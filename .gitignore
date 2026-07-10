@@ -1,0 +1,21 @@
+# Python virtual environment
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local databases and vector indexes
+database/*.db
+database/*.index
+
+# Generated audio
+*.wav
+
+# Environment variables
+.env
+
+# IDE files
+.vscode/
+.idea/

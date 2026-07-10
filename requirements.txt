@@ -1,0 +1,7 @@
+ollama
+faiss-cpu
+sentence-transformers
+transformers
+torch
+sqlalchemy
+numpy
