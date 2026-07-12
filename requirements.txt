@@ -5,3 +5,5 @@ transformers
 torch
 sqlalchemy
 numpy
+silero-vad
+sounddevice

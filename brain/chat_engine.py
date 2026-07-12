@@ -9,7 +9,7 @@ from brain.prompt_builder import PromptBuilder
 from brain.conversation_manager import ConversationManager
 from brain.memory_ranker import MemoryRanker
 from brain.attention import Attention
-from voice.manager import VoiceManager
+from voice.audio_manager import AudioManager
 
 class ChatEngine:
 
@@ -24,7 +24,7 @@ class ChatEngine:
         self.conversation = ConversationManager()
         self.memory_ranker = MemoryRanker()
         self.attention = Attention()
-        self.voice = VoiceManager()
+        self.audio = AudioManager()
 
         self.system_prompt = """
 You are Elaina.
@@ -124,7 +124,7 @@ Reply using plain text only.
             reply
         )
 
-        self.voice.speak(reply)
+        self.audio.speak(reply)
 
         ####################################################
         # Store Memory

@@ -27,7 +27,9 @@ while True:
         user_input = input("\nYou: ").strip()
 
     elif mode in {"m", "mic", "microphone"}:
-        user_input = speech_to_text.record_until_enter()
+        user_input = speech_to_text.listen_and_transcribe(
+            on_speech_start=engine.audio.stop,
+        )
 
         if not user_input:
             continue

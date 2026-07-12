@@ -1,5 +1,7 @@
 import ctypes
 import os
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 import sysconfig
 
 # Correct site-packages location inside the virtual environment
@@ -87,6 +89,8 @@ import wave
 import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
+from voice.vad import VoiceActivityDetector
+from collections.abc import Callable
 
 
 class SpeechToText:
@@ -96,11 +100,22 @@ class SpeechToText:
         model_size: str = "small",
         sample_rate: int = 16000,
         language: str | None = None,
+        device_index: int | None = None,
     ):
         self.model_size = model_size
         self.sample_rate = sample_rate
         self.language = language
+        self.device_index = device_index
         self.using_gpu = False
+
+        self.vad = VoiceActivityDetector(
+            sample_rate=self.sample_rate,
+            device_index=self.device_index,
+            threshold=0.5,
+            silence_ms=1100,
+            minimum_speech_ms=250,
+            start_timeout_seconds=15,
+        )
 
         self._load_gpu_model()
 
@@ -238,3 +253,35 @@ class SpeechToText:
             print("[STT] No speech detected.")
 
         return text
+    
+    def listen_and_transcribe(
+        self,
+        on_speech_start: Callable[[], None] | None = None,
+    ) -> str:
+        audio = self.vad.record(
+            on_speech_start=on_speech_start,
+        )
+
+        if audio is None or audio.size == 0:
+            return ""
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".wav",
+            delete=False,
+        ) as temporary_file:
+            wav_path = temporary_file.name
+
+        try:
+            with wave.open(wav_path, "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(self.sample_rate)
+                wav_file.writeframes(audio.tobytes())
+
+            return self.transcribe(wav_path)
+
+        finally:
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
