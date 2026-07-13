@@ -18,7 +18,7 @@ print("Press Ctrl+C to stop manually.")
 try:
     while True:
         user_input = speech_to_text.listen_and_transcribe(
-            on_speech_start=engine.audio.stop,
+            on_speech_start=engine.on_speech_start,
         )
 
         if not user_input:

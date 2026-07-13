@@ -12,6 +12,7 @@ from brain.memory_ranker import MemoryRanker
 from brain.attention import Attention
 from voice.audio_manager import AudioManager
 from brain.emotion_engine import EmotionEngine
+from core.event_bus import Event, EventBus
 
 
 def extract_complete_sentences(
@@ -53,7 +54,10 @@ class ChatEngine:
         self.conversation = ConversationManager()
         self.memory_ranker = MemoryRanker()
         self.attention = Attention()
-        self.audio = AudioManager()
+        self.events = EventBus()
+        self.audio = AudioManager(
+            event_bus=self.events,
+        )
         self.emotion = EmotionEngine()
 
         self.system_prompt = """
@@ -79,7 +83,18 @@ Use plain text only.
 
 Do not include emoji characters even if the user uses them.
 """
+    def _print_event(self, event: Event) -> None:
+        print(
+            f"\n[Event] {event.name}: "
+            f"{event.data}"
+        )
 
+    def on_speech_start(self) -> None:
+        self.events.emit("speech_started")
+
+        if self.audio.is_speaking():
+            self.audio.stop()
+    
     def chat(self, user_input):
         
         self.attention.update(user_input)
@@ -180,6 +195,12 @@ Do not include emoji characters even if the user uses them.
         emotion_state = self.emotion.analyze(
             user_input=user_input,
             reply=reply,
+        )
+
+        self.events.emit(
+            "emotion_changed",
+            emotion=emotion_state.name,
+            intensity=emotion_state.intensity,
         )
 
         ####################################################

@@ -4,11 +4,15 @@ import queue
 import threading
 
 from voice.manager import VoiceManager
-
+from core.event_bus import EventBus
 
 class AudioManager:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        event_bus: EventBus | None = None,
+    ) -> None:
         self.voice = VoiceManager()
+        self.events = event_bus
 
         self._queue: queue.Queue[
             tuple[int, str]
@@ -50,7 +54,19 @@ class AudioManager:
                 with self._lock:
                     self._speaking = True
 
+                if self.events is not None:
+                    self.events.emit(
+                        "tts_started",
+                        text=text,
+                    )
+
                 self.voice.speak(text)
+
+                if self.events is not None:
+                    self.events.emit(
+                        "tts_finished",
+                        text=text,
+                    )
 
             except Exception as error:
                 print(f"[TTS Error] {error}")
@@ -62,6 +78,7 @@ class AudioManager:
                 self._queue.task_done()
 
     def stop(self) -> None:
+        was_speaking = self.is_speaking()
         # Invalidates all sentences queued before this interruption.
         with self._lock:
             self._generation += 1
@@ -76,6 +93,9 @@ class AudioManager:
                 self._queue.task_done()
             except queue.Empty:
                 break
+        
+        if was_speaking and self.events is not None:
+            self.events.emit("tts_interrupted")
 
     def is_speaking(self) -> bool:
         with self._lock:
