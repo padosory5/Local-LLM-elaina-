@@ -4,29 +4,19 @@ from voice.stt import SpeechToText
 
 engine = ChatEngine()
 
-# Use language=None for automatic English/Korean detection.
 speech_to_text = SpeechToText(
     model_size="small",
     language=None,
 )
 
-print("\nElaina is ready!")
-print("[k] Keyboard")
-print("[m] Microphone")
-print("[q] Quit")
+print("\nElaina is ready.")
+print("Microphone mode active.")
+print("Say 'goodbye Elaina' to quit.")
+print("Press Ctrl+C to stop manually.")
 
 
-while True:
-    mode = input("\nChoose input mode [k/m/q]: ").strip().lower()
-
-    if mode in {"q", "quit", "exit"}:
-        print("Goodbye!")
-        break
-
-    if mode in {"k", "keyboard"}:
-        user_input = input("\nYou: ").strip()
-
-    elif mode in {"m", "mic", "microphone"}:
+try:
+    while True:
         user_input = speech_to_text.listen_and_transcribe(
             on_speech_start=engine.audio.stop,
         )
@@ -34,11 +24,22 @@ while True:
         if not user_input:
             continue
 
-    else:
-        print("Please enter k, m, or q.")
-        continue
+        command = user_input.lower().strip()
 
-    if user_input.lower() in {"quit", "exit"}:
-        break
+        if command in {
+            "quit",
+            "exit",
+            "goodbye",
+            "goodbye elaina",
+            "stop elaina",
+        }:
+            break
 
-    engine.chat(user_input)
+        engine.chat(user_input)
+
+except KeyboardInterrupt:
+    print("\nStopping Elaina...")
+
+finally:
+    engine.audio.stop()
+    print("Goodbye!")

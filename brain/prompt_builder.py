@@ -2,34 +2,27 @@ class PromptBuilder:
 
     def build(
         self,
-        system_prompt,
-        memory_text,
-        attention_text,
-        user_input
-    ):
+        memory_text: str,
+        attention_text: str,
+        user_input: str,
+    ) -> str:
+        sections = []
 
-        prompt = f"""
-System
+        if attention_text.strip():
+            sections.append(
+                f"Relevant conversation context:\n"
+                f"{attention_text.strip()}"
+            )
 
-{system_prompt}
+        if memory_text.strip():
+            sections.append(
+                f"Relevant memories:\n"
+                f"{memory_text.strip()}"
+            )
 
-----------------------------------------
+        sections.append(
+            f"Current user message:\n"
+            f"{user_input.strip()}"
+        )
 
-Attention
-
-{attention_text}
-
-----------------------------------------
-
-Memory
-
-{memory_text}
-
-----------------------------------------
-
-User
-
-{user_input}
-"""
-
-        return prompt.strip()
+        return "\n\n".join(sections)

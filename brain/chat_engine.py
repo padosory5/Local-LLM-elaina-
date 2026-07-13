@@ -1,3 +1,4 @@
+import re
 import ollama
 
 from memory.memory_manager import MemoryManager
@@ -10,6 +11,34 @@ from brain.conversation_manager import ConversationManager
 from brain.memory_ranker import MemoryRanker
 from brain.attention import Attention
 from voice.audio_manager import AudioManager
+from brain.emotion_engine import EmotionEngine
+
+
+def extract_complete_sentences(
+    buffer: str,
+) -> tuple[list[str], str]:
+    sentences: list[str] = []
+
+    pattern = re.compile(
+        r'(.+?[.!?]+(?:["\')\]]+)?)(?=\s|$)',
+        re.DOTALL,
+    )
+
+    while True:
+        match = pattern.match(buffer)
+
+        if match is None:
+            break
+
+        sentence = match.group(1).strip()
+
+        if sentence:
+            sentences.append(sentence)
+
+        buffer = buffer[match.end():].lstrip()
+
+    return sentences, buffer
+
 
 class ChatEngine:
 
@@ -25,6 +54,7 @@ class ChatEngine:
         self.memory_ranker = MemoryRanker()
         self.attention = Attention()
         self.audio = AudioManager()
+        self.emotion = EmotionEngine()
 
         self.system_prompt = """
 You are Elaina.
@@ -43,9 +73,11 @@ Only give detailed answers if the user asks.
 
 Sound like a real person.
 
-Never use emojis.
+Never use emojis, emoticons, decorative symbols, or reaction icons.
 
-Reply using plain text only.
+Use plain text only.
+
+Do not include emoji characters even if the user uses them.
 """
 
     def chat(self, user_input):
@@ -79,52 +111,76 @@ Reply using plain text only.
         # Build Prompt
         ####################################################
 
-        prompt = self.prompt_builder.build(
-            self.system_prompt,
-            memory_text,
-            attention_text,
-            user_input
-        )
-
-        self.conversation.add(
-            "user",
-            prompt
+        context_prompt = self.prompt_builder.build(
+            memory_text=memory_text,
+            attention_text=attention_text,
+            user_input=user_input,
         )
 
         ####################################################
         # Ask Qwen
         ####################################################
 
+        messages = self.conversation.build_messages(
+            system_prompt=self.system_prompt,
+            context_prompt=context_prompt,
+        )
+
         stream = self.client.chat(
             model="qwen3:8b",
-            messages=self.conversation.get_history(),
-            stream=True
+            messages=messages,
+            stream=True,
         )
 
         reply = ""
-
+        speech_buffer = ""
 
         print("\nElaina: ", end="", flush=True)
 
         for chunk in stream:
-
             if "message" not in chunk:
                 continue
 
-            content = chunk["message"]["content"]
+            content = chunk["message"].get("content", "")
+
+            if not content:
+                continue
 
             print(content, end="", flush=True)
 
             reply += content
+            speech_buffer += content
+
+            complete_sentences, speech_buffer = (
+                extract_complete_sentences(speech_buffer)
+            )
+
+            for sentence in complete_sentences:
+                self.audio.speak(sentence)
 
         print()
+
+        # Speak any remaining text that did not end in punctuation.
+        remaining_text = speech_buffer.strip()
+
+        if remaining_text:
+            self.audio.speak(remaining_text)
+
+
+        self.conversation.add(
+            "user",
+            user_input,
+        )
 
         self.conversation.add(
             "assistant",
             reply
         )
 
-        self.audio.speak(reply)
+        emotion_state = self.emotion.analyze(
+            user_input=user_input,
+            reply=reply,
+        )
 
         ####################################################
         # Store Memory
