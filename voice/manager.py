@@ -1,15 +1,18 @@
-from voice.config import VOICE_ENGINE
+from config.loader import Config
 from voice.piper import PiperTTS
 
 
 class VoiceManager:
 
-    def __init__(self):
+    def __init__(self, config: Config) -> None:
+        provider = config.active_provider("tts")
 
-        if VOICE_ENGINE == "piper":
-            self.engine = PiperTTS()
+        if provider == "piper":
+            self.engine = PiperTTS(config=config)
         else:
-            raise ValueError("Unknown voice engine")
+            raise ValueError(
+                f"TTS provider is not implemented: {provider}"
+            )
 
     def speak(self, text: str) -> None:
         self.engine.speak(text)

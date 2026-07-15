@@ -5,13 +5,16 @@ import threading
 
 from voice.manager import VoiceManager
 from core.event_bus import EventBus
+from config.loader import Config
 
 class AudioManager:
+
     def __init__(
         self,
+        config: Config,
         event_bus: EventBus | None = None,
     ) -> None:
-        self.voice = VoiceManager()
+        self.voice = VoiceManager(config=config)
         self.events = event_bus
 
         self._queue: queue.Queue[

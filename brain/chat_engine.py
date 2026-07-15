@@ -13,7 +13,12 @@ from brain.attention import Attention
 from voice.audio_manager import AudioManager
 from brain.emotion_engine import EmotionEngine
 from core.event_bus import Event, EventBus
-
+from brain.text_filter import TextFilter
+from tools.web_search import WebSearchTool
+from config.loader import Config
+from brain.personality_loader import PersonalityLoader
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 def extract_complete_sentences(
     buffer: str,
@@ -44,8 +49,32 @@ def extract_complete_sentences(
 class ChatEngine:
 
     def __init__(self):
+        self.config = Config()
+
+        self.model = self.config.get(
+            "llm",
+            "ollama",
+            "model",
+        )
+
+        self.temperature = self.config.get(
+            "llm",
+            "ollama",
+            "temperature",
+        )
+
+        self.client = ollama.Client(
+            host=self.config.get(
+                "llm",
+                "ollama",
+                "base_url",
+            )
+        )
+        
         self.prompt_builder = PromptBuilder()
-        self.client = ollama.Client()
+        self.personality_loader = PersonalityLoader()
+        self.system_prompt = self.personality_loader.load()
+        self.prompt_builder = PromptBuilder()
         self.memory_manager = MemoryManager()
         self.extractor = MemoryExtractor()
         self.consolidator = MemoryConsolidator()
@@ -55,34 +84,16 @@ class ChatEngine:
         self.memory_ranker = MemoryRanker()
         self.attention = Attention()
         self.events = EventBus()
+        self.web_search_tool = WebSearchTool()
+
         self.audio = AudioManager(
+            config=self.config,
             event_bus=self.events,
         )
+
         self.emotion = EmotionEngine()
 
-        self.system_prompt = """
-You are Elaina.
-
-You are a warm, friendly and intelligent AI.
-
-Speak naturally.
-
-Most replies should be one or two sentences.
-
-Don't mention memories unless they're useful.
-
-Don't over-explain.
-
-Only give detailed answers if the user asks.
-
-Sound like a real person.
-
-Never use emojis, emoticons, decorative symbols, or reaction icons.
-
-Use plain text only.
-
-Do not include emoji characters even if the user uses them.
-"""
+        
     def _print_event(self, event: Event) -> None:
         print(
             f"\n[Event] {event.name}: "
@@ -125,13 +136,16 @@ Do not include emoji characters even if the user uses them.
         ####################################################
         # Build Prompt
         ####################################################
+        time_context = self.build_time_context()
 
         context_prompt = self.prompt_builder.build(
             memory_text=memory_text,
             attention_text=attention_text,
-            user_input=user_input,
+            user_input=(
+                f"{time_context}\n\n"
+                f"{user_input}"
+            ),
         )
-
         ####################################################
         # Ask Qwen
         ####################################################
@@ -141,12 +155,78 @@ Do not include emoji characters even if the user uses them.
             context_prompt=context_prompt,
         )
 
-        stream = self.client.chat(
-            model="qwen3:8b",
+        messages.append({
+            "role": "system",
+            "content": self.build_time_context(),
+        })
+
+        tool_response = self.client.chat(
+            model=self.model,
             messages=messages,
-            stream=True,
+            tools=[self.search_web],
+            stream=False,
+            options={
+                "temperature": self.temperature,
+            },
         )
 
+        tool_calls = (
+            tool_response.message.tool_calls
+            if tool_response.message
+            else None
+        )
+
+        if tool_calls:
+            messages.append(tool_response.message)
+
+            for tool_call in tool_calls:
+                function_name = tool_call.function.name
+                arguments = tool_call.function.arguments
+
+                if function_name == "search_web":
+                    query = str(
+                        arguments.get("query", "")
+                    ).strip()
+
+                    try:
+                        max_results = int(
+                            arguments.get("max_results", 3)
+                        )
+                    except (TypeError, ValueError):
+                        max_results = 3
+
+                    tool_result = self.search_web(
+                        query=query,
+                        max_results=max_results,
+                    )
+                else:
+                    tool_result = (
+                        f"Unknown tool requested: {function_name}"
+                    )
+
+                messages.append({
+                    "role": "tool",
+                    "tool_name": function_name,
+                    "content": tool_result,
+                })
+
+            messages.append({
+                "role": "system",
+                "content": (
+                    "Answer directly using the supplied search information. "
+                    "Use no more than two short sentences. Do not provide URLs, "
+                    "tell the user to visit a website, or list unrelated meanings."
+                ),
+            })
+
+        stream = self.client.chat(
+            model=self.model,
+            messages=messages,
+            stream=True,
+            options={
+                "temperature": self.temperature,
+            },
+        )
         reply = ""
         speech_buffer = ""
 
@@ -157,6 +237,8 @@ Do not include emoji characters even if the user uses them.
                 continue
 
             content = chunk["message"].get("content", "")
+
+            content = TextFilter.clean(content)
 
             if not content:
                 continue
@@ -238,3 +320,54 @@ Do not include emoji characters even if the user uses them.
                 )
 
         return reply
+    
+    def search_web(
+        self,
+        query: str,
+        max_results: int = 5,
+    ) -> str:
+        """
+        Search the web for current or recently changing information.
+
+        Use this tool for news, current events, prices, recent software
+        versions, schedules, sports results, current company leaders,
+        or any information that may have changed recently.
+
+        Args:
+            query: A focused web-search query.
+            max_results: Number of results to retrieve.
+
+        Returns:
+            Current web-search results.
+        """
+        print(f"\n[Tool] Searching web for: {query}")
+
+        if hasattr(self, "events"):
+            self.events.emit(
+                "tool_started",
+                tool="web_search",
+                query=query,
+            )
+
+        result = self.web_search_tool.search_web(
+            query=query,
+            max_results=max_results,
+        )
+
+        if hasattr(self, "events"):
+            self.events.emit(
+                "tool_finished",
+                tool="web_search",
+                query=query,
+            )
+
+        return result
+    
+    def build_time_context(self) -> str:
+        now = datetime.now()
+
+        return (
+            f"Today is {now.strftime('%A, %B %d, %Y')}.\n"
+            f"The current local time is {now.strftime('%I:%M %p')}.\n"
+            f"The current year is {now.year}."
+        )

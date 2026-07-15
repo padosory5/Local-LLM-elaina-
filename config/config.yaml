@@ -1,0 +1,318 @@
+############################################################
+# Elaina Configuration
+#
+# Changing a provider here only works after its Python
+# integration has been implemented.
+#
+# Currently implemented:
+#   LLM: Ollama
+#   TTS: Piper
+############################################################
+
+
+############################################################
+# Large Language Model
+############################################################
+
+llm:
+  # Active LLM provider.
+  #
+  # Current:
+  #   ollama
+  #
+  # Possible future providers:
+  #   openai
+  #   anthropic
+  #   openrouter
+  #   llama_cpp
+  provider: "ollama"
+
+  ##########################################################
+  # Ollama
+  #
+  # Local LLM server:
+  #   http://localhost:11434
+  #
+  # Example model names:
+  #   qwen3:8b
+  #   qwen3:14b
+  #   qwen3:30b
+  #   gemma3:27b
+  #   mistral-small
+  #
+  # Install models using:
+  #   ollama pull qwen3:8b
+  ##########################################################
+
+  ollama:
+    base_url: "http://localhost:11434"
+    model: "qwen3:8b"
+
+    # Sampling temperature, generally between 0 and 2.
+    # Lower values are more predictable.
+    # Higher values are more creative.
+    temperature: 0.8
+
+    # Number of seconds Ollama keeps the model loaded.
+    # Use -1 to keep it loaded indefinitely.
+    keep_alive: -1
+
+  ##########################################################
+  # OpenAI
+  #
+  # Store the real API key in your .env file:
+  #   OPENAI_API_KEY=your-key
+  #
+  # Do not place the actual key in this YAML file.
+  ##########################################################
+
+  openai:
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+    organization_id_env: "OPENAI_ORGANIZATION_ID"
+    project_id_env: "OPENAI_PROJECT_ID"
+    model: ""
+    temperature: 0.8
+
+  ##########################################################
+  # Anthropic
+  #
+  # Store the API key in .env:
+  #   ANTHROPIC_API_KEY=your-key
+  ##########################################################
+
+  anthropic:
+    base_url: "https://api.anthropic.com"
+    api_key_env: "ANTHROPIC_API_KEY"
+    model: ""
+    temperature: 0.8
+
+  ##########################################################
+  # OpenRouter
+  #
+  # Store the API key in .env:
+  #   OPENROUTER_API_KEY=your-key
+  #
+  # OpenRouter provides an OpenAI-compatible API for many
+  # hosted model providers.
+  ##########################################################
+
+  openrouter:
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: "OPENROUTER_API_KEY"
+    model: ""
+    temperature: 0.8
+
+  ##########################################################
+  # llama.cpp
+  #
+  # Local inference using a GGUF model.
+  #
+  # Example:
+  #   model_path: "C:/Models/model.gguf"
+  ##########################################################
+
+  llama_cpp:
+    model_path: ""
+    context_length: 8192
+    gpu_layers: -1
+    temperature: 0.8
+
+
+############################################################
+# Text-to-Speech
+############################################################
+
+tts:
+  # Active TTS provider.
+  #
+  # Current:
+  #   piper
+  #
+  # Possible future providers:
+  #   xtts
+  #   elevenlabs
+  #   fish_speech
+  #   edge_tts
+  provider: "piper"
+
+  ##########################################################
+  # Piper
+  #
+  # Current local TTS implementation.
+  #
+  # The matching model JSON file should normally be stored
+  # beside the ONNX model.
+  ##########################################################
+
+  piper:
+    executable: "C:/Users/pados/piper/piper.exe"
+    model: "C:/Users/pados/piper/voices/en_US-amy-medium.onnx"
+
+  ##########################################################
+  # XTTS
+  #
+  # Possible future local multilingual and voice-cloning TTS.
+  #
+  # speaker_wav should point to a clean reference recording.
+  ##########################################################
+
+  xtts:
+    model: "tts_models/multilingual/multi-dataset/xtts_v2"
+    speaker_wav: ""
+    language: "en"
+    device: "cuda"
+
+  ##########################################################
+  # ElevenLabs
+  #
+  # Store the API key in .env:
+  #   ELEVENLABS_API_KEY=your-key
+  ##########################################################
+
+  elevenlabs:
+    api_key_env: "ELEVENLABS_API_KEY"
+    voice_id: ""
+    model: ""
+    output_format: "mp3_44100_128"
+
+  ##########################################################
+  # Fish Speech
+  #
+  # Possible future local expressive TTS.
+  ##########################################################
+
+  fish_speech:
+    model_path: ""
+    reference_audio: ""
+    reference_text: ""
+    device: "cuda"
+
+  ##########################################################
+  # Microsoft Edge TTS
+  #
+  # Possible future online TTS provider.
+  ##########################################################
+
+  edge_tts:
+    voice: "en-US-JennyNeural"
+    rate: "+0%"
+    pitch: "+0Hz"
+    volume: "+0%"
+
+
+############################################################
+# Speech-to-Text
+############################################################
+
+stt:
+  provider: "faster_whisper"
+
+  faster_whisper:
+    model_size: "small"
+
+    # Use null for automatic language detection.
+    # Examples:
+    #   "en"
+    #   "ko"
+    language: null
+
+    device: "cuda"
+    compute_type: "float16"
+
+    # If GPU transcription fails, Elaina currently falls
+    # back to CPU automatically.
+    cpu_compute_type: "int8"
+
+
+############################################################
+# Voice Activity Detection
+############################################################
+
+vad:
+  provider: "silero"
+
+  silero:
+    sample_rate: 16000
+    threshold: 0.5
+    silence_ms: 1100
+    minimum_speech_ms: 250
+    pre_speech_ms: 300
+    start_timeout_seconds: 15
+    maximum_recording_seconds: 30
+
+    # Use null to let SoundDevice choose the default input.
+    device_index: null
+
+
+############################################################
+# Memory
+############################################################
+
+memory:
+  enabled: true
+
+  # Maximum number of raw candidates retrieved before ranking.
+  top_k: 20
+
+  # Default importance assigned to newly stored memories.
+  default_importance: 5
+
+
+############################################################
+# Web Search
+############################################################
+
+search:
+  enabled: true
+  provider: "duckduckgo"
+
+  duckduckgo:
+    max_results: 3
+    timeout_seconds: 10
+
+  # Possible future Tavily configuration.
+  # Store the key in .env:
+  #   TAVILY_API_KEY=your-key
+  tavily:
+    api_key_env: "TAVILY_API_KEY"
+    max_results: 3
+
+
+############################################################
+# Time Context
+############################################################
+
+time:
+  enabled: true
+
+  # Use "local" to use the operating system's local time.
+  # You can later use an IANA name such as "Asia/Seoul"
+  # when the tzdata package is installed.
+  timezone: "local"
+
+  use_12_hour_clock: true
+
+
+############################################################
+# Avatar
+############################################################
+
+avatar:
+  enabled: false
+  provider: "unity"
+
+  unity:
+    host: "127.0.0.1"
+    websocket_port: 8765
+
+
+############################################################
+# Debugging
+############################################################
+
+debug:
+  print_events: false
+  print_memory: false
+  print_search: true
+  print_tool_calls: true

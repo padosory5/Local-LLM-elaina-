@@ -8,16 +8,29 @@ import time
 
 import pygame
 
+from config.loader import Config
 from voice.base import BaseTTS
 
 
 class PiperTTS(BaseTTS):
 
-    def __init__(self) -> None:
-        self.piper = r"C:\Users\pados\piper\piper.exe"
-        self.model = (
-            r"C:\Users\pados\piper\voices"
-            r"\en_US-amy-medium.onnx"
+    def __init__(self, config: Config) -> None:
+        self.piper = str(
+            config.resolve_path(
+                "tts",
+                "piper",
+                "executable",
+                must_exist=True,
+            )
+        )
+
+        self.model = str(
+            config.resolve_path(
+                "tts",
+                "piper",
+                "model",
+                must_exist=True,
+            )
         )
 
         if not pygame.mixer.get_init():
