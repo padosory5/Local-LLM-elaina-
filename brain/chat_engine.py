@@ -1,4 +1,5 @@
 import re
+from elevenlabs import stream
 import ollama
 
 from memory.memory_manager import MemoryManager
@@ -70,11 +71,19 @@ class ChatEngine:
                 "base_url",
             )
         )
-        
+
         self.prompt_builder = PromptBuilder()
         self.personality_loader = PersonalityLoader()
-        self.system_prompt = self.personality_loader.load()
-        self.prompt_builder = PromptBuilder()
+
+        language = self.config.get(
+            "language",
+            "response",
+        )
+
+        self.system_prompt = self.personality_loader.load(
+            language
+        )
+
         self.memory_manager = MemoryManager()
         self.extractor = MemoryExtractor()
         self.consolidator = MemoryConsolidator()
@@ -92,7 +101,6 @@ class ChatEngine:
         )
 
         self.emotion = EmotionEngine()
-
         
     def _print_event(self, event: Event) -> None:
         print(
@@ -229,6 +237,8 @@ class ChatEngine:
         )
         reply = ""
         speech_buffer = ""
+        tts_buffer = ""
+        tts_sentence_count = 0
 
         print("\nElaina: ", end="", flush=True)
 
@@ -237,7 +247,6 @@ class ChatEngine:
                 continue
 
             content = chunk["message"].get("content", "")
-
             content = TextFilter.clean(content)
 
             if not content:
@@ -253,7 +262,14 @@ class ChatEngine:
             )
 
             for sentence in complete_sentences:
-                self.audio.speak(sentence)
+                tts_buffer += " " + sentence
+                tts_sentence_count += 1
+
+                if tts_sentence_count >= 2 or len(tts_buffer) >= 180:
+                    self.audio.speak(tts_buffer.strip())
+
+                    tts_buffer = ""
+                    tts_sentence_count = 0
 
         print()
 
@@ -261,7 +277,12 @@ class ChatEngine:
         remaining_text = speech_buffer.strip()
 
         if remaining_text:
-            self.audio.speak(remaining_text)
+            tts_buffer += " " + remaining_text
+
+        final_tts_text = tts_buffer.strip()
+
+        if final_tts_text:
+            self.audio.speak(final_tts_text)
 
 
         self.conversation.add(

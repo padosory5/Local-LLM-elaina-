@@ -1,6 +1,8 @@
+from networkx import config
+
 from config.loader import Config
 from voice.piper import PiperTTS
-
+from voice.elevenlabs import ElevenLabsTTS
 
 class VoiceManager:
 
@@ -9,6 +11,8 @@ class VoiceManager:
 
         if provider == "piper":
             self.engine = PiperTTS(config=config)
+        elif provider == "elevenlabs":
+            self.engine = ElevenLabsTTS(config=config)
         else:
             raise ValueError(
                 f"TTS provider is not implemented: {provider}"

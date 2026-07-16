@@ -19,3 +19,6 @@ database/*.index
 # IDE files
 .vscode/
 .idea/
+
+# API keys
+.env

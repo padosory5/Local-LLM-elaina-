@@ -2,18 +2,24 @@ from pathlib import Path
 
 
 class PersonalityLoader:
-    def __init__(self) -> None:
-        self.path = (
-            Path(__file__).resolve().parent
-            / "personality.txt"
-        )
 
-    def load(self) -> str:
-        if not self.path.is_file():
+    def __init__(self):
+        self.directory = Path(__file__).parent
+
+    def load(
+        self,
+        language: str,
+    ) -> str:
+
+        filename = f"personality_{language}.txt"
+
+        path = self.directory / filename
+
+        if not path.exists():
             raise FileNotFoundError(
-                f"Personality file not found: {self.path}"
+                f"Personality file not found: {path}"
             )
 
-        return self.path.read_text(
+        return path.read_text(
             encoding="utf-8",
         ).strip()

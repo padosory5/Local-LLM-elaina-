@@ -118,6 +118,17 @@ llm:
     gpu_layers: -1
     temperature: 0.8
 
+############################################################
+# Language
+############################################################
+
+language:
+  # Elaina's response language.
+  #
+  # en = English
+  # ko = Korean
+  response: "en"
+
 
 ############################################################
 # Text-to-Speech
@@ -172,8 +183,8 @@ tts:
 
   elevenlabs:
     api_key_env: "ELEVENLABS_API_KEY"
-    voice_id: ""
-    model: ""
+    voice_id: "9wV7LnFitDJZcfhwO7gm"
+    model: "eleven_v3"
     output_format: "mp3_44100_128"
 
   ##########################################################
@@ -215,7 +226,7 @@ stt:
     # Examples:
     #   "en"
     #   "ko"
-    language: null
+    language: "en"
 
     device: "cuda"
     compute_type: "float16"
