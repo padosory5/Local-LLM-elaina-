@@ -63,6 +63,51 @@ Current progress includes:
 * Context management
 * Streaming responses
 
+## Language
+
+Elaina supports multiple response languages through `config/config.yaml`.
+
+Open:
+
+```text
+config/config.yaml
+```
+
+Find:
+
+```yaml
+language:
+
+  # Response language
+  # en = English
+  # ko = Korean
+
+  response: "en"
+```
+
+### English
+
+```yaml
+language:
+  response: "en"
+```
+
+### Korean
+
+```yaml
+language:
+  response: "ko"
+```
+
+Changing this setting will:
+
+- Load the corresponding personality file (`personality_en.txt` or `personality_ko.txt`)
+- Change Elaina's response language
+- Configure the speech recognition language (if enabled)
+- Use the configured TTS provider for that language
+
+After changing the language, restart Elaina for the changes to take effect.
+
 ## Roadmap
 
 ### Version 0.2
