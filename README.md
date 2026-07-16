@@ -108,6 +108,84 @@ Changing this setting will:
 
 After changing the language, restart Elaina for the changes to take effect.
 
+## Live2D (Unity) Setup
+
+### If the Live2D model is invisible
+
+If your Live2D model imports successfully but does not appear in the Scene or Game view, follow these steps before importing the Cubism SDK.
+
+### 1. Configure the Render Pipeline
+
+Open:
+
+```
+Edit → Project Settings → Quality
+```
+
+Find **Render Pipeline Asset** and set it to:
+
+```
+UniversalRP
+```
+
+---
+
+### 2. Change the Color Space
+
+Open:
+
+```
+Edit → Project Settings → Player → Other Settings
+```
+
+Set:
+
+```
+Color Space → Gamma
+```
+
+---
+
+### 3. Import the Cubism SDK
+
+After changing the settings above, import the **Cubism SDK for Unity (URP)** into your project.
+
+---
+
+### 4. Configure the Universal Renderer
+
+In the **Project** window:
+
+1. Press **Ctrl + F**
+2. Search for:
+
+```
+UniversalRP
+```
+
+3. Select the **UniversalRP** asset.
+
+In the **Inspector**:
+
+- Locate **Renderer List**
+- Add:
+
+```
+CubismURPRenderer
+```
+
+- Set **CubismURPRenderer** as the **Default Renderer**.
+
+---
+
+### 5. Import your Live2D model
+
+After completing the steps above, import your `.model3.json` file.
+
+The model should now render correctly.
+
+> **Note:** If the model is still invisible, double-check the camera position, model scale, and that all texture files were imported with the model.
+
 ## Roadmap
 
 ### Version 0.2
