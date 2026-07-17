@@ -1,10 +1,6 @@
 # Elaina AI
 
-A local conversational AI assistant built with Python and Ollama.
-
-## Overview
-
-Elaina AI is a personal AI assistant that runs completely on a local machine without relying on cloud APIs. The goal of this project is to create an AI companion capable of remembering conversations, speaking naturally, and eventually synchronizing with a 3D avatar in real time.
+Elaina is an open LLM model that runs as a personal AI assistant. The main focus is trying to run the model as local, avoiding cloud APIs. Although if the user prefers using APIs the configurations maybe made. The goal of this project is to create an AI agent capable of remembering conversations, finishing tasks for user, and synchronizing with a live2D avatar.
 
 ## Features
 
@@ -17,32 +13,6 @@ Elaina AI is a personal AI assistant that runs completely on a local machine wit
 * Context-aware responses
 * Streaming text generation
 * Modular architecture for future expansion
-
-## Project Structure
-
-```text
-elainaAI/
-│
-├── brain/
-│   ├── chat_engine.py
-│   ├── conversation_manager.py
-│   ├── prompt_builder.py
-│   ├── attention.py
-│   └── memory_ranker.py
-│
-├── memory/
-│   ├── memory_manager.py
-│   ├── extractor.py
-│   ├── consolidator.py
-│   ├── context_builder.py
-│   ├── router.py
-│   ├── embedding.py
-│   └── faiss_manager.py
-│
-├── database/
-├── main.py
-└── requirements.txt
-```
 
 ## Tech Stack
 
