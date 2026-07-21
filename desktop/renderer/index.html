@@ -17,6 +17,49 @@
     <main id="desktop-character">
         <canvas id="live2d-canvas"></canvas>
 
+        <section id="message-layer">
+            <div id="user-caption" class="hidden">
+                <span class="caption-label">You</span>
+                <span id="user-caption-text"></span>
+            </div>
+
+            <div id="assistant-bubble" class="hidden">
+                <span class="caption-label">Elaina</span>
+                <p id="assistant-bubble-text"></p>
+            </div>
+        </section>
+
+        <div id="bottom-bar">
+            <div id="connection-status">
+                <span id="status-dot"></span>
+                <span id="connection-text">Connecting...</span>
+            </div>
+
+            <button
+                id="chat-toggle-button"
+                type="button"
+                title="Show chat history"
+            >
+                Chat
+            </button>
+        </div>
+
+        <aside id="chat-drawer" class="closed">
+            <header id="chat-drawer-header">
+                <span>Conversation</span>
+
+                <button
+                    id="chat-drawer-close"
+                    type="button"
+                    title="Close chat history"
+                >
+                    ×
+                </button>
+            </header>
+
+            <div id="chat-history"></div>
+        </aside>
+
         <nav id="window-controls">
             <button
                 id="pin-button"

@@ -115,7 +115,20 @@ class ChatEngine:
             self.audio.stop()
     
     def chat(self, user_input):
-        
+        user_input = str(user_input).strip()
+
+        if not user_input:
+            return ""
+
+        print(
+            f"[ChatEngine] Emitting user_message: {user_input}"
+        )
+
+        self.events.emit(
+            "user_message",
+            text=user_input,
+        )
+
         self.attention.update(user_input)
 
         ####################################################
@@ -235,43 +248,84 @@ class ChatEngine:
                 "temperature": self.temperature,
             },
         )
+
         reply = ""
         speech_buffer = ""
         tts_buffer = ""
         tts_sentence_count = 0
 
-        print("\nElaina: ", end="", flush=True)
+        # Tell Electron to create a new empty assistant bubble.
+        print("[ChatEngine] Emitting assistant_started")
+
+        self.events.emit(
+            "assistant_started"
+        )
+
+        print(
+            "\nElaina: ",
+            end="",
+            flush=True,
+        )
 
         for chunk in stream:
             if "message" not in chunk:
                 continue
 
-            content = chunk["message"].get("content", "")
+            content = chunk["message"].get(
+                "content",
+                "",
+            )
+
             content = TextFilter.clean(content)
 
             if not content:
                 continue
 
-            print(content, end="", flush=True)
+            print(
+                content,
+                end="",
+                flush=True,
+            )
 
             reply += content
             speech_buffer += content
 
+            print("[ChatEngine] Emitting assistant_finished")
+
+            # Send this exact streamed chunk to Electron.
+            self.events.emit(
+                "assistant_stream",
+                text=content,
+            )
+
             complete_sentences, speech_buffer = (
-                extract_complete_sentences(speech_buffer)
+                extract_complete_sentences(
+                    speech_buffer
+                )
             )
 
             for sentence in complete_sentences:
                 tts_buffer += " " + sentence
                 tts_sentence_count += 1
 
-                if tts_sentence_count >= 2 or len(tts_buffer) >= 180:
-                    self.audio.speak(tts_buffer.strip())
+                if (
+                    tts_sentence_count >= 2
+                    or len(tts_buffer) >= 180
+                ):
+                    self.audio.speak(
+                        tts_buffer.strip()
+                    )
 
                     tts_buffer = ""
                     tts_sentence_count = 0
 
         print()
+
+        # The LLM has finished generating its response.
+        self.events.emit(
+            "assistant_finished",
+            text=reply,
+        )
 
         # Speak any remaining text that did not end in punctuation.
         remaining_text = speech_buffer.strip()
@@ -282,8 +336,9 @@ class ChatEngine:
         final_tts_text = tts_buffer.strip()
 
         if final_tts_text:
-            self.audio.speak(final_tts_text)
-
+            self.audio.speak(
+                final_tts_text
+            )
 
         self.conversation.add(
             "user",

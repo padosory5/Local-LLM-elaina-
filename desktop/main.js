@@ -1,20 +1,21 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 
+const WINDOW_WIDTH = 420;
+const WINDOW_HEIGHT = 650;
+
 let mainWindow = null;
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 420,
-        height: 650,
+        width: WINDOW_WIDTH,
+        height: WINDOW_HEIGHT,
 
-        // Desktop companion appearance
         frame: false,
         transparent: true,
         backgroundColor: "#00000000",
         hasShadow: false,
 
-        // Window behavior
         alwaysOnTop: true,
         resizable: false,
         movable: true,
@@ -36,16 +37,24 @@ function createWindow() {
         mode: "detach"
     });
 
-    // Keep Elaina above normal windows.
     mainWindow.setAlwaysOnTop(true, "floating");
 
-    // Place her near the bottom-right of the primary monitor.
     const { screen } = require("electron");
     const display = screen.getPrimaryDisplay();
     const workArea = display.workArea;
+    const margin = 20;
 
-    const x = workArea.x + workArea.width - 440;
-    const y = workArea.y + workArea.height - 670;
+    const x =
+        workArea.x +
+        workArea.width -
+        WINDOW_WIDTH -
+        margin;
+
+    const y =
+        workArea.y +
+        workArea.height -
+        WINDOW_HEIGHT -
+        margin;
 
     mainWindow.setPosition(x, y);
 
@@ -67,14 +76,19 @@ ipcMain.on("toggle-always-on-top", (_event, enabled) => {
         return;
     }
 
-    mainWindow.setAlwaysOnTop(Boolean(enabled), "floating");
+    mainWindow.setAlwaysOnTop(
+        Boolean(enabled),
+        "floating"
+    );
 });
 
 app.whenReady().then(() => {
     createWindow();
 
     app.on("activate", () => {
-        if (BrowserWindow.getAllWindows().length === 0) {
+        if (
+            BrowserWindow.getAllWindows().length === 0
+        ) {
             createWindow();
         }
     });

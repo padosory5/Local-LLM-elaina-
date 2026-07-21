@@ -27,14 +27,17 @@ class WebSocketServer:
         self._started = threading.Event()
 
         self._event_names = (
-            "lip_sync",
             "tts_started",
             "tts_finished",
             "tts_interrupted",
             "speech_started",
             "emotion_changed",
-            "tool_started",
-            "tool_finished",
+            "lip_sync",
+
+            "user_message",
+            "assistant_started",
+            "assistant_stream",
+            "assistant_finished",
         )
 
         for event_name in self._event_names:
@@ -97,6 +100,10 @@ class WebSocketServer:
             )
 
     def _on_event(self, event: Event) -> None:
+        print(
+            f"[WebSocket Event] {event.name}: {event.data}"
+        )
+
         if self._loop is None:
             return
 
