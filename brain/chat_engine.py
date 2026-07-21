@@ -167,7 +167,7 @@ class ChatEngine:
             "role": "system",
             "content": self.build_time_context(),
         })
-
+        
         tool_response = self.client.chat(
             model=self.model,
             messages=messages,
@@ -177,7 +177,7 @@ class ChatEngine:
                 "temperature": self.temperature,
             },
         )
-
+        
         tool_calls = (
             tool_response.message.tool_calls
             if tool_response.message

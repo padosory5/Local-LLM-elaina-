@@ -156,6 +156,10 @@ The model should now render correctly.
 
 > **Note:** If the model is still invisible, double-check the camera position, model scale, and that all texture files were imported with the model.
 
+## Live2D Desktop Application Setup
+
+The live2d uses pixiv live2d display which only uses CubismSDK4. Therefore, when you export your live2d file make sure to set it up as Cubism4 and no other versions.
+
 ## Roadmap
 
 ### Version 0.2

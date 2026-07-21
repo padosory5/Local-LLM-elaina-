@@ -111,9 +111,9 @@ class SpeechToText:
         self.vad = VoiceActivityDetector(
             sample_rate=self.sample_rate,
             device_index=self.device_index,
-            threshold=0.5,
-            silence_ms=1100,
-            minimum_speech_ms=250,
+            threshold=0.35,
+            silence_ms=900,
+            minimum_speech_ms=180,
             start_timeout_seconds=15,
         )
 
@@ -171,6 +171,7 @@ class SpeechToText:
                 samplerate=self.sample_rate,
                 channels=1,
                 dtype="int16",
+                device=self.device_index,
                 callback=callback,
             ):
                 stop_event.wait()
@@ -237,7 +238,7 @@ class SpeechToText:
         segments, _ = self.model.transcribe(
             audio_path,
             language=self.language,
-            beam_size=5,
+            beam_size=1,
             vad_filter=True,
         )
 
