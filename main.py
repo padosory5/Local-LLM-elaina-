@@ -1,8 +1,17 @@
 from brain.chat_engine import ChatEngine
+from core.websocket_server import WebSocketServer
 from voice.stt import SpeechToText
 
 
 engine = ChatEngine()
+
+websocket_server = WebSocketServer(
+    event_bus=engine.events,
+    host="127.0.0.1",
+    port=8765,
+)
+
+websocket_server.start()
 
 speech_to_text = SpeechToText(
     model_size="small",

@@ -9,15 +9,17 @@
 		"DisplayInfo": "Elaina.cdi3.json"
 	},
 	"Groups": [
-		{
-			"Target": "Parameter",
-			"Name": "EyeBlink",
-			"Ids": []
-		},
-		{
-			"Target": "Parameter",
-			"Name": "LipSync",
-			"Ids": []
-		}
+	{
+		"Target": "Parameter",
+		"Name": "EyeBlink",
+		"Ids": []
+	},
+	{
+		"Target": "Parameter",
+		"Name": "LipSync",
+		"Ids": [
+		"ParamMouthOpenY"
+		]
+	}
 	]
 }

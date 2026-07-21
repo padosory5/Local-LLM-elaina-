@@ -6,6 +6,9 @@ const canvas = document.getElementById("live2d-canvas");
 
 let alwaysOnTop = true;
 let live2dModel = null;
+let targetMouthValue = 0;
+let currentMouthValue = 0;
+let pythonSocket = null;
 
 pinButton.classList.add("active");
 
@@ -59,6 +62,26 @@ async function loadElaina() {
 
         pixiApp.stage.addChild(live2dModel);
 
+        live2dModel.internalModel.on(
+            "beforeModelUpdate",
+            () => {
+                currentMouthValue +=
+                    (targetMouthValue - currentMouthValue) * 0.45;
+
+                if (currentMouthValue < 0.01) {
+                    currentMouthValue = 0;
+                }
+
+                live2dModel.internalModel.coreModel
+                    .setParameterValueById(
+                        "ParamMouthOpenY",
+                        currentMouthValue
+                    );
+            }
+        );
+
+        connectToPython();
+
         fitModelToWindow(live2dModel, pixiApp);
 
         statusMessage.classList.add("hidden");
@@ -79,6 +102,79 @@ async function loadElaina() {
         statusMessage.textContent =
             "Failed to load Elaina. Press Ctrl+Shift+I.";
     }
+}
+
+function connectToPython() {
+    if (
+        pythonSocket &&
+        (
+            pythonSocket.readyState === WebSocket.OPEN ||
+            pythonSocket.readyState === WebSocket.CONNECTING
+        )
+    ) {
+        return;
+    }
+
+    console.log("Connecting to Python WebSocket...");
+
+    pythonSocket = new WebSocket(
+        "ws://127.0.0.1:8765"
+    );
+
+    pythonSocket.addEventListener("open", () => {
+        console.log(
+            "Connected to Elaina Python backend."
+        );
+    });
+
+    pythonSocket.addEventListener("message", event => {
+        try {
+            const message = JSON.parse(event.data);
+
+            if (message.event === "lip_sync") {
+                const value = Number(message.value);
+
+                if (Number.isFinite(value)) {
+                    targetMouthValue = Math.max(
+                        0,
+                        Math.min(1, value)
+                    );
+                }
+            }
+
+            if (
+                message.event === "tts_finished" ||
+                message.event === "tts_interrupted"
+            ) {
+                targetMouthValue = 0;
+            }
+        } catch (error) {
+            console.error(
+                "Invalid WebSocket message:",
+                event.data,
+                error
+            );
+        }
+    });
+
+    pythonSocket.addEventListener("close", () => {
+        console.log(
+            "Python WebSocket disconnected. Retrying..."
+        );
+
+        targetMouthValue = 0;
+        currentMouthValue = 0;
+        pythonSocket = null;
+
+        setTimeout(connectToPython, 2000);
+    });
+
+    pythonSocket.addEventListener("error", error => {
+        console.error(
+            "Python WebSocket error:",
+            error
+        );
+    });
 }
 
 function fitModelToWindow(model, pixiApp) {
@@ -121,3 +217,4 @@ function fitModelToWindow(model, pixiApp) {
 }
 
 loadElaina();
+
