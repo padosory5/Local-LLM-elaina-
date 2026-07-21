@@ -14,7 +14,10 @@ class AudioManager:
         config: Config,
         event_bus: EventBus | None = None,
     ) -> None:
-        self.voice = VoiceManager(config=config)
+        self.voice = VoiceManager(
+            config=config,
+            event_bus=event_bus,
+        )
         self.events = event_bus
 
         self._queue: queue.Queue[

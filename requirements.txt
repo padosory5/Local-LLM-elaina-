@@ -7,3 +7,5 @@ sqlalchemy
 numpy
 silero-vad
 sounddevice
+PySide6
+PySide6-Addons

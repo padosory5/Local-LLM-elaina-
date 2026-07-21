@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Elaina Desktop</title>
+
+    <link rel="stylesheet" href="./style.css">
+</head>
+
+<body>
+    <main id="desktop-character">
+        <canvas id="live2d-canvas"></canvas>
+
+        <nav id="window-controls">
+            <button
+                id="pin-button"
+                type="button"
+                title="Toggle always on top"
+            >
+                Pin
+            </button>
+
+            <button
+                id="minimize-button"
+                type="button"
+                title="Minimize"
+            >
+                −
+            </button>
+
+            <button
+                id="close-button"
+                type="button"
+                title="Close"
+            >
+                ×
+            </button>
+        </nav>
+
+        <p id="status-message">
+            Loading Elaina...
+        </p>
+    </main>
+
+    <!-- Cubism Core must load before pixi-live2d-display. -->
+    <script src="./lib/live2dcubismcore.min.js"></script>
+
+    <!-- PixiJS 6 -->
+    <script src="../node_modules/pixi.js/dist/browser/pixi.min.js"></script>
+
+    <!-- Cubism 4-only build of pixi-live2d-display -->
+    <script
+        src="../node_modules/pixi-live2d-display/dist/cubism4.min.js"
+    ></script>
+
+    <script src="./app.js"></script>
+</body>
+</html>

@@ -22,3 +22,14 @@ database/*.index
 
 # API keys
 .env
+
+# Node / Electron
+node_modules/
+desktop/node_modules/
+
+# Electron build output
+desktop/dist/
+desktop/out/
+
+# Logs
+*.log

@@ -19,7 +19,6 @@ from tools.web_search import WebSearchTool
 from config.loader import Config
 from brain.personality_loader import PersonalityLoader
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 def extract_complete_sentences(
     buffer: str,
@@ -93,6 +92,7 @@ class ChatEngine:
         self.memory_ranker = MemoryRanker()
         self.attention = Attention()
         self.events = EventBus()
+
         self.web_search_tool = WebSearchTool()
 
         self.audio = AudioManager(

@@ -1,0 +1,16 @@
+{
+  "name": "elaina-desktop",
+  "version": "0.1.0",
+  "description": "Elaina desktop companion",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^39.0.0"
+  },
+  "dependencies": {
+    "pixi-live2d-display": "^0.4.0",
+    "pixi.js": "^6.5.10"
+  }
+}
