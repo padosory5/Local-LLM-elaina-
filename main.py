@@ -50,5 +50,5 @@ except KeyboardInterrupt:
     print("\nStopping Elaina...")
 
 finally:
-    engine.audio.stop()
+    engine.close()
     print("Goodbye!")

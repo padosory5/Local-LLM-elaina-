@@ -14,5 +14,9 @@ contextBridge.exposeInMainWorld("elainaDesktop", {
             "toggle-always-on-top",
             Boolean(enabled)
         );
+    },
+
+    getCursorState: () => {
+        return ipcRenderer.invoke("get-cursor-state");
     }
 });

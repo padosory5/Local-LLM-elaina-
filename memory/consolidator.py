@@ -1,7 +1,6 @@
 import json
 import ollama
-
-client = ollama.Client()
+from config.loader import Config
 
 SYSTEM_PROMPT = """
 You are a memory consolidation AI.
@@ -36,6 +35,13 @@ Return JSON only.
 
 class MemoryConsolidator:
 
+    def __init__(self, config: Config | None = None) -> None:
+        self.config = config or Config()
+        self.model = self.config.get("llm", "ollama", "model")
+        self.client = ollama.Client(
+            host=self.config.get("llm", "ollama", "base_url")
+        )
+
     def consolidate(self, similar_memories, new_memory):
 
         memories = []
@@ -52,8 +58,8 @@ class MemoryConsolidator:
             "new_memory": new_memory
         }
 
-        response = client.chat(
-            model="qwen3:8b",
+        response = self.client.chat(
+            model=self.model,
             messages=[
                 {
                     "role": "system",

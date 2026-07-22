@@ -2,106 +2,61 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0"
-    >
-
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Elaina Desktop</title>
 
+    <!-- Change this path only if you rename or move style.css. -->
     <link rel="stylesheet" href="./style.css">
 </head>
 
 <body>
+    <!-- The entire transparent Electron companion window. -->
     <main id="desktop-character">
+        <!-- PixiJS draws the Live2D model inside this canvas. -->
         <canvas id="live2d-canvas"></canvas>
 
-        <section id="message-layer">
-            <div id="user-caption" class="hidden">
-                <span class="caption-label">You</span>
-                <span id="user-caption-text"></span>
-            </div>
+        <!-- Small indicator that does not cover the avatar. -->
+        <div id="activity-status" class="offline" aria-live="polite">
+            <span id="activity-dot"></span>
+            <span id="activity-text">Connecting...</span>
+        </div>
 
-            <div id="assistant-bubble" class="hidden">
-                <span class="caption-label">Elaina</span>
-                <p id="assistant-bubble-text"></p>
-            </div>
-        </section>
-
+        <!-- Backend connection status and chat-history button. -->
         <div id="bottom-bar">
             <div id="connection-status">
                 <span id="status-dot"></span>
                 <span id="connection-text">Connecting...</span>
             </div>
 
-            <button
-                id="chat-toggle-button"
-                type="button"
-                title="Show chat history"
-            >
+            <button id="chat-toggle-button" type="button" title="Show chat history">
                 Chat
             </button>
         </div>
 
+        <!-- Slide-out conversation history. -->
         <aside id="chat-drawer" class="closed">
             <header id="chat-drawer-header">
                 <span>Conversation</span>
-
-                <button
-                    id="chat-drawer-close"
-                    type="button"
-                    title="Close chat history"
-                >
-                    ×
-                </button>
+                <button id="chat-drawer-close" type="button" title="Close chat history">×</button>
             </header>
 
-            <div id="chat-history"></div>
+            <div id="chat-history" aria-live="polite"></div>
         </aside>
 
-        <nav id="window-controls">
-            <button
-                id="pin-button"
-                type="button"
-                title="Toggle always on top"
-            >
-                Pin
-            </button>
-
-            <button
-                id="minimize-button"
-                type="button"
-                title="Minimize"
-            >
-                −
-            </button>
-
-            <button
-                id="close-button"
-                type="button"
-                title="Close"
-            >
-                ×
-            </button>
+        <!-- Electron window controls. These call functions exposed by preload.js. -->
+        <nav id="window-controls" aria-label="Window controls">
+            <button id="pin-button" type="button" title="Lock window position">Pin</button>
+            <button id="minimize-button" type="button" title="Minimize">−</button>
+            <button id="close-button" type="button" title="Close">×</button>
         </nav>
 
-        <p id="status-message">
-            Loading Elaina...
-        </p>
+        <p id="status-message">Loading Elaina...</p>
     </main>
 
-    <!-- Cubism Core must load before pixi-live2d-display. -->
+    <!-- Load order matters: Cubism Core -> PixiJS -> Live2D plugin -> app.js. -->
     <script src="./lib/live2dcubismcore.min.js"></script>
-
-    <!-- PixiJS 6 -->
     <script src="../node_modules/pixi.js/dist/browser/pixi.min.js"></script>
-
-    <!-- Cubism 4-only build of pixi-live2d-display -->
-    <script
-        src="../node_modules/pixi-live2d-display/dist/cubism4.min.js"
-    ></script>
-
+    <script src="../node_modules/pixi-live2d-display/dist/cubism4.min.js"></script>
     <script src="./app.js"></script>
 </body>
 </html>

@@ -100,9 +100,6 @@ class WebSocketServer:
             )
 
     def _on_event(self, event: Event) -> None:
-        print(
-            f"[WebSocket Event] {event.name}: {event.data}"
-        )
 
         if self._loop is None:
             return

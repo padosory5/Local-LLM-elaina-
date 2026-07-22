@@ -5,6 +5,7 @@ class PromptBuilder:
         memory_text: str,
         attention_text: str,
         user_input: str,
+        screen_text: str = "",
     ) -> str:
         sections = []
 
@@ -18,6 +19,12 @@ class PromptBuilder:
             sections.append(
                 f"Relevant memories:\n"
                 f"{memory_text.strip()}"
+            )
+
+        if screen_text.strip():
+            sections.append(
+                f"Current visual context:\n"
+                f"{screen_text.strip()}"
             )
 
         sections.append(

@@ -46,6 +46,7 @@ llm:
 
   ollama:
     base_url: "http://localhost:11434"
+    # Fast text-only model used for normal conversation.
     model: "qwen3:8b"
 
     # Sampling temperature, generally between 0 and 2.
@@ -268,6 +269,30 @@ memory:
 
   # Default importance assigned to newly stored memories.
   default_importance: 5
+
+
+############################################################
+# Screen Vision
+############################################################
+
+vision:
+  # A fresh screenshot is captured only for an explicit screen-related request.
+  # Elaina does not record continuously or write screenshots to disk.
+  enabled: true
+
+  # Used only for explicit screen questions. Keeping it separate prevents
+  # normal conversation from paying the vision model's image-processing cost.
+  model: "qwen3-vl:8b"
+
+  # Unload the vision model after its answer so normal chat retains priority.
+  keep_alive: 0
+
+  # 1 is the first physical monitor; use 2 for a second monitor.
+  monitor_index: 1
+
+  # Smaller images reduce visual-token processing time.
+  maximum_width: 960
+  jpeg_quality: 60
 
 
 ############################################################

@@ -1,6 +1,20 @@
-* {
-    box-sizing: border-box;
+/*
+ * ELaina Desktop styles
+ * Change the color variables below to quickly customize the interface.
+ */
+:root {
+    --panel: rgb(22 18 34 / 95%);
+    --control: rgb(30 24 42 / 78%);
+    --purple: rgb(112 76 151 / 96%);
+    --user-blue: rgb(76 96 190 / 96%);
+    --assistant-white: rgb(255 252 255 / 98%);
+    --white: #fff;
+    --dark-text: rgb(35 28 42);
+    --connected: rgb(75 210 125);
+    --disconnected: rgb(220 80 95);
 }
+
+* { box-sizing: border-box; }
 
 html,
 body {
@@ -8,176 +22,164 @@ body {
     height: 100%;
     margin: 0;
     overflow: hidden;
-
     background: transparent;
-
     user-select: none;
 }
 
-body {
-    font-family: Arial, sans-serif;
-}
+body { font-family: Arial, sans-serif; }
+button { font: inherit; }
 
-button {
-    font: inherit;
-}
-
-
-/* Main transparent companion window */
-
+/* Main transparent companion window. */
 #desktop-character {
     position: relative;
-
     width: 100%;
     height: 100%;
-
     overflow: hidden;
-
     -webkit-app-region: drag;
 }
 
-
-/* Live2D canvas */
-
-#live2d-canvas {
-    position: absolute;
-    inset: 0;
-
-    display: block;
-
-    width: 100%;
-    height: 100%;
-
-    background: transparent;
-
-    z-index: 1;
-
-    -webkit-app-region: drag;
+/* The Pin button applies this class to prevent Electron window dragging. */
+body.position-locked #desktop-character,
+body.position-locked #live2d-canvas {
+    -webkit-app-region: no-drag;
 }
 
-
-/* Temporary speech bubbles */
-
-#message-layer {
+/* Small state indicator: Listening -> Thinking -> Speaking. */
+#activity-status {
     position: absolute;
-    top: 45px;
-    left: 22px;
-    right: 22px;
-
+    bottom: 58px;
+    left: 50%;
+    z-index: 60;
     display: flex;
-    flex-direction: column;
     align-items: center;
-    gap: 14px;
-
-    z-index: 50;
-
+    gap: 8px;
+    padding: 8px 14px;
+    border: 1px solid rgb(255 255 255 / 18%);
+    border-radius: 999px;
+    color: white;
+    background: rgb(22 18 34 / 82%);
+    backdrop-filter: blur(12px);
+    box-shadow: 0 6px 18px rgb(0 0 0 / 25%);
+    transform: translateX(-50%);
+    font-size: 12px;
     pointer-events: none;
     -webkit-app-region: no-drag;
 }
 
-.caption,
-.speech-bubble {
-    position: relative;
-
-    width: fit-content;
-    max-width: 92%;
-
-    padding: 14px 18px;
-
-    border: 2px solid rgb(90 63 120 / 35%);
-    border-radius: 22px;
-
-    font-size: 16px;
-    font-weight: 500;
-    line-height: 1.5;
-
-    opacity: 1;
-    visibility: visible;
-    transform: translateY(0);
-
-    transition:
-        opacity 180ms ease,
-        transform 180ms ease,
-        visibility 180ms ease;
+#activity-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
 }
-/* User caption */
 
-.caption {
-    align-self: flex-end;
+#activity-status.listening #activity-dot {
+    background: var(--connected);
+    animation: activity-pulse 1.4s infinite;
+}
 
-    padding: 9px 13px;
+#activity-status.thinking #activity-dot {
+    background: rgb(235 190 70);
+    animation: activity-pulse 700ms infinite;
+}
 
-    color: white;
+#activity-status.speaking #activity-dot {
+    background: rgb(170 110 235);
+    animation: activity-pulse 500ms infinite;
+}
+
+#activity-status.offline #activity-dot {
+    background: var(--disconnected);
+}
+
+@keyframes activity-pulse {
+    0%, 100% { opacity: 0.45; transform: scale(0.9); }
+    50% { opacity: 1; transform: scale(1.25); }
+}
+
+/* Live2D model drawing area. */
+#live2d-canvas {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    -webkit-app-region: drag;
+}
+
+/*
+ * Conversation rail
+ * It has its own space on the left, while JavaScript positions Elaina on the right.
+ */
+#conversation-rail {
+    position: absolute;
+    top: 58px;
+    bottom: 58px;
+    left: 16px;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: clamp(220px, 34vw, 340px);
+    padding: 12px;
+    border: 1px solid rgb(255 255 255 / 16%);
+    border-radius: 18px;
+    background: rgb(22 18 34 / 82%);
+    backdrop-filter: blur(14px);
+    box-shadow: 0 12px 34px rgb(0 0 0 / 28%);
+    -webkit-app-region: no-drag;
+}
+
+.rail-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 3px 2px;
+    color: var(--white);
     font-size: 13px;
+    font-weight: 700;
+}
 
-    background: rgb(76 96 190 / 96%);
+#listening-label {
+    color: rgb(166 225 188);
+    font-size: 11px;
+    font-weight: 500;
+}
 
-    border: 1px solid rgb(255 255 255 / 30%);
+.message-card {
+    width: 100%;
+    max-height: 42%;
+    padding: 12px 14px;
+    overflow-y: auto;
     border-radius: 15px;
-
-    box-shadow:
-        0 8px 20px rgb(0 0 0 / 28%);
+    opacity: 1;
+    transform: translateY(0);
+    transition: opacity 180ms ease, transform 180ms ease;
 }
 
-/* Elaina speech bubble */
-
-.speech-bubble {
-    align-self: center;
-
-    min-width: 180px;
-
-    color: rgb(35 28 42);
-
-    background: rgb(255 252 255 / 98%);
-
-    box-shadow:
-        0 10px 30px rgb(0 0 0 / 30%),
-        inset 0 0 0 1px rgb(255 255 255 / 80%);
+.user-card {
+    align-self: flex-end;
+    color: var(--white);
+    background: var(--user-blue);
+    box-shadow: 0 8px 20px rgb(0 0 0 / 22%);
 }
 
-/* Bubble tail pointing down toward Elaina */
-
-.speech-bubble::before {
-    content: "";
-
-    position: absolute;
-    left: 50%;
-    bottom: -18px;
-
-    width: 0;
-    height: 0;
-
-    transform: translateX(-50%);
-
-    border-left: 16px solid transparent;
-    border-right: 16px solid transparent;
-    border-top: 20px solid rgb(90 63 120 / 35%);
+.assistant-card {
+    color: var(--dark-text);
+    background: var(--assistant-white);
+    box-shadow: 0 8px 20px rgb(0 0 0 / 24%);
 }
 
-.speech-bubble::after {
-    content: "";
-
-    position: absolute;
-    left: 50%;
-    bottom: -14px;
-
-    width: 0;
-    height: 0;
-
-    transform: translateX(-50%);
-
-    border-left: 13px solid transparent;
-    border-right: 13px solid transparent;
-    border-top: 17px solid rgb(255 252 255 / 98%);
+.message-card.empty {
+    opacity: 0.55;
 }
 
-/* Labels */
+.message-card.faded { opacity: 0.72; }
 
 .caption-label {
     display: block;
-
     margin-bottom: 5px;
-
     color: rgb(110 75 140);
     font-size: 10px;
     font-weight: 800;
@@ -185,56 +187,27 @@ button {
     text-transform: uppercase;
 }
 
-.caption .caption-label {
-    color: rgb(225 232 255);
-}
+.user-card .caption-label { color: rgb(225 232 255); }
 
-/* Text */
-
-#user-caption-text {
-    display: block;
-
-    color: white;
-
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-}
-
+#user-caption-text,
 #assistant-bubble-text {
-    margin: 0;
-
-    color: rgb(35 28 42);
-
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
 
-/* Hidden state */
+#user-caption-text { display: block; color: var(--white); }
+#assistant-bubble-text { margin: 0; color: var(--dark-text); }
 
-#user-caption.hidden,
-#assistant-bubble.hidden {
-    opacity: 0;
-    visibility: hidden;
-    transform: translateY(-8px);
-
-    pointer-events: none;
-}
-
-
-/* Bottom status area */
-
+/* Bottom connection status and chat button. */
 #bottom-bar {
     position: absolute;
-    left: 14px;
     right: 14px;
     bottom: 12px;
-
+    left: 14px;
+    z-index: 60;
     display: flex;
     align-items: center;
     justify-content: space-between;
-
-    z-index: 60;
-
     pointer-events: none;
 }
 
@@ -242,60 +215,36 @@ button {
     display: flex;
     align-items: center;
     gap: 7px;
-
     padding: 7px 10px;
-
     border: 1px solid rgb(255 255 255 / 14%);
     border-radius: 999px;
-
-    color: white;
-    font-size: 12px;
-
-    background: rgb(28 22 42 / 78%);
+    color: var(--white);
+    background: var(--control);
     backdrop-filter: blur(10px);
-
-    box-shadow:
-        0 5px 16px rgb(0 0 0 / 22%);
+    box-shadow: 0 5px 16px rgb(0 0 0 / 22%);
+    font-size: 12px;
 }
 
 #status-dot {
     width: 8px;
     height: 8px;
-
     border-radius: 50%;
-
     background: rgb(210 170 70);
 }
 
-#connection-status.connected #status-dot {
-    background: rgb(75 210 125);
-}
-
-#connection-status.disconnected #status-dot {
-    background: rgb(220 80 95);
-}
-
-
-/* Chat button */
+#connection-status.connected #status-dot { background: var(--connected); }
+#connection-status.disconnected #status-dot { background: var(--disconnected); }
 
 #chat-toggle-button {
     padding: 7px 12px;
-
     border: 1px solid rgb(255 255 255 / 18%);
     border-radius: 999px;
-
-    color: white;
-
+    color: var(--white);
     background: rgb(72 49 98 / 90%);
-
     cursor: pointer;
-
     pointer-events: auto;
     -webkit-app-region: no-drag;
-
-    transition:
-        background 160ms ease,
-        transform 160ms ease;
+    transition: background 160ms ease, transform 160ms ease;
 }
 
 #chat-toggle-button:hover {
@@ -303,48 +252,32 @@ button {
     transform: translateY(-1px);
 }
 
-
-/* Chat history drawer */
-
+/* Slide-out chat history. */
 #chat-drawer {
     position: absolute;
     top: 55px;
     right: 10px;
     bottom: 55px;
-
-    width: 300px;
-
+    z-index: 80;
     display: flex;
     flex-direction: column;
-
+    width: 300px;
     border: 1px solid rgb(255 255 255 / 16%);
     border-radius: 16px;
-
-    background: rgb(22 18 34 / 95%);
-    backdrop-filter: blur(16px);
-
-    box-shadow:
-        0 12px 35px rgb(0 0 0 / 38%);
-
-    z-index: 80;
-
     opacity: 1;
     visibility: visible;
     transform: translateX(0);
-
-    transition:
-        opacity 180ms ease,
-        transform 180ms ease,
-        visibility 180ms ease;
-
+    background: var(--panel);
+    backdrop-filter: blur(16px);
+    box-shadow: 0 12px 35px rgb(0 0 0 / 38%);
     -webkit-app-region: no-drag;
+    transition: opacity 180ms ease, transform 180ms ease, visibility 180ms ease;
 }
 
 #chat-drawer.closed {
     opacity: 0;
     visibility: hidden;
     transform: translateX(24px);
-
     pointer-events: none;
 }
 
@@ -352,12 +285,9 @@ button {
     display: flex;
     align-items: center;
     justify-content: space-between;
-
     padding: 12px 14px;
-
     border-bottom: 1px solid rgb(255 255 255 / 10%);
-
-    color: white;
+    color: var(--white);
     font-size: 14px;
     font-weight: 700;
 }
@@ -365,152 +295,93 @@ button {
 #chat-drawer-close {
     width: 28px;
     height: 28px;
-
     border: 0;
     border-radius: 8px;
-
-    color: white;
+    color: var(--white);
     background: transparent;
-
     cursor: pointer;
 }
 
-#chat-drawer-close:hover {
-    background: rgb(255 255 255 / 10%);
-}
+#chat-drawer-close:hover { background: rgb(255 255 255 / 10%); }
 
 #chat-history {
     flex: 1;
-
     display: flex;
     flex-direction: column;
     gap: 10px;
-
     padding: 12px;
-
     overflow-y: auto;
-
     user-select: text;
 }
 
-#chat-history::-webkit-scrollbar {
-    width: 7px;
-}
-
-#chat-history::-webkit-scrollbar-thumb {
-    border-radius: 999px;
-
-    background: rgb(255 255 255 / 18%);
-}
-
-
-/* Drawer messages */
+#chat-history::-webkit-scrollbar { width: 7px; }
+#chat-history::-webkit-scrollbar-thumb { border-radius: 999px; background: rgb(255 255 255 / 18%); }
 
 .message {
     width: fit-content;
     max-width: 88%;
-
     padding: 9px 12px;
-
     border-radius: 13px;
-
-    color: white;
+    color: var(--white);
     font-size: 13px;
     line-height: 1.45;
-
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
 
 .message.user {
     align-self: flex-end;
-
     border-bottom-right-radius: 5px;
-
     background: rgb(75 104 210 / 92%);
 }
 
 .message.assistant {
     align-self: flex-start;
-
     border-bottom-left-radius: 5px;
-
     background: rgb(82 65 105 / 94%);
 }
 
-
-/* Window controls */
-
+/* Electron window buttons. */
 #window-controls {
     position: absolute;
     top: 12px;
     right: 12px;
-
+    z-index: 100;
     display: flex;
     gap: 6px;
-
-    z-index: 100;
-
     -webkit-app-region: no-drag;
 }
 
 #window-controls button {
     min-width: 38px;
     height: 32px;
-
     border: 1px solid rgb(255 255 255 / 35%);
     border-radius: 8px;
-
-    color: white;
-
-    background: rgb(30 24 42 / 78%);
-
+    color: var(--white);
+    background: var(--control);
     cursor: pointer;
-
-    transition:
-        background 160ms ease,
-        transform 160ms ease;
+    transition: background 160ms ease, transform 160ms ease;
 }
 
-#window-controls button:hover {
-    background: rgb(75 56 98 / 92%);
-    transform: translateY(-1px);
-}
+#window-controls button:hover { background: rgb(75 56 98 / 92%); transform: translateY(-1px); }
+#close-button:hover { background: rgb(190 50 65 / 92%); }
+#pin-button.active { background: var(--purple); }
 
-#close-button:hover {
-    background: rgb(190 50 65 / 92%);
-}
-
-#pin-button.active {
-    background: rgb(112 76 151 / 96%);
-}
-
-
-/* Loading/error status */
-
+/* Loading and error message. */
 #status-message {
     position: absolute;
     bottom: 55px;
     left: 50%;
-
+    z-index: 90;
     margin: 0;
     padding: 7px 12px;
-
-    transform: translateX(-50%);
-
     border-radius: 10px;
-
-    color: white;
+    color: var(--white);
+    background: var(--control);
+    transform: translateX(-50%);
     font-size: 13px;
     white-space: nowrap;
-
-    background: rgb(30 24 42 / 80%);
-
     pointer-events: none;
-
-    z-index: 90;
 }
 
-#status-message.hidden {
-    display: none;
-}
+#status-message.hidden { display: none; }

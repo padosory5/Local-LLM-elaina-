@@ -9,3 +9,5 @@ silero-vad
 sounddevice
 PySide6
 PySide6-Addons
+mss
+Pillow

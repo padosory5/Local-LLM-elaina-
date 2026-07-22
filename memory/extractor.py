@@ -2,9 +2,7 @@ import json
 import re
 
 import ollama
-
-
-client = ollama.Client()
+from config.loader import Config
 
 
 SYSTEM_PROMPT = """
@@ -86,6 +84,13 @@ Return JSON only. Do not use Markdown code blocks.
 
 class MemoryExtractor:
 
+    def __init__(self, config: Config | None = None) -> None:
+        self.config = config or Config()
+        self.model = self.config.get("llm", "ollama", "model")
+        self.client = ollama.Client(
+            host=self.config.get("llm", "ollama", "base_url")
+        )
+
     def extract(self, user_message: str) -> dict:
 
         default_result = {
@@ -95,8 +100,8 @@ class MemoryExtractor:
         }
 
         try:
-            response = client.chat(
-                model="qwen3:8b",
+            response = self.client.chat(
+                model=self.model,
                 messages=[
                     {
                         "role": "system",
