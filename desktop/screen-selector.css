@@ -1,0 +1,132 @@
+:root {
+    --selection-border: rgb(183 132 255);
+    --selection-fill: rgb(126 78 180 / 14%);
+    --panel: rgb(28 21 40 / 94%);
+    --white: rgb(255 255 255);
+}
+
+* {
+    box-sizing: border-box;
+    cursor: default !important;
+}
+
+html,
+body,
+#selection-surface {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+}
+
+body {
+    background: rgb(0 0 0 / 9%);
+    font-family: Arial, sans-serif;
+    user-select: none;
+}
+
+#selection-surface {
+    position: relative;
+}
+
+#selection-help {
+    position: fixed;
+    top: 22px;
+    left: 50%;
+    z-index: 5;
+    padding: 9px 14px;
+    border: 1px solid rgb(255 255 255 / 18%);
+    border-radius: 999px;
+    color: var(--white);
+    background: var(--panel);
+    box-shadow: 0 6px 22px rgb(0 0 0 / 30%);
+    transform: translateX(-50%);
+    font-size: 13px;
+    pointer-events: none;
+}
+
+#selection-box {
+    position: absolute;
+    min-width: 40px;
+    min-height: 40px;
+    border: 2px solid var(--selection-border);
+    border-radius: 5px;
+    background: var(--selection-fill);
+    box-shadow:
+        0 0 0 1px rgb(0 0 0 / 35%),
+        0 8px 28px rgb(0 0 0 / 22%);
+}
+
+#selection-box.hidden {
+    display: none;
+}
+
+.resize-handle {
+    position: absolute;
+    z-index: 3;
+    display: block;
+}
+
+.north,
+.south {
+    right: 10px;
+    left: 10px;
+    height: 12px;
+}
+
+.north { top: -7px; }
+.south { bottom: -7px; }
+
+.east,
+.west {
+    top: 10px;
+    bottom: 10px;
+    width: 12px;
+}
+
+.east { right: -7px; }
+.west { left: -7px; }
+
+.north-east,
+.south-east,
+.south-west,
+.north-west {
+    width: 18px;
+    height: 18px;
+}
+
+.north-east { top: -9px; right: -9px; }
+.south-east { right: -9px; bottom: -9px; }
+.south-west { bottom: -9px; left: -9px; }
+.north-west { top: -9px; left: -9px; }
+
+#selection-actions {
+    position: absolute;
+    right: -2px;
+    bottom: -44px;
+    z-index: 4;
+    display: flex;
+    gap: 7px;
+    padding: 5px;
+    border-radius: 10px;
+    background: var(--panel);
+    box-shadow: 0 7px 20px rgb(0 0 0 / 28%);
+}
+
+#selection-box.actions-above #selection-actions {
+    top: -44px;
+    bottom: auto;
+}
+
+#selection-actions button {
+    padding: 7px 11px;
+    border: 1px solid rgb(255 255 255 / 18%);
+    border-radius: 7px;
+    color: var(--white);
+    background: rgb(75 56 98 / 95%);
+    font: 12px Arial, sans-serif;
+}
+
+#analyze-selection {
+    background: rgb(112 76 151 / 98%) !important;
+}

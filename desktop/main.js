@@ -12,6 +12,8 @@ const WINDOW_WIDTH = 420;
 const WINDOW_HEIGHT = 650;
 
 let mainWindow = null;
+let selectionWindow = null;
+let selectionDesktopBounds = null;
 let pythonProcess = null;
 let isQuitting = false;
 
@@ -192,6 +194,77 @@ function createWindow() {
 }
 
 /*
+ * Return one rectangle covering every connected display.
+ * Coordinates may be negative when a monitor is left of the primary display.
+ */
+function getVirtualDesktopBounds() {
+    const displays = screen.getAllDisplays();
+
+    const left = Math.min(...displays.map(display => display.bounds.x));
+    const top = Math.min(...displays.map(display => display.bounds.y));
+    const right = Math.max(
+        ...displays.map(display => display.bounds.x + display.bounds.width)
+    );
+    const bottom = Math.max(
+        ...displays.map(display => display.bounds.y + display.bounds.height)
+    );
+
+    return {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top
+    };
+}
+
+/*
+ * Open a transparent overlay where the user can create, move, and resize
+ * the region that Elaina should analyze.
+ */
+function openScreenSelector() {
+    if (selectionWindow && !selectionWindow.isDestroyed()) {
+        selectionWindow.focus();
+        return;
+    }
+
+    selectionDesktopBounds = getVirtualDesktopBounds();
+
+    selectionWindow = new BrowserWindow({
+        ...selectionDesktopBounds,
+        frame: false,
+        transparent: true,
+        backgroundColor: "#00000000",
+        hasShadow: false,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        resizable: false,
+        movable: false,
+        fullscreenable: false,
+        webPreferences: {
+            preload: path.join(__dirname, "preload.js"),
+            contextIsolation: true,
+            nodeIntegration: false
+        }
+    });
+
+    selectionWindow.setAlwaysOnTop(true, "screen-saver");
+    selectionWindow.loadFile(
+        path.join(__dirname, "screen-selector.html")
+    );
+
+    selectionWindow.on("closed", () => {
+        selectionWindow = null;
+        selectionDesktopBounds = null;
+    });
+}
+
+function closeScreenSelector() {
+    if (selectionWindow && !selectionWindow.isDestroyed()) {
+        selectionWindow.close();
+    }
+}
+
+/*
  * Window buttons used by renderer/app.js.
  */
 ipcMain.on("window-close", () => {
@@ -200,6 +273,55 @@ ipcMain.on("window-close", () => {
 
 ipcMain.on("window-minimize", () => {
     mainWindow?.minimize();
+});
+
+ipcMain.on("open-screen-selector", () => {
+    openScreenSelector();
+});
+
+ipcMain.on("screen-selection-cancel", () => {
+    closeScreenSelector();
+});
+
+ipcMain.on("screen-selection-confirm", (_event, region) => {
+    if (!selectionDesktopBounds || !mainWindow || !region) {
+        closeScreenSelector();
+        return;
+    }
+
+    const values = [
+        region.x,
+        region.y,
+        region.width,
+        region.height
+    ].map(Number);
+
+    if (
+        values.some(value => !Number.isFinite(value)) ||
+        values[2] < 20 ||
+        values[3] < 20
+    ) {
+        return;
+    }
+
+    const selectedRegion = {
+        left: Math.round(selectionDesktopBounds.x + values[0]),
+        top: Math.round(selectionDesktopBounds.y + values[1]),
+        width: Math.round(values[2]),
+        height: Math.round(values[3])
+    };
+
+    // Remove the overlay before Python captures the selected pixels.
+    closeScreenSelector();
+
+    setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send(
+                "screen-region-selected",
+                selectedRegion
+            );
+        }
+    }, 100);
 });
 
 /*
@@ -284,5 +406,6 @@ app.on("before-quit", () => {
     }
 
     isQuitting = true;
+    closeScreenSelector();
     stopPythonBackend();
 });

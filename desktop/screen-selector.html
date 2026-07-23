@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Select screen area</title>
+    <link rel="stylesheet" href="./screen-selector.css">
+</head>
+<body>
+    <div id="selection-surface">
+        <div id="selection-help">
+            Drag to select an area. Adjust it, then choose Analyze.
+        </div>
+
+        <div id="selection-box" class="hidden">
+            <span class="resize-handle north" data-resize="n"></span>
+            <span class="resize-handle north-east" data-resize="ne"></span>
+            <span class="resize-handle east" data-resize="e"></span>
+            <span class="resize-handle south-east" data-resize="se"></span>
+            <span class="resize-handle south" data-resize="s"></span>
+            <span class="resize-handle south-west" data-resize="sw"></span>
+            <span class="resize-handle west" data-resize="w"></span>
+            <span class="resize-handle north-west" data-resize="nw"></span>
+
+            <div id="selection-actions">
+                <button id="cancel-selection" type="button">Cancel</button>
+                <button id="analyze-selection" type="button">Analyze</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="./screen-selector.js"></script>
+</body>
+</html>

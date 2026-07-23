@@ -75,6 +75,59 @@ class ScreenMonitor:
             print(f"[Vision Capture Warning] {error}")
             return None
 
+    def capture_region(self, region: dict) -> ScreenSnapshot | None:
+        """Capture one user-selected desktop rectangle."""
+        if not self.enabled:
+            return None
+
+        try:
+            requested = {
+                "left": int(region["left"]),
+                "top": int(region["top"]),
+                "width": int(region["width"]),
+                "height": int(region["height"]),
+            }
+
+            if requested["width"] < 20 or requested["height"] < 20:
+                raise ValueError("The selected region is too small.")
+
+            with mss.mss() as screen_capture:
+                desktop = screen_capture.monitors[0]
+
+                left = max(requested["left"], desktop["left"])
+                top = max(requested["top"], desktop["top"])
+                right = min(
+                    requested["left"] + requested["width"],
+                    desktop["left"] + desktop["width"],
+                )
+                bottom = min(
+                    requested["top"] + requested["height"],
+                    desktop["top"] + desktop["height"],
+                )
+
+                if right - left < 20 or bottom - top < 20:
+                    raise ValueError(
+                        "The selected region is outside the visible desktop."
+                    )
+
+                raw_frame = screen_capture.grab({
+                    "left": left,
+                    "top": top,
+                    "width": right - left,
+                    "height": bottom - top,
+                })
+
+                return ScreenSnapshot(
+                    image_bytes=self._compress_frame(raw_frame),
+                    mime_type="image/jpeg",
+                    active_window_title=self._get_active_window_title(),
+                    capture_target="selected screen region",
+                    captured_at=time.time(),
+                )
+        except Exception as error:
+            print(f"[Vision Region Warning] {error}")
+            return None
+
     def _select_monitor(self, monitors, target: str):
         """Resolve natural positions without relying on Windows monitor numbers."""
         if not monitors:

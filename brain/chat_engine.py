@@ -1,4 +1,5 @@
 import re
+import threading
 import ollama
 
 from memory.memory_manager import MemoryManager
@@ -126,6 +127,11 @@ class ChatEngine:
 
         self.screen_monitor = ScreenMonitor(self.config)
         self.screen_monitor.start()
+
+        # A selection made in Electron is held only until the user's next
+        # spoken message. The image remains in memory and is never saved.
+        self._pending_screen_lock = threading.Lock()
+        self._pending_screen_snapshot = None
         
     def _print_event(self, event: Event) -> None:
         print(
@@ -139,12 +145,17 @@ class ChatEngine:
         if self.audio.is_speaking():
             self.audio.stop()
     
-    def chat(self, user_input):
+    def chat(
+        self,
+        user_input,
+        screen_region=None,
+        screen_snapshot=None,
+    ):
         user_input = str(user_input).strip()
 
         if not user_input:
             return ""
-        
+
         self.events.emit(
             "user_message",
             text=user_input,
@@ -180,13 +191,24 @@ class ChatEngine:
         ####################################################
         time_context = self.build_time_context()
 
-        use_screen_vision = self._should_use_screen_vision(user_input)
-        screen_target = self._select_screen_target(user_input)
-        screen_snapshot = (
-            self.screen_monitor.capture_now(screen_target)
-            if use_screen_vision
-            else None
+        use_screen_vision = (
+            screen_region is not None
+            or screen_snapshot is not None
+            or self._should_use_screen_vision(user_input)
         )
+        screen_target = self._select_screen_target(user_input)
+        if screen_snapshot is not None:
+            pass
+        elif screen_region is not None:
+            screen_snapshot = self.screen_monitor.capture_region(
+                screen_region
+            )
+        elif use_screen_vision:
+            screen_snapshot = self.screen_monitor.capture_now(
+                screen_target
+            )
+        else:
+            screen_snapshot = None
         screen_context = (
             self._build_screen_context(screen_snapshot)
             if use_screen_vision
@@ -438,6 +460,31 @@ class ChatEngine:
                 )
 
         return reply
+
+    def prepare_screen_region(self, region: dict) -> bool:
+        """Capture a selected region and hold it for the next spoken message."""
+        snapshot = self.screen_monitor.capture_region(region)
+
+        if snapshot is None:
+            self.events.emit(
+                "screen_region_error",
+                text="Could not capture the selected area.",
+            )
+            return False
+
+        with self._pending_screen_lock:
+            self._pending_screen_snapshot = snapshot
+
+        self.events.emit("screen_region_ready")
+        return True
+
+    def consume_pending_screen_snapshot(self):
+        """Return and clear the image waiting for the next user question."""
+        with self._pending_screen_lock:
+            snapshot = self._pending_screen_snapshot
+            self._pending_screen_snapshot = None
+
+        return snapshot
 
     def _build_screen_context(self, snapshot) -> str:
         if snapshot is None:

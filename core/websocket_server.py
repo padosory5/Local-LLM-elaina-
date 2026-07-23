@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from collections.abc import Callable
 from typing import Any
 
 import websockets
@@ -16,10 +17,12 @@ class WebSocketServer:
         event_bus: EventBus,
         host: str = "127.0.0.1",
         port: int = 8765,
+        command_handler: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.events = event_bus
         self.host = host
         self.port = port
+        self.command_handler = command_handler
 
         self._clients: set[Any] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -38,6 +41,8 @@ class WebSocketServer:
             "assistant_started",
             "assistant_stream",
             "assistant_finished",
+            "screen_region_ready",
+            "screen_region_error",
         )
 
         for event_name in self._event_names:
@@ -90,7 +95,8 @@ class WebSocketServer:
         )
 
         try:
-            await websocket.wait_closed()
+            async for raw_message in websocket:
+                await self._handle_message(raw_message)
         finally:
             self._clients.discard(websocket)
 
@@ -99,7 +105,30 @@ class WebSocketServer:
                 f"Clients: {len(self._clients)}"
             )
 
+    async def _handle_message(self, raw_message: str) -> None:
+        """Receive commands initiated by the Electron interface."""
+        if self.command_handler is None:
+            return
+
+        try:
+            message = json.loads(raw_message)
+
+            if not isinstance(message, dict):
+                raise ValueError("WebSocket command must be an object.")
+
+            await asyncio.to_thread(
+                self.command_handler,
+                message,
+            )
+        except json.JSONDecodeError:
+            print("[WebSocket Command Error] Invalid JSON.")
+        except Exception as error:
+            print(f"[WebSocket Command Error] {error}")
+
     def _on_event(self, event: Event) -> None:
+        print(
+            f"[WebSocket Event] {event.name}: {event.data}"
+        )
 
         if self._loop is None:
             return

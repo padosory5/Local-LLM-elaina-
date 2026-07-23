@@ -30,6 +30,7 @@ const elements = {
     activityText: document.getElementById("activity-text"),
     chatHistory: document.getElementById("chat-history"),
     chatDrawer: document.getElementById("chat-drawer"),
+    screenButton: document.getElementById("screen-button"),
     chatToggleButton: document.getElementById("chat-toggle-button"),
     chatDrawerClose: document.getElementById("chat-drawer-close"),
     connectionStatus: document.getElementById("connection-status"),
@@ -80,6 +81,39 @@ function setupChatDrawer() {
 
     elements.chatDrawerClose.addEventListener("click", () => {
         elements.chatDrawer.classList.add("closed");
+    });
+}
+
+/* ------------------------- Screen selection ------------------------- */
+
+function setupScreenSelection() {
+    elements.screenButton.addEventListener("click", () => {
+        if (
+            !state.pythonSocket ||
+            state.pythonSocket.readyState !== WebSocket.OPEN
+        ) {
+            setActivity("offline", "Elaina is offline");
+            return;
+        }
+
+        window.elainaDesktop?.openScreenSelector();
+    });
+
+    window.elainaDesktop?.onScreenRegionSelected(region => {
+        if (
+            !state.pythonSocket ||
+            state.pythonSocket.readyState !== WebSocket.OPEN
+        ) {
+            setActivity("offline", "Elaina is offline");
+            return;
+        }
+
+        setActivity("thinking", "Analyzing...");
+
+        state.pythonSocket.send(JSON.stringify({
+            command: "queue_screen_region",
+            region
+        }));
     });
 }
 
@@ -290,6 +324,15 @@ function handlePythonMessage(event) {
                 addAssistantMessage(message.text);
                 setActivity("speaking", "Speaking...");
                 break;
+            case "screen_region_ready":
+                setActivity("listening", "Ask about selection...");
+                break;
+            case "screen_region_error":
+                setActivity(
+                    "offline",
+                    message.text || "Could not capture selection"
+                );
+                break;
             case "lip_sync":
                 handleLipSync(message.value);
                 break;
@@ -331,6 +374,7 @@ function stopMouthMovement() {
 function startApplication() {
     setupWindowControls();
     setupChatDrawer();
+    setupScreenSelection();
     loadElaina();
     connectToPython();
 }

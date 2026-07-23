@@ -235,6 +235,14 @@ body.position-locked #live2d-canvas {
 #connection-status.connected #status-dot { background: var(--connected); }
 #connection-status.disconnected #status-dot { background: var(--disconnected); }
 
+#bottom-actions {
+    display: flex;
+    gap: 8px;
+    pointer-events: auto;
+    -webkit-app-region: no-drag;
+}
+
+#screen-button,
 #chat-toggle-button {
     padding: 7px 12px;
     border: 1px solid rgb(255 255 255 / 18%);
@@ -247,6 +255,7 @@ body.position-locked #live2d-canvas {
     transition: background 160ms ease, transform 160ms ease;
 }
 
+#screen-button:hover,
 #chat-toggle-button:hover {
     background: rgb(105 72 142 / 96%);
     transform: translateY(-1px);

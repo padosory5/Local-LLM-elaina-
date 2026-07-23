@@ -106,3 +106,8 @@ class AudioManager:
     def is_speaking(self) -> bool:
         with self._lock:
             return self._speaking or not self._queue.empty()
+
+
+    def wait_until_idle(self) -> None:
+        """Wait until every queued sentence has finished playing."""
+        self._queue.join()
