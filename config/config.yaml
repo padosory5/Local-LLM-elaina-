@@ -316,6 +316,21 @@ search:
 
 
 ############################################################
+# Local Project Access (read-only MCP)
+############################################################
+
+project_access:
+  # When enabled, Elaina can inspect this one project only.
+  # Use forward slashes in Windows paths so YAML stays easy to read.
+  enabled: true
+  project_root: "C:/Users/pados/localProj/elainaAI"
+
+  # Prevent the local model from repeatedly calling project tools.
+  # Normal conversations do not use these rounds at all.
+  max_tool_rounds: 3
+
+
+############################################################
 # Time Context
 ############################################################
 

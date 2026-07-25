@@ -34,7 +34,24 @@ const elements = {
     chatToggleButton: document.getElementById("chat-toggle-button"),
     chatDrawerClose: document.getElementById("chat-drawer-close"),
     connectionStatus: document.getElementById("connection-status"),
-    connectionText: document.getElementById("connection-text")
+    connectionText: document.getElementById("connection-text"),
+    projectApproval: document.getElementById("project-approval"),
+    projectApprovalSummary: document.getElementById("project-approval-summary"),
+    projectApprovalFiles: document.getElementById("project-approval-files"),
+    projectChangeEditors: document.getElementById("project-change-editors"),
+    projectApprovalDiff: document.getElementById("project-approval-diff"),
+    projectApprovalNote: document.getElementById("project-approval-note"),
+    projectApproveButton: document.getElementById("project-approve-button"),
+    projectRejectButton: document.getElementById("project-reject-button"),
+    gitApproval: document.getElementById("git-approval"),
+    gitTarget: document.getElementById("git-target"),
+    gitApprovalFiles: document.getElementById("git-approval-files"),
+    gitCommitMessage: document.getElementById("git-commit-message"),
+    gitApprovalDiff: document.getElementById("git-approval-diff"),
+    gitApprovalNote: document.getElementById("git-approval-note"),
+    gitRejectButton: document.getElementById("git-reject-button"),
+    gitCommitButton: document.getElementById("git-commit-button"),
+    gitPushButton: document.getElementById("git-push-button")
 };
 
 /* Values that change while the application is running. */
@@ -46,6 +63,10 @@ const state = {
     reconnectTimer: null,
     userCaptionTimer: null,
     cursorTrackingTimer: null,
+    activeProposalId: null,
+    proposalEditors: [],
+    activeGitProposalId: null,
+    gitPushAvailable: false,
     targetMouthValue: 0,
     currentMouthValue: 0
 };
@@ -82,6 +103,235 @@ function setupChatDrawer() {
     elements.chatDrawerClose.addEventListener("click", () => {
         elements.chatDrawer.classList.add("closed");
     });
+}
+
+/* ----------------------- Project change approval -------------------- */
+
+function setupProjectApproval() {
+    elements.projectApproveButton.addEventListener("click", () => {
+        sendProjectDecision("approve");
+    });
+
+    elements.projectRejectButton.addEventListener("click", () => {
+        sendProjectDecision("reject");
+    });
+}
+
+function showProjectProposal(message) {
+    const proposalId = cleanText(message.proposal_id);
+    if (!proposalId) return;
+
+    state.activeProposalId = proposalId;
+    elements.projectApprovalSummary.textContent =
+        cleanText(message.summary) || "Elaina prepared project changes.";
+
+    elements.projectApprovalFiles.replaceChildren();
+    const files = Array.isArray(message.files) ? message.files : [];
+
+    for (const filePath of files) {
+        const file = document.createElement("div");
+        file.className = "project-file";
+        file.textContent = String(filePath);
+        elements.projectApprovalFiles.appendChild(file);
+    }
+
+    elements.projectChangeEditors.replaceChildren();
+    state.proposalEditors = [];
+    const editableChanges = Array.isArray(message.editable_changes)
+        ? message.editable_changes
+        : [];
+
+    editableChanges.forEach((change, index) => {
+        const editor = document.createElement("section");
+        editor.className = "project-change-editor";
+
+        const label = document.createElement("label");
+        label.textContent =
+            `${change.action || "change"} · ${change.path || `Change ${index + 1}`}`;
+
+        const hint = document.createElement("span");
+        hint.textContent = change.action === "create"
+            ? "New file content"
+            : "Replacement code";
+
+        const textarea = document.createElement("textarea");
+        textarea.className = "project-code-editor";
+        textarea.spellcheck = false;
+        textarea.value = String(change.new_text ?? "");
+        textarea.setAttribute(
+            "aria-label",
+            `Editable replacement for ${change.path || `change ${index + 1}`}`
+        );
+
+        label.appendChild(hint);
+        editor.append(label, textarea);
+        elements.projectChangeEditors.appendChild(editor);
+        state.proposalEditors.push(textarea);
+    });
+
+    elements.projectApprovalDiff.textContent =
+        cleanText(message.diff) || "No preview was provided.";
+    elements.projectApprovalNote.textContent = message.diff_truncated
+        ? "Preview shortened. No files have been changed yet."
+        : "No files have been changed yet.";
+
+    setProjectApprovalBusy(false);
+    elements.projectApproval.classList.remove("hidden");
+}
+
+function setProjectApprovalBusy(isBusy) {
+    elements.projectApproveButton.disabled = isBusy;
+    elements.projectRejectButton.disabled = isBusy;
+}
+
+function sendProjectDecision(decision) {
+    if (!state.activeProposalId) return;
+
+    if (
+        !state.pythonSocket ||
+        state.pythonSocket.readyState !== WebSocket.OPEN
+    ) {
+        elements.projectApprovalNote.textContent =
+            "Elaina is offline. Reconnect before deciding.";
+        return;
+    }
+
+    setProjectApprovalBusy(true);
+    elements.projectApprovalNote.textContent = decision === "approve"
+        ? "Applying the approved changes..."
+        : "Rejecting the proposal...";
+
+    const command = {
+        command: "project_change_decision",
+        proposal_id: state.activeProposalId,
+        decision
+    };
+
+    if (decision === "approve") {
+        command.revised_texts = state.proposalEditors.map(
+            editor => editor.value
+        );
+    }
+
+    state.pythonSocket.send(JSON.stringify(command));
+}
+
+function closeProjectApproval() {
+    state.activeProposalId = null;
+    state.proposalEditors = [];
+    elements.projectChangeEditors.replaceChildren();
+    elements.projectApproval.classList.add("hidden");
+    setProjectApprovalBusy(false);
+}
+
+/* --------------------------- Git approval --------------------------- */
+
+function setupGitApproval() {
+    elements.gitRejectButton.addEventListener("click", () => {
+        sendGitDecision("reject");
+    });
+    elements.gitCommitButton.addEventListener("click", () => {
+        sendGitDecision("commit_only");
+    });
+    elements.gitPushButton.addEventListener("click", () => {
+        sendGitDecision("commit_push");
+    });
+}
+
+function showGitProposal(message) {
+    const proposalId = cleanText(message.proposal_id);
+    if (!proposalId) return;
+
+    state.activeGitProposalId = proposalId;
+    const branch = cleanText(message.branch) || "(unknown branch)";
+    const remote = cleanText(message.remote);
+    elements.gitTarget.textContent = remote
+        ? `${remote} · ${branch}`
+        : `Local commit · ${branch}`;
+
+    elements.gitCommitMessage.value =
+        cleanText(message.commit_message) || "Update project files";
+
+    elements.gitApprovalFiles.replaceChildren();
+    const files = Array.isArray(message.files) ? message.files : [];
+    for (const item of files) {
+        const row = document.createElement("div");
+        row.className = "git-file";
+
+        const status = document.createElement("span");
+        status.className = "git-file-status";
+        status.textContent = cleanText(item.status) || "??";
+
+        const path = document.createElement("span");
+        path.textContent = String(item.path || "");
+
+        row.append(status, path);
+        elements.gitApprovalFiles.appendChild(row);
+    }
+
+    const stat = cleanText(message.diff_stat);
+    const diff = cleanText(message.diff);
+    elements.gitApprovalDiff.textContent = [stat, diff]
+        .filter(Boolean)
+        .join("\n\n") || "No textual diff preview is available.";
+    elements.gitApprovalNote.textContent = message.diff_truncated
+        ? "Diff preview shortened. Nothing has been staged yet."
+        : "Nothing has been staged, committed, or pushed.";
+
+    state.gitPushAvailable = Boolean(message.push_available);
+    setGitApprovalBusy(false);
+    elements.gitApproval.classList.remove("hidden");
+}
+
+function setGitApprovalBusy(isBusy) {
+    elements.gitRejectButton.disabled = isBusy;
+    elements.gitCommitButton.disabled = isBusy;
+    elements.gitPushButton.disabled = isBusy || !state.gitPushAvailable;
+    elements.gitCommitMessage.disabled = isBusy;
+}
+
+function sendGitDecision(decision) {
+    if (!state.activeGitProposalId) return;
+
+    if (
+        !state.pythonSocket ||
+        state.pythonSocket.readyState !== WebSocket.OPEN
+    ) {
+        elements.gitApprovalNote.textContent =
+            "Elaina is offline. Reconnect before deciding.";
+        return;
+    }
+
+    const commitMessage = elements.gitCommitMessage.value.trim();
+    if (decision !== "reject" && !commitMessage) {
+        elements.gitApprovalNote.textContent =
+            "Enter a commit message before continuing.";
+        elements.gitCommitMessage.focus();
+        return;
+    }
+
+    setGitApprovalBusy(true);
+    elements.gitApprovalNote.textContent = decision === "commit_push"
+        ? "Committing and pushing the approved files..."
+        : decision === "commit_only"
+            ? "Committing the approved files..."
+            : "Rejecting the Git proposal...";
+
+    state.pythonSocket.send(JSON.stringify({
+        command: "git_action_decision",
+        proposal_id: state.activeGitProposalId,
+        decision,
+        commit_message: commitMessage
+    }));
+}
+
+function closeGitApproval() {
+    state.activeGitProposalId = null;
+    state.gitPushAvailable = false;
+    elements.gitApproval.classList.add("hidden");
+    elements.gitApprovalFiles.replaceChildren();
+    elements.gitCommitMessage.value = "";
+    setGitApprovalBusy(false);
 }
 
 /* ------------------------- Screen selection ------------------------- */
@@ -333,6 +583,70 @@ function handlePythonMessage(event) {
                     message.text || "Could not capture selection"
                 );
                 break;
+            case "project_change_proposed":
+                showProjectProposal(message);
+                setActivity("thinking", "Waiting for approval...");
+                break;
+            case "project_change_applied":
+                closeProjectApproval();
+                addAssistantMessage(
+                    `Changes applied to ${(message.files || []).join(", ")}.`
+                );
+                setActivity("listening", "Changes applied");
+                break;
+            case "project_change_rejected":
+                closeProjectApproval();
+                addAssistantMessage("Project changes rejected. Nothing was edited.");
+                setActivity("listening", "Changes rejected");
+                break;
+            case "project_change_error":
+                elements.projectApprovalNote.textContent =
+                    message.message || "The project change failed.";
+                setProjectApprovalBusy(false);
+                setActivity("offline", "Change failed");
+                break;
+            case "git_action_proposed":
+                showGitProposal(message);
+                setActivity("thinking", "Waiting for Git approval...");
+                break;
+            case "git_action_completed": {
+                const actionText = message.status === "pushed"
+                    ? `Committed ${message.commit} and pushed to ${message.remote}.`
+                    : `Created commit ${message.commit}.`;
+                closeGitApproval();
+                addAssistantMessage(actionText);
+                setActivity("listening", message.status === "pushed"
+                    ? "Push complete"
+                    : "Commit complete");
+                break;
+            }
+            case "git_action_rejected":
+                closeGitApproval();
+                addAssistantMessage(
+                    "Git action rejected. Nothing was staged or committed."
+                );
+                setActivity("listening", "Git action rejected");
+                break;
+            case "git_action_partial":
+                closeGitApproval();
+                addAssistantMessage(
+                    `Commit ${message.commit} was created, but push failed: ` +
+                    `${message.error || "Unknown push error"}`
+                );
+                setActivity("offline", "Push failed after commit");
+                break;
+            case "git_action_error":
+                if (state.activeGitProposalId) {
+                    elements.gitApprovalNote.textContent =
+                        message.message || "The Git action failed.";
+                    setGitApprovalBusy(false);
+                } else {
+                    addAssistantMessage(
+                        message.message || "The Git proposal could not be prepared."
+                    );
+                }
+                setActivity("offline", "Git action failed");
+                break;
             case "lip_sync":
                 handleLipSync(message.value);
                 break;
@@ -374,6 +688,8 @@ function stopMouthMovement() {
 function startApplication() {
     setupWindowControls();
     setupChatDrawer();
+    setupProjectApproval();
+    setupGitApproval();
     setupScreenSelection();
     loadElaina();
     connectToPython();

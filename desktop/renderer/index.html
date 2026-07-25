@@ -49,6 +49,93 @@
             <div id="chat-history" aria-live="polite"></div>
         </aside>
 
+        <!-- Elaina cannot edit files until the user approves this proposal. -->
+        <section
+            id="project-approval"
+            class="hidden"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="project-approval-title"
+        >
+            <div id="project-approval-card">
+                <header id="project-approval-header">
+                    <div>
+                        <span id="project-approval-label">Project change</span>
+                        <h2 id="project-approval-title">Review changes</h2>
+                    </div>
+                </header>
+
+                <p id="project-approval-summary"></p>
+                <div id="project-approval-files"></div>
+
+                <div id="project-change-editors"></div>
+
+                <details id="project-diff-details">
+                    <summary>View code changes</summary>
+                    <pre id="project-approval-diff"></pre>
+                </details>
+
+                <p id="project-approval-note">
+                    No files have been changed yet.
+                </p>
+
+                <div id="project-approval-actions">
+                    <button id="project-reject-button" type="button">
+                        Reject
+                    </button>
+                    <button id="project-approve-button" type="button">
+                        Approve
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Git remains read-only until one of these actions is approved. -->
+        <section
+            id="git-approval"
+            class="hidden"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="git-approval-title"
+        >
+            <div id="git-approval-card">
+                <header>
+                    <div>
+                        <span class="approval-label">Git action</span>
+                        <h2 id="git-approval-title">Review commit</h2>
+                    </div>
+                </header>
+
+                <div id="git-target"></div>
+                <div id="git-approval-files"></div>
+
+                <label id="git-message-label" for="git-commit-message">
+                    Commit message
+                </label>
+                <input
+                    id="git-commit-message"
+                    type="text"
+                    maxlength="200"
+                    autocomplete="off"
+                >
+
+                <details id="git-diff-details">
+                    <summary>View Git diff</summary>
+                    <pre id="git-approval-diff"></pre>
+                </details>
+
+                <p id="git-approval-note">
+                    Nothing has been staged, committed, or pushed.
+                </p>
+
+                <div id="git-approval-actions">
+                    <button id="git-reject-button" type="button">Reject</button>
+                    <button id="git-commit-button" type="button">Commit Only</button>
+                    <button id="git-push-button" type="button">Commit &amp; Push</button>
+                </div>
+            </div>
+        </section>
+
         <!-- Electron window controls. These call functions exposed by preload.js. -->
         <nav id="window-controls" aria-label="Window controls">
             <button id="pin-button" type="button" title="Lock window position">Pin</button>

@@ -43,6 +43,15 @@ class WebSocketServer:
             "assistant_finished",
             "screen_region_ready",
             "screen_region_error",
+            "project_change_proposed",
+            "project_change_applied",
+            "project_change_rejected",
+            "project_change_error",
+            "git_action_proposed",
+            "git_action_completed",
+            "git_action_rejected",
+            "git_action_partial",
+            "git_action_error",
         )
 
         for event_name in self._event_names:
@@ -126,9 +135,6 @@ class WebSocketServer:
             print(f"[WebSocket Command Error] {error}")
 
     def _on_event(self, event: Event) -> None:
-        print(
-            f"[WebSocket Event] {event.name}: {event.data}"
-        )
 
         if self._loop is None:
             return

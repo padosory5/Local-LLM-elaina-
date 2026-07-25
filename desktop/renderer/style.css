@@ -350,6 +350,353 @@ body.position-locked #live2d-canvas {
     background: rgb(82 65 105 / 94%);
 }
 
+/* File changes remain blocked until the user approves this modal. */
+#project-approval {
+    position: absolute;
+    inset: 0;
+    z-index: 140;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+    background: rgb(8 6 14 / 62%);
+    backdrop-filter: blur(8px);
+    -webkit-app-region: no-drag;
+}
+
+#project-approval.hidden {
+    display: none;
+}
+
+#project-approval-card {
+    width: 100%;
+    max-height: 82%;
+    padding: 16px;
+    overflow-y: auto;
+    border: 1px solid rgb(255 255 255 / 18%);
+    border-radius: 18px;
+    color: var(--white);
+    background: var(--panel);
+    box-shadow: 0 18px 48px rgb(0 0 0 / 48%);
+}
+
+#project-approval-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+
+#project-approval-label {
+    color: rgb(190 151 232);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+#project-approval-title {
+    margin: 4px 0 0;
+    font-size: 18px;
+}
+
+#project-approval-summary {
+    margin: 0 0 10px;
+    color: rgb(235 229 242);
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+#project-approval-files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.project-file {
+    padding: 5px 8px;
+    border-radius: 7px;
+    color: rgb(225 211 242);
+    background: rgb(112 76 151 / 34%);
+    font-family: Consolas, monospace;
+    font-size: 10px;
+    overflow-wrap: anywhere;
+}
+
+#project-change-editors {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.project-change-editor {
+    overflow: hidden;
+    border: 1px solid rgb(255 255 255 / 14%);
+    border-radius: 10px;
+    background: rgb(8 7 14 / 55%);
+}
+
+.project-change-editor label {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    color: rgb(229 218 241);
+    font: 10px/1.3 Consolas, monospace;
+}
+
+.project-change-editor label span {
+    color: rgb(175 153 198);
+    font-family: Arial, sans-serif;
+    white-space: nowrap;
+}
+
+.project-code-editor {
+    display: block;
+    width: 100%;
+    min-height: 110px;
+    max-height: 260px;
+    padding: 10px;
+    resize: vertical;
+    border: 0;
+    border-top: 1px solid rgb(255 255 255 / 10%);
+    outline: none;
+    color: rgb(215 238 218);
+    background: rgb(5 5 10 / 70%);
+    font: 10px/1.5 Consolas, monospace;
+    tab-size: 4;
+    user-select: text;
+    white-space: pre;
+}
+
+.project-code-editor:focus {
+    box-shadow: inset 0 0 0 1px rgb(150 100 205 / 75%);
+}
+
+#project-diff-details {
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 10px;
+    background: rgb(8 7 14 / 45%);
+}
+
+#project-diff-details summary {
+    padding: 9px 10px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+#project-approval-diff {
+    max-height: 210px;
+    margin: 0;
+    padding: 10px;
+    overflow: auto;
+    border-top: 1px solid rgb(255 255 255 / 10%);
+    color: rgb(215 238 218);
+    font: 10px/1.45 Consolas, monospace;
+    user-select: text;
+    white-space: pre;
+}
+
+#project-approval-note {
+    margin: 10px 0;
+    color: rgb(218 198 120);
+    font-size: 11px;
+}
+
+#project-approval-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+#project-approval-actions button {
+    min-width: 86px;
+    padding: 8px 12px;
+    border: 1px solid rgb(255 255 255 / 18%);
+    border-radius: 9px;
+    color: var(--white);
+    cursor: pointer;
+}
+
+#project-reject-button {
+    background: rgb(72 62 82 / 95%);
+}
+
+#project-approve-button {
+    background: rgb(105 72 142 / 96%);
+}
+
+#project-approval-actions button:disabled {
+    cursor: wait;
+    opacity: 0.55;
+}
+
+/* Git commit/push review modal. */
+#git-approval {
+    position: absolute;
+    inset: 0;
+    z-index: 145;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+    background: rgb(8 6 14 / 66%);
+    backdrop-filter: blur(8px);
+    -webkit-app-region: no-drag;
+}
+
+#git-approval.hidden {
+    display: none;
+}
+
+#git-approval-card {
+    width: 100%;
+    max-height: 84%;
+    padding: 16px;
+    overflow-y: auto;
+    border: 1px solid rgb(255 255 255 / 18%);
+    border-radius: 18px;
+    color: var(--white);
+    background: var(--panel);
+    box-shadow: 0 18px 48px rgb(0 0 0 / 48%);
+}
+
+#git-approval-card header {
+    margin-bottom: 10px;
+}
+
+.approval-label {
+    color: rgb(115 214 158);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+#git-approval-title {
+    margin: 4px 0 0;
+    font-size: 18px;
+}
+
+#git-target {
+    margin-bottom: 10px;
+    color: rgb(198 231 209);
+    font: 11px/1.4 Consolas, monospace;
+}
+
+#git-approval-files {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    max-height: 120px;
+    margin-bottom: 12px;
+    overflow-y: auto;
+}
+
+.git-file {
+    display: flex;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 7px;
+    background: rgb(255 255 255 / 6%);
+    font: 10px/1.35 Consolas, monospace;
+    overflow-wrap: anywhere;
+}
+
+.git-file-status {
+    min-width: 20px;
+    color: rgb(125 220 160);
+    font-weight: 700;
+}
+
+#git-message-label {
+    display: block;
+    margin-bottom: 6px;
+    color: rgb(221 210 232);
+    font-size: 11px;
+}
+
+#git-commit-message {
+    width: 100%;
+    margin-bottom: 10px;
+    padding: 9px 10px;
+    border: 1px solid rgb(255 255 255 / 16%);
+    border-radius: 9px;
+    outline: none;
+    color: var(--white);
+    background: rgb(8 7 14 / 62%);
+    font: 11px Consolas, monospace;
+}
+
+#git-commit-message:focus {
+    border-color: rgb(115 214 158 / 75%);
+}
+
+#git-diff-details {
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 10px;
+    background: rgb(8 7 14 / 45%);
+}
+
+#git-diff-details summary {
+    padding: 9px 10px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+#git-approval-diff {
+    max-height: 210px;
+    margin: 0;
+    padding: 10px;
+    overflow: auto;
+    border-top: 1px solid rgb(255 255 255 / 10%);
+    color: rgb(210 232 217);
+    font: 10px/1.45 Consolas, monospace;
+    user-select: text;
+    white-space: pre;
+}
+
+#git-approval-note {
+    margin: 10px 0;
+    color: rgb(218 198 120);
+    font-size: 11px;
+}
+
+#git-approval-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 7px;
+}
+
+#git-approval-actions button {
+    padding: 8px 10px;
+    border: 1px solid rgb(255 255 255 / 18%);
+    border-radius: 9px;
+    color: var(--white);
+    cursor: pointer;
+    font-size: 11px;
+}
+
+#git-reject-button {
+    background: rgb(72 62 82 / 95%);
+}
+
+#git-commit-button {
+    background: rgb(74 87 112 / 96%);
+}
+
+#git-push-button {
+    background: rgb(65 139 96 / 96%);
+}
+
+#git-approval-actions button:disabled,
+#git-commit-message:disabled {
+    cursor: wait;
+    opacity: 0.55;
+}
+
 /* Electron window buttons. */
 #window-controls {
     position: absolute;

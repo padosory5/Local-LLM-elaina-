@@ -18,6 +18,56 @@ def handle_desktop_command(message):
             return
 
         engine.prepare_screen_region(region)
+        return
+
+    if command == "project_change_decision":
+        proposal_id = message.get("proposal_id")
+        decision = message.get("decision")
+        revised_texts = message.get("revised_texts")
+
+        if not isinstance(proposal_id, str):
+            print("[Project Change] Invalid proposal ID.")
+            return
+
+        if decision not in {"approve", "reject"}:
+            print("[Project Change] Invalid decision.")
+            return
+
+        if revised_texts is not None and (
+            not isinstance(revised_texts, list)
+            or not all(isinstance(text, str) for text in revised_texts)
+        ):
+            print("[Project Change] Invalid edited code.")
+            return
+
+        engine.resolve_project_change(
+            proposal_id=proposal_id,
+            approved=decision == "approve",
+            revised_texts=revised_texts,
+        )
+        return
+
+    if command == "git_action_decision":
+        proposal_id = message.get("proposal_id")
+        decision = message.get("decision")
+        commit_message = message.get("commit_message", "")
+
+        if not isinstance(proposal_id, str):
+            print("[Git Action] Invalid proposal ID.")
+            return
+        if decision not in {"commit_push", "commit_only", "reject"}:
+            print("[Git Action] Invalid decision.")
+            return
+        if not isinstance(commit_message, str):
+            print("[Git Action] Invalid commit message.")
+            return
+
+        engine.resolve_git_action(
+            proposal_id=proposal_id,
+            approved=decision != "reject",
+            commit_message=commit_message,
+            push=decision == "commit_push",
+        )
 
 
 websocket_server = WebSocketServer(
