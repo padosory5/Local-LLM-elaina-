@@ -56,6 +56,7 @@ class VoiceActivityDetector:
     def record(
         self,
         on_speech_start: Callable[[], None] | None = None,
+        is_barge_in: Callable[[], bool] | None = None,
     ) -> np.ndarray | None:
         audio_queue: queue.Queue[np.ndarray] = queue.Queue(
             maxsize=100
@@ -80,6 +81,9 @@ class VoiceActivityDetector:
 
         waiting_started_at = time.monotonic()
         recording_started_at: float | None = None
+        noise_floor = 0.003
+        peak_probability = 0.0
+        peak_rms = 0.0
 
         self.model.reset_states()
 
@@ -126,7 +130,9 @@ class VoiceActivityDetector:
                             >= self.start_timeout_seconds
                         ):
                             print(
-                                "No speech detected."
+                                "No speech detected. "
+                                "(microphone delivered no audio frames; "
+                                f"device={self.device_index})"
                             )
                             return None
 
@@ -149,9 +155,46 @@ class VoiceActivityDetector:
                             ).item()
                         )
 
+                    rms = float(
+                        np.sqrt(
+                            np.mean(
+                                normalized_audio
+                                * normalized_audio
+                            )
+                        )
+                    )
+                    peak_probability = max(
+                        peak_probability,
+                        speech_probability,
+                    )
+                    peak_rms = max(peak_rms, rms)
+
+                    # Slowly learn quiet-room volume only from chunks that
+                    # Silero considers non-speech. This makes soft speech less
+                    # likely to disappear without treating fan noise as speech.
+                    if speech_probability < 0.10:
+                        noise_floor = (
+                            noise_floor * 0.98
+                            + rms * 0.02
+                        )
+
+                    barge_in_active = bool(
+                        is_barge_in is not None
+                        and is_barge_in()
+                    )
+                    active_threshold = self.threshold + (
+                        0.12 if barge_in_active else 0.0
+                    )
+                    energy_threshold = max(
+                        0.010,
+                        noise_floor * 3.0,
+                    )
                     is_speech = (
-                        speech_probability
-                        >= self.threshold
+                        speech_probability >= active_threshold
+                        or (
+                            speech_probability >= 0.15
+                            and rms >= energy_threshold
+                        )
                     )
 
                     if not speech_started:
@@ -205,7 +248,10 @@ class VoiceActivityDetector:
                             >= self.start_timeout_seconds
                         ):
                             print(
-                                "No speech detected."
+                                "No speech detected. "
+                                f"(peak VAD={peak_probability:.2f}, "
+                                f"peak level={peak_rms:.4f}, "
+                                f"device={self.device_index})"
                             )
                             return None
 

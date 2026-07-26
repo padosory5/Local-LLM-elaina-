@@ -304,12 +304,46 @@ ipcMain.on("screen-selection-confirm", (_event, region) => {
         return;
     }
 
-    const selectedRegion = {
+    // The selector renderer reports coordinates in Electron DIP units.
+    // Windows screen capture APIs such as MSS use physical pixel coordinates.
+    // At 125%, 150%, or 200% display scaling, sending DIP values directly
+    // captures a different area of the screen.
+    const selectedDipRegion = {
         left: Math.round(selectionDesktopBounds.x + values[0]),
         top: Math.round(selectionDesktopBounds.y + values[1]),
         width: Math.round(values[2]),
         height: Math.round(values[3])
     };
+
+    const dipStart = {
+        x: selectedDipRegion.left,
+        y: selectedDipRegion.top
+    };
+    const dipEnd = {
+        x: selectedDipRegion.left + selectedDipRegion.width,
+        y: selectedDipRegion.top + selectedDipRegion.height
+    };
+
+    let selectedRegion;
+
+    if (process.platform === "win32") {
+        // Electron selects the correct display scale factor for each point.
+        // Converting both corners also works when monitors have different DPI.
+        const pixelStart = screen.dipToScreenPoint(dipStart);
+        const pixelEnd = screen.dipToScreenPoint(dipEnd);
+
+        selectedRegion = {
+            left: Math.min(pixelStart.x, pixelEnd.x),
+            top: Math.min(pixelStart.y, pixelEnd.y),
+            width: Math.abs(pixelEnd.x - pixelStart.x),
+            height: Math.abs(pixelEnd.y - pixelStart.y)
+        };
+    } else {
+        selectedRegion = selectedDipRegion;
+    }
+
+    console.log("[Screen Selection] DIP region:", selectedDipRegion);
+    console.log("[Screen Selection] Pixel region:", selectedRegion);
 
     // Remove the overlay before Python captures the selected pixels.
     closeScreenSelector();

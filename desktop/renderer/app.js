@@ -570,6 +570,14 @@ function handlePythonMessage(event) {
                 addUserMessage(message.text);
                 setActivity("thinking", "Thinking...");
                 break;
+            case "assistant_status":
+                addAssistantMessage(message.text);
+                setActivity("thinking", message.text || "Working...");
+                break;
+            case "assistant_interrupted":
+                setActivity("listening", "Listening...");
+                stopMouthMovement();
+                break;
             case "assistant_finished":
                 addAssistantMessage(message.text);
                 setActivity("speaking", "Speaking...");
@@ -583,6 +591,15 @@ function handlePythonMessage(event) {
                     message.text || "Could not capture selection"
                 );
                 break;
+            case "visual_match_found": {
+                const title = cleanText(message.title) || "Visual web match";
+                const score = Number(message.score);
+                const confidence = Number.isFinite(score) && score > 0
+                    ? ` (${Math.round(score * 100)}% retrieval score)`
+                    : "";
+                addAssistantMessage(`Matched source: ${title}${confidence}`);
+                break;
+            }
             case "project_change_proposed":
                 showProjectProposal(message);
                 setActivity("thinking", "Waiting for approval...");

@@ -11,3 +11,5 @@ PySide6
 PySide6-Addons
 mss
 Pillow
+google-cloud-vision>=3.10,<4
+python-dotenv

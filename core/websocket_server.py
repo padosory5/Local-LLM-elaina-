@@ -39,10 +39,13 @@ class WebSocketServer:
 
             "user_message",
             "assistant_started",
+            "assistant_status",
+            "assistant_interrupted",
             "assistant_stream",
             "assistant_finished",
             "screen_region_ready",
             "screen_region_error",
+            "visual_match_found",
             "project_change_proposed",
             "project_change_applied",
             "project_change_rejected",

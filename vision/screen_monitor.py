@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import ctypes
 import io
+import json
 import platform
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import mss
 from PIL import Image
@@ -43,6 +45,13 @@ class ScreenMonitor:
         )
         self.jpeg_quality = int(
             config.get("vision", "jpeg_quality", default=70, required=False)
+        )
+        # Debug copies are saved only for manually selected regions. The JPEG
+        # written here is byte-for-byte identical to the image sent to Ollama.
+        self.selected_capture_directory = (
+            Path(__file__).resolve().parents[1]
+            / "debug"
+            / "screen_captures"
         )
 
     def start(self) -> None:
@@ -116,9 +125,22 @@ class ScreenMonitor:
                     "width": right - left,
                     "height": bottom - top,
                 })
+                image_bytes = self._compress_frame(raw_frame)
+                captured_region = {
+                    "left": left,
+                    "top": top,
+                    "width": right - left,
+                    "height": bottom - top,
+                }
+
+                self._save_selected_capture(
+                    image_bytes=image_bytes,
+                    requested_region=requested,
+                    captured_region=captured_region,
+                )
 
                 return ScreenSnapshot(
-                    image_bytes=self._compress_frame(raw_frame),
+                    image_bytes=image_bytes,
                     mime_type="image/jpeg",
                     active_window_title=self._get_active_window_title(),
                     capture_target="selected screen region",
@@ -127,6 +149,60 @@ class ScreenMonitor:
         except Exception as error:
             print(f"[Vision Region Warning] {error}")
             return None
+
+    def _save_selected_capture(
+        self,
+        *,
+        image_bytes: bytes,
+        requested_region: dict,
+        captured_region: dict,
+    ) -> None:
+        """
+        Save exactly what the vision model receives for the latest selection.
+
+        The previous files are replaced so repeated analysis does not slowly
+        fill the drive with screenshots.
+        """
+        try:
+            self.selected_capture_directory.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            image_path = (
+                self.selected_capture_directory
+                / "latest_selection.jpg"
+            )
+            metadata_path = (
+                self.selected_capture_directory
+                / "latest_selection.json"
+            )
+
+            image_path.write_bytes(image_bytes)
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "requested_region": requested_region,
+                        "captured_region": captured_region,
+                        "saved_at": time.strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        ),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            print(
+                f"[Vision] Saved selected capture: {image_path}"
+            )
+        except Exception as error:
+            # Saving a debug copy should never prevent Elaina from analyzing
+            # an otherwise valid selection.
+            print(
+                f"[Vision Debug Save Warning] "
+                f"{type(error).__name__}: {error}"
+            )
 
     def _select_monitor(self, monitors, target: str):
         """Resolve natural positions without relying on Windows monitor numbers."""

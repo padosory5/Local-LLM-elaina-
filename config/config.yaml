@@ -284,8 +284,9 @@ vision:
   # normal conversation from paying the vision model's image-processing cost.
   model: "qwen3-vl:8b"
 
-  # Unload the vision model after its answer so normal chat retains priority.
-  keep_alive: 0
+  # Keep Qwen3-VL loaded briefly so repeated screen requests do not reload the
+  # entire model. Ollama may still evict it if VRAM is needed.
+  keep_alive: "10m"
 
   # 1 is the first physical monitor; use 2 for a second monitor.
   monitor_index: 1
@@ -302,6 +303,8 @@ vision:
 search:
   enabled: true
   provider: "duckduckgo"
+  cache_seconds: 300
+  cache_entries: 20
 
   duckduckgo:
     max_results: 3
@@ -313,6 +316,36 @@ search:
   tavily:
     api_key_env: "TAVILY_API_KEY"
     max_results: 3
+
+
+############################################################
+# Reverse Image Search
+############################################################
+
+visual_search:
+  # Used only when the screen request asks Elaina to identify an exact person,
+  # game, product, landmark, vehicle, logo, or other entity. Direct tasks such
+  # as translation and code explanation remain local with Qwen3-VL.
+  enabled: true
+  provider: "google_cloud_vision"
+
+  google_cloud_vision:
+    # Store the credential JSON outside this project. The startup batch file
+    # should set this environment variable to the full credential path.
+    credentials_env: "GOOGLE_APPLICATION_CREDENTIALS"
+
+    # Limit the amount of retrieval evidence placed into the final prompt.
+    max_results: 8
+
+    # Local safety limit for Elaina. Google currently provides 1,000 free
+    # Cloud Vision feature units per month, so 900 leaves a buffer. This counter
+    # covers Elaina only; also configure a Cloud billing budget/alert.
+    monthly_request_limit: 900
+    usage_file: "data/visual_search_usage.json"
+
+    # Reusing the exact same selected image does not consume another request
+    # while Elaina remains open.
+    cache_seconds: 86400
 
 
 ############################################################
@@ -367,3 +400,4 @@ debug:
   print_memory: false
   print_search: true
   print_tool_calls: true
+  print_timings: true

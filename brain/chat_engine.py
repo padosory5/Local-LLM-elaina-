@@ -1,7 +1,9 @@
 import json
 import re
 import threading
+import time
 import ollama
+from collections import deque
 
 from memory.memory_manager import MemoryManager
 from memory.extractor import MemoryExtractor
@@ -17,11 +19,13 @@ from brain.emotion_engine import EmotionEngine
 from core.event_bus import Event, EventBus
 from brain.text_filter import TextFilter
 from tools.web_search import WebSearchTool
+from tools.visual_search import VisualSearchTool
 from tools.project_mcp_client import ProjectMCPManager
 from config.loader import Config
 from brain.personality_loader import PersonalityLoader
 from datetime import datetime
 from vision.screen_monitor import ScreenMonitor
+from brain.intent_router import SemanticIntentRouter
 
 def extract_complete_sentences(
     buffer: str,
@@ -84,9 +88,14 @@ class ChatEngine:
         self.vision_keep_alive = self.config.get(
             "vision",
             "keep_alive",
-            default=0,
+            default="10m",
             required=False,
         )
+        # A zero keep-alive unloads Qwen3-VL immediately. If the first request
+        # needs a compatibility retry, Ollama then has to load the entire model
+        # again, which can add many seconds even on a fast GPU.
+        if self.vision_keep_alive in {None, 0, "0", "0s"}:
+            self.vision_keep_alive = "10m"
 
         self.client = ollama.Client(
             host=self.config.get(
@@ -95,6 +104,42 @@ class ChatEngine:
                 "base_url",
             )
         )
+        self.intent_router = SemanticIntentRouter(
+            client=self.client,
+            model=self.model,
+            keep_alive=self.keep_alive,
+        )
+        self._router_history = deque(maxlen=6)
+        self._active_topic = ""
+        self._active_entity = ""
+        self._entity_aliases: dict[str, str] = {}
+        self._grounded_context = {
+            "subject": "",
+            "statement": "",
+            "source": "",
+        }
+        self._turn_visual_subject = ""
+        self._pending_action = ""
+        self._search_cache: dict[str, tuple[float, str]] = {}
+        self._last_search_query = ""
+        self._search_cache_seconds = int(self.config.get(
+            "search",
+            "cache_seconds",
+            default=300,
+            required=False,
+        ))
+        self._search_cache_entries = int(self.config.get(
+            "search",
+            "cache_entries",
+            default=20,
+            required=False,
+        ))
+        self._print_timings = bool(self.config.get(
+            "debug",
+            "print_timings",
+            default=True,
+            required=False,
+        ))
 
         self.prompt_builder = PromptBuilder()
         self.personality_loader = PersonalityLoader()
@@ -119,6 +164,7 @@ class ChatEngine:
         self.events = EventBus()
 
         self.web_search_tool = WebSearchTool()
+        self.visual_search_tool = VisualSearchTool(config=self.config)
         self.project_mcp = None
         self._start_project_mcp()
 
@@ -136,7 +182,13 @@ class ChatEngine:
         # spoken message. The image remains in memory and is never saved.
         self._pending_screen_lock = threading.Lock()
         self._pending_screen_snapshot = None
-        
+        self._memory_store_lock = threading.Lock()
+        self._vision_warm_lock = threading.Lock()
+        self._vision_warming = False
+        self._vision_last_warm = 0.0
+        self._turn_lock = threading.Lock()
+        self._active_turn_cancel: threading.Event | None = None
+
     def _print_event(self, event: Event) -> None:
         print(
             f"\n[Event] {event.name}: "
@@ -146,8 +198,214 @@ class ChatEngine:
     def on_speech_start(self) -> None:
         self.events.emit("speech_started")
 
-        if self.audio.is_speaking():
+        was_speaking = self.audio.is_speaking()
+        if was_speaking:
             self.audio.stop()
+            with self._turn_lock:
+                if self._active_turn_cancel is not None:
+                    self._active_turn_cancel.set()
+
+    def _build_conversation_state(self) -> dict:
+        return {
+            "active_topic": self._active_topic,
+            "active_entity": self._active_entity,
+            "entity_aliases": self._entity_aliases,
+            "grounded_context": dict(self._grounded_context),
+        }
+
+    def _grounded_context_text(self) -> str:
+        subject = self._grounded_context.get("subject", "").strip()
+        statement = self._grounded_context.get("statement", "").strip()
+        source = self._grounded_context.get("source", "").strip()
+        if not statement:
+            return ""
+        return (
+            "RECENT GROUNDED CONTEXT\n"
+            f"Subject: {subject or 'Current subject'}\n"
+            f"Last verified result: {statement}\n"
+            f"Evidence source: {source or 'Previous verified tool result'}\n"
+            "Use this only when it is relevant to the current follow-up. "
+            "Distinguish reboots, remakes, sequels, and older works that share "
+            "the same name. If the user points out that this verified result "
+            "corrected an earlier answer, acknowledge that directly."
+        )
+
+    def _remember_grounded_fact(
+        self,
+        *,
+        subject: str,
+        statement: str,
+        source: str,
+    ) -> None:
+        statement = " ".join(statement.split()).strip()
+        if not statement:
+            return
+        self._grounded_context = {
+            "subject": subject.strip() or self._active_entity or self._active_topic,
+            "statement": statement[:1200],
+            "source": source.strip(),
+        }
+
+    @staticmethod
+    def _should_consider_memory(user_input: str) -> bool:
+        """Queue only likely personal statements, not tools or fact questions."""
+        normalized = " ".join(user_input.lower().split())
+        if normalized.endswith("?"):
+            return False
+        return bool(re.search(
+            r"\b(i am|i'm|i feel|i like|i love|i hate|i prefer|i want|"
+            r"i need|i have|i live|i study|i work|my favorite|my project)\b",
+            normalized,
+        ))
+
+    def _store_memory_candidate(self, user_input: str) -> None:
+        """Perform expensive extraction/consolidation outside response latency."""
+        with self._memory_store_lock:
+            started = time.perf_counter()
+            try:
+                memory = self.extractor.extract(user_input)
+                if not memory["save"]:
+                    return
+
+                similar = self.memory_manager.search_memory_objects(
+                    memory["content"]
+                )
+                result = self.consolidator.consolidate(
+                    similar,
+                    memory["content"],
+                )
+                action = result["action"]
+
+                if action == "ADD":
+                    self.memory_manager.store_memory(
+                        content=memory["content"],
+                        category=memory["category"],
+                        importance=5,
+                    )
+                elif action == "UPDATE":
+                    self.memory_manager.update_memory(
+                        result["memory_id"],
+                        result["content"],
+                    )
+            except Exception as error:
+                print(
+                    f"[Memory Background Warning] "
+                    f"{type(error).__name__}: {error}"
+                )
+            finally:
+                if self._print_timings:
+                    print(
+                        "[Timing] background_memory="
+                        f"{time.perf_counter() - started:.2f}s"
+                    )
+
+    def _update_conversation_state(self, route) -> None:
+        """Retain corrected entities and topics for short follow-up turns."""
+        if route.topic:
+            self._active_topic = route.topic
+        elif route.intent in {"knowledge_question", "web_search"}:
+            self._active_topic = route.normalized_request
+        if route.entity:
+            previous_entity = self._active_entity
+            self._active_entity = route.entity
+            if route.intent == "entity_correction" and previous_entity:
+                self._entity_aliases[previous_entity] = route.entity
+            for alias in route.aliases:
+                self._entity_aliases[alias] = route.entity
+            # Keep the state prompt small during long sessions.
+            if len(self._entity_aliases) > 20:
+                oldest = next(iter(self._entity_aliases))
+                self._entity_aliases.pop(oldest, None)
+
+    def _corrected_search_query(self, entity: str) -> str:
+        topic = self._active_topic.strip()
+        if "release" in topic.lower():
+            return f"latest {entity} model releases official"
+        if self._last_search_query:
+            words = self._last_search_query.split()
+            if words:
+                words[-1] = entity
+                return " ".join(words)
+        return f"latest information about {entity}"
+
+    def _build_factual_messages(
+        self,
+        question: str,
+        evidence: str = "",
+    ) -> list[dict]:
+        grounded_context = self._grounded_context_text()
+        evidence_block = (
+            f"\n\nCURRENT RETRIEVED EVIDENCE\n{evidence}"
+            if evidence
+            else ""
+        )
+        grounded_block = (
+            f"\n\n{grounded_context}"
+            if grounded_context
+            else ""
+        )
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "You are Elaina speaking naturally to the user. Answer the "
+                    "exact factual question directly and accurately, normally "
+                    "in one or two conversational sentences. This will be read "
+                    "aloud by TTS. Never use Markdown, headings, bullet points, "
+                    "bold, italics, stars, tables, or labels such as 'Answer:' "
+                    "and 'Confidence:'. Do not sound like a written report. "
+                    "Give enough detail for how, why, and example questions. "
+                    "Do not add greetings, emotional reassurance, time-of-day "
+                    "comments, promises to search later, offers for more help, "
+                    "or unrelated follow-up questions. Do not output raw URLs."
+                    f"{grounded_block}{evidence_block}"
+                ),
+            },
+            {
+                "role": "user",
+                "content": question,
+            },
+        ]
+
+    def _announce_work_status(self, intent: str) -> None:
+        """Immediately show and speak progress before a slower tool runs."""
+        status_by_intent = {
+            "web_search": (
+                "Sure, I'll search that now. Give me a second."
+            ),
+            "entity_correction": (
+                "Got it. I'll repeat the search with the corrected name."
+            ),
+            "screen_analysis": (
+                "Got it. I'm analyzing the selected area now."
+            ),
+            "project_question": (
+                "I'll check the relevant project files now."
+            ),
+            "project_edit": (
+                "I'll inspect the relevant files and prepare a change for "
+                "your approval."
+            ),
+            "git_commit": (
+                "I'll inspect the Git changes and prepare them for your "
+                "approval."
+            ),
+            "git_publish": (
+                "I'll inspect the Git changes and prepare a push for your "
+                "approval."
+            ),
+        }
+        text = status_by_intent.get(intent, "")
+        if not text:
+            return
+
+        print(f"[Status] Elaina: {text}")
+        self.events.emit(
+            "assistant_status",
+            text=text,
+            intent=intent,
+        )
+        self.audio.speak(text)
     
     def chat(
         self,
@@ -155,10 +413,17 @@ class ChatEngine:
         screen_region=None,
         screen_snapshot=None,
     ):
+        turn_started = time.perf_counter()
+        timings: dict[str, float] = {}
         user_input = str(user_input).strip()
 
         if not user_input:
             return ""
+
+        turn_cancel = threading.Event()
+        with self._turn_lock:
+            self._active_turn_cancel = turn_cancel
+        self._turn_visual_subject = ""
 
         self.events.emit(
             "user_message",
@@ -175,35 +440,56 @@ class ChatEngine:
 
         attention_text = self.attention.build_context()
 
-        use_memory = self.router.should_use_memory(user_input)
-
-        if use_memory:
-
-            memories = self.memory_manager.search(
-                user_input,
-                k=20
-            )
-            
-            memories = self.memory_ranker.rank(
-                memories
-            )
-
-            memory_text = self.context_builder.build(memories)
-
         ####################################################
         # Build Prompt
         ####################################################
-        time_context = self.build_time_context()
-
-        project_edit_requested = self._is_project_edit_request(user_input)
-        use_screen_vision = (
-            screen_region is not None
-            or screen_snapshot is not None
-            or (
-                not project_edit_requested
-                and self._should_use_screen_vision(user_input)
-            )
+        route_started = time.perf_counter()
+        route = self.intent_router.route(
+            user_input,
+            recent_turns=list(self._router_history),
+            has_screen_selection=(
+                screen_region is not None
+                or screen_snapshot is not None
+            ),
+            project_tools_available=self.project_mcp is not None,
+            conversation_state=self._build_conversation_state(),
+            pending_action=self._pending_action,
         )
+        timings["route"] = time.perf_counter() - route_started
+        self._update_conversation_state(route)
+        print(
+            f"[Router] {route.intent} ({route.confidence:.2f}): "
+            f"{route.reason or route.normalized_request}"
+        )
+        if route.normalized_request != user_input:
+            print(
+                f"[Router] Interpreted transcript as: "
+                f"{route.normalized_request}"
+            )
+        if route.intent == "fact_check" and route.search_query:
+            self._announce_work_status("web_search")
+        else:
+            self._announce_work_status(route.intent)
+
+        memory_started = time.perf_counter()
+        use_memory = (
+            route.intent == "conversation"
+            and self.router.should_use_memory(user_input)
+        )
+        if use_memory:
+            memories = self.memory_manager.search(
+                user_input,
+                k=20,
+            )
+            memories = self.memory_ranker.rank(memories)
+            memory_text = self.context_builder.build(memories)
+        timings["memory_retrieval"] = (
+            time.perf_counter() - memory_started
+        )
+
+        project_edit_requested = route.intent == "project_edit"
+        use_screen_vision = route.intent == "screen_analysis"
+        forced_response = ""
         screen_target = self._select_screen_target(user_input)
         if screen_snapshot is not None:
             pass
@@ -227,10 +513,7 @@ class ChatEngine:
             memory_text=memory_text,
             attention_text=attention_text,
             screen_text=screen_context,
-            user_input=(
-                f"{time_context}\n\n"
-                f"{user_input}"
-            ),
+            user_input=user_input,
         )
         ####################################################
         # Ask Qwen
@@ -240,60 +523,336 @@ class ChatEngine:
             system_prompt=self.system_prompt,
             context_prompt=context_prompt,
         )
-
-        # Old screenshots never enter conversation history. Only this turn's
-        # latest in-memory frame is sent to Ollama.
-        if screen_snapshot is not None:
-            messages[-1]["images"] = [screen_snapshot.image_bytes]
-
-        messages.append({
-            "role": "system",
-            "content": self.build_time_context(),
-        })
-        
-        # A simple relevance check avoids a complete extra LLM generation on
-        # every turn. Only clearly time-sensitive questions perform web search.
-        if not use_screen_vision and self._should_search_web(user_input):
-            search_result = self.search_web(
-                query=user_input,
-                max_results=3,
+        grounded_context = self._grounded_context_text()
+        if grounded_context and route.intent in {
+            "conversation",
+            "clarification",
+            "fact_check",
+        }:
+            messages.insert(
+                -1,
+                {
+                    "role": "system",
+                    "content": grounded_context,
+                },
             )
+
+        if route.intent == "time_question":
+            messages.append({
+                "role": "system",
+                "content": self.build_time_context(),
+            })
+
+        if route.intent in {
+            "knowledge_question",
+            "selected_text_question",
+            "screen_analysis",
+            "project_question",
+            "project_edit",
+            "git_commit",
+            "git_publish",
+            "time_question",
+            "fact_check",
+        }:
             messages.append({
                 "role": "system",
                 "content": (
-                    "Use this current web-search information when answering:\n"
-                    f"{search_result}\n\n"
-                    "Answer directly in no more than two short sentences. "
-                    "Do not provide raw URLs."
+                    "This is a factual or tool-focused turn. Answer the exact "
+                    "request directly. Do not mention the current hour, how "
+                    "early or late it is, or add unrelated conversational "
+                    "filler. Never claim a tool action succeeded unless the "
+                    "tool result says it succeeded. Keep simple answers short, "
+                    "but give enough detail to fully answer how or why "
+                    "questions."
                 ),
             })
 
-        # Git writes use a deterministic snapshot and approval flow rather than
-        # asking the language model to choose commands or files.
-        if not use_screen_vision and self._is_git_action_request(user_input):
-            git_context = self._prepare_git_action()
-            if git_context:
-                messages.append({
-                    "role": "system",
-                    "content": git_context,
-                })
-
-        # Other project questions use the normal read/proposal tool planner.
-        elif not use_screen_vision and self._should_use_project_tools(user_input):
-            project_context = self._research_project(
-                user_input=user_input,
-                messages=messages,
+        if route.intent == "knowledge_question":
+            messages = self._build_factual_messages(
+                route.normalized_request,
+            )
+        elif route.intent == "time_question":
+            messages = self._build_factual_messages(
+                route.normalized_request,
+                self.build_time_context(),
             )
 
-            if project_context:
-                messages.append({
-                    "role": "system",
-                    "content": project_context,
-                })
+        turn_grounding_source = ""
+        turn_grounding_subject = ""
+        
+        if not use_screen_vision and route.intent == "web_search":
+            search_started = time.perf_counter()
+            try:
+                search_result = self.search_web(
+                    query=route.search_query or route.normalized_request,
+                    max_results=3,
+                )
+                self._last_search_query = (
+                    route.search_query or route.normalized_request
+                )
+                if not str(search_result).strip():
+                    raise RuntimeError("The search returned no results.")
+                messages = self._build_factual_messages(
+                    route.normalized_request,
+                    str(search_result),
+                )
+                turn_grounding_source = "Current web search"
+                turn_grounding_subject = (
+                    route.entity
+                    or self._active_entity
+                    or route.topic
+                    or route.normalized_request
+                )
+            except Exception as error:
+                forced_response = (
+                    "I couldn't complete that web search: "
+                    f"{type(error).__name__}: {error}"
+                )
+            finally:
+                timings["web_search"] = (
+                    time.perf_counter() - search_started
+                )
 
-        active_model = self.vision_model if use_screen_vision else self.model
+        if route.intent == "fact_check":
+            if route.search_query:
+                search_started = time.perf_counter()
+                try:
+                    search_result = self.search_web(
+                        query=route.search_query,
+                        max_results=3,
+                    )
+                    self._last_search_query = route.search_query
+                    messages = self._build_factual_messages(
+                        (
+                            f"Reconcile the user's correction with the recent "
+                            f"grounded context: {route.normalized_request}. "
+                            "If Elaina's earlier statement was wrong, say so "
+                            "directly and acknowledge that the user was right."
+                        ),
+                        str(search_result),
+                    )
+                    turn_grounding_source = "Current fact-check web search"
+                    turn_grounding_subject = (
+                        route.entity
+                        or self._grounded_context.get("subject", "")
+                        or route.topic
+                    )
+                except Exception as error:
+                    forced_response = (
+                        "I couldn't verify that correction: "
+                        f"{type(error).__name__}: {error}"
+                    )
+                finally:
+                    timings["web_search"] = (
+                        time.perf_counter() - search_started
+                    )
+            else:
+                messages = self._build_factual_messages(
+                    (
+                        f"Respond to this follow-up using the recent grounded "
+                        f"context: {route.normalized_request}. If the user was "
+                        "right and Elaina's earlier answer was wrong, clearly "
+                        "acknowledge both facts."
+                    ),
+                )
+
+        if route.intent == "entity_correction":
+            corrected_entity = route.entity or route.normalized_request
+            corrected_query = self._corrected_search_query(corrected_entity)
+            search_started = time.perf_counter()
+            try:
+                search_result = self.search_web(
+                    query=corrected_query,
+                    max_results=3,
+                )
+                self._last_search_query = corrected_query
+                messages = self._build_factual_messages(
+                    (
+                        f"Briefly acknowledge that the corrected entity is "
+                        f"{corrected_entity}, then answer the corrected search "
+                        f"request: {corrected_query}"
+                    ),
+                    str(search_result),
+                )
+                turn_grounding_source = "Corrected-entity web search"
+                turn_grounding_subject = corrected_entity
+            except Exception as error:
+                forced_response = (
+                    f"Got it—the name is {corrected_entity}. I couldn't redo "
+                    f"the search: {type(error).__name__}: {error}"
+                )
+            finally:
+                timings["web_search"] = (
+                    time.perf_counter() - search_started
+                )
+
+        if route.intent == "pending_approval":
+            forced_response = (
+                f"The {self._pending_action or 'action'} proposal is still "
+                "waiting in Electron. Review it and use the approval or "
+                "rejection button there."
+            )
+
+        # Git writes use a deterministic snapshot and approval flow rather than
+        # asking the language model to choose commands or files.
+        if not use_screen_vision and route.intent in {
+            "git_commit",
+            "git_publish",
+        }:
+            if self._pending_action:
+                forced_response = (
+                    f"A {self._pending_action} proposal is already waiting in "
+                    "Electron. Review it before creating another action."
+                )
+            else:
+                project_started = time.perf_counter()
+                git_context = self._prepare_git_action()
+                timings["project_tools"] = (
+                    time.perf_counter() - project_started
+                )
+                if self._pending_action == "Git":
+                    forced_response = (
+                        "The Git proposal is ready in Electron. Nothing has "
+                        "been committed or pushed; review it and choose Commit "
+                        "& Push, Commit Only, or Reject."
+                    )
+                else:
+                    forced_response = (
+                        "I couldn't prepare a valid Git proposal. Nothing was "
+                        "staged, committed, or pushed; check the console error."
+                    )
+
+        # Other project questions use the normal read/proposal tool planner.
+        elif not use_screen_vision and route.intent in {
+            "project_question",
+            "project_edit",
+        }:
+            if project_edit_requested and self._pending_action:
+                forced_response = (
+                    f"A {self._pending_action} proposal is already waiting in "
+                    "Electron. Review it before creating another change."
+                )
+            else:
+                project_started = time.perf_counter()
+                project_context = self._research_project(
+                    user_input=route.normalized_request,
+                    messages=messages,
+                    edit_requested=project_edit_requested,
+                )
+                timings["project_tools"] = (
+                    time.perf_counter() - project_started
+                )
+
+                if project_edit_requested and self._pending_action == "project":
+                    forced_response = (
+                        "The project change proposal is ready in Electron. No "
+                        "files have changed; review the editable code and click "
+                        "Approve or Reject."
+                    )
+                elif project_edit_requested:
+                    forced_response = (
+                        "I couldn't create a valid project-change proposal. "
+                        "No files were changed; check the project-tool log."
+                    )
+                elif project_context:
+                    messages.append({
+                        "role": "system",
+                        "content": project_context,
+                    })
+
+        if use_screen_vision and screen_snapshot is not None:
+            visual_started = time.perf_counter()
+            (
+                verification_context,
+                blocked_identification_reply,
+            ) = self._prepare_visual_verification(
+                user_input=user_input,
+                screen_snapshot=screen_snapshot,
+            )
+            timings["visual_pipeline"] = (
+                time.perf_counter() - visual_started
+            )
+        else:
+            verification_context = ""
+            blocked_identification_reply = ""
+
+        verified_identification = bool(verification_context)
+
+        if use_screen_vision and screen_snapshot is not None:
+            # Keep vision requests isolated from memories and old conversation
+            # history. This makes OCR faster and prevents Qwen3-VL from
+            # returning an empty final answer after processing a large prompt.
+            # The image is attached directly to the user message exactly as
+            # Ollama's vision API expects.
+            if verified_identification:
+                # Google has already searched the image itself. Use the faster,
+                # more reliable text model to synthesize that retrieved
+                # evidence instead of sending a large prompt back through VL.
+                messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "IDENTIFICATION MODE\n"
+                            "Answer the current identification question using "
+                            "the verified reverse-image evidence below. Prefer "
+                            "matching-page titles, full/partial matches, and "
+                            "high-scoring web entities. Speak like a person, "
+                            "normally in one or two natural sentences. State "
+                            "the identity directly, then give only the most "
+                            "useful supporting detail. If uncertain, express "
+                            "that uncertainty naturally in the sentence. Never "
+                            "use Markdown, headings, bullets, stars, bold text, "
+                            "or separate Answer and Confidence labels.\n\n"
+                            f"{verification_context}"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": user_input,
+                    },
+                ]
+            else:
+                messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "VISION MODE\n"
+                            "Answer only the user's current question using the "
+                            "attached selected screen region. Read visible text "
+                            "carefully. If translation is requested, transcribe "
+                            "the source text and translate it directly. Do not "
+                            "discuss unrelated conversation history. If text is "
+                            "genuinely unreadable, say so instead of guessing. "
+                            "For translation, output only a concise translation "
+                            "and necessary source-text clarification. Do not add "
+                            "reactions, jokes, opinions, hype, or follow-up "
+                            "questions. Write one or two natural spoken "
+                            "sentences. Never use Markdown, headings, bullets, "
+                            "stars, bold text, tables, or report-style labels."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"{user_input}\n\n"
+                            f"{screen_context}"
+                        ),
+                        "images": [screen_snapshot.image_bytes],
+                    },
+                ]
+
+        uses_vision_model = (
+            use_screen_vision
+            and not verified_identification
+        )
+        active_model = self.vision_model if uses_vision_model else self.model
         active_keep_alive = (
-            self.vision_keep_alive if use_screen_vision else self.keep_alive
+            self.vision_keep_alive if uses_vision_model else self.keep_alive
+        )
+        active_temperature = (
+            self.temperature
+            if route.intent == "conversation"
+            else 0.1
         )
 
         # Notify the UI before waiting for Ollama's first token.
@@ -310,6 +869,9 @@ class ChatEngine:
         speech_buffer = ""
         tts_buffer = ""
         tts_sentence_count = 0
+        effective_forced_response = (
+            forced_response or blocked_identification_reply
+        )
 
         def stream_answer(*, allow_thinking: bool) -> None:
             """Stream one Ollama response into this turn's output buffers."""
@@ -320,13 +882,16 @@ class ChatEngine:
                 messages=messages,
                 stream=True,
                 options={
-                    "temperature": self.temperature,
+                    "temperature": active_temperature,
                 },
                 keep_alive=active_keep_alive,
                 think=allow_thinking,
             )
 
             for chunk in response_stream:
+                if turn_cancel.is_set():
+                    break
+
                 message = chunk.get("message")
                 if not message:
                     continue
@@ -373,28 +938,93 @@ class ChatEngine:
                         tts_buffer = ""
                         tts_sentence_count = 0
 
+        generation_started = time.perf_counter()
         try:
-            # Fast path: ask Ollama to suppress the model's reasoning tokens.
-            stream_answer(allow_thinking=False)
-
-            # Some Ollama/Qwen3-VL combinations return an empty content stream
-            # when thinking is disabled. Retry only that failed vision request
-            # with thinking enabled; reasoning stays hidden because we read only
-            # the final `content` field.
-            if use_screen_vision and not reply.strip():
+            if effective_forced_response:
+                # Verification failures are enforced here instead of asking
+                # the vision model to voluntarily avoid a confident guess.
                 print(
-                    "\n[Vision] The first response was empty; retrying in "
-                    "compatibility mode..."
+                    effective_forced_response,
+                    end="",
+                    flush=True,
+                )
+                reply = effective_forced_response
+                speech_buffer = effective_forced_response
+                self.events.emit(
+                    "assistant_stream",
+                    text=effective_forced_response,
+                )
+            else:
+                # Fast path: suppress the model's reasoning tokens.
+                stream_answer(allow_thinking=False)
+
+            # Some Ollama/Qwen3-VL combinations return an empty streamed
+            # content field. Retry once with Ollama's documented non-streaming
+            # vision request instead of running a long reasoning stream.
+            if (
+                uses_vision_model
+                and not effective_forced_response
+                and not reply.strip()
+            ):
+                print(
+                    "\n[Vision] The streamed response was empty; retrying "
+                    "with the direct vision request..."
                 )
                 print("Elaina: ", end="", flush=True)
-                stream_answer(allow_thinking=True)
+                direct_response = self.client.chat(
+                    model=active_model,
+                    messages=messages,
+                    stream=False,
+                    options={
+                        "temperature": active_temperature,
+                    },
+                    keep_alive=active_keep_alive,
+                    think=False,
+                )
+                direct_message = self._value(
+                    direct_response,
+                    "message",
+                    {},
+                )
+                direct_content = TextFilter.clean(
+                    self._value(
+                        direct_message,
+                        "content",
+                        "",
+                    )
+                )
+
+                if direct_content:
+                    print(
+                        direct_content,
+                        end="",
+                        flush=True,
+                    )
+                    reply = direct_content
+                    speech_buffer = direct_content
+                    self.events.emit(
+                        "assistant_stream",
+                        text=direct_content,
+                    )
 
         except Exception as error:
             print(f"\n[Vision/LLM Error] {type(error).__name__}: {error}")
+        timings["generation"] = time.perf_counter() - generation_started
+
+        if turn_cancel.is_set():
+            print("\n[ChatEngine] Response interrupted.")
+            self.events.emit(
+                "assistant_interrupted",
+                text=reply,
+            )
+            with self._turn_lock:
+                if self._active_turn_cancel is turn_cancel:
+                    self._active_turn_cancel = None
+            return reply
 
         # Never silently return to microphone listening after a failed request.
         if not reply.strip():
-            if use_screen_vision:
+            if uses_vision_model:
                 reply = (
                     "I couldn't analyze the screen. Please check that the "
                     f"Ollama model '{self.vision_model}' is installed and "
@@ -435,6 +1065,24 @@ class ChatEngine:
                 final_tts_text
             )
 
+        if verified_identification:
+            self._remember_grounded_fact(
+                subject=(
+                    self._turn_visual_subject
+                    or route.entity
+                    or route.topic
+                    or "Selected image"
+                ),
+                statement=reply,
+                source="Google visual matching and current web verification",
+            )
+        elif turn_grounding_source:
+            self._remember_grounded_fact(
+                subject=turn_grounding_subject,
+                statement=reply,
+                source=turn_grounding_source,
+            )
+
         self.conversation.add(
             "user",
             user_input,
@@ -444,6 +1092,16 @@ class ChatEngine:
             "assistant",
             reply
         )
+        self._router_history.extend([
+            {
+                "role": "user",
+                "content": user_input,
+            },
+            {
+                "role": "assistant",
+                "content": reply,
+            },
+        ])
 
         emotion_state = self.emotion.analyze(
             user_input=user_input,
@@ -456,39 +1114,31 @@ class ChatEngine:
             intensity=emotion_state.intensity,
         )
 
-        ####################################################
-        # Store Memory
-        ####################################################
+        if (
+            route.intent == "conversation"
+            and self._should_consider_memory(user_input)
+        ):
+            threading.Thread(
+                target=self._store_memory_candidate,
+                args=(user_input,),
+                name="elaina-memory-store",
+                daemon=True,
+            ).start()
+            timings["memory_queue"] = 0.0
 
-        memory = self.extractor.extract(user_input)
-
-        if memory["save"]:
-
-            similar = self.memory_manager.search_memory_objects(
-                memory["content"]
+        timings["total"] = time.perf_counter() - turn_started
+        if self._print_timings:
+            print(
+                "[Timing] "
+                + " ".join(
+                    f"{name}={duration:.2f}s"
+                    for name, duration in timings.items()
+                )
             )
 
-            result = self.consolidator.consolidate(
-                similar,
-                memory["content"]
-            )
-
-            action = result["action"]
-
-            if action == "ADD":
-
-                self.memory_manager.store_memory(
-                    content=memory["content"],
-                    category=memory["category"],
-                    importance=5
-                )
-
-            elif action == "UPDATE":
-
-                self.memory_manager.update_memory(
-                    result["memory_id"],
-                    result["content"]
-                )
+        with self._turn_lock:
+            if self._active_turn_cancel is turn_cancel:
+                self._active_turn_cancel = None
 
         return reply
 
@@ -507,7 +1157,52 @@ class ChatEngine:
             self._pending_screen_snapshot = snapshot
 
         self.events.emit("screen_region_ready")
+
+        # Begin loading Qwen3-VL while the user is speaking their question.
+        # If the model is already resident, Ollama returns quickly. The cooldown
+        # avoids creating a preload request for every selection in a short
+        # session.
+        if time.monotonic() - self._vision_last_warm > 300:
+            threading.Thread(
+                target=self._prewarm_vision_model,
+                name="elaina-vision-prewarm",
+                daemon=True,
+            ).start()
+
         return True
+
+    def _prewarm_vision_model(self) -> None:
+        """Load the vision model before the next direct screen-analysis turn."""
+        with self._vision_warm_lock:
+            if self._vision_warming:
+                return
+            if time.monotonic() - self._vision_last_warm <= 300:
+                return
+            self._vision_warming = True
+
+        started = time.perf_counter()
+        try:
+            print(f"[Vision] Preloading {self.vision_model}...")
+            self.client.generate(
+                model=self.vision_model,
+                prompt="",
+                stream=False,
+                keep_alive=self.vision_keep_alive,
+            )
+            self._vision_last_warm = time.monotonic()
+            if self._print_timings:
+                print(
+                    "[Timing] vision_preload="
+                    f"{time.perf_counter() - started:.2f}s"
+                )
+        except Exception as error:
+            print(
+                f"[Vision Preload Warning] "
+                f"{type(error).__name__}: {error}"
+            )
+        finally:
+            with self._vision_warm_lock:
+                self._vision_warming = False
 
     def consume_pending_screen_snapshot(self):
         """Return and clear the image waiting for the next user question."""
@@ -531,6 +1226,190 @@ class ChatEngine:
             "mention the screenshot unless it is relevant.\n"
             f"Active window title: {title}"
         )
+
+    def _prepare_visual_verification(
+        self,
+        *,
+        user_input: str,
+        screen_snapshot,
+    ) -> tuple[str, str]:
+        """
+        Verify visual identification requests with current web evidence.
+
+        Translation, OCR, code explanation, and ordinary description skip this
+        path. Identification of games, products, landmarks, vehicles, public
+        media, and other specific entities receives a visual evidence pass,
+        web search, and final image-to-evidence comparison.
+        """
+        task_type = self._classify_visual_task(user_input)
+        print(f"[Vision Router] {task_type}")
+
+        if task_type != "identify":
+            return "", ""
+
+        if not self.config.get(
+            "search",
+            "enabled",
+            default=True,
+            required=False,
+        ):
+            return (
+                "",
+                "Web verification is disabled, so I can't confirm the exact "
+                "identity without guessing.",
+            )
+
+        try:
+            print(
+                "[Visual Search] Searching the selected image with "
+                "Google Web Detection..."
+            )
+            visual_result = self.visual_search_tool.search_image(
+                screen_snapshot.image_bytes,
+            )
+            print(
+                "[Visual Search] Received "
+                f"{len(visual_result.matching_pages)} matching pages and "
+                f"{len(visual_result.web_entities)} web entities."
+            )
+            if visual_result.matching_pages:
+                best_page = visual_result.matching_pages[0]
+                self.events.emit(
+                    "visual_match_found",
+                    title=best_page.get("title", ""),
+                    url=best_page.get("url", ""),
+                    score=best_page.get("score", 0),
+                )
+        except Exception as error:
+            print(
+                f"[Visual Search] Image search failed: "
+                f"{type(error).__name__}: {error}"
+            )
+            return (
+                "",
+                "I couldn't search the image on the web, so I can't verify its "
+                "exact identity without guessing. Check the Google Cloud "
+                "Vision setup and try again.",
+            )
+
+        if not visual_result.has_useful_evidence:
+            return (
+                "",
+                "I couldn't find a reliable matching image or web entity for "
+                "this selection, so I don't want to guess its exact identity.",
+            )
+
+        visual_subject_candidates = [
+            *visual_result.best_guess_labels,
+            *[
+                str(item.get("description", ""))
+                for item in visual_result.web_entities[:3]
+            ],
+        ]
+        self._turn_visual_subject = next(
+            (
+                candidate.strip()
+                for candidate in visual_subject_candidates
+                if candidate and candidate.strip()
+            ),
+            "",
+        )
+
+        search_terms = [
+            *visual_result.best_guess_labels,
+            *[
+                str(item.get("description", ""))
+                for item in visual_result.web_entities[:5]
+            ],
+        ]
+        search_query = " ".join(
+            term.strip()
+            for term in search_terms
+            if term and term.strip()
+        )[:250]
+
+        text_search_result = ""
+        if search_query:
+            try:
+                text_search_result = self.search_web(
+                    query=search_query,
+                    max_results=5,
+                )
+            except Exception as error:
+                print(
+                    f"[Visual Search] Text confirmation failed: "
+                    f"{type(error).__name__}: {error}"
+                )
+                text_search_result = (
+                    "Additional text-search confirmation was unavailable."
+                )
+
+        return (
+            (
+                "VISUAL IDENTIFICATION VERIFICATION\n"
+                "Google Web Detection searched using the attached image bytes. "
+                "Its matching-image evidence is:\n"
+                f"{visual_result.to_prompt_text()}\n\n"
+                "Additional text-search confirmation:\n"
+                f"{text_search_result}\n\n"
+                "Use the attached image and this retrieval evidence together. "
+                "Prefer full or partial image matches and matching-page titles "
+                "over generic web-entity labels. Give an exact identity only "
+                "when the evidence agrees. Otherwise state uncertainty. Include "
+                "a short confidence label: high, moderate, or low. Briefly "
+                "explain which retrieved evidence supports the answer. Do not "
+                "output URLs."
+            ),
+            "",
+        )
+
+    def _classify_visual_task(self, user_input: str) -> str:
+        """Semantically distinguish identification from direct visual tasks."""
+        prompt = (
+            "Classify the user's screen-image question as exactly one of:\n"
+            "- identify: asks for the exact identity, name, model, brand, "
+            "location, title, species, game, product, building, vehicle, logo, "
+            "public media, or other specific entity.\n"
+            "- direct: asks to translate, read text, explain code, summarize, "
+            "describe visible actions, troubleshoot an error, or answer without "
+            "needing the exact identity of an entity.\n\n"
+            "Infer meaning semantically rather than matching trigger words. "
+            'Return JSON only: {"task":"identify"} or {"task":"direct"}.\n\n'
+            f"Question: {user_input}"
+        )
+
+        try:
+            response = self.client.chat(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": prompt,
+                    },
+                ],
+                stream=False,
+                format="json",
+                options={
+                    "temperature": 0,
+                    "num_predict": 30,
+                },
+                keep_alive=self.keep_alive,
+                think=False,
+            )
+            message = self._value(response, "message", {})
+            content = self._value(message, "content", "")
+            payload = json.loads(content)
+            task = str(payload.get("task", "")).strip().lower()
+            if task in {"identify", "direct"}:
+                return task
+        except Exception as error:
+            print(
+                f"[Vision Router] Classification failed: "
+                f"{type(error).__name__}: {error}"
+            )
+
+        # Failure must not trigger an unnecessary search or confident guess.
+        return "direct"
 
     def _should_use_screen_vision(self, user_input: str) -> bool:
         """Give explicit references to visible desktop content top priority."""
@@ -773,6 +1652,7 @@ class ChatEngine:
         self,
         user_input: str,
         messages: list[dict],
+        edit_requested: bool | None = None,
     ) -> str:
         """
         Let Qwen gather read-only project evidence before writing its answer.
@@ -784,7 +1664,8 @@ class ChatEngine:
         if self.project_mcp is None:
             return ""
 
-        edit_requested = self._is_project_edit_request(user_input)
+        if edit_requested is None:
+            edit_requested = self._is_project_edit_request(user_input)
         tools = self.project_mcp.ollama_tools()
         if not tools:
             return ""
@@ -1000,6 +1881,7 @@ class ChatEngine:
 
                     if proposal.get("status") == "awaiting_approval":
                         proposal_created = True
+                        self._pending_action = "project"
                         should_finish = True
                         self.events.emit(
                             "project_change_proposed",
@@ -1142,6 +2024,7 @@ class ChatEngine:
 
                     if proposal.get("status") == "awaiting_approval":
                         proposal_created = True
+                        self._pending_action = "project"
                         self.events.emit(
                             "project_change_proposed",
                             proposal_id=proposal.get("proposal_id", ""),
@@ -1249,6 +2132,7 @@ class ChatEngine:
             diff=proposal.get("diff", ""),
             diff_truncated=proposal.get("diff_truncated", False),
         )
+        self._pending_action = "Git"
 
         return (
             "A Git proposal is visible in Electron. No files have been staged, "
@@ -1308,6 +2192,13 @@ class ChatEngine:
             event_name = "git_action_completed"
 
         self.events.emit(event_name, **result)
+        if status in {
+            "rejected",
+            "committed",
+            "pushed",
+            "commit_created_push_failed",
+        }:
+            self._pending_action = ""
         return result
 
     def resolve_project_change(
@@ -1356,6 +2247,8 @@ class ChatEngine:
             else "project_change_rejected"
         )
         self.events.emit(event_name, **result)
+        if result.get("status") in {"applied", "rejected"}:
+            self._pending_action = ""
         return result
 
     def close(self) -> None:
@@ -1384,6 +2277,15 @@ class ChatEngine:
         Returns:
             Current web-search results.
         """
+        normalized_query = " ".join(str(query).lower().split())
+        cached = self._search_cache.get(normalized_query)
+        if cached is not None:
+            cached_at, cached_result = cached
+            if time.monotonic() - cached_at < self._search_cache_seconds:
+                print(f"\n[Tool] Using cached web search for: {query}")
+                return cached_result
+            self._search_cache.pop(normalized_query, None)
+
         print(f"\n[Tool] Searching web for: {query}")
 
         if hasattr(self, "events"):
@@ -1397,6 +2299,16 @@ class ChatEngine:
             query=query,
             max_results=max_results,
         )
+        self._search_cache[normalized_query] = (
+            time.monotonic(),
+            result,
+        )
+        if len(self._search_cache) > self._search_cache_entries:
+            oldest_key = min(
+                self._search_cache,
+                key=lambda key: self._search_cache[key][0],
+            )
+            self._search_cache.pop(oldest_key, None)
 
         if hasattr(self, "events"):
             self.events.emit(

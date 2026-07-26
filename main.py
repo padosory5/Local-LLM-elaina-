@@ -1,9 +1,25 @@
+import threading
+
+from dotenv import load_dotenv
+
+# Load local API keys and credential paths before creating ChatEngine.
+load_dotenv()
+
 from brain.chat_engine import ChatEngine
 from core.websocket_server import WebSocketServer
 from voice.stt import SpeechToText
 
 
 engine = ChatEngine()
+response_thread = None
+
+
+def run_response(user_input, selected_screen):
+    """Generate one response without blocking the microphone listener."""
+    engine.chat(
+        user_input,
+        screen_snapshot=selected_screen,
+    )
 
 
 def handle_desktop_command(message):
@@ -94,6 +110,8 @@ try:
     while True:
         user_input = speech_to_text.listen_and_transcribe(
             on_speech_start=engine.on_speech_start,
+            is_tts_speaking=engine.audio.is_speaking,
+            echo_text_provider=engine.audio.echo_reference_text,
         )
 
         if not user_input:
@@ -110,19 +128,34 @@ try:
         }:
             break
 
-        selected_screen = engine.consume_pending_screen_snapshot()
+        # An interruption sets the old turn's cancellation event. Give that
+        # worker a moment to leave its Ollama stream before starting a new turn
+        # so conversation and tool state are never mutated concurrently.
+        if response_thread is not None and response_thread.is_alive():
+            response_thread.join(timeout=5)
 
-        engine.chat(
-            user_input,
-            screen_snapshot=selected_screen,
+        if response_thread is not None and response_thread.is_alive():
+            print(
+                "[ChatEngine] The previous response is still stopping. "
+                "Please repeat the request."
+            )
+            continue
+
+        selected_screen = engine.consume_pending_screen_snapshot()
+        response_thread = threading.Thread(
+            target=run_response,
+            args=(user_input, selected_screen),
+            name="elaina-response",
+            daemon=True,
         )
-        # Wait before reopening the microphone so Elaina
-        # does not hear and interrupt her own voice.
-        engine.audio.wait_until_idle()
+        response_thread.start()
 
 except KeyboardInterrupt:
     print("\nStopping Elaina...")
 
 finally:
+    engine.on_speech_start()
+    if response_thread is not None:
+        response_thread.join(timeout=5)
     engine.close()
     print("Goodbye!")

@@ -6,6 +6,7 @@ import threading
 from voice.manager import VoiceManager
 from core.event_bus import EventBus
 from config.loader import Config
+from brain.text_filter import TextFilter
 
 class AudioManager:
 
@@ -27,6 +28,8 @@ class AudioManager:
         self._lock = threading.Lock()
         self._generation = 0
         self._speaking = False
+        self._current_text = ""
+        self._recent_text = ""
 
         self._worker_thread = threading.Thread(
             target=self._worker_loop,
@@ -35,7 +38,7 @@ class AudioManager:
         self._worker_thread.start()
 
     def speak(self, text: str) -> None:
-        text = text.strip()
+        text = TextFilter.for_speech(text)
 
         if not text:
             return
@@ -59,6 +62,8 @@ class AudioManager:
 
                 with self._lock:
                     self._speaking = True
+                    self._current_text = text
+                    self._recent_text = text
 
                 if self.events is not None:
                     self.events.emit(
@@ -80,6 +85,7 @@ class AudioManager:
             finally:
                 with self._lock:
                     self._speaking = False
+                    self._current_text = ""
 
                 self._queue.task_done()
 
@@ -107,7 +113,11 @@ class AudioManager:
         with self._lock:
             return self._speaking or not self._queue.empty()
 
-
     def wait_until_idle(self) -> None:
         """Wait until every queued sentence has finished playing."""
         self._queue.join()
+
+    def echo_reference_text(self) -> str:
+        """Return recent TTS text so STT can reject speaker-loopback echoes."""
+        with self._lock:
+            return self._current_text or self._recent_text

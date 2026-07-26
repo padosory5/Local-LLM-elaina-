@@ -85,6 +85,7 @@ print("[CUDA] cuBLAS and cuDNN loaded successfully.")
 import tempfile
 import threading
 import wave
+from difflib import SequenceMatcher
 
 import numpy as np
 import sounddevice as sd
@@ -258,9 +259,12 @@ class SpeechToText:
     def listen_and_transcribe(
         self,
         on_speech_start: Callable[[], None] | None = None,
+        is_tts_speaking: Callable[[], bool] | None = None,
+        echo_text_provider: Callable[[], str] | None = None,
     ) -> str:
         audio = self.vad.record(
             on_speech_start=on_speech_start,
+            is_barge_in=is_tts_speaking,
         )
 
         if audio is None or audio.size == 0:
@@ -279,10 +283,46 @@ class SpeechToText:
                 wav_file.setframerate(self.sample_rate)
                 wav_file.writeframes(audio.tobytes())
 
-            return self.transcribe(wav_path)
+            transcript = self.transcribe(wav_path)
+
+            if (
+                transcript
+                and echo_text_provider is not None
+                and self._looks_like_tts_echo(
+                    transcript,
+                    echo_text_provider(),
+                )
+            ):
+                print("[STT] Ignored probable speaker echo.")
+                return ""
+
+            return transcript
 
         finally:
             try:
                 os.remove(wav_path)
             except OSError:
                 pass
+
+    @staticmethod
+    def _looks_like_tts_echo(transcript: str, spoken_text: str) -> bool:
+        """Reject audio that is almost certainly Elaina hearing herself."""
+        normalize = lambda value: "".join(
+            character.lower()
+            for character in value
+            if character.isalnum() or character.isspace()
+        ).split()
+        heard = " ".join(normalize(transcript))
+        spoken = " ".join(normalize(spoken_text))
+
+        if len(heard) < 8 or not spoken:
+            return False
+        if heard in spoken:
+            return True
+
+        similarity = SequenceMatcher(
+            None,
+            heard,
+            spoken,
+        ).ratio()
+        return similarity >= 0.78

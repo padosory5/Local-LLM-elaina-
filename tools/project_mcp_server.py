@@ -288,17 +288,7 @@ def _git_path_allowed(relative_path: str) -> bool:
 
 
 def _git_status_entries() -> list[dict]:
-    pathspecs = ["."]
-
-    for directory in sorted(IGNORED_DIRECTORIES):
-        pathspecs.append(
-            f":(exclude,glob)**/{directory}/**"
-        )
-
-    for pattern in sorted(GIT_IGNORED_FILE_GLOBS):
-        pathspecs.append(
-            f":(exclude,glob)**/{pattern}"
-        )
+    pathspecs = _git_safe_pathspecs()
 
     result = _run_git([
         "status",
@@ -344,6 +334,31 @@ def _git_status_entries() -> list[dict]:
         unique.append(entry)
 
     return unique
+
+
+def _git_safe_pathspecs() -> list[str]:
+    """Select the project while excluding generated and sensitive locations."""
+    pathspecs = ["."]
+
+    for directory in sorted(IGNORED_DIRECTORIES):
+        pathspecs.append(
+            f":(exclude,glob)**/{directory}/**"
+        )
+
+    for pattern in sorted(GIT_IGNORED_FILE_GLOBS):
+        pathspecs.append(
+            f":(exclude,glob)**/{pattern}"
+        )
+
+    for filename in sorted(BLOCKED_FILENAMES):
+        pathspecs.append(
+            f":(exclude,glob)**/{filename}"
+        )
+
+    pathspecs.append(":(exclude,glob)**/.env.*")
+    pathspecs.append(":(exclude,glob)**/*.key")
+    pathspecs.append(":(exclude,glob)**/*.pem")
+    return pathspecs
 
 
 def _reviewable_git_entries() -> tuple[list[dict], list[str]]:
@@ -1053,22 +1068,10 @@ def prepare_git_proposal(
     """
     Prepare a reviewable commit-and-push proposal without changing Git state.
 
-    The result contains the exact safe files, branch, remote, diff preview, and
-    editable commit message. Electron approval is required before staging.
+    Fast mode reviews the commands, branch, remote, and editable commit message.
+    It intentionally avoids a full working-tree scan before approval.
     """
     _clean_expired_proposals()
-    entries, blocked = _reviewable_git_entries()
-
-    if blocked:
-        raise ValueError(
-            "Git proposal blocked because these changed files are unsupported "
-            "or sensitive: "
-            + ", ".join(blocked[:20])
-        )
-
-    if not entries:
-        raise ValueError("There are no project changes to commit.")
-
     branch_result = _run_git(["branch", "--show-current"])
     branch = branch_result.stdout.strip()
     if branch_result.returncode != 0 or not branch:
@@ -1100,54 +1103,12 @@ def prepare_git_proposal(
         else ("origin" if "origin" in remotes else "")
     )
 
-    paths = [entry["path"] for entry in entries]
-    stat_result = _run_git(["diff", "HEAD", "--stat", "--", *paths])
-    if stat_result.returncode != 0:
-        stat_result = _run_git(["diff", "--stat", "--", *paths])
-
-    diff_result = _run_git([
-        "diff",
-        "HEAD",
-        "--no-ext-diff",
-        "--",
-        *paths,
-    ])
-    if diff_result.returncode != 0:
-        diff_result = _run_git([
-            "diff",
-            "--no-ext-diff",
-            "--",
-            *paths,
-        ])
-
-    diff_text = diff_result.stdout
-    for entry in entries:
-        if entry["status"] != "??":
-            continue
-
-        target = safe_path(entry["path"])
-        if not target.is_file():
-            continue
-
-        content = target.read_text(
-            encoding="utf-8",
-            errors="replace",
-        )
-        diff_text += "\n" + _proposal_preview(
-            entry["path"],
-            "",
-            content,
-            True,
-        )
-
-    message = str(commit_message).strip() or _default_commit_message(entries)
+    message = str(commit_message).strip() or "Update Elaina project files"
     message = " ".join(message.splitlines()).strip()[:200]
 
     proposal_id = uuid.uuid4().hex
     now = time.monotonic()
     PENDING_GIT_PROPOSALS[proposal_id] = {
-        "entries": entries,
-        "snapshot": _git_snapshot(entries),
         "branch": branch,
         "remote": remote,
         "upstream": upstream,
@@ -1163,10 +1124,17 @@ def prepare_git_proposal(
         "upstream": upstream,
         "push_available": bool(remote or upstream),
         "commit_message": message,
-        "files": entries,
-        "diff_stat": stat_result.stdout.strip(),
-        "diff": diff_text[:MAX_DIFF_CHARACTERS],
-        "diff_truncated": len(diff_text) > MAX_DIFF_CHARACTERS,
+        "files": [{
+            "status": "--",
+            "path": "All non-protected project changes",
+        }],
+        "diff_stat": "Fast command mode",
+        "diff": (
+            "git add -A -- .  (protected paths excluded)\n"
+            f'git commit -m "{message}"\n'
+            "git push"
+        ),
+        "diff_truncated": False,
         "expires_in_seconds": GIT_PROPOSAL_TTL_SECONDS,
     }, ensure_ascii=False)
 
@@ -1200,23 +1168,12 @@ def execute_git_proposal(
             "The active branch changed after review. Nothing was staged."
         )
 
-    current_entries, current_blocked = _reviewable_git_entries()
-    if current_blocked:
-        raise ValueError(
-            "A protected or unsupported file changed after review. Nothing "
-            "was staged."
-        )
-    if (
-        current_entries != proposal["entries"]
-        or _git_snapshot(current_entries) != proposal["snapshot"]
-    ):
-        raise ValueError(
-            "Project files changed after review. Nothing was staged; create a "
-            "new Git proposal."
-        )
-
-    paths = [entry["path"] for entry in proposal["entries"]]
-    add_result = _run_git(["add", "--", *paths])
+    add_result = _run_git([
+        "add",
+        "-A",
+        "--",
+        *_git_safe_pathspecs(),
+    ], timeout=60)
     if add_result.returncode != 0:
         raise RuntimeError(
             add_result.stderr.strip() or "Git staging failed."
@@ -1228,15 +1185,27 @@ def execute_git_proposal(
         for line in staged_result.stdout.splitlines()
         if line.strip()
     }
-    unexpected = staged_paths.difference(paths)
-    if unexpected:
+
+    protected_staged = {
+        path
+        for path in staged_paths
+        if (
+            any(
+                part in IGNORED_DIRECTORIES
+                for part in Path(path).parts
+            )
+            or not _git_path_allowed(path)
+        )
+    }
+    if protected_staged:
         raise RuntimeError(
-            "Unexpected files were already staged: "
-            + ", ".join(sorted(unexpected))
+            "Protected files were already staged and the commit was stopped: "
+            + ", ".join(sorted(protected_staged))
         )
     if not staged_paths:
         raise RuntimeError("There are no staged changes to commit.")
 
+    paths = sorted(staged_paths)
     commit_result = _run_git(["commit", "-m", message], timeout=60)
     if commit_result.returncode != 0:
         raise RuntimeError(

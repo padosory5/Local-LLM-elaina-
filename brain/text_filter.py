@@ -22,4 +22,56 @@ class TextFilter:
 
     @classmethod
     def clean(cls, text: str) -> str:
-        return cls.EMOJI_PATTERN.sub("", text)
+        text = cls.EMOJI_PATTERN.sub("", text)
+
+        # Elaina is presented as a speaking companion. Stray Markdown emphasis
+        # characters look unnatural in chat and may be pronounced by TTS.
+        return text.replace("*", "")
+
+    @classmethod
+    def for_speech(cls, text: str) -> str:
+        """Convert display-oriented text into natural TTS input."""
+        text = cls.clean(text)
+
+        # Keep link labels but never read their raw destinations aloud.
+        text = re.sub(
+            r"\[([^\]]+)\]\((?:[^)]+)\)",
+            r"\1",
+            text,
+        )
+        text = re.sub(r"https?://\S+", "", text)
+
+        # Suppress report-style labels that occasionally leak from factual
+        # models. Confidence should be expressed naturally, not announced as a
+        # form field by a speaking companion.
+        text = re.sub(
+            r"(?i)\banswer\s*:\s*",
+            "",
+            text,
+        )
+        text = re.sub(
+            r"(?i)\bconfidence\s*:\s*"
+            r"(?:high|moderate|medium|low)\b[\s,.;:—-]*",
+            "",
+            text,
+        )
+
+        # Remove common Markdown structure and code-formatting marks.
+        text = re.sub(r"```(?:\w+)?", "", text)
+        text = text.replace("`", "")
+        text = re.sub(
+            r"(?m)^\s{0,3}(?:#{1,6}|>|[-+])\s*",
+            "",
+            text,
+        )
+        text = re.sub(r"(?m)^\s*\d+[.)]\s+", "", text)
+
+        # Underscores are useful on screen for identifiers, but a speech
+        # engine should pause between their words instead of saying "underscore."
+        text = text.replace("_", " ")
+        text = text.replace("&", " and ")
+
+        # Collapse formatting whitespace while preserving sentence boundaries.
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\s*\n+\s*", " ", text)
+        return text.strip()

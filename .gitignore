@@ -33,3 +33,10 @@ desktop/out/
 
 # Logs
 *.log
+
+# Data and Debugs
+data/visual_search_usage.json
+debug/screen_captures/
+
+# testing
+REINFORCEMENT_TEST_CASES.md
