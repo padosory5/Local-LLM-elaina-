@@ -132,6 +132,17 @@ language:
 
 
 ############################################################
+# Semantic Routing Safety
+############################################################
+
+routing:
+  # enforce: block vague conversation from project-edit tools
+  # shadow: log what would be blocked without changing the route
+  # off: legacy routing behavior (temporary rollback only)
+  project_edit_safety: "enforce"
+
+
+############################################################
 # Text-to-Speech
 ############################################################
 
@@ -227,7 +238,7 @@ stt:
     # Examples:
     #   "en"
     #   "ko"
-    language: "en"
+    language: null
 
     device: "cuda"
     compute_type: "float16"
@@ -235,6 +246,9 @@ stt:
     # If GPU transcription fails, Elaina currently falls
     # back to CPU automatically.
     cpu_compute_type: "int8"
+
+    # Helps Whisper preserve names that occur frequently in this project.
+    initial_prompt: "Elaina, Qwen, Ollama, Live2D, Marathon, MCP, GitHub"
 
 
 ############################################################
@@ -246,9 +260,9 @@ vad:
 
   silero:
     sample_rate: 16000
-    threshold: 0.5
-    silence_ms: 1100
-    minimum_speech_ms: 250
+    threshold: 0.35
+    silence_ms: 900
+    minimum_speech_ms: 180
     pre_speech_ms: 300
     start_timeout_seconds: 15
     maximum_recording_seconds: 30
@@ -341,11 +355,25 @@ visual_search:
     # Cloud Vision feature units per month, so 900 leaves a buffer. This counter
     # covers Elaina only; also configure a Cloud billing budget/alert.
     monthly_request_limit: 900
-    usage_file: "data/visual_search_usage.json"
+    usage_file: "runtime/data/visual_search_usage.json"
 
     # Reusing the exact same selected image does not consume another request
     # while Elaina remains open.
     cache_seconds: 86400
+
+
+############################################################
+# Google Calendar Agent
+############################################################
+
+calendar:
+  google:
+    # Prefer setting this in .env:
+    # GOOGLE_CALENDAR_CREDENTIALS=C:/path/to/oauth-client.json
+    #
+    # This must be an OAuth client created for a Desktop application.
+    # The authorized user token is stored privately under runtime/secrets.
+    credentials_file: ""
 
 
 ############################################################
@@ -356,7 +384,8 @@ project_access:
   # When enabled, Elaina can inspect this one project only.
   # Use forward slashes in Windows paths so YAML stays easy to read.
   enabled: true
-  project_root: "C:/Users/pados/localProj/elainaAI"
+  # "." means this Elaina project. You may replace it with another folder.
+  project_root: "."
 
   # Prevent the local model from repeatedly calling project tools.
   # Normal conversations do not use these rounds at all.

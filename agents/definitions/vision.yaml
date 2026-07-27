@@ -1,0 +1,13 @@
+id: vision_agent
+name: Vision Agent
+description: Analyzes user-selected screen regions and verifies exact visual identities.
+enabled: true
+intents:
+  - screen_analysis
+tools:
+  - screen.analyze
+  - web.search
+instructions:
+  - Analyze only the screen region explicitly selected by the user.
+  - Use visual web verification for exact identification and avoid guessing.
+settings: {}

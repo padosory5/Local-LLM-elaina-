@@ -1,136 +1,182 @@
+from __future__ import annotations
+
 import ctypes
 import os
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 import sysconfig
+import tempfile
+import wave
+from collections.abc import Callable
+from difflib import SequenceMatcher
+from pathlib import Path
 
-# Correct site-packages location inside the virtual environment
-site_packages = sysconfig.get_path("purelib")
+from faster_whisper import WhisperModel
 
-cublas_dir = os.path.join(
-    site_packages,
-    "nvidia",
-    "cublas",
-    "bin",
-)
+from config.loader import Config
+from voice.vad import VoiceActivityDetector
 
-cudnn_dir = os.path.join(
-    site_packages,
-    "nvidia",
-    "cudnn",
-    "bin",
-)
 
-cuda_runtime_dir = os.path.join(
-    site_packages,
-    "nvidia",
-    "cuda_runtime",
-    "bin",
-)
+_DLL_DIRECTORY_HANDLES = []
 
-cuda_directories = [
-    cublas_dir,
-    cudnn_dir,
-    cuda_runtime_dir,
-]
 
-DLL_DIRECTORY_HANDLES = []
+def _configure_cuda_runtime() -> None:
+    """Expose pip-installed CUDA DLLs on Windows without blocking CPU fallback."""
+    if os.name != "nt":
+        return
 
-for directory in cuda_directories:
-    if os.path.isdir(directory):
+    site_packages = Path(sysconfig.get_path("purelib"))
+    candidate_directories = (
+        site_packages / "nvidia" / "cublas" / "bin",
+        site_packages / "nvidia" / "cudnn" / "bin",
+        site_packages / "nvidia" / "cuda_runtime" / "bin",
+    )
+
+    for directory in candidate_directories:
+        if not directory.is_dir():
+            continue
+
         os.environ["PATH"] = (
-            directory
+            str(directory)
             + os.pathsep
             + os.environ.get("PATH", "")
         )
-
         if hasattr(os, "add_dll_directory"):
-            DLL_DIRECTORY_HANDLES.append(
-                os.add_dll_directory(directory)
+            _DLL_DIRECTORY_HANDLES.append(
+                os.add_dll_directory(str(directory))
             )
 
-        print(f"[CUDA] Added: {directory}")
-
-cublas_lt_path = os.path.join(
-    cublas_dir,
-    "cublasLt64_12.dll",
-)
-
-cublas_path = os.path.join(
-    cublas_dir,
-    "cublas64_12.dll",
-)
-
-cudnn_path = os.path.join(
-    cudnn_dir,
-    "cudnn64_9.dll",
-)
-
-for dll_path in [
-    cublas_lt_path,
-    cublas_path,
-    cudnn_path,
-]:
-    if not os.path.isfile(dll_path):
-        raise FileNotFoundError(
-            f"Required CUDA DLL not found: {dll_path}"
-        )
-
-ctypes.WinDLL(cublas_lt_path)
-ctypes.WinDLL(cublas_path)
-ctypes.WinDLL(cudnn_path)
-
-print("[CUDA] cuBLAS and cuDNN loaded successfully.")
-
-import tempfile
-import threading
-import wave
-from difflib import SequenceMatcher
-
-import numpy as np
-import sounddevice as sd
-from faster_whisper import WhisperModel
-from voice.vad import VoiceActivityDetector
-from collections.abc import Callable
+    # Loading these explicitly avoids a Windows search-order problem on some
+    # Faster-Whisper installations. Missing files are allowed: model creation
+    # below will either locate CUDA normally or fall back to CPU.
+    for name in (
+        "cublasLt64_12.dll",
+        "cublas64_12.dll",
+        "cudnn64_9.dll",
+    ):
+        for directory in candidate_directories:
+            dll_path = directory / name
+            if not dll_path.is_file():
+                continue
+            try:
+                ctypes.WinDLL(str(dll_path))
+            except OSError as error:
+                print(f"[CUDA Warning] Could not load {name}: {error}")
+            break
 
 
 class SpeechToText:
+    """One configured Faster-Whisper model plus Silero microphone capture."""
 
     def __init__(
         self,
-        model_size: str = "small",
-        sample_rate: int = 16000,
-        language: str | None = None,
-        device_index: int | None = None,
-    ):
-        self.model_size = model_size
-        self.sample_rate = sample_rate
-        self.language = language
-        self.device_index = device_index
+        config: Config,
+    ) -> None:
+        self.config = config
+        self.model_size = str(config.get(
+            "stt",
+            "faster_whisper",
+            "model_size",
+        ))
+        self.language = config.get(
+            "stt",
+            "faster_whisper",
+            "language",
+            default=None,
+            required=False,
+        )
+        self.preferred_device = str(config.get(
+            "stt",
+            "faster_whisper",
+            "device",
+            default="cuda",
+            required=False,
+        )).lower()
+        self.compute_type = str(config.get(
+            "stt",
+            "faster_whisper",
+            "compute_type",
+            default="float16",
+            required=False,
+        ))
+        self.cpu_compute_type = str(config.get(
+            "stt",
+            "faster_whisper",
+            "cpu_compute_type",
+            default="int8",
+            required=False,
+        ))
+        self.initial_prompt = str(config.get(
+            "stt",
+            "faster_whisper",
+            "initial_prompt",
+            default="",
+            required=False,
+        )).strip()
+
+        self.sample_rate = int(config.get(
+            "vad",
+            "silero",
+            "sample_rate",
+        ))
+        self.device_index = config.get(
+            "vad",
+            "silero",
+            "device_index",
+            default=None,
+            required=False,
+        )
         self.using_gpu = False
 
         self.vad = VoiceActivityDetector(
             sample_rate=self.sample_rate,
             device_index=self.device_index,
-            threshold=0.35,
-            silence_ms=900,
-            minimum_speech_ms=180,
-            start_timeout_seconds=15,
+            threshold=float(config.get(
+                "vad",
+                "silero",
+                "threshold",
+            )),
+            silence_ms=int(config.get(
+                "vad",
+                "silero",
+                "silence_ms",
+            )),
+            minimum_speech_ms=int(config.get(
+                "vad",
+                "silero",
+                "minimum_speech_ms",
+            )),
+            pre_speech_ms=int(config.get(
+                "vad",
+                "silero",
+                "pre_speech_ms",
+            )),
+            start_timeout_seconds=float(config.get(
+                "vad",
+                "silero",
+                "start_timeout_seconds",
+            )),
+            maximum_recording_seconds=float(config.get(
+                "vad",
+                "silero",
+                "maximum_recording_seconds",
+            )),
         )
 
-        self._load_gpu_model()
+        self._load_model()
 
-    def _load_gpu_model(self) -> None:
+    def _load_model(self) -> None:
+        if self.preferred_device == "cpu":
+            self._load_cpu_model()
+            return
+
+        _configure_cuda_runtime()
         try:
             self.model = WhisperModel(
                 self.model_size,
                 device="cuda",
-                compute_type="float16",
+                compute_type=self.compute_type,
             )
-
             self.using_gpu = True
             print("[STT] Faster-Whisper configured for GPU.")
-
         except Exception as error:
             print(f"[STT] GPU initialization failed: {error}")
             self._load_cpu_model()
@@ -139,81 +185,16 @@ class SpeechToText:
         self.model = WhisperModel(
             self.model_size,
             device="cpu",
-            compute_type="int8",
+            compute_type=self.cpu_compute_type,
         )
-
         self.using_gpu = False
         print("[STT] Faster-Whisper loaded on CPU.")
-
-    def record_until_enter(self) -> str:
-        frames: list[np.ndarray] = []
-        stop_event = threading.Event()
-
-        def callback(indata, frame_count, time_info, status):
-            if status:
-                print(f"\n[Microphone Warning] {status}")
-
-            frames.append(indata.copy())
-
-        def wait_for_enter():
-            input()
-            stop_event.set()
-
-        print("\nListening... Press Enter to stop recording.")
-
-        listener = threading.Thread(
-            target=wait_for_enter,
-            daemon=True,
-        )
-        listener.start()
-
-        try:
-            with sd.InputStream(
-                samplerate=self.sample_rate,
-                channels=1,
-                dtype="int16",
-                device=self.device_index,
-                callback=callback,
-            ):
-                stop_event.wait()
-
-        except sd.PortAudioError as error:
-            print(f"[Microphone Error] {error}")
-            return ""
-
-        if not frames:
-            print("[STT] No audio was recorded.")
-            return ""
-
-        audio = np.concatenate(frames, axis=0)
-
-        with tempfile.NamedTemporaryFile(
-            suffix=".wav",
-            delete=False,
-        ) as temporary_file:
-            wav_path = temporary_file.name
-
-        try:
-            with wave.open(wav_path, "wb") as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(self.sample_rate)
-                wav_file.writeframes(audio.tobytes())
-
-            return self.transcribe(wav_path)
-
-        finally:
-            try:
-                os.remove(wav_path)
-            except OSError:
-                pass
 
     def transcribe(self, audio_path: str) -> str:
         print("[STT] Transcribing...")
 
         try:
             return self._run_transcription(audio_path)
-
         except RuntimeError as error:
             if not self.using_gpu:
                 print(f"[STT Error] {error}")
@@ -221,16 +202,12 @@ class SpeechToText:
 
             print(f"[STT] GPU transcription failed: {error}")
             print("[STT] Retrying on CPU...")
-
             self._load_cpu_model()
-
             try:
                 return self._run_transcription(audio_path)
-
             except Exception as cpu_error:
                 print(f"[STT CPU Error] {cpu_error}")
                 return ""
-
         except Exception as error:
             print(f"[STT Error] {error}")
             return ""
@@ -240,7 +217,11 @@ class SpeechToText:
             audio_path,
             language=self.language,
             beam_size=1,
-            vad_filter=True,
+            # Silero already captured a speech-only clip. Running Whisper's VAD
+            # again caused legitimate soft sentences to disappear.
+            vad_filter=False,
+            condition_on_previous_text=False,
+            initial_prompt=self.initial_prompt or None,
         )
 
         text = " ".join(
@@ -253,9 +234,8 @@ class SpeechToText:
             print(f"You said: {text}")
         else:
             print("[STT] No speech detected.")
-
         return text
-    
+
     def listen_and_transcribe(
         self,
         on_speech_start: Callable[[], None] | None = None,
@@ -284,7 +264,6 @@ class SpeechToText:
                 wav_file.writeframes(audio.tobytes())
 
             transcript = self.transcribe(wav_path)
-
             if (
                 transcript
                 and echo_text_provider is not None
@@ -295,9 +274,7 @@ class SpeechToText:
             ):
                 print("[STT] Ignored probable speaker echo.")
                 return ""
-
             return transcript
-
         finally:
             try:
                 os.remove(wav_path)
@@ -307,22 +284,19 @@ class SpeechToText:
     @staticmethod
     def _looks_like_tts_echo(transcript: str, spoken_text: str) -> bool:
         """Reject audio that is almost certainly Elaina hearing herself."""
-        normalize = lambda value: "".join(
-            character.lower()
-            for character in value
-            if character.isalnum() or character.isspace()
-        ).split()
-        heard = " ".join(normalize(transcript))
-        spoken = " ".join(normalize(spoken_text))
 
+        def normalize(value: str) -> str:
+            characters = (
+                character.lower()
+                for character in value
+                if character.isalnum() or character.isspace()
+            )
+            return " ".join("".join(characters).split())
+
+        heard = normalize(transcript)
+        spoken = normalize(spoken_text)
         if len(heard) < 8 or not spoken:
             return False
         if heard in spoken:
             return True
-
-        similarity = SequenceMatcher(
-            None,
-            heard,
-            spoken,
-        ).ratio()
-        return similarity >= 0.78
+        return SequenceMatcher(None, heard, spoken).ratio() >= 0.78

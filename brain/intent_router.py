@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 
@@ -18,6 +18,8 @@ ALLOWED_INTENTS = {
     "knowledge_question",
     "time_question",
     "pending_approval",
+    "agent_create",
+    "calendar_action",
     "entity_correction",
     "fact_check",
     "clarification",
@@ -35,6 +37,10 @@ class IntentDecision:
     entity: str = ""
     aliases: tuple[str, ...] = ()
     is_follow_up: bool = False
+    speech_act: str = ""
+    action_requested: bool = False
+    action_target: str = ""
+    topic_shift: bool = False
 
 
 class SemanticIntentRouter:
@@ -45,10 +51,16 @@ class SemanticIntentRouter:
         client: Any,
         model: str,
         keep_alive: int | str = -1,
+        safety_mode: str = "enforce",
     ) -> None:
         self.client = client
         self.model = model
         self.keep_alive = keep_alive
+        self.safety_mode = (
+            safety_mode
+            if safety_mode in {"enforce", "shadow", "off"}
+            else "enforce"
+        )
 
     def route(
         self,
@@ -177,6 +189,60 @@ class SemanticIntentRouter:
             )
             decision = self._parse_decision(raw_content, routed_input)
             if decision is not None:
+                if (
+                    decision.intent not in {"agent_create", "pending_approval"}
+                    and self._is_direct_agent_creation_request(user_input)
+                ):
+                    decision = replace(
+                        decision,
+                        intent="agent_create",
+                        confidence=max(decision.confidence, 0.98),
+                        normalized_request=user_input.strip(),
+                        reason=(
+                            "Local action policy recognized a direct request "
+                            "to create an agent."
+                        ),
+                        speech_act="action_request",
+                        action_requested=True,
+                        action_target="new agent",
+                    )
+                elif (
+                    decision.intent not in {
+                        "calendar_action",
+                        "agent_create",
+                        "pending_approval",
+                    }
+                    and self._is_direct_calendar_write_request(user_input)
+                ):
+                    decision = replace(
+                        decision,
+                        intent="calendar_action",
+                        confidence=max(decision.confidence, 0.98),
+                        normalized_request=user_input.strip(),
+                        reason=(
+                            "Local action policy recognized a direct calendar "
+                            "write request."
+                        ),
+                        speech_act="action_request",
+                        action_requested=True,
+                        action_target="calendar event",
+                    )
+                safe_decision = self._apply_action_safety_policy(
+                    decision,
+                    original_input=user_input,
+                    conversation_state=state,
+                )
+                if (
+                    self.safety_mode == "shadow"
+                    and safe_decision.intent != decision.intent
+                ):
+                    print(
+                        "[Router Shadow] "
+                        f"{decision.intent} -> {safe_decision.intent}: "
+                        f"{safe_decision.reason}"
+                    )
+                elif self.safety_mode == "enforce":
+                    decision = safe_decision
                 grounded = dict(state.get("grounded_context", {}))
                 if (
                     grounded.get("statement")
@@ -356,6 +422,141 @@ class SemanticIntentRouter:
             flags=re.IGNORECASE,
         ))
 
+    @classmethod
+    def _apply_action_safety_policy(
+        cls,
+        decision: IntentDecision,
+        *,
+        original_input: str,
+        conversation_state: dict[str, Any],
+    ) -> IntentDecision:
+        """
+        Prevent vague conversation from reaching project write tools.
+
+        The semantic model proposes an intent, but a local policy owns the
+        authorization boundary. Only a direct request for a concrete change may
+        remain project_edit. Uncertainty falls back to a read-only or
+        conversational intent.
+        """
+        if decision.intent != "project_edit":
+            return decision
+
+        if cls._is_direct_project_change_request(original_input):
+            return replace(
+                decision,
+                speech_act=decision.speech_act or "action_request",
+                action_requested=True,
+            )
+
+        normalized = " ".join(original_input.lower().split())
+        active_topic = str(
+            conversation_state.get("active_topic", "")
+        ).lower()
+        asks_for_advice = bool(re.search(
+            r"\b(?:what|which)\s+should\s+(?:i|we)\b|"
+            r"\bwhat\s+should\s+(?:be\s+)?(?:add|change|improve)|"
+            r"\b(?:recommend|suggest|any ideas)\b",
+            normalized,
+        ))
+        project_context = bool(re.search(
+            r"\b(project|code|codebase|repository|repo|app|ui|feature)\b",
+            normalized,
+        )) or "project" in active_topic
+
+        safe_intent = (
+            "project_question"
+            if asks_for_advice and project_context
+            else "conversation"
+        )
+        return replace(
+            decision,
+            intent=safe_intent,
+            normalized_request=original_input.strip(),
+            reason=(
+                "Safety policy downgraded project_edit because the user did "
+                "not directly request a concrete file change."
+            ),
+            search_query="",
+            action_requested=False,
+            action_target="",
+        )
+
+    @staticmethod
+    def _is_direct_project_change_request(user_input: str) -> bool:
+        normalized = " ".join(user_input.lower().split())
+
+        advice_or_status = bool(re.search(
+            r"\b(?:what|which)\s+should\s+(?:i|we)\b|"
+            r"\bwhat\s+should\s+(?:be\s+)?(?:add|change|improve)|"
+            r"\b(?:i am|i'm|im|i was|i'll|i will|i'm gonna|"
+            r"i am going to)\s+(?:keep\s+)?(?:work|working|edit|editing|"
+            r"build|building|continue|continuing)\b",
+            normalized,
+        ))
+        explicit_delegation = bool(re.search(
+            r"\b(?:can|could|would|will)\s+you\b|"
+            r"\bi\s+want\s+you\s+to\b|\bplease\b",
+            normalized,
+        ))
+        imperative = bool(re.match(
+            r"^(?:add|create|edit|change|modify|fix|delete|remove|rename|"
+            r"move|implement|refactor|update|replace)\b",
+            normalized,
+        ))
+        delegated_mutation = bool(re.search(
+            r"\b(?:add|create|edit|change|modify|fix|delete|remove|rename|"
+            r"move|implement|refactor|update|replace)\b",
+            normalized,
+        ))
+
+        if advice_or_status and not explicit_delegation:
+            return False
+        return imperative or (
+            explicit_delegation and delegated_mutation
+        )
+
+    @staticmethod
+    def _is_direct_agent_creation_request(user_input: str) -> bool:
+        normalized = " ".join(user_input.lower().split())
+        mentions_agent = bool(re.search(
+            r"\b(?:ai\s+)?agents?\b",
+            normalized,
+        ))
+        requests_creation = bool(re.search(
+            r"\b(?:create|build|make|add|install|configure|set up)\b",
+            normalized,
+        ))
+        direct = bool(re.match(
+            r"^(?:create|build|make|add|install|configure|set up)\b",
+            normalized,
+        )) or bool(re.search(
+            r"\b(?:can|could|would|will)\s+you\b|"
+            r"\bi\s+want\s+you\s+to\b|\bplease\b",
+            normalized,
+        ))
+        return mentions_agent and requests_creation and direct
+
+    @staticmethod
+    def _is_direct_calendar_write_request(user_input: str) -> bool:
+        normalized = " ".join(user_input.lower().split())
+        mentions_calendar = bool(re.search(
+            r"\b(?:calendar|schedule|appointment|event)\b",
+            normalized,
+        ))
+        mutation = bool(re.search(
+            r"\b(?:add|create|put|schedule|write|book)\b",
+            normalized,
+        ))
+        direct = bool(re.match(
+            r"^(?:add|create|put|schedule|write|book)\b",
+            normalized,
+        )) or bool(re.search(
+            r"\b(?:can|could|would|will)\s+you\b|"
+            r"\bi\s+want\s+you\s+to\b|\bplease\b",
+            normalized,
+        ))
+        return mentions_calendar and mutation and direct
+
     @staticmethod
     def _value(item: Any, key: str, default: Any = None) -> Any:
         if isinstance(item, dict):
@@ -386,11 +587,15 @@ class SemanticIntentRouter:
             "conversation, web_search, project_question, project_edit, "
             "git_commit, git_publish, screen_analysis, "
             "selected_text_question, knowledge_question, time_question, "
-            "pending_approval, entity_correction, fact_check, clarification.\n\n"
+            "pending_approval, agent_create, calendar_action, "
+            "entity_correction, fact_check, clarification.\n\n"
             "Infer meaning instead of matching exact phrases. Account for "
             "speech-to-text mistakes and similar-sounding words. For example, "
             "'push my changes to get' usually means git_publish. Use recent "
-            "turns to resolve short follow-ups, pronouns, and corrections.\n\n"
+            "turns to resolve short follow-ups, pronouns, and corrections. "
+            "The immediately previous user/assistant exchange has higher "
+            "priority than an older active_topic. Treat active_topic only as a "
+            "fallback when recent turns do not establish the subject.\n\n"
             "Preserve corrected named entities. If the user spells or corrects "
             "a name, make entity the corrected canonical form and put earlier "
             "misheard forms in aliases. Resolve words such as it, that, them, "
@@ -400,6 +605,10 @@ class SemanticIntentRouter:
             "- git_publish: commit/upload/push current code to Git or GitHub.\n"
             "- git_commit: commit locally without requesting a push.\n"
             "- project_edit: create, edit, fix, delete, or modify project files.\n"
+            "  Use project_edit only when the user directly delegates a "
+            "specific change to Elaina. A statement about what the user plans "
+            "to work on is conversation. Asking what they should add or asking "
+            "for ideas is project_question, not project_edit.\n"
             "- project_question: inspect or explain the user's local project.\n"
             "- screen_analysis: answer from an attached selection or inspect "
             "visible screen content.\n"
@@ -422,10 +631,19 @@ class SemanticIntentRouter:
             "asks about it, confirms it verbally, repeats the same action, or "
             "says a short response such as yes/no. Approval still happens only "
             "in Electron.\n"
+            "- agent_create: the user directly asks Elaina to create, install, "
+            "or configure a new AI agent or capability. Do not use this merely "
+            "because the user discusses agents.\n"
+            "- calendar_action: the user asks Elaina to create or add an event, "
+            "class, appointment, reminder, or other schedule entry in Google "
+            "Calendar. Asking for scheduling advice without requesting a "
+            "calendar change is conversation or knowledge_question.\n"
             "- knowledge_question: a factual how/why/what question that can be "
             "answered from stable general knowledge without a tool.\n"
             "- conversation: ordinary dialogue or stable knowledge that needs "
-            "no factual explanation.\n"
+            "no factual explanation. This includes statements such as 'I'm "
+            "continuing my project tonight' because they describe the user's "
+            "activity rather than delegating an edit.\n"
             "- clarification: only when a write/action request is genuinely "
             "ambiguous. Never execute writes from this router.\n"
             "An attached screen selection strongly implies screen_analysis "
@@ -433,7 +651,15 @@ class SemanticIntentRouter:
             "a UI control beside the Screen button is project_edit, not vision.\n\n"
             "Return one JSON object only with: intent, confidence from 0 to 1, "
             "normalized_request, reason, search_query, topic, entity, aliases, "
-            "and is_follow_up. search_query must be self-contained for "
+            "is_follow_up, speech_act, action_requested, action_target, and "
+            "topic_shift. speech_act is one of social, statement, advice, "
+            "information_request, action_request, correction, or "
+            "approval_response. Always provide the current conversational "
+            "topic, including for ordinary conversation. action_requested is "
+            "true only when the user directly asks Elaina to perform an action; "
+            "action_target names the concrete requested target. topic_shift is "
+            "true when the latest exchange establishes a newer topic than the "
+            "stored active topic. search_query must be self-contained for "
             "web_search and include the resolved canonical entity; otherwise "
             "use an empty string. Do not answer the user's question.\n\n"
             f"Runtime state: {json.dumps(state)}\n"
@@ -485,6 +711,10 @@ class SemanticIntentRouter:
                 if str(item).strip()
             ) if isinstance(payload.get("aliases", []), list) else (),
             is_follow_up=bool(payload.get("is_follow_up", False)),
+            speech_act=str(payload.get("speech_act", "")).strip(),
+            action_requested=bool(payload.get("action_requested", False)),
+            action_target=str(payload.get("action_target", "")).strip(),
+            topic_shift=bool(payload.get("topic_shift", False)),
         )
 
     @staticmethod

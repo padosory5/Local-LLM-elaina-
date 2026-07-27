@@ -1,15 +1,37 @@
-ollama
-faiss-cpu
-sentence-transformers
-transformers
-torch
-sqlalchemy
-numpy
-silero-vad
-sounddevice
-PySide6
-PySide6-Addons
-mss
-Pillow
+# Local language model
+ollama>=0.6,<1
+
+# Speech recognition and voice activity detection
+faster-whisper>=1.1,<2
+silero-vad>=6,<7
+sounddevice>=0.5,<1
+torch>=2.5
+numpy>=2,<3
+
+# Text-to-speech and playback
+elevenlabs>=2,<3
+pygame>=2.6,<3
+
+# Persistent semantic memory
+faiss-cpu>=1.9,<2
+sentence-transformers>=5,<6
+SQLAlchemy>=2,<3
+
+# Screen capture and image understanding
+mss>=10,<11
+Pillow>=11,<13
 google-cloud-vision>=3.10,<4
-python-dotenv
+google-api-python-client>=2,<3
+google-auth-oauthlib>=1.2,<2
+google-auth-httplib2>=0.2,<1
+
+# Search and integrations
+ddgs>=9,<10
+mcp>=1.20,<2
+pydantic>=2,<3
+websockets>=15,<17
+
+# Configuration
+PyYAML>=6,<7
+python-dotenv>=1,<2
+tzdata>=2025

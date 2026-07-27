@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from core.paths import PROJECT_ROOT, VISUAL_SEARCH_USAGE_PATH
+
 
 @dataclass(frozen=True)
 class VisualSearchResult:
@@ -50,11 +52,7 @@ class VisualSearchTool:
         self.monthly_request_limit = 900
         self.cache_seconds = 86400
         self._cache: dict[str, tuple[float, VisualSearchResult]] = {}
-        self.usage_file = (
-            Path(__file__).resolve().parents[1]
-            / "data"
-            / "visual_search_usage.json"
-        )
+        self.usage_file = VISUAL_SEARCH_USAGE_PATH
 
         if config is not None:
             self.enabled = bool(config.get(
@@ -101,7 +99,7 @@ class VisualSearchTool:
                 "visual_search",
                 "google_cloud_vision",
                 "usage_file",
-                default="data/visual_search_usage.json",
+                default="runtime/data/visual_search_usage.json",
                 required=False,
             ))
             configured_path = Path(configured_usage_file)
@@ -109,8 +107,7 @@ class VisualSearchTool:
                 self.usage_file = configured_path
             else:
                 self.usage_file = (
-                    Path(__file__).resolve().parents[1]
-                    / configured_path
+                    PROJECT_ROOT / configured_path
                 )
 
     def search_image(

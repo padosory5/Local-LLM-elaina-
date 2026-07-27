@@ -136,6 +136,41 @@
             </div>
         </section>
 
+        <!-- New agents and external writes use this shared action review. -->
+        <section
+            id="action-approval"
+            class="hidden"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="action-approval-title"
+        >
+            <div id="action-approval-card">
+                <header>
+                    <div>
+                        <span class="approval-label">Agent action</span>
+                        <h2 id="action-approval-title">Review action</h2>
+                    </div>
+                    <span id="action-approval-risk"></span>
+                </header>
+
+                <p id="action-approval-summary"></p>
+                <div id="action-approval-details"></div>
+
+                <p id="action-approval-note">
+                    Nothing has been changed yet.
+                </p>
+
+                <div id="action-approval-actions">
+                    <button id="action-reject-button" type="button">
+                        Reject
+                    </button>
+                    <button id="action-approve-button" type="button">
+                        Approve
+                    </button>
+                </div>
+            </div>
+        </section>
+
         <!-- Electron window controls. These call functions exposed by preload.js. -->
         <nav id="window-controls" aria-label="Window controls">
             <button id="pin-button" type="button" title="Lock window position">Pin</button>

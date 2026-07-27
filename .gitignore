@@ -1,42 +1,32 @@
-# Python virtual environment
-.venv/
-venv/
+# Secrets
+.env
+credentials*.json
 
-# Python cache
+# Python
 __pycache__/
 *.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
 
-# Local databases and vector indexes
-database/*.db
-database/*.index
+# Electron
+desktop/node_modules/
+desktop/dist/
 
-# Generated audio
-*.wav
+# Generated runtime state
+runtime/debug/
+runtime/data/visual_search_usage.json
+runtime/agents/
+runtime/audit/
+runtime/secrets/
 
-# Environment variables
-.env
+# Keep personal memory data local by default
+runtime/database/*.db
+runtime/database/*.index
 
-# IDE files
+# OS and editor files
+.DS_Store
+Thumbs.db
 .vscode/
 .idea/
-
-# API keys
-.env
-
-# Node / Electron
-node_modules/
-desktop/node_modules/
-
-# Electron build output
-desktop/dist/
-desktop/out/
-
-# Logs
-*.log
-
-# Data and Debugs
-data/visual_search_usage.json
-debug/screen_captures/
-
-# testing
-REINFORCEMENT_TEST_CASES.md

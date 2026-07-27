@@ -1,137 +1,123 @@
-# Elaina AI
+# Elaina Agent Runtime
 
-Elaina is an open LLM model that runs as a personal AI assistant. The main focus is trying to run the model as local, avoiding cloud APIs. Although if the user prefers using APIs the configurations maybe made. The goal of this project is to create an AI agent capable of remembering conversations, finishing tasks for user, and synchronizing with a live2D avatar.
+Elaina is a local, voice-first desktop companion. Elaina handles normal
+conversation and delegates actionable work to constrained specialist agents.
 
-## Features
+## Included agents
 
-* Local LLM using Ollama (Qwen3)
-* Persistent long-term memory with SQLite
-* Semantic memory search using FAISS
-* Automatic memory extraction
-* Memory consolidation
-* Conversation history management
-* Context-aware responses
-* Streaming text generation
-* Modular architecture for future expansion
+| Agent | Current capability |
+| --- | --- |
+| Conversation Agent | Personality, normal conversation, memory, and stable knowledge |
+| Research Agent | Current web searches, entity corrections, and fact checking |
+| Vision Agent | Selected-screen analysis and verified visual identification |
+| Coding Agent | Project inspection and approval-gated file changes |
+| Git Agent | Approval-gated commits and pushes |
+| Agent Builder | Requirement collection and reviewed agent installation |
 
-## Tech Stack
+The Google Calendar Agent is supplied as an inactive blueprint. Elaina creates
+its user-specific definition only after collecting settings and receiving
+Electron approval.
 
-* Python
-* Ollama
-* Qwen3 8B
-* SQLite
-* FAISS
-* Sentence Transformers
-
-## Current Status
-
-Current progress includes:
-
-* Local chat engine
-* Persistent memory system
-* Semantic memory retrieval
-* Context management
-* Streaming responses
-
-## Language
-
-Elaina supports multiple response languages through `config/config.yaml`.
-
-Open:
+## Project layout
 
 ```text
-config/config.yaml
+agents/         agent definitions, registry, coordinator, and specialists
+brain/          Elaina conversation engine and semantic routing
+config/         validated YAML configuration
+core/           events, WebSocket transport, and shared paths
+desktop/        Electron, Live2D renderer, approvals, and screen selector
+memory/         SQLite and FAISS semantic memory
+security/       deterministic permissions and approval storage
+tools/          MCP, search, visual search, and Google Calendar tools
+vision/         on-demand screen capture
+voice/          VAD, STT, TTS, playback, and interruption
+runtime/        generated agents, audit records, memories, tokens, and captures
+tests/          deterministic regression tests
 ```
 
-Find:
+## First setup
 
-```yaml
-language:
+From the project root in PowerShell:
 
-  # Response language
-  # en = English
-  # ko = Korean
-
-  response: "en"
-```
-
-### English
-
-```yaml
-language:
-  response: "en"
-```
-
-### Korean
-
-```yaml
-language:
-  response: "ko"
-```
-
-Changing this setting will:
-
-- Load the corresponding personality file (`personality_en.txt` or `personality_ko.txt`)
-- Change Elaina's response language
-- Configure the speech recognition language (if enabled)
-- Use the configured TTS provider for that language
-
-After changing the language, restart Elaina for the changes to take effect.
-
-## Live2D Desktop Application Setup
-
-The live2d uses pixiv live2d display which only uses CubismSDK4. Therefore, when you export your live2d file make sure to set it up as Cubism4 and no other versions.
-
-## Roadmap
-
-### Version 0.2
-
-* Voice conversation (Speech-to-Text)
-* Local Text-to-Speech
-
-### Version 0.3
-
-* Emotion engine
-* Personality engine
-* Improved memory ranking
-
-### Version 0.4
-
-* Unity integration
-* 3D avatar synchronization
-* Lip sync
-* Facial expressions
-
-### Version 1.0
-
-* Fully local AI companion with memory, voice, and avatar support.
-
-## Installation
-
-```bash
-git clone <repository-url>
-cd elainaAI
-
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -r requirements.txt
+
+cd desktop
+npm install
+cd ..
 ```
 
-Start Ollama and make sure the Qwen3 model is installed:
+Copy `.env.example` to `.env` and enter only the services you use. Review
+`config/config.yaml`, especially the Piper paths and Ollama model names.
 
-```bash
-ollama pull qwen3:8b
-```
+## Start Elaina
 
-Run the application:
+Activate the virtual environment, then run:
 
-```bash
+```powershell
 python main.py
 ```
 
-## Vision
+Python starts the WebSocket backend and opens Electron. Closing Electron also
+stops the Python process. The existing BAT/VBS launchers remain compatible.
 
-The long-term goal of Elaina AI is to become a fully local AI companion capable of natural conversation, long-term memory, voice interaction, and expressive 3D avatar synchronization, providing a private and extensible personal assistant without requiring cloud services.
+To run Python without Electron for diagnostics:
+
+```powershell
+$env:ELAINA_OPEN_DESKTOP="0"
+python main.py
+```
+
+## Google Calendar
+
+Follow [docs/GOOGLE_CALENDAR_SETUP.md](docs/GOOGLE_CALENDAR_SETUP.md) before
+testing real event creation.
+
+After setup, say:
+
+> Create an agent that can add events to my Google Calendar.
+
+Elaina asks for the time zone, calendar, default duration, and approval policy.
+It then shows an installation proposal. Installing the agent does not create an
+event and does not bypass future approvals.
+
+After installation, say:
+
+> Add my calculus review to my calendar tomorrow at 3 PM for 90 minutes.
+
+Elaina prepares the exact event and stops at the approval window. Google
+Calendar is written only after approval. The first approved event opens
+Google's OAuth authorization page.
+
+## Safety model
+
+- Semantic routing can select an agent, but cannot grant permissions.
+- A local policy table owns every action permission.
+- User-created agents are YAML definitions, not automatically executed Python.
+- Project changes, Git writes, agent installation, and calendar writes require
+  approval.
+- Calendar OAuth tokens remain under `runtime/secrets/`.
+- Unknown tools are rejected when an agent definition is installed.
+- Each task and approval transition is recorded under `runtime/audit/`.
+
+## Tests
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+The suite covers the original routing fixes plus agent registration,
+requirement collection, calendar-event preparation, task states, and reusable
+approval prevention.
+
+## Current limitations
+
+- The first user-created action agent is Google Calendar.
+- Calendar event creation is implemented; update and deletion are not.
+- Completely new executable tools are not generated or installed
+  automatically. Elaina explains the missing capability instead.
+- Browser purchasing, hotel booking, payments, and university registration are
+  intentionally unavailable until separate tools and policies are implemented.

@@ -1,0 +1,14 @@
+id: coding_agent
+name: Coding Agent
+description: Reads project files and prepares approval-gated code changes.
+enabled: true
+intents:
+  - project_question
+  - project_edit
+tools:
+  - project.read
+  - project.write
+instructions:
+  - Read only inside the configured project root.
+  - Never change a file until the user approves the exact proposal.
+settings: {}

@@ -1,0 +1,15 @@
+id: research_agent
+name: Research Agent
+description: Searches current web information and verifies corrected factual claims.
+enabled: true
+intents:
+  - web_search
+  - entity_correction
+  - fact_check
+tools:
+  - web.search
+instructions:
+  - Search only when current or externally verifiable information is needed.
+  - Ground the answer in retrieved evidence and never invent a completed search.
+settings:
+  max_results: 5

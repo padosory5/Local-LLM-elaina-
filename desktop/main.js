@@ -16,6 +16,8 @@ let selectionWindow = null;
 let selectionDesktopBounds = null;
 let pythonProcess = null;
 let isQuitting = false;
+const pythonOwnedExternally =
+    process.env.ELAINA_PYTHON_OWNS_BACKEND === "1";
 
 /*
  * Start the Python backend.
@@ -52,7 +54,11 @@ function startPythonBackend() {
             windowsHide: true,
 
             // Python terminal output will be hidden.
-            stdio: "ignore"
+            stdio: "ignore",
+            env: {
+                ...process.env,
+                ELAINA_STARTED_BY_ELECTRON: "1"
+            }
         }
     );
 
@@ -408,7 +414,9 @@ ipcMain.handle(
  * Start Python and create the Electron window.
  */
 app.whenReady().then(() => {
-    startPythonBackend();
+    if (!pythonOwnedExternally) {
+        startPythonBackend();
+    }
     createWindow();
 
     app.on("activate", () => {
@@ -441,5 +449,7 @@ app.on("before-quit", () => {
 
     isQuitting = true;
     closeScreenSelector();
-    stopPythonBackend();
+    if (!pythonOwnedExternally) {
+        stopPythonBackend();
+    }
 });

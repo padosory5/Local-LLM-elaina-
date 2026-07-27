@@ -1,0 +1,14 @@
+id: agent_builder
+name: Agent Builder
+description: Collects requirements and proposes constrained agent definitions for approval.
+enabled: true
+intents:
+  - agent_create
+tools:
+  - agent.install
+  - calendar.create_event
+instructions:
+  - Prefer declarative definitions over generated executable code.
+  - Explain missing tools instead of claiming an unavailable capability works.
+  - Never activate an agent before explicit approval.
+settings: {}

@@ -1,0 +1,184 @@
+# Elaina reinforcement test cases
+
+Restart both Python and Electron after replacing the files.
+
+## 1. Contextual STT correction and Git approval
+
+Say:
+
+> Push my changes to get.
+
+Expected:
+
+- Router intent: `git_publish`
+- Electron opens one Git approval window.
+- Nothing is staged, committed, or pushed before approval.
+- Repeating the request or saying "yeah" reports that the proposal is already
+  waiting instead of creating a duplicate.
+
+## 2. Corrected entity and search continuity
+
+Say these as separate turns:
+
+1. "Can you find recent Quen releases?"
+2. "No, I said Gwynn. Q W E N."
+3. "Search the latest releases about Quinn."
+
+Expected:
+
+- The spelling turn is authoritative and immediately repeats the search using
+  `Qwen`; you do not need to ask Elaina to search again.
+- Later STT variants such as `Quinn`, `Quen`, and `Gwynn` resolve to `Qwen`
+  while the current topic is still Qwen.
+- Elaina returns completed results and never says she will search later.
+- Repeating the same query within five minutes uses the search cache.
+
+## 3. General factual follow-up
+
+Say:
+
+1. "How does mental illness develop?"
+2. "For example?"
+
+Expected:
+
+- The second answer gives a concrete example of how mental illness can develop,
+  using the active topic rather than treating "For example" as a new topic.
+- Elaina does not mention the time of day.
+
+## 4. Project editing
+
+Say:
+
+> Add a test button next to the Screen button.
+
+Expected:
+
+- Router intent: `project_edit`
+- Electron displays editable proposed code.
+- No file changes before approval.
+- Repeating the request does not create another proposal.
+
+Reject the proposal after testing if you do not want the button.
+
+## 5. Direct screen analysis
+
+Select text or code with Screen, then say:
+
+> Translate this text.
+
+or:
+
+> Explain this code.
+
+Expected:
+
+- Router intent: `screen_analysis`
+- Vision router: `direct`
+- After selecting the region, the console may show
+  `[Vision] Preloading qwen3-vl:8b...`; this runs while you speak.
+- Qwen3-VL handles the image locally.
+- Google Web Detection is not called.
+- The answer contains no jokes, hype, unrelated reactions, or follow-up offer.
+
+## 6. Screen identification
+
+Select a game, product, landmark, logo, or other identifiable image, then say:
+
+> What exactly is this?
+
+Expected:
+
+- Vision router: `identify`
+- Google Web Detection runs.
+- Electron shows the strongest matched-page title and retrieval score.
+- Qwen3 provides a concise answer with high, moderate, or low confidence.
+- Failed retrieval produces uncertainty instead of a guess.
+
+## 7. Performance timing
+
+After each completed turn, check for:
+
+```text
+[Timing] route=...s memory_retrieval=...s web_search=...s
+         visual_pipeline=...s generation=...s total=...s
+```
+
+Only stages used by that turn are printed. Project actions add
+`project_tools`; background memory writes print their own
+`background_memory` timing without delaying Elaina's reply.
+
+Use these numbers to determine whether delay comes from routing, memory,
+retrieval/tools, model generation, or the entire pipeline.
+
+## 8. Voice interruption
+
+Ask Elaina for an explanation long enough to speak for several seconds. While
+she is speaking, say:
+
+> Elaina, stop. Tell me the short version.
+
+Expected:
+
+- Her current voice stops as soon as speech is confirmed.
+- The old streamed response is cancelled and is not resumed.
+- The console prints `[ChatEngine] Response interrupted.`
+- Your interruption is transcribed and receives a new response.
+- If the microphone captures Elaina's speaker output, probable matching text
+  is discarded with `[STT] Ignored probable speaker echo.`
+
+Headphones provide the most reliable interruption because they prevent speaker
+audio from physically entering the microphone.
+
+## 9. Intermittent missed-speech diagnostics
+
+Make a screen selection, wait for the vision preload message, and speak at a
+normal volume during `Listening...`.
+
+Expected:
+
+- Soft speech can be accepted using combined Silero and microphone-energy
+  evidence.
+- A timeout now reports `peak VAD`, `peak level`, and the microphone device.
+- If it says `microphone delivered no audio frames`, the selected Windows input
+  device or driver stopped delivering samples; this is different from a VAD
+  threshold miss.
+
+## 10. Immediate work status
+
+Try one request from each group:
+
+1. "Search for the latest Qwen release."
+2. Select an image and say "Identify this."
+3. "Explain where the Screen button is implemented in my project."
+4. "Add a test button next to Screen."
+5. "Push my changes to Git."
+
+Expected:
+
+- Electron immediately displays a short status message.
+- Elaina speaks that status while the tool works.
+- The later final answer or approval proposal is displayed separately.
+- The status never claims that a search, edit, commit, or push succeeded before
+  its actual result is known.
+
+## 11. Grounded factual continuity
+
+Select an image from Bungie's 2026 Marathon and say these as separate turns:
+
+1. "What game is this?"
+2. "When was it released?"
+3. "I thought Marathon was an older game."
+4. "Look, I was right about the new one."
+
+Expected:
+
+- The visual result becomes the grounded subject, including which version of
+  Marathon was identified.
+- "When was it released?" routes to `web_search`, never `time_question`.
+- Elaina distinguishes the original 1994 game from Bungie's 2026 extraction
+  shooter.
+- A correction that still needs evidence routes to `fact_check` with web
+  verification.
+- After verification, "I was right" uses the grounded result without asking
+  "right about what?" or performing an unnecessary second search.

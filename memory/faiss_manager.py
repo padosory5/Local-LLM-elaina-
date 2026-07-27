@@ -1,17 +1,22 @@
+import os
+from pathlib import Path
+
 import faiss
 import numpy as np
-import os
+
+from core.paths import FAISS_INDEX_PATH, ensure_runtime_directories
 
 
 class FAISSManager:
 
-    def __init__(self, dimension, index_path="database/faiss.index"):
+    def __init__(self, dimension, index_path=None):
         self.dimension = dimension
-        self.index_path = index_path
+        ensure_runtime_directories()
+        self.index_path = Path(index_path or FAISS_INDEX_PATH)
 
-        if os.path.exists(index_path):
+        if os.path.exists(self.index_path):
             try:
-                self.index = faiss.read_index(index_path)
+                self.index = faiss.read_index(str(self.index_path))
                 print("Loaded existing FAISS index.")
             except RuntimeError:
                 print("Corrupted index detected. Creating a new one.")
@@ -30,4 +35,5 @@ class FAISSManager:
         return distances[0], indices[0]
 
     def save(self):
-        faiss.write_index(self.index, self.index_path)
+        self.index_path.parent.mkdir(parents=True, exist_ok=True)
+        faiss.write_index(self.index, str(self.index_path))

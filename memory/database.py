@@ -1,14 +1,12 @@
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import declarative_base, sessionmaker
 
-# SQLite database
-DATABASE_URL = "sqlite:///database/memory.db"
+from core.paths import MEMORY_DATABASE_PATH, ensure_runtime_directories
 
-# Create the database engine
+
+ensure_runtime_directories()
+DATABASE_URL = f"sqlite:///{MEMORY_DATABASE_PATH.as_posix()}"
+
 engine = create_engine(DATABASE_URL, echo=False)
-
-# Create a session factory
 SessionLocal = sessionmaker(bind=engine)
-
-# Base class for all database tables
 Base = declarative_base()

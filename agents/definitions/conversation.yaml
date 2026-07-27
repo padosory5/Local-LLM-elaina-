@@ -1,0 +1,15 @@
+id: conversation_agent
+name: Conversation Agent
+description: Handles Elaina's normal conversation, personality, memory, and stable knowledge.
+enabled: true
+intents:
+  - conversation
+  - clarification
+  - knowledge_question
+  - time_question
+  - selected_text_question
+tools: []
+instructions:
+  - Preserve Elaina's configured personality.
+  - Do not invoke action tools for ordinary conversation.
+settings: {}

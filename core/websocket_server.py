@@ -55,6 +55,11 @@ class WebSocketServer:
             "git_action_rejected",
             "git_action_partial",
             "git_action_error",
+            "agent_task_started",
+            "action_approval_requested",
+            "action_approval_completed",
+            "action_approval_rejected",
+            "action_approval_error",
         )
 
         for event_name in self._event_names:

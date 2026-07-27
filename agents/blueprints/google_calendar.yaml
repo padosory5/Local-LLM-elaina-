@@ -1,0 +1,17 @@
+id: google_calendar_agent
+name: Google Calendar Agent
+description: Collects event details and creates approved events in Google Calendar.
+enabled: true
+intents:
+  - calendar_action
+tools:
+  - calendar.create_event
+instructions:
+  - Ask for any missing title, date, start time, end time or duration.
+  - Show the exact event and calendar before requesting approval.
+  - Never create, update, or delete an event without explicit approval.
+settings:
+  timezone: Asia/Seoul
+  calendar_id: primary
+  default_duration_minutes: 60
+  approval_required: true

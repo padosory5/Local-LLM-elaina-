@@ -51,7 +51,15 @@ const elements = {
     gitApprovalNote: document.getElementById("git-approval-note"),
     gitRejectButton: document.getElementById("git-reject-button"),
     gitCommitButton: document.getElementById("git-commit-button"),
-    gitPushButton: document.getElementById("git-push-button")
+    gitPushButton: document.getElementById("git-push-button"),
+    actionApproval: document.getElementById("action-approval"),
+    actionApprovalTitle: document.getElementById("action-approval-title"),
+    actionApprovalRisk: document.getElementById("action-approval-risk"),
+    actionApprovalSummary: document.getElementById("action-approval-summary"),
+    actionApprovalDetails: document.getElementById("action-approval-details"),
+    actionApprovalNote: document.getElementById("action-approval-note"),
+    actionRejectButton: document.getElementById("action-reject-button"),
+    actionApproveButton: document.getElementById("action-approve-button")
 };
 
 /* Values that change while the application is running. */
@@ -67,6 +75,7 @@ const state = {
     proposalEditors: [],
     activeGitProposalId: null,
     gitPushAvailable: false,
+    activeActionProposalId: null,
     targetMouthValue: 0,
     currentMouthValue: 0
 };
@@ -332,6 +341,89 @@ function closeGitApproval() {
     elements.gitApprovalFiles.replaceChildren();
     elements.gitCommitMessage.value = "";
     setGitApprovalBusy(false);
+}
+
+/* ------------------------ Agent action approval --------------------- */
+
+function setupActionApproval() {
+    elements.actionRejectButton.addEventListener("click", () => {
+        sendActionDecision("reject");
+    });
+    elements.actionApproveButton.addEventListener("click", () => {
+        sendActionDecision("approve");
+    });
+}
+
+function showActionProposal(message) {
+    const proposalId = cleanText(message.proposal_id);
+    if (!proposalId) return;
+
+    state.activeActionProposalId = proposalId;
+    elements.actionApprovalTitle.textContent =
+        cleanText(message.title) || "Review action";
+    elements.actionApprovalRisk.textContent =
+        cleanText(message.risk).replaceAll("_", " ") || "approval required";
+    elements.actionApprovalSummary.textContent =
+        cleanText(message.summary) || "Elaina prepared an agent action.";
+
+    elements.actionApprovalDetails.replaceChildren();
+    const details = Array.isArray(message.details) ? message.details : [];
+    for (const item of details) {
+        const row = document.createElement("div");
+        row.className = "action-detail";
+
+        const label = document.createElement("span");
+        label.className = "action-detail-label";
+        label.textContent = cleanText(item.label);
+
+        const value = document.createElement("span");
+        value.className = "action-detail-value";
+        value.textContent = cleanText(item.value);
+
+        row.append(label, value);
+        elements.actionApprovalDetails.appendChild(row);
+    }
+
+    elements.actionApprovalNote.textContent =
+        "Nothing has been changed yet. Review every detail before approving.";
+    setActionApprovalBusy(false);
+    elements.actionApproval.classList.remove("hidden");
+}
+
+function setActionApprovalBusy(isBusy) {
+    elements.actionRejectButton.disabled = isBusy;
+    elements.actionApproveButton.disabled = isBusy;
+}
+
+function sendActionDecision(decision) {
+    if (!state.activeActionProposalId) return;
+
+    if (
+        !state.pythonSocket ||
+        state.pythonSocket.readyState !== WebSocket.OPEN
+    ) {
+        elements.actionApprovalNote.textContent =
+            "Elaina is offline. Reconnect before deciding.";
+        return;
+    }
+
+    setActionApprovalBusy(true);
+    elements.actionApprovalNote.textContent = decision === "approve"
+        ? "Performing the approved action..."
+        : "Rejecting the action...";
+
+    state.pythonSocket.send(JSON.stringify({
+        command: "action_approval_decision",
+        proposal_id: state.activeActionProposalId,
+        decision
+    }));
+}
+
+function closeActionApproval() {
+    state.activeActionProposalId = null;
+    elements.actionApproval.classList.add("hidden");
+    elements.actionApprovalDetails.replaceChildren();
+    setActionApprovalBusy(false);
 }
 
 /* ------------------------- Screen selection ------------------------- */
@@ -664,6 +756,42 @@ function handlePythonMessage(event) {
                 }
                 setActivity("offline", "Git action failed");
                 break;
+            case "agent_task_started":
+                setActivity(
+                    "thinking",
+                    `${cleanText(message.agent_name) || "Agent"} is working...`
+                );
+                break;
+            case "action_approval_requested":
+                showActionProposal(message);
+                setActivity("thinking", "Waiting for action approval...");
+                break;
+            case "action_approval_completed":
+                closeActionApproval();
+                addAssistantMessage(
+                    message.message || "The approved action was completed."
+                );
+                setActivity("listening", "Action completed");
+                break;
+            case "action_approval_rejected":
+                closeActionApproval();
+                addAssistantMessage(
+                    message.message || "The action was rejected."
+                );
+                setActivity("listening", "Action rejected");
+                break;
+            case "action_approval_error":
+                if (state.activeActionProposalId) {
+                    elements.actionApprovalNote.textContent =
+                        message.message || "The agent action failed.";
+                    setActionApprovalBusy(false);
+                } else {
+                    addAssistantMessage(
+                        message.message || "The agent action failed."
+                    );
+                }
+                setActivity("offline", "Agent action failed");
+                break;
             case "lip_sync":
                 handleLipSync(message.value);
                 break;
@@ -707,6 +835,7 @@ function startApplication() {
     setupChatDrawer();
     setupProjectApproval();
     setupGitApproval();
+    setupActionApproval();
     setupScreenSelection();
     loadElaina();
     connectToPython();

@@ -6,12 +6,12 @@ import json
 import platform
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 import mss
 from PIL import Image
 
 from config.loader import Config
+from core.paths import SCREEN_CAPTURE_DIRECTORY
 
 
 @dataclass(frozen=True)
@@ -48,11 +48,7 @@ class ScreenMonitor:
         )
         # Debug copies are saved only for manually selected regions. The JPEG
         # written here is byte-for-byte identical to the image sent to Ollama.
-        self.selected_capture_directory = (
-            Path(__file__).resolve().parents[1]
-            / "debug"
-            / "screen_captures"
-        )
+        self.selected_capture_directory = SCREEN_CAPTURE_DIRECTORY
 
     def start(self) -> None:
         if self.enabled:

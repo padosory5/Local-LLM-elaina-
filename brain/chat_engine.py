@@ -25,7 +25,15 @@ from config.loader import Config
 from brain.personality_loader import PersonalityLoader
 from datetime import datetime
 from vision.screen_monitor import ScreenMonitor
-from brain.intent_router import SemanticIntentRouter
+from brain.intent_router import IntentDecision, SemanticIntentRouter
+from agents.builder import AgentBuilder
+from agents.calendar_agent import GoogleCalendarAgent
+from agents.coordinator import AgentCoordinator
+from agents.registry import AgentRegistry
+from agents.task_manager import AgentTaskManager
+from security.approval_manager import ApprovalManager
+from security.policy import PolicyEngine
+from tools.google_calendar import GoogleCalendarTool
 
 def extract_complete_sentences(
     buffer: str,
@@ -108,6 +116,12 @@ class ChatEngine:
             client=self.client,
             model=self.model,
             keep_alive=self.keep_alive,
+            safety_mode=str(self.config.get(
+                "routing",
+                "project_edit_safety",
+                default="enforce",
+                required=False,
+            )),
         )
         self._router_history = deque(maxlen=6)
         self._active_topic = ""
@@ -163,6 +177,29 @@ class ChatEngine:
         self.attention = Attention()
         self.events = EventBus()
 
+        # Agent orchestration is intentionally layered above the proven
+        # feature implementations below. Agents decide which constrained
+        # capability owns a turn; existing tools still perform the actual work.
+        self.agent_registry = AgentRegistry()
+        self.agent_tasks = AgentTaskManager()
+        self.agent_coordinator = AgentCoordinator(
+            registry=self.agent_registry,
+            tasks=self.agent_tasks,
+        )
+        self.policy = PolicyEngine()
+        self.approvals = ApprovalManager(self.policy)
+        self.agent_builder = AgentBuilder(
+            client=self.client,
+            model=self.model,
+            keep_alive=self.keep_alive,
+        )
+        self.calendar_agent = GoogleCalendarAgent(
+            client=self.client,
+            model=self.model,
+            keep_alive=self.keep_alive,
+        )
+        self.calendar_tool = GoogleCalendarTool(self.config)
+
         self.web_search_tool = WebSearchTool()
         self.visual_search_tool = VisualSearchTool(config=self.config)
         self.project_mcp = None
@@ -204,6 +241,20 @@ class ChatEngine:
             with self._turn_lock:
                 if self._active_turn_cancel is not None:
                     self._active_turn_cancel.set()
+
+    def cancel_active_turn(self) -> None:
+        """Unconditionally stop active generation and queued speech."""
+        self.audio.stop()
+        with self._turn_lock:
+            if self._active_turn_cancel is not None:
+                self._active_turn_cancel.set()
+
+    def _turn_is_cancelled(self) -> bool:
+        with self._turn_lock:
+            return bool(
+                self._active_turn_cancel is not None
+                and self._active_turn_cancel.is_set()
+            )
 
     def _build_conversation_state(self) -> dict:
         return {
@@ -394,6 +445,12 @@ class ChatEngine:
                 "I'll inspect the Git changes and prepare a push for your "
                 "approval."
             ),
+            "agent_create": (
+                "I'll check which capability and permissions that agent needs."
+            ),
+            "calendar_action": (
+                "I'll prepare the calendar event details for your approval."
+            ),
         }
         text = status_by_intent.get(intent, "")
         if not text:
@@ -444,17 +501,38 @@ class ChatEngine:
         # Build Prompt
         ####################################################
         route_started = time.perf_counter()
-        route = self.intent_router.route(
-            user_input,
-            recent_turns=list(self._router_history),
-            has_screen_selection=(
-                screen_region is not None
-                or screen_snapshot is not None
-            ),
-            project_tools_available=self.project_mcp is not None,
-            conversation_state=self._build_conversation_state(),
-            pending_action=self._pending_action,
-        )
+        if self.agent_builder.active:
+            route = IntentDecision(
+                intent="agent_create",
+                confidence=1.0,
+                normalized_request=user_input,
+                reason="Continuing the active agent setup.",
+                speech_act="information_request",
+                action_requested=True,
+                action_target="agent setup",
+            )
+        elif self.calendar_agent.active:
+            route = IntentDecision(
+                intent="calendar_action",
+                confidence=1.0,
+                normalized_request=user_input,
+                reason="Continuing the active calendar event draft.",
+                speech_act="information_request",
+                action_requested=True,
+                action_target="calendar event",
+            )
+        else:
+            route = self.intent_router.route(
+                user_input,
+                recent_turns=list(self._router_history),
+                has_screen_selection=(
+                    screen_region is not None
+                    or screen_snapshot is not None
+                ),
+                project_tools_available=self.project_mcp is not None,
+                conversation_state=self._build_conversation_state(),
+                pending_action=self._pending_action,
+            )
         timings["route"] = time.perf_counter() - route_started
         self._update_conversation_state(route)
         print(
@@ -466,6 +544,25 @@ class ChatEngine:
                 f"[Router] Interpreted transcript as: "
                 f"{route.normalized_request}"
             )
+
+        assignment_intent = route.intent
+        if (
+            route.intent == "calendar_action"
+            and not self.agent_registry.has_agent("google_calendar_agent")
+        ):
+            assignment_intent = "agent_create"
+        assignment = self.agent_coordinator.assign(
+            assignment_intent,
+            route.normalized_request,
+        )
+        agent_task_id = assignment.task.id
+        self.events.emit(
+            "agent_task_started",
+            task_id=agent_task_id,
+            agent_id=assignment.definition.id,
+            agent_name=assignment.definition.name,
+            intent=route.intent,
+        )
         if route.intent == "fact_check" and route.search_query:
             self._announce_work_status("web_search")
         else:
@@ -487,7 +584,12 @@ class ChatEngine:
             time.perf_counter() - memory_started
         )
 
-        project_edit_requested = route.intent == "project_edit"
+        # The router's local safety policy must explicitly authorize a write
+        # proposal. A model label alone is never enough to invoke MCP edits.
+        project_edit_requested = (
+            route.intent == "project_edit"
+            and route.action_requested
+        )
         use_screen_vision = route.intent == "screen_analysis"
         forced_response = ""
         screen_target = self._select_screen_target(user_input)
@@ -553,6 +655,8 @@ class ChatEngine:
             "git_publish",
             "time_question",
             "fact_check",
+            "agent_create",
+            "calendar_action",
         }:
             messages.append({
                 "role": "system",
@@ -693,12 +797,226 @@ class ChatEngine:
                 "rejection button there."
             )
 
+        if route.intent == "agent_create":
+            if self._pending_action:
+                forced_response = (
+                    f"A {self._pending_action} proposal is already waiting in "
+                    "Electron. Review it before creating another capability."
+                )
+            else:
+                build_result = self.agent_builder.handle(
+                    route.normalized_request
+                )
+                forced_response = build_result.message
+
+                if build_result.status == "input_required":
+                    self.agent_tasks.update(
+                        agent_task_id,
+                        "input_required",
+                        build_result.message,
+                    )
+                elif build_result.status in {"unsupported", "cancelled"}:
+                    self.agent_tasks.update(
+                        agent_task_id,
+                        "completed",
+                        build_result.message,
+                    )
+
+                if (
+                    build_result.status == "ready"
+                    and build_result.definition is not None
+                ):
+                    definition = build_result.definition
+                    settings = dict(definition.get("settings", {}))
+                    tools = list(definition.get("tools", []))
+                    credentials_ready, credential_message = (
+                        self.calendar_tool.readiness()
+                    )
+                    proposal = self.approvals.create(
+                        action="agent.install",
+                        title="Install Google Calendar Agent",
+                        summary=(
+                            "Activate a constrained agent that can prepare "
+                            "Google Calendar events. Every event creation will "
+                            "still require a separate approval."
+                        ),
+                        details=[
+                            {
+                                "label": "Agent",
+                                "value": str(definition.get("name", "")),
+                            },
+                            {
+                                "label": "Allowed tools",
+                                "value": ", ".join(tools),
+                            },
+                            {
+                                "label": "Time zone",
+                                "value": str(settings.get("timezone", "")),
+                            },
+                            {
+                                "label": "Calendar",
+                                "value": str(settings.get("calendar_id", "")),
+                            },
+                            {
+                                "label": "Default duration",
+                                "value": (
+                                    f"{settings.get('default_duration_minutes')} "
+                                    "minutes"
+                                ),
+                            },
+                            {
+                                "label": "Credentials",
+                                "value": credential_message,
+                            },
+                        ],
+                        payload={
+                            "definition": definition,
+                            "task_id": agent_task_id,
+                            "credentials_ready": credentials_ready,
+                        },
+                    )
+                    self._pending_action = "Agent installation"
+                    self.agent_tasks.update(
+                        agent_task_id,
+                        "waiting_approval",
+                        "Waiting for agent installation approval.",
+                    )
+                    self.events.emit(
+                        "action_approval_requested",
+                        **proposal.public_payload(),
+                    )
+
+        if route.intent == "calendar_action":
+            calendar_definition = self.agent_registry.get(
+                "google_calendar_agent"
+            )
+            if calendar_definition is None:
+                build_result = self.agent_builder.handle(
+                    route.normalized_request
+                )
+                forced_response = (
+                    "I don't have a Google Calendar Agent yet. My "
+                    "recommendation is to add one with permission to create "
+                    "events only after approval. "
+                    + build_result.message
+                )
+                self.agent_tasks.update(
+                    agent_task_id,
+                    "input_required",
+                    "Calendar Agent setup information is required.",
+                )
+            elif self._pending_action:
+                forced_response = (
+                    f"A {self._pending_action} proposal is already waiting in "
+                    "Electron. Review it before preparing another event."
+                )
+            else:
+                credentials_ready, credential_message = (
+                    self.calendar_tool.readiness()
+                )
+                if not credentials_ready:
+                    calendar_result = None
+                    forced_response = (
+                        "The Google Calendar Agent is installed, but it cannot "
+                        "write events yet. "
+                        + credential_message
+                        + " Add the OAuth Desktop credential path to .env as "
+                        "GOOGLE_CALENDAR_CREDENTIALS, then restart Elaina."
+                    )
+                    self.agent_tasks.update(
+                        agent_task_id,
+                        "failed",
+                        forced_response,
+                    )
+                else:
+                    calendar_result = self.calendar_agent.handle(
+                        route.normalized_request,
+                        calendar_definition,
+                    )
+                    forced_response = calendar_result.message
+
+                if (
+                    calendar_result is not None
+                    and calendar_result.status == "ready"
+                    and calendar_result.event is not None
+                ):
+                    event = calendar_result.event
+                    proposal = self.approvals.create(
+                        action="calendar.create_event",
+                        title="Create Google Calendar event",
+                        summary=(
+                            "Create this exact event in Google Calendar. "
+                            "Nothing has been written yet."
+                        ),
+                        details=[
+                            {
+                                "label": "Title",
+                                "value": str(event["summary"]),
+                            },
+                            {
+                                "label": "Starts",
+                                "value": str(
+                                    event["start"]["dateTime"]
+                                ),
+                            },
+                            {
+                                "label": "Ends",
+                                "value": str(event["end"]["dateTime"]),
+                            },
+                            {
+                                "label": "Time zone",
+                                "value": str(
+                                    event["start"]["timeZone"]
+                                ),
+                            },
+                            {
+                                "label": "Calendar",
+                                "value": calendar_result.calendar_id,
+                            },
+                            {
+                                "label": "Location",
+                                "value": str(
+                                    event.get("location") or "(none)"
+                                ),
+                            },
+                        ],
+                        payload={
+                            "calendar_id": calendar_result.calendar_id,
+                            "event": event,
+                            "task_id": agent_task_id,
+                        },
+                    )
+                    self._pending_action = "Calendar event"
+                    self.agent_tasks.update(
+                        agent_task_id,
+                        "waiting_approval",
+                        "Waiting for calendar event approval.",
+                    )
+                    self.events.emit(
+                        "action_approval_requested",
+                        **proposal.public_payload(),
+                    )
+                elif (
+                    calendar_result is not None
+                    and calendar_result.status == "input_required"
+                ):
+                    self.agent_tasks.update(
+                        agent_task_id,
+                        "input_required",
+                        calendar_result.message,
+                    )
+
         # Git writes use a deterministic snapshot and approval flow rather than
         # asking the language model to choose commands or files.
         if not use_screen_vision and route.intent in {
             "git_commit",
             "git_publish",
         }:
+            self.policy.get(
+                "git.push"
+                if route.intent == "git_publish"
+                else "git.commit"
+            )
             if self._pending_action:
                 forced_response = (
                     f"A {self._pending_action} proposal is already waiting in "
@@ -727,6 +1045,10 @@ class ChatEngine:
             "project_question",
             "project_edit",
         }:
+            if project_edit_requested:
+                self.policy.get("project.write")
+            else:
+                self.policy.get("project.read")
             if project_edit_requested and self._pending_action:
                 forced_response = (
                     f"A {self._pending_action} proposal is already waiting in "
@@ -1017,6 +1339,21 @@ class ChatEngine:
                 "assistant_interrupted",
                 text=reply,
             )
+            current_task = self.agent_tasks.get(agent_task_id)
+            if (
+                current_task is not None
+                and current_task.status not in {
+                    "waiting_approval",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                }
+            ):
+                self.agent_tasks.update(
+                    agent_task_id,
+                    "cancelled",
+                    "The user interrupted the active response.",
+                )
             with self._turn_lock:
                 if self._active_turn_cancel is turn_cancel:
                     self._active_turn_cancel = None
@@ -1134,6 +1471,17 @@ class ChatEngine:
                     f"{name}={duration:.2f}s"
                     for name, duration in timings.items()
                 )
+            )
+
+        current_task = self.agent_tasks.get(agent_task_id)
+        if (
+            current_task is not None
+            and current_task.status == "working"
+        ):
+            self.agent_tasks.update(
+                agent_task_id,
+                "completed",
+                "Agent returned its response.",
             )
 
         with self._turn_lock:
@@ -1502,16 +1850,16 @@ class ChatEngine:
             default=False,
             required=False,
         )
-        project_root = self.config.get(
+        if not enabled:
+            return
+
+        configured_root = self.config.get(
             "project_access",
             "project_root",
             default="",
             required=False,
         )
-
-        if not enabled:
-            return
-        if not str(project_root).strip():
+        if not str(configured_root).strip():
             print(
                 "[Project MCP] Disabled because project_root is empty in "
                 "config.yaml."
@@ -1519,6 +1867,11 @@ class ChatEngine:
             return
 
         try:
+            project_root = self.config.resolve_path(
+                "project_access",
+                "project_root",
+                must_exist=True,
+            )
             self.project_mcp = ProjectMCPManager(project_root)
             self.project_mcp.start()
             tool_count = len(self.project_mcp.ollama_tools())
@@ -1699,7 +2052,10 @@ class ChatEngine:
                     "locate and read the exact relevant source. For UI controls, "
                     "search identifiers using useful forms such as screen-button "
                     "or chat-toggle-button and inspect index.html before "
-                    "proposing an HTML change. If JavaScript behavior or styling "
+                    "proposing an HTML change. All tool paths and list_files "
+                    "directories must be relative to the configured project "
+                    "root; use '.' for the root and never send an absolute "
+                    "Windows path. If JavaScript behavior or styling "
                     "is requested, inspect those files too. If the user asks to "
                     "create or edit code, call propose_file_changes using this "
                     "shape:\n"
@@ -1750,6 +2106,9 @@ class ChatEngine:
         print(f"\n[Project MCP] Researching: {user_input}")
 
         for _ in range(max_rounds):
+            if self._turn_is_cancelled():
+                print("[Project MCP] Research cancelled.")
+                break
             try:
                 response = self.client.chat(
                     model=self.model,
@@ -1790,6 +2149,9 @@ class ChatEngine:
             should_finish = False
 
             for tool_call in tool_calls:
+                if self._turn_is_cancelled():
+                    should_finish = True
+                    break
                 name, arguments = self._parse_tool_call(tool_call)
 
                 if name == "finish_project_research":
@@ -1918,6 +2280,7 @@ class ChatEngine:
             and not proposal_created
             and evidence
             and source_file_read
+            and not self._turn_is_cancelled()
         ):
             proposal_tool = next(
                 (
@@ -1950,6 +2313,9 @@ class ChatEngine:
                 ]
 
                 for _ in range(2):
+                    if self._turn_is_cancelled():
+                        print("[Project MCP] Proposal generation cancelled.")
+                        break
                     try:
                         forced_response = self.client.chat(
                             model=self.model,
@@ -2251,10 +2617,121 @@ class ChatEngine:
             self._pending_action = ""
         return result
 
+    def resolve_agent_action(
+        self,
+        proposal_id: str,
+        approved: bool,
+    ) -> dict:
+        """Resolve an agent-install or calendar-write proposal."""
+        try:
+            proposal = self.approvals.resolve(
+                proposal_id,
+                approved,
+            )
+        except Exception as error:
+            result = {
+                "status": "error",
+                "message": f"{type(error).__name__}: {error}",
+            }
+            self.events.emit("action_approval_error", **result)
+            return result
+
+        task_id = str(proposal.payload.get("task_id", ""))
+        if not approved:
+            result = {
+                "status": "rejected",
+                "proposal_id": proposal.proposal_id,
+                "action": proposal.action,
+                "message": "The action was rejected. Nothing was changed.",
+            }
+            if self.agent_tasks.get(task_id) is not None:
+                self.agent_tasks.update(
+                    task_id,
+                    "cancelled",
+                    "The user rejected the action.",
+                )
+            self._pending_action = ""
+            self.events.emit("action_approval_rejected", **result)
+            return result
+
+        try:
+            if proposal.action == "agent.install":
+                installed = self.agent_registry.install_user_agent(
+                    proposal.payload["definition"]
+                )
+                credentials_ready, credential_message = (
+                    self.calendar_tool.readiness()
+                )
+                result = {
+                    "status": "completed",
+                    "proposal_id": proposal.proposal_id,
+                    "action": proposal.action,
+                    "message": (
+                        f"{installed.name} was installed. "
+                        + (
+                            "It is ready to prepare calendar events."
+                            if credentials_ready
+                            else (
+                                "Before its first event can be created, "
+                                + credential_message
+                            )
+                        )
+                    ),
+                    "agent_id": installed.id,
+                }
+            elif proposal.action == "calendar.create_event":
+                created = self.calendar_tool.create_event(
+                    calendar_id=str(
+                        proposal.payload["calendar_id"]
+                    ),
+                    event=dict(proposal.payload["event"]),
+                )
+                result = {
+                    "status": "completed",
+                    "proposal_id": proposal.proposal_id,
+                    "action": proposal.action,
+                    "message": (
+                        f"Created the calendar event "
+                        f"'{created['summary']}'."
+                    ),
+                    **created,
+                }
+            else:
+                raise PermissionError(
+                    f"Unsupported approved action: {proposal.action}"
+                )
+        except Exception as error:
+            result = {
+                "status": "error",
+                "proposal_id": proposal.proposal_id,
+                "action": proposal.action,
+                "message": f"{type(error).__name__}: {error}",
+            }
+            if self.agent_tasks.get(task_id) is not None:
+                self.agent_tasks.update(
+                    task_id,
+                    "failed",
+                    result["message"],
+                )
+            self._pending_action = ""
+            self.events.emit("action_approval_error", **result)
+            return result
+
+        if self.agent_tasks.get(task_id) is not None:
+            self.agent_tasks.update(
+                task_id,
+                "completed",
+                result["message"],
+            )
+        self._pending_action = ""
+        self.events.emit("action_approval_completed", **result)
+        self.audio.speak(result["message"])
+        return result
+
     def close(self) -> None:
         """Stop background services and active speech."""
+        self.cancel_active_turn()
         self.screen_monitor.stop()
-        self.audio.stop()
         if self.project_mcp is not None:
             self.project_mcp.close()
     

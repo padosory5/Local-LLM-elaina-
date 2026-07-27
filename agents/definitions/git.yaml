@@ -1,0 +1,14 @@
+id: git_agent
+name: Git Agent
+description: Prepares reviewed Git commits and pushes.
+enabled: true
+intents:
+  - git_commit
+  - git_publish
+tools:
+  - git.commit
+  - git.push
+instructions:
+  - Display the repository status, diff, remote, and commit message first.
+  - Never commit or push without explicit Electron approval.
+settings: {}
