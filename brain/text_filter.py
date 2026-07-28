@@ -75,3 +75,35 @@ class TextFilter:
         text = re.sub(r"[ \t]+", " ", text)
         text = re.sub(r"\s*\n+\s*", " ", text)
         return text.strip()
+
+    @classmethod
+    def for_voice_response(
+        cls,
+        text: str,
+        *,
+        max_words: int = 45,
+        max_sentences: int = 2,
+    ) -> str:
+        """Create plain, bounded prose for both Electron and TTS."""
+        text = cls.for_speech(text)
+        if not text:
+            return ""
+
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(
+                r"(?<=[.!?])\s+",
+                text,
+            )
+            if sentence.strip()
+        ]
+        if max_sentences > 0:
+            text = " ".join(sentences[:max_sentences])
+
+        words = text.split()
+        if max_words > 0 and len(words) > max_words:
+            text = " ".join(words[:max_words]).rstrip(",:;—-")
+            if not text.endswith((".", "!", "?")):
+                text += "."
+
+        return text.strip()

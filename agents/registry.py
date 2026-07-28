@@ -18,6 +18,34 @@ class AgentRegistry:
     allowed by Elaina.
     """
 
+    _BUILT_IN_CAPABILITY_NOTES = {
+        "agent_builder": (
+            "Can collect requirements and propose an agent from a reviewed "
+            "blueprint. It cannot invent a new executable tool or perform the "
+            "new agent's action before installation and approval."
+        ),
+        "coding_agent": (
+            "Can inspect the selected local project and prepare approval-gated "
+            "file changes. It cannot edit anything before approval."
+        ),
+        "conversation_agent": (
+            "Handles ordinary voice conversation, personality, memory, and "
+            "stable knowledge without performing external actions."
+        ),
+        "git_agent": (
+            "Can prepare reviewed Git commits and pushes. It cannot commit or "
+            "push before approval."
+        ),
+        "research_agent": (
+            "Can perform a current one-time web search or fact check. It "
+            "cannot keep monitoring something or send a future alert."
+        ),
+        "vision_agent": (
+            "Can analyze a screen region the user explicitly selects and use "
+            "web verification for identification."
+        ),
+    }
+
     def __init__(
         self,
         built_in_directory: Path | None = None,
@@ -66,6 +94,40 @@ class AgentRegistry:
 
     def all(self) -> tuple[AgentDefinition, ...]:
         return tuple(self._agents.values())
+
+    def capability_context(self) -> str:
+        """Describe only the agents that are active in this runtime."""
+        active_agents = sorted(
+            (
+                agent
+                for agent in self._agents.values()
+                if agent.enabled
+            ),
+            key=lambda agent: agent.name.casefold(),
+        )
+        lines = []
+        for agent in active_agents:
+            built_in_note = self._BUILT_IN_CAPABILITY_NOTES.get(agent.id)
+            if built_in_note:
+                lines.append(
+                    f"- {agent.name}: {built_in_note}"
+                )
+                continue
+
+            tools = (
+                ", ".join(agent.tools)
+                if agent.tools
+                else "conversation only"
+            )
+            lines.append(
+                f"- {agent.name}: {agent.description} "
+                f"Available tools: {tools}."
+            )
+
+        return (
+            "Elaina can currently delegate only to these active agents:\n"
+            + "\n".join(lines)
+        )
 
     def get(self, agent_id: str) -> AgentDefinition | None:
         agent = self._agents.get(str(agent_id).strip())

@@ -23,6 +23,7 @@ from tools.visual_search import VisualSearchTool
 from tools.project_mcp_client import ProjectMCPManager
 from config.loader import Config
 from brain.personality_loader import PersonalityLoader
+from brain.response_messages import build_personality_messages
 from datetime import datetime
 from vision.screen_monitor import ScreenMonitor
 from brain.intent_router import IntentDecision, SemanticIntentRouter
@@ -34,32 +35,6 @@ from agents.task_manager import AgentTaskManager
 from security.approval_manager import ApprovalManager
 from security.policy import PolicyEngine
 from tools.google_calendar import GoogleCalendarTool
-
-def extract_complete_sentences(
-    buffer: str,
-) -> tuple[list[str], str]:
-    sentences: list[str] = []
-
-    pattern = re.compile(
-        r'(.+?[.!?]+(?:["\')\]]+)?)(?=\s|$)',
-        re.DOTALL,
-    )
-
-    while True:
-        match = pattern.match(buffer)
-
-        if match is None:
-            break
-
-        sentence = match.group(1).strip()
-
-        if sentence:
-            sentences.append(sentence)
-
-        buffer = buffer[match.end():].lstrip()
-
-    return sentences, buffer
-
 
 class ChatEngine:
 
@@ -85,6 +60,37 @@ class ChatEngine:
             default=-1,
             required=False,
         )
+        self.response_max_words = int(self.config.get(
+            "responses",
+            "max_words",
+            default=45,
+            required=False,
+        ))
+        self.response_max_sentences = int(self.config.get(
+            "responses",
+            "max_sentences",
+            default=2,
+            required=False,
+        ))
+        self.detailed_response_max_words = int(self.config.get(
+            "responses",
+            "detailed_max_words",
+            default=220,
+            required=False,
+        ))
+        self.detailed_response_max_sentences = int(self.config.get(
+            "responses",
+            "detailed_max_sentences",
+            default=8,
+            required=False,
+        ))
+        self.status_max_words = int(self.config.get(
+            "responses",
+            "status_max_words",
+            default=10,
+            required=False,
+        ))
+        self._recent_work_statuses: deque[str] = deque(maxlen=5)
 
         self.vision_model = self.config.get(
             "vision",
@@ -262,7 +268,19 @@ class ChatEngine:
             "active_entity": self._active_entity,
             "entity_aliases": self._entity_aliases,
             "grounded_context": dict(self._grounded_context),
+            "available_agents": [
+                {
+                    "name": agent.name,
+                    "description": agent.description,
+                    "tools": list(agent.tools),
+                }
+                for agent in self.agent_registry.all()
+                if agent.enabled
+            ],
         }
+
+    def _capability_context(self) -> str:
+        return self.agent_registry.capability_context()
 
     def _grounded_context_text(self) -> str:
         subject = self._grounded_context.get("subject", "").strip()
@@ -306,6 +324,18 @@ class ChatEngine:
         return bool(re.search(
             r"\b(i am|i'm|i feel|i like|i love|i hate|i prefer|i want|"
             r"i need|i have|i live|i study|i work|my favorite|my project)\b",
+            normalized,
+        ))
+
+    @staticmethod
+    def _wants_detailed_response(user_input: str) -> bool:
+        """Reserve long voice answers for an explicit request for detail."""
+        normalized = " ".join(user_input.lower().split())
+        return bool(re.search(
+            r"\b(?:in detail|detailed explanation|explain fully|"
+            r"step[- ]by[- ]step|walk me through|complete list|full list|"
+            r"list (?:all|every)|all (?:the )?agents|be thorough|"
+            r"comprehensive)\b",
             normalized,
         ))
 
@@ -384,78 +414,219 @@ class ChatEngine:
         question: str,
         evidence: str = "",
     ) -> list[dict]:
+        """Build a grounded answer without replacing Elaina's personality."""
         grounded_context = self._grounded_context_text()
-        evidence_block = (
-            f"\n\nCURRENT RETRIEVED EVIDENCE\n{evidence}"
-            if evidence
-            else ""
-        )
-        grounded_block = (
-            f"\n\n{grounded_context}"
-            if grounded_context
-            else ""
-        )
-        return [
-            {
-                "role": "system",
-                "content": (
-                    "You are Elaina speaking naturally to the user. Answer the "
-                    "exact factual question directly and accurately, normally "
-                    "in one or two conversational sentences. This will be read "
-                    "aloud by TTS. Never use Markdown, headings, bullet points, "
-                    "bold, italics, stars, tables, or labels such as 'Answer:' "
-                    "and 'Confidence:'. Do not sound like a written report. "
-                    "Give enough detail for how, why, and example questions. "
-                    "Do not add greetings, emotional reassurance, time-of-day "
-                    "comments, promises to search later, offers for more help, "
-                    "or unrelated follow-up questions. Do not output raw URLs."
-                    f"{grounded_block}{evidence_block}"
-                ),
-            },
-            {
-                "role": "user",
-                "content": question,
-            },
-        ]
+        context_sections: list[tuple[str, str]] = []
+        if grounded_context:
+            context_sections.append((
+                "RECENT VERIFIED CONTEXT",
+                grounded_context,
+            ))
+        if evidence:
+            context_sections.append((
+                "CURRENT RETRIEVED EVIDENCE",
+                evidence,
+            ))
+        context_sections.append((
+            "CURRENTLY AVAILABLE AI AGENTS",
+            self._capability_context(),
+        ))
 
-    def _announce_work_status(self, intent: str) -> None:
-        """Immediately show and speak progress before a slower tool runs."""
-        status_by_intent = {
-            "web_search": (
-                "Sure, I'll search that now. Give me a second."
+        return build_personality_messages(
+            system_prompt=self.system_prompt,
+            history=self.conversation.get_history(),
+            user_input=question,
+            context_sections=context_sections,
+        )
+
+    def _build_tool_result_messages(
+        self,
+        user_input: str,
+        tool_result: str,
+    ) -> list[dict]:
+        """Let personality.txt phrase a trusted action result for the user."""
+        return build_personality_messages(
+            system_prompt=self.system_prompt,
+            history=self.conversation.get_history(),
+            user_input=user_input,
+            context_sections=(
+                ("TRUSTED TOOL RESULT", tool_result),
+                (
+                    "CURRENTLY AVAILABLE AI AGENTS",
+                    self._capability_context(),
+                ),
             ),
+        )
+
+    def _announce_work_status(
+        self,
+        intent: str,
+        user_input: str,
+    ) -> None:
+        """Use Ollama for one brief acknowledgement before slower work."""
+        work_by_intent = {
+            "web_search": "A one-time web search is starting.",
             "entity_correction": (
-                "Got it. I'll repeat the search with the corrected name."
+                "The web search is restarting with the corrected entity."
             ),
             "screen_analysis": (
-                "Got it. I'm analyzing the selected area now."
+                "The selected screen region is being analyzed."
             ),
             "project_question": (
-                "I'll check the relevant project files now."
+                "The Coding Agent is inspecting relevant project files."
             ),
             "project_edit": (
-                "I'll inspect the relevant files and prepare a change for "
-                "your approval."
+                "The Coding Agent is inspecting files and preparing a change "
+                "proposal. No file has changed yet."
             ),
             "git_commit": (
-                "I'll inspect the Git changes and prepare them for your "
-                "approval."
+                "The Git Agent is preparing a commit proposal. Nothing has "
+                "been committed yet."
             ),
             "git_publish": (
-                "I'll inspect the Git changes and prepare a push for your "
-                "approval."
+                "The Git Agent is preparing a commit and push proposal. "
+                "Nothing has been committed or pushed yet."
             ),
             "agent_create": (
-                "I'll check which capability and permissions that agent needs."
+                "The Agent Builder is checking requirements and permissions."
             ),
             "calendar_action": (
-                "I'll prepare the calendar event details for your approval."
+                "The Calendar Agent is preparing event details. Nothing has "
+                "been added yet."
             ),
         }
-        text = status_by_intent.get(intent, "")
-        if not text:
+        work = work_by_intent.get(intent, "")
+        if not work:
             return
 
+        recent = " | ".join(self._recent_work_statuses)
+        status_request = (
+            f"The user said: {user_input.strip()}\n"
+            f"Work beginning now: {work}\n"
+            "Give one casual acknowledgement in one sentence. Keep it under "
+            f"{self.status_max_words} words. Do not answer the request, use "
+            "formatting, or imply that the work already finished."
+        )
+        if recent:
+            status_request += (
+                "\nAvoid repeating these recent acknowledgements: "
+                f"{recent}"
+            )
+
+        fallbacks_by_intent = {
+            "web_search": (
+                "Okay, I'll check that now.",
+                "Sure, give me a second.",
+                "Got it, I'll look it up.",
+            ),
+            "entity_correction": (
+                "Got it, I'll search the corrected name.",
+                "Okay, I'll try that name instead.",
+                "Sure, I'll check the right name.",
+            ),
+            "screen_analysis": (
+                "Okay, I'll take a look.",
+                "Sure, let me check that.",
+                "Got it, I'm looking now.",
+            ),
+            "project_question": (
+                "Sure, I'll check the project.",
+                "Okay, let me inspect that.",
+                "Got it, I'll look through the files.",
+            ),
+            "project_edit": (
+                "Okay, I'll prepare that change for you.",
+                "Sure, let me work on that.",
+                "Got it, I'll set up the change.",
+            ),
+            "git_commit": (
+                "Sure, I'll prepare the commit.",
+                "Okay, let me check the Git changes.",
+                "Got it, I'll set up the commit.",
+            ),
+            "git_publish": (
+                "Okay, I'll prepare the push.",
+                "Sure, let me check the Git changes.",
+                "Got it, I'll set up the push.",
+            ),
+            "agent_create": (
+                "Sure, I'll check what that agent needs.",
+                "Okay, let me look into that agent.",
+                "Got it, I'll check the requirements.",
+            ),
+            "calendar_action": (
+                "Okay, I'll prepare the event.",
+                "Sure, let me set that up.",
+                "Got it, I'll check the event details.",
+            ),
+        }
+
+        text = ""
+        try:
+            response = self.client.chat(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": self.system_prompt,
+                    },
+                    {
+                        "role": "user",
+                        "content": status_request,
+                    },
+                ],
+                stream=False,
+                options={
+                    "temperature": max(float(self.temperature), 0.7),
+                    "num_predict": 24,
+                },
+                keep_alive=self.keep_alive,
+                think=False,
+            )
+            message = self._value(response, "message", {})
+            text = TextFilter.for_voice_response(
+                self._value(message, "content", ""),
+                max_words=self.status_max_words,
+                max_sentences=1,
+            )
+        except Exception as error:
+            print(
+                "[Status Generation Warning] "
+                f"{type(error).__name__}: {error}"
+            )
+
+        # A status must never turn a pending action into a false success claim.
+        completed_action = re.search(
+            r"\b(?:done|finished|completed|added|changed|edited|created|"
+            r"committed|pushed|scheduled|found it)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        repeated = bool(
+            text
+            and any(
+                text.casefold() == previous.casefold()
+                for previous in self._recent_work_statuses
+            )
+        )
+        if not text or completed_action or repeated:
+            recent_normalized = {
+                previous.casefold()
+                for previous in self._recent_work_statuses
+            }
+            fallbacks = fallbacks_by_intent[intent]
+            text = next(
+                (
+                    fallback
+                    for fallback in fallbacks
+                    if fallback.casefold() not in recent_normalized
+                ),
+                fallbacks[
+                    len(self._recent_work_statuses) % len(fallbacks)
+                ],
+            )
+
+        self._recent_work_statuses.append(text)
         print(f"[Status] Elaina: {text}")
         self.events.emit(
             "assistant_status",
@@ -564,9 +735,15 @@ class ChatEngine:
             intent=route.intent,
         )
         if route.intent == "fact_check" and route.search_query:
-            self._announce_work_status("web_search")
+            self._announce_work_status(
+                "web_search",
+                route.normalized_request,
+            )
         else:
-            self._announce_work_status(route.intent)
+            self._announce_work_status(
+                route.intent,
+                route.normalized_request,
+            )
 
         memory_started = time.perf_counter()
         use_memory = (
@@ -617,6 +794,26 @@ class ChatEngine:
             screen_text=screen_context,
             user_input=user_input,
         )
+        grounded_context = self._grounded_context_text()
+        if grounded_context and route.intent in {
+            "conversation",
+            "clarification",
+            "fact_check",
+        }:
+            context_prompt += (
+                "\n\nRECENT VERIFIED CONTEXT\n"
+                f"{grounded_context}"
+            )
+        if route.intent == "time_question":
+            context_prompt += (
+                "\n\nCURRENT LOCAL TIME CONTEXT\n"
+                f"{self.build_time_context()}"
+            )
+        context_prompt += (
+            "\n\nCURRENTLY AVAILABLE AI AGENTS\n"
+            f"{self._capability_context()}"
+        )
+
         ####################################################
         # Ask Qwen
         ####################################################
@@ -625,51 +822,6 @@ class ChatEngine:
             system_prompt=self.system_prompt,
             context_prompt=context_prompt,
         )
-        grounded_context = self._grounded_context_text()
-        if grounded_context and route.intent in {
-            "conversation",
-            "clarification",
-            "fact_check",
-        }:
-            messages.insert(
-                -1,
-                {
-                    "role": "system",
-                    "content": grounded_context,
-                },
-            )
-
-        if route.intent == "time_question":
-            messages.append({
-                "role": "system",
-                "content": self.build_time_context(),
-            })
-
-        if route.intent in {
-            "knowledge_question",
-            "selected_text_question",
-            "screen_analysis",
-            "project_question",
-            "project_edit",
-            "git_commit",
-            "git_publish",
-            "time_question",
-            "fact_check",
-            "agent_create",
-            "calendar_action",
-        }:
-            messages.append({
-                "role": "system",
-                "content": (
-                    "This is a factual or tool-focused turn. Answer the exact "
-                    "request directly. Do not mention the current hour, how "
-                    "early or late it is, or add unrelated conversational "
-                    "filler. Never claim a tool action succeeded unless the "
-                    "tool result says it succeeded. Keep simple answers short, "
-                    "but give enough detail to fully answer how or why "
-                    "questions."
-                ),
-            })
 
         if route.intent == "knowledge_question":
             messages = self._build_factual_messages(
@@ -1077,10 +1229,10 @@ class ChatEngine:
                         "No files were changed; check the project-tool log."
                     )
                 elif project_context:
-                    messages.append({
-                        "role": "system",
-                        "content": project_context,
-                    })
+                    messages[-1]["content"] += (
+                        "\n\nTRUSTED PROJECT TOOL RESULT\n"
+                        f"{project_context}"
+                    )
 
         if use_screen_vision and screen_snapshot is not None:
             visual_started = time.perf_counter()
@@ -1110,54 +1262,30 @@ class ChatEngine:
                 # Google has already searched the image itself. Use the faster,
                 # more reliable text model to synthesize that retrieved
                 # evidence instead of sending a large prompt back through VL.
-                messages = [
-                    {
-                        "role": "system",
-                        "content": (
-                            "IDENTIFICATION MODE\n"
-                            "Answer the current identification question using "
-                            "the verified reverse-image evidence below. Prefer "
-                            "matching-page titles, full/partial matches, and "
-                            "high-scoring web entities. Speak like a person, "
-                            "normally in one or two natural sentences. State "
-                            "the identity directly, then give only the most "
-                            "useful supporting detail. If uncertain, express "
-                            "that uncertainty naturally in the sentence. Never "
-                            "use Markdown, headings, bullets, stars, bold text, "
-                            "or separate Answer and Confidence labels.\n\n"
-                            f"{verification_context}"
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": user_input,
-                    },
-                ]
+                messages = self.conversation.build_messages(
+                    system_prompt=self.system_prompt,
+                    context_prompt=(
+                        "CURRENT USER MESSAGE\n"
+                        f"{user_input}\n\n"
+                        "VERIFIED REVERSE-IMAGE EVIDENCE\n"
+                        f"{verification_context}\n\n"
+                        "CURRENTLY AVAILABLE AI AGENTS\n"
+                        f"{self._capability_context()}"
+                    ),
+                )
             else:
                 messages = [
                     {
                         "role": "system",
-                        "content": (
-                            "VISION MODE\n"
-                            "Answer only the user's current question using the "
-                            "attached selected screen region. Read visible text "
-                            "carefully. If translation is requested, transcribe "
-                            "the source text and translate it directly. Do not "
-                            "discuss unrelated conversation history. If text is "
-                            "genuinely unreadable, say so instead of guessing. "
-                            "For translation, output only a concise translation "
-                            "and necessary source-text clarification. Do not add "
-                            "reactions, jokes, opinions, hype, or follow-up "
-                            "questions. Write one or two natural spoken "
-                            "sentences. Never use Markdown, headings, bullets, "
-                            "stars, bold text, tables, or report-style labels."
-                        ),
+                        "content": self.system_prompt,
                     },
                     {
                         "role": "user",
                         "content": (
                             f"{user_input}\n\n"
-                            f"{screen_context}"
+                            f"{screen_context}\n\n"
+                            "CURRENTLY AVAILABLE AI AGENTS\n"
+                            f"{self._capability_context()}"
                         ),
                         "images": [screen_snapshot.image_bytes],
                     },
@@ -1177,6 +1305,18 @@ class ChatEngine:
             else 0.1
         )
 
+        # Action handlers produce exact, trusted state such as "waiting for
+        # approval" or "nothing changed." The same language model now phrases
+        # that state through personality.txt instead of exposing a canned agent
+        # response. Keep the original result as a no-hallucination fallback.
+        tool_result_fallback = forced_response
+        if forced_response:
+            messages = self._build_tool_result_messages(
+                user_input=user_input,
+                tool_result=forced_response,
+            )
+            forced_response = ""
+
         # Notify the UI before waiting for Ollama's first token.
         print("[ChatEngine] Emitting assistant_started")
         self.events.emit("assistant_started")
@@ -1190,95 +1330,52 @@ class ChatEngine:
         reply = ""
         speech_buffer = ""
         tts_buffer = ""
-        tts_sentence_count = 0
         effective_forced_response = (
             forced_response or blocked_identification_reply
         )
+        detailed_response = self._wants_detailed_response(user_input)
+        max_words = (
+            self.detailed_response_max_words
+            if detailed_response
+            else self.response_max_words
+        )
+        max_sentences = (
+            self.detailed_response_max_sentences
+            if detailed_response
+            else self.response_max_sentences
+        )
+        num_predict = 320 if detailed_response else 100
 
-        def stream_answer(*, allow_thinking: bool) -> None:
-            """Stream one Ollama response into this turn's output buffers."""
-            nonlocal reply, speech_buffer, tts_buffer, tts_sentence_count
-
+        def collect_answer() -> str:
+            """Collect locally streamed tokens before publishing clean speech."""
+            parts: list[str] = []
             response_stream = self.client.chat(
                 model=active_model,
                 messages=messages,
                 stream=True,
                 options={
                     "temperature": active_temperature,
+                    "num_predict": num_predict,
                 },
                 keep_alive=active_keep_alive,
-                think=allow_thinking,
+                think=False,
             )
-
             for chunk in response_stream:
                 if turn_cancel.is_set():
                     break
-
                 message = chunk.get("message")
-                if not message:
-                    continue
-
-                content = message.get("content", "")
-                content = TextFilter.clean(content)
-
-                if not content:
-                    continue
-
-                print(
-                    content,
-                    end="",
-                    flush=True,
-                )
-
-                reply += content
-                speech_buffer += content
-
-                # Send this exact streamed chunk to Electron.
-                self.events.emit(
-                    "assistant_stream",
-                    text=content,
-                )
-
-                complete_sentences, speech_buffer = (
-                    extract_complete_sentences(
-                        speech_buffer
-                    )
-                )
-
-                for sentence in complete_sentences:
-                    tts_buffer += " " + sentence
-                    tts_sentence_count += 1
-
-                    if (
-                        tts_sentence_count >= 2
-                        or len(tts_buffer) >= 180
-                    ):
-                        self.audio.speak(
-                            tts_buffer.strip()
-                        )
-
-                        tts_buffer = ""
-                        tts_sentence_count = 0
+                if message:
+                    parts.append(str(message.get("content", "")))
+            return "".join(parts)
 
         generation_started = time.perf_counter()
         try:
             if effective_forced_response:
                 # Verification failures are enforced here instead of asking
                 # the vision model to voluntarily avoid a confident guess.
-                print(
-                    effective_forced_response,
-                    end="",
-                    flush=True,
-                )
-                reply = effective_forced_response
-                speech_buffer = effective_forced_response
-                self.events.emit(
-                    "assistant_stream",
-                    text=effective_forced_response,
-                )
+                raw_reply = effective_forced_response
             else:
-                # Fast path: suppress the model's reasoning tokens.
-                stream_answer(allow_thinking=False)
+                raw_reply = collect_answer()
 
             # Some Ollama/Qwen3-VL combinations return an empty streamed
             # content field. Retry once with Ollama's documented non-streaming
@@ -1286,19 +1383,19 @@ class ChatEngine:
             if (
                 uses_vision_model
                 and not effective_forced_response
-                and not reply.strip()
+                and not str(raw_reply).strip()
             ):
                 print(
                     "\n[Vision] The streamed response was empty; retrying "
                     "with the direct vision request..."
                 )
-                print("Elaina: ", end="", flush=True)
                 direct_response = self.client.chat(
                     model=active_model,
                     messages=messages,
                     stream=False,
                     options={
                         "temperature": active_temperature,
+                        "num_predict": num_predict,
                     },
                     keep_alive=active_keep_alive,
                     think=False,
@@ -1308,26 +1405,28 @@ class ChatEngine:
                     "message",
                     {},
                 )
-                direct_content = TextFilter.clean(
-                    self._value(
-                        direct_message,
-                        "content",
-                        "",
-                    )
+                raw_reply = self._value(
+                    direct_message,
+                    "content",
+                    "",
                 )
 
-                if direct_content:
-                    print(
-                        direct_content,
-                        end="",
-                        flush=True,
-                    )
-                    reply = direct_content
-                    speech_buffer = direct_content
-                    self.events.emit(
-                        "assistant_stream",
-                        text=direct_content,
-                    )
+            reply = TextFilter.for_voice_response(
+                raw_reply,
+                max_words=max_words,
+                max_sentences=max_sentences,
+            )
+            speech_buffer = reply
+            if reply:
+                print(
+                    reply,
+                    end="",
+                    flush=True,
+                )
+                self.events.emit(
+                    "assistant_stream",
+                    text=reply,
+                )
 
         except Exception as error:
             print(f"\n[Vision/LLM Error] {type(error).__name__}: {error}")
@@ -1361,7 +1460,13 @@ class ChatEngine:
 
         # Never silently return to microphone listening after a failed request.
         if not reply.strip():
-            if uses_vision_model:
+            if tool_result_fallback:
+                reply = TextFilter.for_voice_response(
+                    tool_result_fallback,
+                    max_words=max_words,
+                    max_sentences=max_sentences,
+                )
+            elif uses_vision_model:
                 reply = (
                     "I couldn't analyze the screen. Please check that the "
                     f"Ollama model '{self.vision_model}' is installed and "

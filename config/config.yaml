@@ -132,6 +132,22 @@ language:
 
 
 ############################################################
+# Voice Response Length
+############################################################
+
+responses:
+  # Normal voice answers stay compact. Detailed limits apply only when the
+  # user explicitly asks for a detailed, complete, or step-by-step answer.
+  max_words: 45
+  max_sentences: 2
+  detailed_max_words: 220
+  detailed_max_sentences: 8
+
+  # Short Ollama-generated acknowledgement before a slower agent starts.
+  status_max_words: 10
+
+
+############################################################
 # Semantic Routing Safety
 ############################################################
 
@@ -267,8 +283,15 @@ vad:
     start_timeout_seconds: 15
     maximum_recording_seconds: 30
 
-    # Use null to let SoundDevice choose the default input.
+    # A numeric index overrides the name-based selection below. Keep this null
+    # because Windows device indices can change after a reboot.
     device_index: null
+
+    # Select the headset microphone through WASAPI. Elaina captures at the
+    # device's native rate and resamples to Silero's 16 kHz automatically.
+    device_name: "PRO X 2 LIGHTSPEED"
+    preferred_host_api: "Windows WASAPI"
+    capture_sample_rate: null
 
 
 ############################################################

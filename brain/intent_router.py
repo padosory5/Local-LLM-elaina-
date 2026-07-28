@@ -243,6 +243,24 @@ class SemanticIntentRouter:
                     )
                 elif self.safety_mode == "enforce":
                     decision = safe_decision
+                if (
+                    decision.intent == "knowledge_question"
+                    and self._is_subjective_advice_request(routed_input)
+                ):
+                    decision = replace(
+                        decision,
+                        intent="conversation",
+                        confidence=max(decision.confidence, 0.95),
+                        normalized_request=user_input.strip(),
+                        reason=(
+                            "An opinion or personal-value question belongs in "
+                            "conversation, not the factual report path."
+                        ),
+                        search_query="",
+                        speech_act="advice",
+                        action_requested=False,
+                        action_target="",
+                    )
                 grounded = dict(state.get("grounded_context", {}))
                 if (
                     grounded.get("statement")
@@ -420,6 +438,18 @@ class SemanticIntentRouter:
             r"you got that wrong)\b",
             user_input,
             flags=re.IGNORECASE,
+        ))
+
+    @staticmethod
+    def _is_subjective_advice_request(user_input: str) -> bool:
+        """Recognize requests for Elaina's judgment rather than a fact report."""
+        normalized = " ".join(user_input.lower().split())
+        return bool(re.search(
+            r"\b(?:do you think|what do you think|in your opinion)\b|"
+            r"\b(?:is|are|was|were)\s+.+\s+worth\s+(?:it|doing|going|"
+            r"studying|buying|trying)\b|"
+            r"\b(?:would|should)\s+i\b",
+            normalized,
         ))
 
     @classmethod
@@ -643,7 +673,10 @@ class SemanticIntentRouter:
             "- conversation: ordinary dialogue or stable knowledge that needs "
             "no factual explanation. This includes statements such as 'I'm "
             "continuing my project tonight' because they describe the user's "
-            "activity rather than delegating an edit.\n"
+            "activity rather than delegating an edit. Questions asking for "
+            "Elaina's opinion, personal judgment, advice, or whether something "
+            "is worth doing also use conversation, even when a university, "
+            "product, career, or other factual entity is mentioned.\n"
             "- clarification: only when a write/action request is genuinely "
             "ambiguous. Never execute writes from this router.\n"
             "An attached screen selection strongly implies screen_analysis "
