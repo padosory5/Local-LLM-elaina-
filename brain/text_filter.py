@@ -67,7 +67,19 @@ class TextFilter:
             "",
             text,
         )
-        text = re.sub(r"(?m)^\s*\d+[.)]\s+", "", text)
+
+        # A numbered Markdown list ("1. Item\n2. Item") should lose its
+        # markers, but a literal numeric answer at the very start of a reply
+        # ("4. You're welcome...") is not a list and must survive. Only treat
+        # the pattern as list formatting when it repeats or appears after
+        # other text, never when it is the first thing in the whole reply.
+        list_marker_pattern = re.compile(r"(?m)^\s*\d+[.)]\s+")
+        list_marker_matches = list(list_marker_pattern.finditer(text))
+        if len(list_marker_matches) >= 2 or (
+            len(list_marker_matches) == 1
+            and list_marker_matches[0].start() > 0
+        ):
+            text = list_marker_pattern.sub("", text)
 
         # Underscores are useful on screen for identifiers, but a speech
         # engine should pause between their words instead of saying "underscore."
@@ -111,37 +123,47 @@ class TextFilter:
             )
             if sentence.strip()
         ]
-        if max_sentences > 0:
-            sentences = sentences[:max_sentences]
 
-        if max_words > 0:
-            selected: list[str] = []
-            selected_words = 0
-            for sentence in sentences:
-                sentence_words = sentence.split()
-                if selected and selected_words + len(sentence_words) > max_words:
-                    break
-                if not selected and len(sentence_words) > max_words:
-                    shortened = " ".join(sentence_words[:max_words])
-                    # Prefer ending at a natural clause boundary when one is
-                    # available instead of cutting a report mid-thought.
-                    clause_end = max(
-                        shortened.rfind(","),
-                        shortened.rfind(";"),
-                        shortened.rfind(":"),
-                        shortened.rfind("—"),
-                    )
-                    if clause_end >= len(shortened) // 2:
-                        shortened = shortened[:clause_end]
-                    shortened = shortened.rstrip(",:;—- ")
-                    if not shortened.endswith((".", "!", "?")):
-                        shortened += "."
-                    selected.append(shortened)
-                    break
-                selected.append(sentence)
-                selected_words += len(sentence_words)
-            text = " ".join(selected)
-        else:
-            text = " ".join(sentences)
+        if max_words <= 0:
+            if max_sentences > 0:
+                sentences = sentences[:max_sentences]
+            return " ".join(sentences).strip()
 
-        return text.strip()
+        selected: list[str] = []
+        selected_words = 0
+        for sentence in sentences:
+            sentence_words = sentence.split()
+
+            if max_sentences > 0 and len(selected) >= max_sentences:
+                # A short trailing question ("Need help with that?") keeps a
+                # reply from ending mid-thought. Let it through if the word
+                # budget still has room instead of dropping it outright.
+                is_short_follow_up_question = (
+                    sentence.endswith("?") and len(sentence_words) <= 8
+                )
+                if not is_short_follow_up_question:
+                    break
+
+            if selected and selected_words + len(sentence_words) > max_words:
+                break
+            if not selected and len(sentence_words) > max_words:
+                shortened = " ".join(sentence_words[:max_words])
+                # Prefer ending at a natural clause boundary when one is
+                # available instead of cutting a report mid-thought.
+                clause_end = max(
+                    shortened.rfind(","),
+                    shortened.rfind(";"),
+                    shortened.rfind(":"),
+                    shortened.rfind("—"),
+                )
+                if clause_end >= len(shortened) // 2:
+                    shortened = shortened[:clause_end]
+                shortened = shortened.rstrip(",:;—- ")
+                if not shortened.endswith((".", "!", "?")):
+                    shortened += "."
+                selected.append(shortened)
+                break
+            selected.append(sentence)
+            selected_words += len(sentence_words)
+
+        return " ".join(selected).strip()

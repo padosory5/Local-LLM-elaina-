@@ -1,10 +1,17 @@
 import os
 import subprocess
+import sys
 import threading
 import _thread
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+# Elaina's replies naturally include characters such as em dashes and curly
+# quotes. On a non-UTF-8 console codepage (e.g. cp949 on Korean Windows),
+# printing them would otherwise raise UnicodeEncodeError mid-turn.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Load local API keys and credential paths before creating ChatEngine.
 load_dotenv()

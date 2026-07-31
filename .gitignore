@@ -30,3 +30,4 @@ runtime/database/*.index
 Thumbs.db
 .vscode/
 .idea/
+.claude/
