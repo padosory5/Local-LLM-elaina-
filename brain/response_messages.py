@@ -18,7 +18,10 @@ def build_personality_messages(
     ]
     sections.append(
         "CURRENT USER MESSAGE\n"
-        f"{user_input.strip()}"
+        f"{user_input.strip()}\n"
+        "Answer this current message. Use older turns only when they are "
+        "actually relevant. Do not repeat the previous answer merely because "
+        "it appears in history."
     )
 
     return [

@@ -8,6 +8,8 @@ from typing import Any
 
 ALLOWED_INTENTS = {
     "conversation",
+    "agent_offer",
+    "agent_consent",
     "web_search",
     "project_question",
     "project_edit",
@@ -23,6 +25,19 @@ ALLOWED_INTENTS = {
     "entity_correction",
     "fact_check",
     "clarification",
+}
+
+ACTION_INTENTS = {
+    "web_search",
+    "project_question",
+    "project_edit",
+    "git_commit",
+    "git_publish",
+    "screen_analysis",
+    "agent_create",
+    "calendar_action",
+    "entity_correction",
+    "fact_check",
 }
 
 
@@ -41,6 +56,9 @@ class IntentDecision:
     action_requested: bool = False
     action_target: str = ""
     topic_shift: bool = False
+    consent_decision: str = ""
+    offered_intent: str = ""
+    offered_request: str = ""
 
 
 class SemanticIntentRouter:
@@ -188,6 +206,53 @@ class SemanticIntentRouter:
                 "",
             )
             decision = self._parse_decision(raw_content, routed_input)
+            if decision is None:
+                print(
+                    "[Router] Invalid structured output; retrying once in "
+                    "JSON repair mode."
+                )
+                repair_response = self.client.chat(
+                    model=self.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "Repair an intent-router response. Return one "
+                                "valid JSON object only. Required keys: "
+                                "intent, confidence, normalized_request, "
+                                "reason, search_query, topic, entity, aliases, "
+                                "is_follow_up, speech_act, action_requested, "
+                                "action_target, topic_shift, consent_decision, "
+                                "offered_intent, offered_request. Intent must "
+                                "be one of: "
+                                + ", ".join(sorted(ALLOWED_INTENTS))
+                                + ". Do not answer the user."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Current transcript: {routed_input}\n"
+                                "Invalid response:\n"
+                                f"{str(raw_content)[:1200]}"
+                            ),
+                        },
+                    ],
+                    stream=False,
+                    format="json",
+                    options={"temperature": 0, "num_predict": 180},
+                    keep_alive=self.keep_alive,
+                    think=False,
+                )
+                repair_content = self._value(
+                    self._value(repair_response, "message", {}),
+                    "content",
+                    "",
+                )
+                decision = self._parse_decision(
+                    repair_content,
+                    routed_input,
+                )
             if decision is not None:
                 if (
                     decision.intent not in {"agent_create", "pending_approval"}
@@ -244,8 +309,52 @@ class SemanticIntentRouter:
                 elif self.safety_mode == "enforce":
                     decision = safe_decision
                 if (
-                    decision.intent == "knowledge_question"
-                    and self._is_subjective_advice_request(routed_input)
+                    decision.intent in ACTION_INTENTS
+                    and decision.speech_act == "action_request"
+                ):
+                    decision = replace(
+                        decision,
+                        action_requested=True,
+                    )
+                if (
+                    decision.intent == "agent_offer"
+                    and decision.speech_act == "action_request"
+                    and decision.offered_intent in ACTION_INTENTS
+                ):
+                    direct_intent = decision.offered_intent
+                    direct_request = (
+                        decision.offered_request
+                        or decision.normalized_request
+                    )
+                    decision = replace(
+                        decision,
+                        intent=direct_intent,
+                        normalized_request=direct_request,
+                        reason=(
+                            "The user directly requested this agent action; "
+                            "the request itself grants permission to start."
+                        ),
+                        search_query=(
+                            decision.search_query or direct_request
+                            if direct_intent == "web_search"
+                            else decision.search_query
+                        ),
+                        action_requested=True,
+                        offered_intent="",
+                        offered_request="",
+                    )
+                if (
+                    decision.intent in {
+                        "knowledge_question",
+                        "project_question",
+                        "project_edit",
+                        "agent_offer",
+                        "agent_create",
+                    }
+                    and (
+                        decision.speech_act == "advice"
+                        or self._is_subjective_advice_request(routed_input)
+                    )
                 ):
                     decision = replace(
                         decision,
@@ -482,10 +591,21 @@ class SemanticIntentRouter:
         active_topic = str(
             conversation_state.get("active_topic", "")
         ).lower()
-        asks_for_advice = bool(re.search(
+        asks_for_advice = (
+            decision.speech_act == "advice"
+            or bool(re.search(
             r"\b(?:what|which)\s+should\s+(?:i|we)\b|"
             r"\bwhat\s+should\s+(?:be\s+)?(?:add|change|improve)|"
             r"\b(?:recommend|suggest|any ideas)\b",
+            normalized,
+            ))
+        )
+        personal_work_status = bool(re.search(
+            r"\b(?:i am|i'm|im|i was|i'll|i will|i'm gonna|"
+            r"i am going to)\s+(?:keep\s+)?(?:work|working|edit|editing|"
+            r"build|building|continue|continuing)\b|"
+            r"\b(?:back on|continue|continuing)\b.*\bproject\b|"
+            r"\bproject\b.*\b(?:continue|continuing)\b",
             normalized,
         ))
         project_context = bool(re.search(
@@ -493,14 +613,29 @@ class SemanticIntentRouter:
             normalized,
         )) or "project" in active_topic
 
-        safe_intent = (
-            "project_question"
-            if asks_for_advice and project_context
-            else "conversation"
-        )
+        if project_context and not asks_for_advice and not personal_work_status:
+            return replace(
+                decision,
+                intent="agent_offer",
+                normalized_request=original_input.strip(),
+                reason=(
+                    "The user described a concrete project problem but did "
+                    "not authorize an edit, so Coding Agent help is optional."
+                ),
+                search_query="",
+                action_requested=False,
+                action_target="",
+                offered_intent="project_edit",
+                offered_request=(
+                    decision.offered_request
+                    or decision.normalized_request
+                    or original_input.strip()
+                ),
+            )
+
         return replace(
             decision,
-            intent=safe_intent,
+            intent="conversation",
             normalized_request=original_input.strip(),
             reason=(
                 "Safety policy downgraded project_edit because the user did "
@@ -609,12 +744,16 @@ class SemanticIntentRouter:
             "selected_text_attached": has_selected_text,
             "project_tools_available": project_tools_available,
             "pending_action": pending_action,
+            "pending_agent_offer": conversation_state.get(
+                "pending_agent_offer"
+            ),
         }
 
         return (
             "You are Elaina's semantic intent router. Choose exactly one "
             "intent from this allowlist:\n"
-            "conversation, web_search, project_question, project_edit, "
+            "conversation, agent_offer, agent_consent, web_search, "
+            "project_question, project_edit, "
             "git_commit, git_publish, screen_analysis, "
             "selected_text_question, knowledge_question, time_question, "
             "pending_approval, agent_create, calendar_action, "
@@ -632,6 +771,23 @@ class SemanticIntentRouter:
             "the model, the person, and short follow-ups from conversation "
             "state. A correction such as 'Q W E N' means Qwen.\n\n"
             "Routing rules:\n"
+            "- agent_offer: the user expresses a concrete problem, desire, or "
+            "dissatisfaction that an available specialist could help with, "
+            "but does not ask Elaina to perform the work. Do not invoke the "
+            "agent. Set offered_intent to the relevant specialist intent and "
+            "offered_request to a concrete proposed task. Example: 'The "
+            "buttons in this project look boring' may offer project_edit. A "
+            "general life update such as 'I'm working on my project tonight' "
+            "does not justify an offer.\n"
+            "- agent_consent: use only when pending_agent_offer is present and "
+            "the new message responds to that exact offer. Decide its meaning "
+            "semantically from the offer and recent exchange, not from a list "
+            "of yes/no phrases. Set consent_decision to accept, reject, "
+            "modify, or unclear. For modify, put the complete revised task in "
+            "offered_request. Replies such as 'sure', 'yeah let's do that', "
+            "and 'let's go for it' often accept in the right context, but the "
+            "same words may mean something else in another context. If the "
+            "user changes topics, route the new topic normally instead.\n"
             "- git_publish: commit/upload/push current code to Git or GitHub.\n"
             "- git_commit: commit locally without requesting a push.\n"
             "- project_edit: create, edit, fix, delete, or modify project files.\n"
@@ -640,6 +796,9 @@ class SemanticIntentRouter:
             "to work on is conversation. Asking what they should add or asking "
             "for ideas is project_question, not project_edit.\n"
             "- project_question: inspect or explain the user's local project.\n"
+            "  Use it only when the user directly asks Elaina to inspect or "
+            "read project files. Asking for an opinion, recommendation, or a "
+            "choice such as Live2D versus 3D is conversation.\n"
             "- screen_analysis: answer from an attached selection or inspect "
             "visible screen content.\n"
             "- selected_text_question: answer about copied/highlighted text.\n"
@@ -649,6 +808,10 @@ class SemanticIntentRouter:
             "current information, or asks about a specific person/entity that "
             "may require factual lookup. Also use it for release dates and "
             "similarly time-sensitive product or media facts.\n"
+            "  A direct request such as 'Can you search for when Elon Musk "
+            "was born?' is already permission: use web_search with "
+            "speech_act action_request and action_requested true. Do not ask "
+            "whether to use Research Agent a second time.\n"
             "- time_question: only asks for the user's current local clock "
             "time, today's date/day, or current year. Never use it for a game "
             "release, publication, launch, historical event, or product date.\n"
@@ -663,7 +826,9 @@ class SemanticIntentRouter:
             "in Electron.\n"
             "- agent_create: the user directly asks Elaina to create, install, "
             "or configure a new AI agent or capability. Do not use this merely "
-            "because the user discusses agents.\n"
+            "because the user discusses agents. Never suggest Agent Builder "
+            "for creating avatars, images, UI assets, documents, or arbitrary "
+            "code; it only supports reviewed agent blueprints.\n"
             "- calendar_action: the user asks Elaina to create or add an event, "
             "class, appointment, reminder, or other schedule entry in Google "
             "Calendar. Asking for scheduling advice without requesting a "
@@ -677,15 +842,23 @@ class SemanticIntentRouter:
             "Elaina's opinion, personal judgment, advice, or whether something "
             "is worth doing also use conversation, even when a university, "
             "product, career, or other factual entity is mentioned.\n"
+            "  If the user is choosing between options or asking what you "
+            "recommend, answer conversationally without offering an agent "
+            "unless they explicitly ask you to inspect external information.\n"
             "- clarification: only when a write/action request is genuinely "
             "ambiguous. Never execute writes from this router.\n"
             "An attached screen selection strongly implies screen_analysis "
             "unless the user clearly asks for another action. A request to add "
             "a UI control beside the Screen button is project_edit, not vision.\n\n"
+            "A specialist intent may execute only when action_requested is "
+            "true because the user directly requested it, or after a pending "
+            "offer is semantically accepted. Merely noticing a problem is not "
+            "permission.\n\n"
             "Return one JSON object only with: intent, confidence from 0 to 1, "
             "normalized_request, reason, search_query, topic, entity, aliases, "
             "is_follow_up, speech_act, action_requested, action_target, and "
-            "topic_shift. speech_act is one of social, statement, advice, "
+            "topic_shift, consent_decision, offered_intent, and "
+            "offered_request. speech_act is one of social, statement, advice, "
             "information_request, action_request, correction, or "
             "approval_response. Always provide the current conversational "
             "topic, including for ordinary conversation. action_requested is "
@@ -694,7 +867,9 @@ class SemanticIntentRouter:
             "true when the latest exchange establishes a newer topic than the "
             "stored active topic. search_query must be self-contained for "
             "web_search and include the resolved canonical entity; otherwise "
-            "use an empty string. Do not answer the user's question.\n\n"
+            "use an empty string. consent_decision, offered_intent, and "
+            "offered_request must be empty unless their agent routing rule "
+            "requires them. Do not answer the user's question.\n\n"
             f"Runtime state: {json.dumps(state)}\n"
             "Conversation state:\n"
             f"{json.dumps(conversation_state, ensure_ascii=False)}\n"
@@ -748,6 +923,15 @@ class SemanticIntentRouter:
             action_requested=bool(payload.get("action_requested", False)),
             action_target=str(payload.get("action_target", "")).strip(),
             topic_shift=bool(payload.get("topic_shift", False)),
+            consent_decision=str(
+                payload.get("consent_decision", "")
+            ).strip().lower(),
+            offered_intent=str(
+                payload.get("offered_intent", "")
+            ).strip(),
+            offered_request=str(
+                payload.get("offered_request", "")
+            ).strip(),
         )
 
     @staticmethod

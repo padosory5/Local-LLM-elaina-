@@ -124,11 +124,35 @@ class SpeechToText:
             default=None,
             required=False,
         )
+        self.device_name = config.get(
+            "vad",
+            "silero",
+            "device_name",
+            default=None,
+            required=False,
+        )
+        self.preferred_host_api = config.get(
+            "vad",
+            "silero",
+            "preferred_host_api",
+            default=None,
+            required=False,
+        )
+        self.capture_sample_rate = config.get(
+            "vad",
+            "silero",
+            "capture_sample_rate",
+            default=None,
+            required=False,
+        )
         self.using_gpu = False
 
         self.vad = VoiceActivityDetector(
             sample_rate=self.sample_rate,
             device_index=self.device_index,
+            device_name=self.device_name,
+            preferred_host_api=self.preferred_host_api,
+            capture_sample_rate=self.capture_sample_rate,
             threshold=float(config.get(
                 "vad",
                 "silero",
@@ -162,6 +186,7 @@ class SpeechToText:
         )
 
         self._load_model()
+        self.vad.start()
 
     def _load_model(self) -> None:
         if self.preferred_device == "cpu":
@@ -280,6 +305,10 @@ class SpeechToText:
                 os.remove(wav_path)
             except OSError:
                 pass
+
+    def close(self) -> None:
+        """Close the microphone stream when the application shuts down."""
+        self.vad.close()
 
     @staticmethod
     def _looks_like_tts_echo(transcript: str, spoken_text: str) -> bool:

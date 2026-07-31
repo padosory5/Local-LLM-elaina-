@@ -160,6 +160,92 @@ class SemanticIntentRouterTests(unittest.TestCase):
 
         self.assertEqual(result.intent, "pending_approval")
 
+    def test_casual_problem_can_become_agent_offer_without_permission(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "agent_offer",
+                "confidence": 0.97,
+                "normalized_request": "The project buttons look boring.",
+                "reason": "A coding agent could help, but no edit was asked.",
+                "speech_act": "statement",
+                "action_requested": False,
+                "offered_intent": "project_edit",
+                "offered_request": "Redesign the project's buttons.",
+                "consent_decision": "",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("The buttons on this project look boring.")
+
+        self.assertEqual(result.intent, "agent_offer")
+        self.assertFalse(result.action_requested)
+        self.assertEqual(result.offered_intent, "project_edit")
+
+    def test_varied_acceptance_is_a_semantic_router_decision(self):
+        for transcript in (
+            "Sure.",
+            "Yeah, let's do that.",
+            "Let's go for it.",
+        ):
+            with self.subTest(transcript=transcript):
+                router = SemanticIntentRouter(
+                    FakeClient({
+                        "intent": "agent_consent",
+                        "confidence": 0.98,
+                        "normalized_request": transcript,
+                        "reason": (
+                            "The reply accepts the pending offer in context."
+                        ),
+                        "speech_act": "approval_response",
+                        "action_requested": False,
+                        "consent_decision": "accept",
+                        "offered_intent": "",
+                        "offered_request": "",
+                    }),
+                    "qwen3:8b",
+                )
+
+                result = router.route(
+                    transcript,
+                    conversation_state={
+                        "pending_agent_offer": {
+                            "intent": "project_edit",
+                            "request": "Redesign the project's buttons.",
+                        },
+                    },
+                )
+
+                self.assertEqual(result.intent, "agent_consent")
+                self.assertEqual(result.consent_decision, "accept")
+
+    def test_topic_change_does_not_accept_pending_offer(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "conversation",
+                "confidence": 0.99,
+                "normalized_request": "What should I eat tonight?",
+                "reason": "The user changed to an unrelated topic.",
+                "topic": "dinner",
+                "topic_shift": True,
+                "consent_decision": "",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Actually, what should I eat tonight?",
+            conversation_state={
+                "pending_agent_offer": {
+                    "intent": "project_edit",
+                    "request": "Redesign the project's buttons.",
+                },
+            },
+        )
+
+        self.assertEqual(result.intent, "conversation")
+        self.assertTrue(result.topic_shift)
+
     def test_explicit_spelling_is_authoritative(self):
         router = SemanticIntentRouter(
             self.MustNotRunClient(),
@@ -281,6 +367,33 @@ class SemanticIntentRouterTests(unittest.TestCase):
         self.assertIn("Marathon", result.search_query)
         self.assertIn("release date", result.search_query)
 
+    def test_worth_it_question_is_conversation_not_factual_report(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "knowledge_question",
+                "confidence": 0.95,
+                "normalized_request": (
+                    "Is it worth studying engineering at the "
+                    "University of Washington?"
+                ),
+                "reason": "The user asks for an evaluation.",
+                "search_query": "",
+                "topic": "University of Washington engineering",
+                "entity": "University of Washington",
+                "aliases": [],
+                "is_follow_up": True,
+                "speech_act": "information_request",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Do you think it's worth it to go there to study engineering?"
+        )
+
+        self.assertEqual(result.intent, "conversation")
+        self.assertEqual(result.speech_act, "advice")
+
     def test_current_clock_question_remains_time_question(self):
         router = SemanticIntentRouter(
             FakeClient({
@@ -384,6 +497,132 @@ class SemanticIntentRouterTests(unittest.TestCase):
         self.assertEqual(result.intent, "conversation")
         self.assertFalse(result.action_requested)
 
+    def test_button_complaint_becomes_tracked_optional_offer(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "project_edit",
+                "confidence": 0.95,
+                "normalized_request": "Improve the project button design.",
+                "reason": "The user dislikes the button design.",
+                "topic": "project button design",
+                "speech_act": "statement",
+                "action_requested": False,
+                "action_target": "button design",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "I think the buttons on this project look boring."
+        )
+
+        self.assertEqual(result.intent, "agent_offer")
+        self.assertEqual(result.offered_intent, "project_edit")
+        self.assertFalse(result.action_requested)
+
+    def test_direct_search_request_is_already_authorized(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "web_search",
+                "confidence": 0.95,
+                "normalized_request": "Search for Elon Musk's birth date.",
+                "reason": "The user directly asked for a search.",
+                "search_query": "Elon Musk birth date",
+                "speech_act": "action_request",
+                "action_requested": False,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Can you search for when Elon Musk was born?"
+        )
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.action_requested)
+
+    def test_mislabeled_direct_search_offer_is_recovered(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "agent_offer",
+                "confidence": 0.95,
+                "normalized_request": "Search for Elon Musk's birth date.",
+                "reason": "Research Agent can search.",
+                "speech_act": "action_request",
+                "action_requested": False,
+                "offered_intent": "web_search",
+                "offered_request": "Search for Elon Musk's birth date.",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Can you search for when Elon Musk was born?"
+        )
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.action_requested)
+
+    def test_avatar_choice_does_not_offer_agent_builder(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "agent_offer",
+                "confidence": 0.95,
+                "normalized_request": "Recommend Live2D or a 3D avatar.",
+                "reason": "The user wants avatar advice.",
+                "speech_act": "advice",
+                "action_requested": False,
+                "offered_intent": "agent_create",
+                "offered_request": "Create a custom avatar agent.",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Should I use Live2D or a 3D model for my local LLM avatar?"
+        )
+
+        self.assertEqual(result.intent, "conversation")
+        self.assertFalse(result.action_requested)
+
+    def test_invalid_json_is_repaired_once(self):
+        class RepairClient:
+            def __init__(self):
+                self.calls = 0
+
+            def chat(self, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return {"message": {"content": "not json"}}
+                return {
+                    "message": {
+                        "content": json.dumps({
+                            "intent": "conversation",
+                            "confidence": 0.9,
+                            "normalized_request": "Hello",
+                            "reason": "Greeting",
+                            "search_query": "",
+                            "topic": "greeting",
+                            "entity": "",
+                            "aliases": [],
+                            "is_follow_up": False,
+                            "speech_act": "social",
+                            "action_requested": False,
+                            "action_target": "",
+                            "topic_shift": True,
+                            "consent_decision": "",
+                            "offered_intent": "",
+                            "offered_request": "",
+                        }),
+                    },
+                }
+
+        client = RepairClient()
+        result = SemanticIntentRouter(client, "qwen3:8b").route("Hello")
+
+        self.assertEqual(result.intent, "conversation")
+        self.assertEqual(client.calls, 2)
+
     def test_exact_continue_project_transcript_is_conversation(self):
         router = SemanticIntentRouter(
             FakeClient({
@@ -429,7 +668,7 @@ class SemanticIntentRouterTests(unittest.TestCase):
         self.assertEqual(result.intent, "conversation")
         self.assertFalse(result.action_requested)
 
-    def test_project_idea_request_is_read_only_question(self):
+    def test_project_idea_request_stays_conversational(self):
         router = SemanticIntentRouter(
             FakeClient({
                 "intent": "project_edit",
@@ -448,7 +687,7 @@ class SemanticIntentRouterTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(result.intent, "project_question")
+        self.assertEqual(result.intent, "conversation")
         self.assertFalse(result.action_requested)
 
     def test_direct_project_change_remains_project_edit(self):

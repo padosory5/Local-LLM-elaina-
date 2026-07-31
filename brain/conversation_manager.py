@@ -19,6 +19,7 @@ class ConversationManager:
         self,
         system_prompt: str,
         context_prompt: str,
+        history: list[dict[str, str]] | None = None,
     ) -> list[dict[str, str]]:
         messages = [
             {
@@ -27,7 +28,9 @@ class ConversationManager:
             }
         ]
 
-        messages.extend(self.get_history())
+        messages.extend(
+            self.get_history() if history is None else history
+        )
 
         messages.append({
             "role": "user",

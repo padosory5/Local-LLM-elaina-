@@ -2,6 +2,37 @@
 
 Restart both Python and Electron after replacing the files.
 
+## 0. Semantic agent permission
+
+Say these as separate turns:
+
+1. "The buttons on this project look boring."
+2. "Yeah, let's do that."
+
+Expected:
+
+- The first turn stays with Elaina. She may offer to use the Coding Agent, but
+  no agent task starts and no project files are inspected.
+- The second reply is interpreted against the pending offer and starts the
+  Coding Agent.
+- Variants such as "sure" and "let's go for it" can also accept because the
+  router judges their conversational meaning rather than matching one phrase.
+- "No, I was just saying" rejects and clears the offer.
+- Changing the topic instead clears the offer without running anything.
+- Any resulting file edit still requires the separate Electron approval.
+
+A direct request such as "Can you search for when Elon Musk was born?" should
+start Research Agent immediately because the request itself grants permission;
+Elaina must not ask whether to search a second time.
+
+To check the real local model rather than test doubles, run:
+
+```text
+python scripts/live_router_check.py
+```
+
+This performs five read-only routing checks against the configured Ollama model.
+
 ## 1. Contextual STT correction and Git approval
 
 Say:
@@ -137,14 +168,35 @@ normal volume during `Listening...`.
 
 Expected:
 
+- Startup prints `[Microphone] Persistent input stream is active.` once. It
+  should not print once per listening cycle.
+- The same stream stays open while Elaina is thinking and speaking, so the
+  headset is not allowed to enter microphone-idle mode between turns.
 - Soft speech can be accepted using combined Silero and microphone-energy
   evidence.
 - A timeout now reports `peak VAD`, `peak level`, and the microphone device.
 - If it says `microphone delivered no audio frames`, the selected Windows input
   device or driver stopped delivering samples; this is different from a VAD
   threshold miss.
+- If the stream stops delivering frames for two seconds, Elaina automatically
+  closes and reopens it.
 
-## 10. Immediate work status
+## 10. Context and spoken-answer quality
+
+Identify an image as Eros, then change topics and ask:
+
+> Should I use Live2D or a 3D model for my local LLM avatar?
+
+Expected:
+
+- Elaina answers the Live2D-versus-3D question directly and does not mention
+  Eros or the previous image.
+- She does not suggest Agent Builder for creating an avatar.
+- Visual answers do not describe URLs, matching pages, evidence lists, or
+  confidence calculations.
+- Answers end on a complete sentence and Markdown cleanup does not fuse words.
+
+## 11. Immediate work status
 
 Try one request from each group:
 
@@ -162,7 +214,7 @@ Expected:
 - The status never claims that a search, edit, commit, or push succeeded before
   its actual result is known.
 
-## 11. Grounded factual continuity
+## 12. Grounded factual continuity
 
 Select an image from Bungie's 2026 Marathon and say these as separate turns:
 

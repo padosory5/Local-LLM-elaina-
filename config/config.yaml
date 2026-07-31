@@ -157,6 +157,10 @@ routing:
   # off: legacy routing behavior (temporary rollback only)
   project_edit_safety: "enforce"
 
+  # Optional agent offers expire so a later unrelated "yes" cannot start an
+  # old task. The router also clears an offer when the user changes topics.
+  agent_offer_expiry_seconds: 300
+
 
 ############################################################
 # Text-to-Speech
@@ -289,6 +293,8 @@ vad:
 
     # Select the headset microphone through WASAPI. Elaina captures at the
     # device's native rate and resamples to Silero's 16 kHz automatically.
+    # The input stream opens once during startup and remains active until
+    # Elaina exits, which prevents wireless-headset idle shutdown between turns.
     device_name: "PRO X 2 LIGHTSPEED"
     preferred_host_api: "Windows WASAPI"
     capture_sample_rate: null

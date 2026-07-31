@@ -29,7 +29,9 @@ class PromptBuilder:
 
         sections.append(
             f"Current user message:\n"
-            f"{user_input.strip()}"
+            f"{user_input.strip()}\n"
+            "Respond to this message, not an older turn. Use earlier context "
+            "only when it is relevant."
         )
 
         return "\n\n".join(sections)

@@ -4,14 +4,30 @@
 
 1. Elaina receives the transcript and any explicit screen selection.
 2. The semantic router identifies the intent.
-3. The coordinator selects one registered agent.
-4. The task manager creates a task with a visible lifecycle state.
-5. The existing feature implementation performs read-only research or prepares
+3. Ordinary conversation stays with Elaina; no specialist task is created.
+4. If the user describes a problem without delegating work, Elaina may store
+   one optional agent offer and ask permission.
+5. A dedicated semantic consent classifier runs before the general router and
+   interprets the next reply as accepting, rejecting, modifying, not answering,
+   or changing topics. It does not use a trigger-word list, and a classifier
+   failure is treated as unclear rather than permission.
+6. Only a direct action request or accepted offer reaches the coordinator.
+7. The task manager creates a task with a visible lifecycle state.
+8. The existing feature implementation performs read-only research or prepares
    a proposal.
-6. The local policy layer checks the proposed action.
-7. Consequential actions pause in Electron for approval.
-8. The executor performs only the exact approved payload.
-9. Elaina verifies the result and records the final task state.
+9. The local policy layer checks the proposed action.
+10. Consequential actions pause in Electron for approval.
+11. The executor performs only the exact approved payload.
+12. Elaina verifies the result and records the final task state.
+
+Pending offers expire after the configured time and are cleared when the user
+changes topics. This prevents an unrelated later response from authorizing old
+work. Agent permission and Electron approval are separate: permission allows
+an agent to prepare work, while Electron approval authorizes the exact write.
+
+Agent Builder cannot be offered as a generic creator. It is available only for
+direct requests involving reviewed agent blueprints; it cannot create avatars,
+images, UI assets, arbitrary code, or unsupported external capabilities.
 
 ## Agent creation
 

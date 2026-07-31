@@ -26,6 +26,9 @@ class TextFilter:
 
         # Elaina is presented as a speaking companion. Stray Markdown emphasis
         # characters look unnatural in chat and may be pronounced by TTS.
+        # Insert a separator when malformed emphasis would otherwise fuse two
+        # words, such as "models**offer" becoming "modelsoffer".
+        text = re.sub(r"(?<=\w)\*+(?=\w)", " ", text)
         return text.replace("*", "")
 
     @classmethod
@@ -89,6 +92,17 @@ class TextFilter:
         if not text:
             return ""
 
+        # These generic endings often create confirmation loops in voice chat
+        # without adding useful information. Specific natural follow-ups such
+        # as "What kept you up?" are not affected.
+        text = re.sub(
+            r"\s*(?:Do you )?Want to know (?:anything|more)[^?]*\?\s*$|"
+            r"\s*Anything else[^?]*\?\s*$",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        ).strip()
+
         sentences = [
             sentence.strip()
             for sentence in re.split(
@@ -98,12 +112,36 @@ class TextFilter:
             if sentence.strip()
         ]
         if max_sentences > 0:
-            text = " ".join(sentences[:max_sentences])
+            sentences = sentences[:max_sentences]
 
-        words = text.split()
-        if max_words > 0 and len(words) > max_words:
-            text = " ".join(words[:max_words]).rstrip(",:;—-")
-            if not text.endswith((".", "!", "?")):
-                text += "."
+        if max_words > 0:
+            selected: list[str] = []
+            selected_words = 0
+            for sentence in sentences:
+                sentence_words = sentence.split()
+                if selected and selected_words + len(sentence_words) > max_words:
+                    break
+                if not selected and len(sentence_words) > max_words:
+                    shortened = " ".join(sentence_words[:max_words])
+                    # Prefer ending at a natural clause boundary when one is
+                    # available instead of cutting a report mid-thought.
+                    clause_end = max(
+                        shortened.rfind(","),
+                        shortened.rfind(";"),
+                        shortened.rfind(":"),
+                        shortened.rfind("—"),
+                    )
+                    if clause_end >= len(shortened) // 2:
+                        shortened = shortened[:clause_end]
+                    shortened = shortened.rstrip(",:;—- ")
+                    if not shortened.endswith((".", "!", "?")):
+                        shortened += "."
+                    selected.append(shortened)
+                    break
+                selected.append(sentence)
+                selected_words += len(sentence_words)
+            text = " ".join(selected)
+        else:
+            text = " ".join(sentences)
 
         return text.strip()

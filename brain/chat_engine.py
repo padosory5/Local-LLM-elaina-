@@ -24,12 +24,20 @@ from tools.project_mcp_client import ProjectMCPManager
 from config.loader import Config
 from brain.personality_loader import PersonalityLoader
 from brain.response_messages import build_personality_messages
+from brain.response_quality import ResponseQualityGuard
+from brain.context_policy import should_include_grounded_context
 from datetime import datetime
 from vision.screen_monitor import ScreenMonitor
 from brain.intent_router import IntentDecision, SemanticIntentRouter
 from agents.builder import AgentBuilder
 from agents.calendar_agent import GoogleCalendarAgent
 from agents.coordinator import AgentCoordinator
+from agents.consent import (
+    AGENT_EXECUTION_INTENTS,
+    AgentConsentGate,
+    SemanticConsentClassifier,
+    apply_agent_permission,
+)
 from agents.registry import AgentRegistry
 from agents.task_manager import AgentTaskManager
 from security.approval_manager import ApprovalManager
@@ -192,6 +200,19 @@ class ChatEngine:
             registry=self.agent_registry,
             tasks=self.agent_tasks,
         )
+        self.agent_consent = AgentConsentGate(
+            expiry_seconds=int(self.config.get(
+                "routing",
+                "agent_offer_expiry_seconds",
+                default=300,
+                required=False,
+            ))
+        )
+        self.consent_classifier = SemanticConsentClassifier(
+            client=self.client,
+            model=self.model,
+            keep_alive=self.keep_alive,
+        )
         self.policy = PolicyEngine()
         self.approvals = ApprovalManager(self.policy)
         self.agent_builder = AgentBuilder(
@@ -263,11 +284,17 @@ class ChatEngine:
             )
 
     def _build_conversation_state(self) -> dict:
+        pending_offer = self.agent_consent.peek()
         return {
             "active_topic": self._active_topic,
             "active_entity": self._active_entity,
             "entity_aliases": self._entity_aliases,
             "grounded_context": dict(self._grounded_context),
+            "pending_agent_offer": (
+                pending_offer.public_context()
+                if pending_offer is not None
+                else None
+            ),
             "available_agents": [
                 {
                     "name": agent.name,
@@ -382,6 +409,17 @@ class ChatEngine:
 
     def _update_conversation_state(self, route) -> None:
         """Retain corrected entities and topics for short follow-up turns."""
+        if route.topic_shift and route.intent != "fact_check":
+            # Verified evidence belongs to its original subject. Carrying it
+            # into an unrelated turn caused later questions to stay anchored
+            # to the last identified image.
+            self._grounded_context = {
+                "subject": "",
+                "statement": "",
+                "source": "",
+            }
+            if not route.entity:
+                self._active_entity = ""
         if route.topic:
             self._active_topic = route.topic
         elif route.intent in {"knowledge_question", "web_search"}:
@@ -398,6 +436,17 @@ class ChatEngine:
                 oldest = next(iter(self._entity_aliases))
                 self._entity_aliases.pop(oldest, None)
 
+    def _grounded_context_is_relevant(self, route) -> bool:
+        """Use retrieved evidence only for an explicit semantic follow-up."""
+        return should_include_grounded_context(
+            has_statement=bool(
+                self._grounded_context.get("statement", "").strip()
+            ),
+            intent=route.intent,
+            is_follow_up=route.is_follow_up,
+            topic_shift=route.topic_shift,
+        )
+
     def _corrected_search_query(self, entity: str) -> str:
         topic = self._active_topic.strip()
         if "release" in topic.lower():
@@ -413,11 +462,14 @@ class ChatEngine:
         self,
         question: str,
         evidence: str = "",
+        *,
+        include_grounded: bool = False,
+        reset_history: bool = False,
     ) -> list[dict]:
         """Build a grounded answer without replacing Elaina's personality."""
         grounded_context = self._grounded_context_text()
         context_sections: list[tuple[str, str]] = []
-        if grounded_context:
+        if include_grounded and grounded_context:
             context_sections.append((
                 "RECENT VERIFIED CONTEXT",
                 grounded_context,
@@ -434,7 +486,9 @@ class ChatEngine:
 
         return build_personality_messages(
             system_prompt=self.system_prompt,
-            history=self.conversation.get_history(),
+            history=(
+                [] if reset_history else self.conversation.get_history()
+            ),
             user_input=question,
             context_sections=context_sections,
         )
@@ -672,6 +726,13 @@ class ChatEngine:
         # Build Prompt
         ####################################################
         route_started = time.perf_counter()
+        continuing_agent_flow = bool(
+            self.agent_builder.active or self.calendar_agent.active
+        )
+        has_explicit_attachment = bool(
+            screen_region is not None or screen_snapshot is not None
+        )
+        pending_offer = self.agent_consent.peek()
         if self.agent_builder.active:
             route = IntentDecision(
                 intent="agent_create",
@@ -692,6 +753,35 @@ class ChatEngine:
                 action_requested=True,
                 action_target="calendar event",
             )
+        elif pending_offer is not None and not has_explicit_attachment:
+            consent = self.consent_classifier.classify(
+                user_input,
+                pending_offer,
+                recent_turns=list(self._router_history),
+            )
+            if consent.decision == "unrelated":
+                # The dedicated consent classifier has established that this
+                # is a new topic. Clear the stale offer before normal routing.
+                self.agent_consent.clear()
+                route = self.intent_router.route(
+                    user_input,
+                    recent_turns=list(self._router_history),
+                    has_screen_selection=has_explicit_attachment,
+                    project_tools_available=self.project_mcp is not None,
+                    conversation_state=self._build_conversation_state(),
+                    pending_action=self._pending_action,
+                )
+            else:
+                route = IntentDecision(
+                    intent="agent_consent",
+                    confidence=consent.confidence,
+                    normalized_request=user_input,
+                    reason=consent.reason,
+                    is_follow_up=True,
+                    speech_act="approval_response",
+                    consent_decision=consent.decision,
+                    offered_request=consent.modified_request,
+                )
         else:
             route = self.intent_router.route(
                 user_input,
@@ -704,6 +794,19 @@ class ChatEngine:
                 conversation_state=self._build_conversation_state(),
                 pending_action=self._pending_action,
             )
+        route, agent_permission_context = apply_agent_permission(
+            self.agent_consent,
+            route,
+            user_input=user_input,
+            has_explicit_attachment=has_explicit_attachment,
+            continuing_agent_flow=continuing_agent_flow,
+            available_intents={
+                intent
+                for agent in self.agent_registry.all()
+                if agent.enabled
+                for intent in agent.intents
+            },
+        )
         timings["route"] = time.perf_counter() - route_started
         self._update_conversation_state(route)
         print(
@@ -716,34 +819,38 @@ class ChatEngine:
                 f"{route.normalized_request}"
             )
 
-        assignment_intent = route.intent
-        if (
-            route.intent == "calendar_action"
-            and not self.agent_registry.has_agent("google_calendar_agent")
-        ):
-            assignment_intent = "agent_create"
-        assignment = self.agent_coordinator.assign(
-            assignment_intent,
-            route.normalized_request,
-        )
-        agent_task_id = assignment.task.id
-        self.events.emit(
-            "agent_task_started",
-            task_id=agent_task_id,
-            agent_id=assignment.definition.id,
-            agent_name=assignment.definition.name,
-            intent=route.intent,
-        )
-        if route.intent == "fact_check" and route.search_query:
-            self._announce_work_status(
-                "web_search",
+        agent_task_id = None
+        if route.intent in AGENT_EXECUTION_INTENTS:
+            assignment_intent = route.intent
+            if (
+                route.intent == "calendar_action"
+                and not self.agent_registry.has_agent(
+                    "google_calendar_agent"
+                )
+            ):
+                assignment_intent = "agent_create"
+            assignment = self.agent_coordinator.assign(
+                assignment_intent,
                 route.normalized_request,
             )
-        else:
-            self._announce_work_status(
-                route.intent,
-                route.normalized_request,
+            agent_task_id = assignment.task.id
+            self.events.emit(
+                "agent_task_started",
+                task_id=agent_task_id,
+                agent_id=assignment.definition.id,
+                agent_name=assignment.definition.name,
+                intent=route.intent,
             )
+            if route.intent == "fact_check" and route.search_query:
+                self._announce_work_status(
+                    "web_search",
+                    route.normalized_request,
+                )
+            else:
+                self._announce_work_status(
+                    route.intent,
+                    route.normalized_request,
+                )
 
         memory_started = time.perf_counter()
         use_memory = (
@@ -795,11 +902,15 @@ class ChatEngine:
             user_input=user_input,
         )
         grounded_context = self._grounded_context_text()
-        if grounded_context and route.intent in {
+        if (
+            grounded_context
+            and self._grounded_context_is_relevant(route)
+            and route.intent in {
             "conversation",
             "clarification",
             "fact_check",
-        }:
+            }
+        ):
             context_prompt += (
                 "\n\nRECENT VERIFIED CONTEXT\n"
                 f"{grounded_context}"
@@ -813,6 +924,11 @@ class ChatEngine:
             "\n\nCURRENTLY AVAILABLE AI AGENTS\n"
             f"{self._capability_context()}"
         )
+        if agent_permission_context:
+            context_prompt += (
+                "\n\nAGENT PERMISSION STATE\n"
+                f"{agent_permission_context}"
+            )
 
         ####################################################
         # Ask Qwen
@@ -821,16 +937,20 @@ class ChatEngine:
         messages = self.conversation.build_messages(
             system_prompt=self.system_prompt,
             context_prompt=context_prompt,
+            history=[] if route.topic_shift else None,
         )
 
         if route.intent == "knowledge_question":
             messages = self._build_factual_messages(
                 route.normalized_request,
+                include_grounded=self._grounded_context_is_relevant(route),
+                reset_history=route.topic_shift,
             )
         elif route.intent == "time_question":
             messages = self._build_factual_messages(
                 route.normalized_request,
                 self.build_time_context(),
+                reset_history=route.topic_shift,
             )
 
         turn_grounding_source = ""
@@ -851,6 +971,10 @@ class ChatEngine:
                 messages = self._build_factual_messages(
                     route.normalized_request,
                     str(search_result),
+                    include_grounded=self._grounded_context_is_relevant(
+                        route
+                    ),
+                    reset_history=route.topic_shift,
                 )
                 turn_grounding_source = "Current web search"
                 turn_grounding_subject = (
@@ -886,6 +1010,8 @@ class ChatEngine:
                             "directly and acknowledge that the user was right."
                         ),
                         str(search_result),
+                        include_grounded=True,
+                        reset_history=False,
                     )
                     turn_grounding_source = "Current fact-check web search"
                     turn_grounding_subject = (
@@ -910,6 +1036,8 @@ class ChatEngine:
                         "right and Elaina's earlier answer was wrong, clearly "
                         "acknowledge both facts."
                     ),
+                    include_grounded=True,
+                    reset_history=False,
                 )
 
         if route.intent == "entity_correction":
@@ -929,6 +1057,8 @@ class ChatEngine:
                         f"request: {corrected_query}"
                     ),
                     str(search_result),
+                    include_grounded=True,
+                    reset_history=False,
                 )
                 turn_grounding_source = "Corrected-entity web search"
                 turn_grounding_subject = corrected_entity
@@ -1269,6 +1399,11 @@ class ChatEngine:
                         f"{user_input}\n\n"
                         "VERIFIED REVERSE-IMAGE EVIDENCE\n"
                         f"{verification_context}\n\n"
+                        "SPOKEN ANSWER REQUIREMENTS\n"
+                        "Give the identification or answer directly in one or "
+                        "two natural sentences. Use the evidence silently. Do "
+                        "not mention matching pages, URLs, evidence lists, "
+                        "confidence calculations, or retrieval mechanics.\n\n"
                         "CURRENTLY AVAILABLE AI AGENTS\n"
                         f"{self._capability_context()}"
                     ),
@@ -1284,6 +1419,10 @@ class ChatEngine:
                         "content": (
                             f"{user_input}\n\n"
                             f"{screen_context}\n\n"
+                            "Answer the exact visual question directly in one "
+                            "or two natural spoken sentences. Do not write a "
+                            "report, evidence list, heading, or confidence "
+                            "label.\n\n"
                             "CURRENTLY AVAILABLE AI AGENTS\n"
                             f"{self._capability_context()}"
                         ),
@@ -1301,7 +1440,7 @@ class ChatEngine:
         )
         active_temperature = (
             self.temperature
-            if route.intent == "conversation"
+            if route.intent in {"conversation", "agent_offer"}
             else 0.1
         )
 
@@ -1416,6 +1555,59 @@ class ChatEngine:
                 max_words=max_words,
                 max_sentences=max_sentences,
             )
+            if (
+                route.intent in {"conversation", "agent_offer"}
+                and not effective_forced_response
+                and ResponseQualityGuard.should_retry(
+                    reply,
+                    user_input,
+                    self.conversation.get_history(),
+                )
+            ):
+                print(
+                    "\n[Response Guard] Repeated an unrelated prior answer; "
+                    "regenerating once."
+                )
+                retry_messages = [
+                    *messages,
+                    {"role": "assistant", "content": str(raw_reply)},
+                    {
+                        "role": "user",
+                        "content": (
+                            "That draft repeated an older answer and did not "
+                            "respond to my current message. Answer this current "
+                            f"message directly instead: {user_input}"
+                        ),
+                    },
+                ]
+                retry_response = self.client.chat(
+                    model=active_model,
+                    messages=retry_messages,
+                    stream=False,
+                    options={
+                        "temperature": active_temperature,
+                        "num_predict": num_predict,
+                    },
+                    keep_alive=active_keep_alive,
+                    think=False,
+                )
+                retry_message = self._value(
+                    retry_response,
+                    "message",
+                    {},
+                )
+                retry_raw = self._value(
+                    retry_message,
+                    "content",
+                    "",
+                )
+                retry_reply = TextFilter.for_voice_response(
+                    retry_raw,
+                    max_words=max_words,
+                    max_sentences=max_sentences,
+                )
+                if retry_reply:
+                    reply = retry_reply
             speech_buffer = reply
             if reply:
                 print(

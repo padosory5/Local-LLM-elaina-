@@ -37,6 +37,64 @@ class TextFilterTests(unittest.TestCase):
             "That is Marathon.",
         )
 
+    def test_voice_response_flattens_markdown_and_limits_sentences(self):
+        text = (
+            "Sure! Here's what I can do:\n"
+            "- **Coding Agent:** I can inspect code.\n"
+            "- **Git Agent:** I can prepare commits.\n"
+            "- **Research Agent:** I can search the web."
+        )
+
+        result = TextFilter.for_voice_response(
+            text,
+            max_words=30,
+            max_sentences=2,
+        )
+
+        self.assertNotIn("*", result)
+        self.assertNotIn("\n", result)
+        self.assertNotIn("- ", result)
+        self.assertEqual(
+            result,
+            (
+                "Sure! Here's what I can do: Coding Agent: I can inspect code."
+            ),
+        )
+
+    def test_voice_response_enforces_word_limit(self):
+        result = TextFilter.for_voice_response(
+            "one two three four five six seven",
+            max_words=5,
+            max_sentences=2,
+        )
+
+        self.assertEqual(result, "one two three four five.")
+
+    def test_malformed_markdown_does_not_fuse_words(self):
+        self.assertEqual(
+            TextFilter.for_speech("3D models**offer more flexibility."),
+            "3D models offer more flexibility.",
+        )
+
+    def test_removes_generic_voice_follow_up(self):
+        self.assertEqual(
+            TextFilter.for_voice_response(
+                "OpenAI was founded in 2015. Want to know anything else?"
+            ),
+            "OpenAI was founded in 2015.",
+        )
+
+    def test_word_limit_keeps_the_last_complete_sentence(self):
+        result = TextFilter.for_voice_response(
+            "This is Eros, the Greek god of love. "
+            "The following long evidence explanation contains many extra "
+            "details that should never be cut into an unfinished fragment.",
+            max_words=12,
+            max_sentences=2,
+        )
+
+        self.assertEqual(result, "This is Eros, the Greek god of love.")
+
 
 if __name__ == "__main__":
     unittest.main()

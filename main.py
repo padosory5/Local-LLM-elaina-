@@ -237,6 +237,7 @@ except KeyboardInterrupt:
 
 finally:
     engine.cancel_active_turn()
+    speech_to_text.close()
     if response_thread is not None:
         response_thread.join(timeout=5)
     if electron_process is not None and electron_process.poll() is None:

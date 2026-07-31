@@ -10,6 +10,13 @@ class Attention:
 
         text = user_input.lower()
 
+        # This is lightweight current-turn metadata, not long-term memory.
+        # Reset it every turn so an old Unity/Python topic cannot contaminate
+        # a later conversation about food, a song, or an identified image.
+        self.topic = None
+        self.subtopic = None
+        self.goal = None
+
         # Very simple rules for now
         if "unity" in text:
             self.topic = "Unity"
