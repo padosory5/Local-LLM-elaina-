@@ -13,6 +13,10 @@ from faster_whisper import WhisperModel
 
 from config.loader import Config
 from voice.vad import VoiceActivityDetector
+from voice.transcription_policy import (
+    retry_language_for_detection,
+    segment_is_usable,
+)
 
 
 _DLL_DIRECTORY_HANDLES = []
@@ -83,6 +87,43 @@ class SpeechToText:
             default=None,
             required=False,
         )
+        configured_languages = config.get(
+            "stt",
+            "faster_whisper",
+            "allowed_languages",
+            default=["en", "ko"],
+            required=False,
+        )
+        self.allowed_languages = tuple(
+            str(language).strip().lower()
+            for language in (
+                configured_languages
+                if isinstance(configured_languages, list)
+                else [configured_languages]
+            )
+            if str(language).strip()
+        )
+        self.language_retry_threshold = float(config.get(
+            "stt",
+            "faster_whisper",
+            "language_retry_threshold",
+            default=0.60,
+            required=False,
+        ))
+        self.no_speech_threshold = float(config.get(
+            "stt",
+            "faster_whisper",
+            "no_speech_threshold",
+            default=0.60,
+            required=False,
+        ))
+        self.log_probability_threshold = float(config.get(
+            "stt",
+            "faster_whisper",
+            "log_probability_threshold",
+            default=-1.0,
+            required=False,
+        ))
         self.preferred_device = str(config.get(
             "stt",
             "faster_whisper",
@@ -238,28 +279,89 @@ class SpeechToText:
             return ""
 
     def _run_transcription(self, audio_path: str) -> str:
-        segments, _ = self.model.transcribe(
+        segments, info = self._transcribe_once(
             audio_path,
             language=self.language,
+        )
+
+        detected_language = str(
+            self._value(info, "language", "")
+        ).strip().lower()
+        language_probability = float(
+            self._value(info, "language_probability", 0.0) or 0.0
+        )
+        retry_language = retry_language_for_detection(
+            configured_language=self.language,
+            detected_language=detected_language,
+            probability=language_probability,
+            allowed_languages=self.allowed_languages,
+            minimum_probability=self.language_retry_threshold,
+        )
+        if retry_language is not None:
+            print(
+                "[STT] Uncertain or unexpected language "
+                f"'{detected_language or 'unknown'}' "
+                f"({language_probability:.2f}); retrying as "
+                f"'{retry_language}'."
+            )
+            segments, _ = self._transcribe_once(
+                audio_path,
+                language=retry_language,
+            )
+
+        accepted_text: list[str] = []
+        for segment in segments:
+            segment_text = str(
+                self._value(segment, "text", "")
+            ).strip()
+            if not segment_text:
+                continue
+            no_speech_probability = float(
+                self._value(segment, "no_speech_prob", 0.0) or 0.0
+            )
+            average_log_probability = float(
+                self._value(segment, "avg_logprob", 0.0) or 0.0
+            )
+            if not segment_is_usable(
+                no_speech_probability=no_speech_probability,
+                average_log_probability=average_log_probability,
+                no_speech_threshold=self.no_speech_threshold,
+                log_probability_threshold=self.log_probability_threshold,
+            ):
+                continue
+            accepted_text.append(segment_text)
+
+        text = " ".join(accepted_text).strip()
+        if text:
+            print(f"You said: {text}")
+        else:
+            print("[STT] No speech detected.")
+        return text
+
+    def _transcribe_once(
+        self,
+        audio_path: str,
+        *,
+        language: str | None,
+    ):
+        return self.model.transcribe(
+            audio_path,
+            language=language,
             beam_size=1,
             # Silero already captured a speech-only clip. Running Whisper's VAD
             # again caused legitimate soft sentences to disappear.
             vad_filter=False,
             condition_on_previous_text=False,
             initial_prompt=self.initial_prompt or None,
+            no_speech_threshold=self.no_speech_threshold,
+            log_prob_threshold=self.log_probability_threshold,
         )
 
-        text = " ".join(
-            segment.text.strip()
-            for segment in segments
-            if segment.text.strip()
-        ).strip()
-
-        if text:
-            print(f"You said: {text}")
-        else:
-            print("[STT] No speech detected.")
-        return text
+    @staticmethod
+    def _value(item, key: str, default=None):
+        if isinstance(item, dict):
+            return item.get(key, default)
+        return getattr(item, key, default)
 
     def listen_and_transcribe(
         self,
@@ -309,6 +411,14 @@ class SpeechToText:
     def close(self) -> None:
         """Close the microphone stream when the application shuts down."""
         self.vad.close()
+
+    def pause_listening(self) -> None:
+        """Stop capturing microphone audio (used when switching to text mode)."""
+        self.vad.pause()
+
+    def resume_listening(self) -> bool:
+        """Reopen the microphone (used when switching back to voice mode)."""
+        return self.vad.resume()
 
     @staticmethod
     def _looks_like_tts_echo(transcript: str, spoken_text: str) -> bool:

@@ -47,6 +47,32 @@
             </header>
 
             <div id="chat-history" aria-live="polite"></div>
+
+            <!-- Voice and typing are mutually exclusive: switching to Text
+                 mode stops the microphone, switching to Voice mode disables
+                 typing below. -->
+            <div id="input-mode-toggle" role="group" aria-label="Input mode">
+                <button id="mode-voice-button" type="button" class="mode-button active">
+                    Voice
+                </button>
+                <button id="mode-text-button" type="button" class="mode-button">
+                    Text
+                </button>
+            </div>
+
+            <form id="chat-input-row" autocomplete="off">
+                <input
+                    id="chat-text-input"
+                    type="text"
+                    placeholder="Message Elaina..."
+                    maxlength="2000"
+                    autocomplete="off"
+                    disabled
+                >
+                <button id="chat-send-button" type="submit" title="Send message" disabled>
+                    Send
+                </button>
+            </form>
         </aside>
 
         <!-- Elaina cannot edit files until the user approves this proposal. -->

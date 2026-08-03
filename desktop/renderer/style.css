@@ -350,6 +350,92 @@ body.position-locked #live2d-canvas {
     background: rgb(82 65 105 / 94%);
 }
 
+/* Voice/Text mode toggle, sitting just above the typed-message row. */
+#input-mode-toggle {
+    display: flex;
+    gap: 4px;
+    margin: 0 12px 10px;
+    padding: 3px;
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 999px;
+    background: rgb(8 7 14 / 45%);
+}
+
+.mode-button {
+    flex: 1;
+    padding: 6px 0;
+    border: 0;
+    border-radius: 999px;
+    color: rgb(210 200 224);
+    background: transparent;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    transition: background 160ms ease, color 160ms ease;
+}
+
+.mode-button:hover {
+    color: var(--white);
+}
+
+.mode-button.active {
+    color: var(--white);
+    background: var(--purple);
+}
+
+/* Typed-message row docked under the chat history. */
+#chat-input-row {
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px;
+    border-top: 1px solid rgb(255 255 255 / 10%);
+}
+
+#chat-text-input {
+    flex: 1;
+    min-width: 0;
+    padding: 9px 12px;
+    border: 1px solid rgb(255 255 255 / 16%);
+    border-radius: 999px;
+    outline: none;
+    color: var(--white);
+    background: rgb(8 7 14 / 55%);
+    font: 13px Arial, sans-serif;
+    transition: border-color 160ms ease;
+}
+
+#chat-text-input::placeholder {
+    color: rgb(255 255 255 / 40%);
+}
+
+#chat-text-input:focus {
+    border-color: rgb(150 100 205 / 75%);
+}
+
+#chat-send-button {
+    padding: 9px 16px;
+    border: 1px solid rgb(255 255 255 / 18%);
+    border-radius: 999px;
+    color: var(--white);
+    background: var(--purple);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: background 160ms ease, transform 160ms ease, opacity 160ms ease;
+}
+
+#chat-send-button:hover:not(:disabled) {
+    background: rgb(130 90 172 / 96%);
+    transform: translateY(-1px);
+}
+
+#chat-text-input:disabled,
+#chat-send-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+    transform: none;
+}
+
 /* File changes remain blocked until the user approves this modal. */
 #project-approval {
     position: absolute;

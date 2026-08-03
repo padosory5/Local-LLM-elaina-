@@ -4,6 +4,7 @@ description: Handles Elaina's normal conversation, personality, memory, and stab
 enabled: true
 intents:
   - conversation
+  - calculation
   - clarification
   - knowledge_question
   - time_question

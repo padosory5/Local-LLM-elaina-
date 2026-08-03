@@ -37,7 +37,7 @@ class TextFilterTests(unittest.TestCase):
             "That is Marathon.",
         )
 
-    def test_voice_response_flattens_markdown_and_limits_sentences(self):
+    def test_voice_response_flattens_markdown_without_cutting_sentences(self):
         text = (
             "Sure! Here's what I can do:\n"
             "- **Coding Agent:** I can inspect code.\n"
@@ -57,18 +57,20 @@ class TextFilterTests(unittest.TestCase):
         self.assertEqual(
             result,
             (
-                "Sure! Here's what I can do: Coding Agent: I can inspect code."
+                "Sure! Here's what I can do: Coding Agent: I can inspect code. "
+                "Git Agent: I can prepare commits. Research Agent: I can "
+                "search the web."
             ),
         )
 
-    def test_voice_response_enforces_word_limit(self):
+    def test_voice_response_does_not_enforce_word_limit_by_slicing(self):
         result = TextFilter.for_voice_response(
             "one two three four five six seven",
             max_words=5,
             max_sentences=2,
         )
 
-        self.assertEqual(result, "one two three four five.")
+        self.assertEqual(result, "one two three four five six seven")
 
     def test_malformed_markdown_does_not_fuse_words(self):
         self.assertEqual(
@@ -84,7 +86,7 @@ class TextFilterTests(unittest.TestCase):
             "OpenAI was founded in 2015.",
         )
 
-    def test_word_limit_keeps_the_last_complete_sentence(self):
+    def test_length_arguments_never_delete_a_complete_answer(self):
         result = TextFilter.for_voice_response(
             "This is Eros, the Greek god of love. "
             "The following long evidence explanation contains many extra "
@@ -93,7 +95,14 @@ class TextFilterTests(unittest.TestCase):
             max_sentences=2,
         )
 
-        self.assertEqual(result, "This is Eros, the Greek god of love.")
+        self.assertEqual(
+            result,
+            (
+                "This is Eros, the Greek god of love. The following long "
+                "evidence explanation contains many extra details that "
+                "should never be cut into an unfinished fragment."
+            ),
+        )
 
 
 if __name__ == "__main__":

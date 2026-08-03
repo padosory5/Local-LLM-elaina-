@@ -135,6 +135,7 @@ class VoiceActivityDetector:
         self._stream_lock = threading.RLock()
         self._record_lock = threading.Lock()
         self._closed = False
+        self._paused = False
         self._last_audio_frame_at = 0.0
 
         self.start_sound_path = (
@@ -227,6 +228,25 @@ class VoiceActivityDetector:
             self._close_stream_locked()
             self._audio_buffer.clear()
 
+    def pause(self) -> None:
+        """
+        Stop capturing microphone audio until resume() is called.
+
+        Used to switch to text-only mode: the input stream is fully closed
+        (not just ignored), so the OS microphone indicator turns off and no
+        audio is processed while paused.
+        """
+        with self._stream_lock:
+            self._paused = True
+            self._close_stream_locked()
+            self._audio_buffer.clear()
+
+    def resume(self) -> bool:
+        """Reopen the microphone after pause(). Returns True on success."""
+        with self._stream_lock:
+            self._paused = False
+        return self.start()
+
     def _restart_stream(self) -> bool:
         with self._stream_lock:
             self._close_stream_locked()
@@ -272,12 +292,21 @@ class VoiceActivityDetector:
         try:
             with self._record_lock:
                 while True:
+                    if self._paused:
+                        print(
+                            "[Microphone] Paused for text mode; stopped "
+                            "listening."
+                        )
+                        return None
+
                     try:
                         chunk = self._audio_buffer.get(
                             timeout=0.2
                         )
 
                     except queue.Empty:
+                        if self._paused:
+                            return None
                         no_frames_for = (
                             time.monotonic() - self._last_audio_frame_at
                         )

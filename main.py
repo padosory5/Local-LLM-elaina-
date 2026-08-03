@@ -23,8 +23,15 @@ from voice.stt import SpeechToText
 
 engine = ChatEngine()
 response_thread = None
+response_thread_lock = threading.Lock()
 electron_process = None
 electron_closed = threading.Event()
+
+# Voice mode is the default. Cleared while in text mode so the mic loop
+# below parks instead of listening, and the microphone stream itself is
+# closed in handle_desktop_command so it truly stops, not just gets ignored.
+voice_mode_enabled = threading.Event()
+voice_mode_enabled.set()
 
 
 def launch_electron_if_requested():
@@ -91,6 +98,37 @@ def run_response(user_input, selected_screen):
     )
 
 
+def dispatch_response(user_input, selected_screen):
+    """
+    Start one response turn, whether it came from the microphone or a typed
+    message. Both entry points share this lock so a spoken turn and a typed
+    turn can never mutate conversation/tool state at the same time.
+    """
+    global response_thread
+
+    with response_thread_lock:
+        # An interruption sets the old turn's cancellation event. Give that
+        # worker a moment to leave its Ollama stream before starting a new
+        # turn so conversation and tool state are never mutated concurrently.
+        if response_thread is not None and response_thread.is_alive():
+            response_thread.join(timeout=5)
+
+        if response_thread is not None and response_thread.is_alive():
+            print(
+                "[ChatEngine] The previous response is still stopping. "
+                "Please repeat the request."
+            )
+            return
+
+        response_thread = threading.Thread(
+            target=run_response,
+            args=(user_input, selected_screen),
+            name="elaina-response",
+            daemon=True,
+        )
+        response_thread.start()
+
+
 def handle_desktop_command(message):
     """Handle actions sent by the Electron interface."""
     command = message.get("command")
@@ -103,6 +141,37 @@ def handle_desktop_command(message):
             return
 
         engine.prepare_screen_region(region)
+        return
+
+    if command == "set_input_mode":
+        mode = message.get("mode")
+
+        if mode == "text":
+            voice_mode_enabled.clear()
+            speech_to_text.pause_listening()
+        elif mode == "voice":
+            speech_to_text.resume_listening()
+            voice_mode_enabled.set()
+        else:
+            print("[Input Mode] Invalid mode.")
+            return
+
+        engine.events.emit("input_mode_changed", mode=mode)
+        return
+
+    if command == "send_text_message":
+        text = message.get("text")
+
+        if not isinstance(text, str) or not text.strip():
+            print("[Text Message] Invalid text.")
+            return
+
+        # Typing a new message while Elaina is speaking should interrupt her,
+        # the same way starting to talk over her does for voice input.
+        engine.on_speech_start()
+
+        selected_screen = engine.consume_pending_screen_snapshot()
+        dispatch_response(text.strip(), selected_screen)
         return
 
     if command == "project_change_decision":
@@ -197,6 +266,12 @@ try:
         if electron_closed.is_set():
             break
 
+        if not voice_mode_enabled.is_set():
+            # Text mode: leave the microphone untouched until voice mode is
+            # selected again from Electron.
+            voice_mode_enabled.wait(timeout=1.0)
+            continue
+
         user_input = speech_to_text.listen_and_transcribe(
             on_speech_start=engine.on_speech_start,
             is_tts_speaking=engine.audio.is_speaking,
@@ -217,27 +292,8 @@ try:
         }:
             break
 
-        # An interruption sets the old turn's cancellation event. Give that
-        # worker a moment to leave its Ollama stream before starting a new turn
-        # so conversation and tool state are never mutated concurrently.
-        if response_thread is not None and response_thread.is_alive():
-            response_thread.join(timeout=5)
-
-        if response_thread is not None and response_thread.is_alive():
-            print(
-                "[ChatEngine] The previous response is still stopping. "
-                "Please repeat the request."
-            )
-            continue
-
         selected_screen = engine.consume_pending_screen_snapshot()
-        response_thread = threading.Thread(
-            target=run_response,
-            args=(user_input, selected_screen),
-            name="elaina-response",
-            daemon=True,
-        )
-        response_thread.start()
+        dispatch_response(user_input, selected_screen)
 
 except KeyboardInterrupt:
     print("\nStopping Elaina...")

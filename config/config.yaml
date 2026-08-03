@@ -136,8 +136,9 @@ language:
 ############################################################
 
 responses:
-  # Normal voice answers stay compact. Detailed limits apply only when the
-  # user explicitly asks for a detailed, complete, or step-by-step answer.
+  # These limits are passed to Ollama as generation/rewrite requirements.
+  # TextFilter never slices a generated answer. If a short rewrite would lose
+  # the requested result, Elaina keeps the complete answer instead.
   max_words: 45
   max_sentences: 2
   detailed_max_words: 220
@@ -254,11 +255,14 @@ stt:
   faster_whisper:
     model_size: "small"
 
-    # Use null for automatic language detection.
-    # Examples:
-    #   "en"
-    #   "ko"
+    # Use null for automatic detection. Detected languages outside the
+    # allowlist below are retried as English instead of accepting a random
+    # Japanese or other-language hallucination from unclear microphone audio.
     language: null
+    allowed_languages:
+      - "en"
+      - "ko"
+    language_retry_threshold: 0.60
 
     device: "cuda"
     compute_type: "float16"
@@ -267,8 +271,13 @@ stt:
     # back to CPU automatically.
     cpu_compute_type: "int8"
 
-    # Helps Whisper preserve names that occur frequently in this project.
-    initial_prompt: "Elaina, Qwen, Ollama, Live2D, Marathon, MCP, GitHub"
+    # Keep this empty. A long initial prompt can be repeated verbatim when
+    # Whisper receives a quiet or unclear clip.
+    initial_prompt: ""
+
+    # Discard segments that Whisper itself considers silence and low quality.
+    no_speech_threshold: 0.60
+    log_probability_threshold: -1.0
 
 
 ############################################################

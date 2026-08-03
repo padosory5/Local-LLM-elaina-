@@ -43,6 +43,42 @@ class SemanticIntentRouterTests(unittest.TestCase):
         self.assertEqual(result.intent, "git_publish")
         self.assertEqual(result.normalized_request, "Push my changes to Git.")
 
+    def test_routes_distribution_math_as_calculation(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "calculation",
+                "confidence": 0.99,
+                "normalized_request": (
+                    "Split a 650 dollar total proportionally among "
+                    "contributions of 100, 100, and 50 dollars."
+                ),
+                "reason": "The user requested a proportional distribution.",
+                "topic": "gambling distribution",
+                "is_follow_up": False,
+                "speech_act": "information_request",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "We put in 100, 100, and 50 and made 650. What's the distribution?"
+        )
+
+        self.assertEqual(result.intent, "calculation")
+        self.assertIn("650", result.normalized_request)
+
+    def test_router_failure_keeps_obvious_numeric_question_in_calculation_mode(self):
+        class BrokenClient:
+            def chat(self, **_kwargs):
+                raise RuntimeError("offline")
+
+        router = SemanticIntentRouter(BrokenClient(), "qwen3:8b")
+        result = router.route(
+            "We put in 100, 100, and 50 and made 650. What's the distribution?"
+        )
+
+        self.assertEqual(result.intent, "calculation")
+
     def test_rejects_unknown_intent_safely(self):
         router = SemanticIntentRouter(
             FakeClient({

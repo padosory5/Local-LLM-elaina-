@@ -52,6 +52,14 @@ def main() -> int:
             "Should I use Live2D or a 3D model for my local LLM avatar?",
             "conversation",
         ),
+        (
+            "proportional distribution",
+            (
+                "We put in 100, 100, and 50 dollars and made 650 dollars. "
+                "What's the distribution?"
+            ),
+            "calculation",
+        ),
     ]
 
     failures = 0
@@ -82,7 +90,11 @@ def main() -> int:
         f"expected=accept actual={consent.decision}"
     )
 
-    print(f"\n{5 - failures}/5 live routing checks passed.")
+    total_checks = len(cases) + 1
+    print(
+        f"\n{total_checks - failures}/{total_checks} "
+        "live routing checks passed."
+    )
     return 1 if failures else 0
 
 

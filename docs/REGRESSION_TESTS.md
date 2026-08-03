@@ -31,7 +31,7 @@ To check the real local model rather than test doubles, run:
 python scripts/live_router_check.py
 ```
 
-This performs five read-only routing checks against the configured Ollama model.
+This performs six read-only routing checks against the configured Ollama model.
 
 ## 1. Contextual STT correction and Git approval
 
@@ -234,3 +234,46 @@ Expected:
   verification.
 - After verification, "I was right" uses the grounded result without asking
   "right about what?" or performing an unnecessary second search.
+
+## 13. Complete calculations and response limits
+
+Say:
+
+> I put in 100 dollars, one friend put in 100, another put in 50, and the final total was 650. What's the proportional distribution?
+
+Expected:
+
+- Router intent: `calculation`
+- Elaina gives the amounts in the same response instead of asking whether she
+  should do the math.
+- The final payouts are 260, 260, and 130 dollars.
+- If asked for profit, the corresponding profits are 160, 160, and 80 dollars.
+- A configured word or sentence limit makes Ollama rewrite the complete answer
+  concisely. `TextFilter` removes unsafe TTS formatting but never slices it.
+- A draft that ends mid-sentence or defers the calculation is regenerated once
+  before it can enter conversation history.
+
+Run the four read-only calculation samples against the configured local model:
+
+```text
+python scripts/live_response_check.py
+```
+
+The script checks proportional distribution, bill splitting, a discount, and
+travel time. It reports whether the required numbers are present, the answer is
+complete, and the configured voice limits were followed.
+
+## 14. STT hallucination guards
+
+Speak an English sentence containing none of Elaina's project names, then wait
+through one quiet listening timeout.
+
+Expected:
+
+- Quiet audio does not transcribe the old phrase "Qwen, Ollama, Live2D,
+  Marathon, MCP, GitHub" because the Whisper `initial_prompt` is empty.
+- Automatic language detection accepts English and Korean.
+- Unexpected Japanese or another language from uncertain audio is retried as
+  English rather than being sent to Elaina immediately.
+- A segment that is both highly likely to be silence and low-confidence is
+  discarded.

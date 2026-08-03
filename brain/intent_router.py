@@ -8,6 +8,7 @@ from typing import Any
 
 ALLOWED_INTENTS = {
     "conversation",
+    "calculation",
     "agent_offer",
     "agent_consent",
     "web_search",
@@ -752,7 +753,7 @@ class SemanticIntentRouter:
         return (
             "You are Elaina's semantic intent router. Choose exactly one "
             "intent from this allowlist:\n"
-            "conversation, agent_offer, agent_consent, web_search, "
+            "conversation, calculation, agent_offer, agent_consent, web_search, "
             "project_question, project_edit, "
             "git_commit, git_publish, screen_analysis, "
             "selected_text_question, knowledge_question, time_question, "
@@ -835,6 +836,13 @@ class SemanticIntentRouter:
             "calendar change is conversation or knowledge_question.\n"
             "- knowledge_question: a factual how/why/what question that can be "
             "answered from stable general knowledge without a tool.\n"
+            "- calculation: the user asks for arithmetic, a numerical result, "
+            "a proportional split, a percentage, a price, a duration, or a "
+            "quantitative follow-up to an earlier calculation. Resolve short "
+            "follow-ups such as 'how much did I make?' from recent turns and "
+            "put the complete self-contained problem in normalized_request. "
+            "Calculation is a normal answer mode, not an action agent, and it "
+            "never needs permission.\n"
             "- conversation: ordinary dialogue or stable knowledge that needs "
             "no factual explanation. This includes statements such as 'I'm "
             "continuing my project tonight' because they describe the user's "
@@ -946,6 +954,11 @@ class SemanticIntentRouter:
             intent = "screen_analysis"
         elif has_selected_text:
             intent = "selected_text_question"
+        elif SemanticIntentRouter._looks_like_calculation_request(user_input):
+            # This is used only after both semantic JSON attempts fail. The
+            # normal route remains model-based, but an obvious numeric request
+            # should not lose its answer-first policy because of bad JSON.
+            intent = "calculation"
         else:
             intent = "conversation"
 
@@ -955,3 +968,14 @@ class SemanticIntentRouter:
             normalized_request=user_input,
             reason="Safe fallback after router failure.",
         )
+
+    @staticmethod
+    def _looks_like_calculation_request(user_input: str) -> bool:
+        normalized = " ".join(user_input.lower().split())
+        has_number = bool(re.search(r"\d", normalized))
+        quantitative_request = bool(re.search(
+            r"\b(?:calculate|math|total|split|distribution|percentage|"
+            r"percent|profit|how much|how many|each person|each of us)\b",
+            normalized,
+        ))
+        return has_number and quantitative_request

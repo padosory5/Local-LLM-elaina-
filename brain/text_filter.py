@@ -67,19 +67,7 @@ class TextFilter:
             "",
             text,
         )
-
-        # A numbered Markdown list ("1. Item\n2. Item") should lose its
-        # markers, but a literal numeric answer at the very start of a reply
-        # ("4. You're welcome...") is not a list and must survive. Only treat
-        # the pattern as list formatting when it repeats or appears after
-        # other text, never when it is the first thing in the whole reply.
-        list_marker_pattern = re.compile(r"(?m)^\s*\d+[.)]\s+")
-        list_marker_matches = list(list_marker_pattern.finditer(text))
-        if len(list_marker_matches) >= 2 or (
-            len(list_marker_matches) == 1
-            and list_marker_matches[0].start() > 0
-        ):
-            text = list_marker_pattern.sub("", text)
+        text = re.sub(r"(?m)^\s*\d+[.)]\s+", "", text)
 
         # Underscores are useful on screen for identifiers, but a speech
         # engine should pause between their words instead of saying "underscore."
@@ -99,7 +87,13 @@ class TextFilter:
         max_words: int = 45,
         max_sentences: int = 2,
     ) -> str:
-        """Create plain, bounded prose for both Electron and TTS."""
+        """Create plain prose for Electron and TTS without deleting content.
+
+        ``max_words`` and ``max_sentences`` remain accepted for compatibility
+        with older callers. Response length is now controlled during model
+        generation and complete-answer rewriting, never by slicing text here.
+        """
+        del max_words, max_sentences
         text = cls.for_speech(text)
         if not text:
             return ""
@@ -115,55 +109,4 @@ class TextFilter:
             flags=re.IGNORECASE,
         ).strip()
 
-        sentences = [
-            sentence.strip()
-            for sentence in re.split(
-                r"(?<=[.!?])\s+",
-                text,
-            )
-            if sentence.strip()
-        ]
-
-        if max_words <= 0:
-            if max_sentences > 0:
-                sentences = sentences[:max_sentences]
-            return " ".join(sentences).strip()
-
-        selected: list[str] = []
-        selected_words = 0
-        for sentence in sentences:
-            sentence_words = sentence.split()
-
-            if max_sentences > 0 and len(selected) >= max_sentences:
-                # A short trailing question ("Need help with that?") keeps a
-                # reply from ending mid-thought. Let it through if the word
-                # budget still has room instead of dropping it outright.
-                is_short_follow_up_question = (
-                    sentence.endswith("?") and len(sentence_words) <= 8
-                )
-                if not is_short_follow_up_question:
-                    break
-
-            if selected and selected_words + len(sentence_words) > max_words:
-                break
-            if not selected and len(sentence_words) > max_words:
-                shortened = " ".join(sentence_words[:max_words])
-                # Prefer ending at a natural clause boundary when one is
-                # available instead of cutting a report mid-thought.
-                clause_end = max(
-                    shortened.rfind(","),
-                    shortened.rfind(";"),
-                    shortened.rfind(":"),
-                    shortened.rfind("—"),
-                )
-                if clause_end >= len(shortened) // 2:
-                    shortened = shortened[:clause_end]
-                shortened = shortened.rstrip(",:;—- ")
-                if not shortened.endswith((".", "!", "?")):
-                    shortened += "."
-                selected.append(shortened)
-                break
-            selected.append(sentence)
-            selected_words += len(sentence_words)
-
-        return " ".join(selected).strip()
+        return text.strip()

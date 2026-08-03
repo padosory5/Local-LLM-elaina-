@@ -33,6 +33,11 @@ const elements = {
     screenButton: document.getElementById("screen-button"),
     chatToggleButton: document.getElementById("chat-toggle-button"),
     chatDrawerClose: document.getElementById("chat-drawer-close"),
+    chatInputRow: document.getElementById("chat-input-row"),
+    chatTextInput: document.getElementById("chat-text-input"),
+    chatSendButton: document.getElementById("chat-send-button"),
+    modeVoiceButton: document.getElementById("mode-voice-button"),
+    modeTextButton: document.getElementById("mode-text-button"),
     connectionStatus: document.getElementById("connection-status"),
     connectionText: document.getElementById("connection-text"),
     projectApproval: document.getElementById("project-approval"),
@@ -77,7 +82,8 @@ const state = {
     gitPushAvailable: false,
     activeActionProposalId: null,
     targetMouthValue: 0,
-    currentMouthValue: 0
+    currentMouthValue: 0,
+    inputMode: "voice"
 };
 
 /* -------------------------- Window controls -------------------------- */
@@ -107,11 +113,92 @@ function setupWindowControls() {
 function setupChatDrawer() {
     elements.chatToggleButton.addEventListener("click", () => {
         elements.chatDrawer.classList.toggle("closed");
+        if (!elements.chatDrawer.classList.contains("closed")) {
+            elements.chatTextInput.focus();
+        }
     });
 
     elements.chatDrawerClose.addEventListener("click", () => {
         elements.chatDrawer.classList.add("closed");
     });
+}
+
+function setupChatTextInput() {
+    elements.chatInputRow.addEventListener("submit", event => {
+        event.preventDefault();
+        sendTypedMessage();
+    });
+}
+
+function sendTypedMessage() {
+    const text = elements.chatTextInput.value.trim();
+    if (!text) return;
+
+    if (
+        !state.pythonSocket ||
+        state.pythonSocket.readyState !== WebSocket.OPEN
+    ) {
+        setActivity("offline", "Elaina is offline");
+        return;
+    }
+
+    state.pythonSocket.send(JSON.stringify({
+        command: "send_text_message",
+        text
+    }));
+
+    elements.chatTextInput.value = "";
+}
+
+/* --------------------------- Input mode toggle ------------------------ */
+
+function setupInputModeToggle() {
+    elements.modeVoiceButton.addEventListener("click", () => requestInputMode("voice"));
+    elements.modeTextButton.addEventListener("click", () => requestInputMode("text"));
+}
+
+function requestInputMode(mode) {
+    if (mode === state.inputMode) return;
+
+    if (
+        !state.pythonSocket ||
+        state.pythonSocket.readyState !== WebSocket.OPEN
+    ) {
+        setActivity("offline", "Elaina is offline");
+        return;
+    }
+
+    state.pythonSocket.send(JSON.stringify({
+        command: "set_input_mode",
+        mode
+    }));
+}
+
+/* Applies a mode confirmed by Python. Never flips the UI on the click alone,
+ * since the backend is what actually stops or restarts the microphone. */
+function applyInputMode(mode) {
+    state.inputMode = mode;
+    const isTextMode = mode === "text";
+
+    elements.modeVoiceButton.classList.toggle("active", !isTextMode);
+    elements.modeTextButton.classList.toggle("active", isTextMode);
+    updateChatInputAvailability();
+
+    if (isTextMode) {
+        setActivity("listening", "Text mode: type a message");
+    } else {
+        setActivity("listening", "Listening...");
+    }
+}
+
+function updateChatInputAvailability() {
+    const isConnected = Boolean(
+        state.pythonSocket &&
+        state.pythonSocket.readyState === WebSocket.OPEN
+    );
+    const canType = isConnected && state.inputMode === "text";
+    elements.chatTextInput.disabled = !canType;
+    elements.chatSendButton.disabled = !canType;
 }
 
 /* ----------------------- Project change approval -------------------- */
@@ -467,6 +554,7 @@ function setConnectionState(className, text) {
     }
 
     elements.connectionText.textContent = text;
+    updateChatInputAvailability();
 }
 
 function setActivity(activityName, text) {
@@ -674,6 +762,9 @@ function handlePythonMessage(event) {
                 addAssistantMessage(message.text);
                 setActivity("speaking", "Speaking...");
                 break;
+            case "input_mode_changed":
+                applyInputMode(message.mode);
+                break;
             case "screen_region_ready":
                 setActivity("listening", "Ask about selection...");
                 break;
@@ -833,6 +924,8 @@ function stopMouthMovement() {
 function startApplication() {
     setupWindowControls();
     setupChatDrawer();
+    setupChatTextInput();
+    setupInputModeToggle();
     setupProjectApproval();
     setupGitApproval();
     setupActionApproval();

@@ -37,6 +37,8 @@ class WebSocketServer:
             "emotion_changed",
             "lip_sync",
 
+            "input_mode_changed",
+
             "user_message",
             "assistant_started",
             "assistant_status",

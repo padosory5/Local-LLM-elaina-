@@ -25,6 +25,8 @@ from config.loader import Config
 from brain.personality_loader import PersonalityLoader
 from brain.response_messages import build_personality_messages
 from brain.response_quality import ResponseQualityGuard
+from brain.response_policy import AnswerCompletionGuard, ResponseLimits
+from brain.calculation_planner import CalculationPlanner
 from brain.context_policy import should_include_grounded_context
 from datetime import datetime
 from vision.screen_monitor import ScreenMonitor
@@ -209,6 +211,11 @@ class ChatEngine:
             ))
         )
         self.consent_classifier = SemanticConsentClassifier(
+            client=self.client,
+            model=self.model,
+            keep_alive=self.keep_alive,
+        )
+        self.calculation_planner = CalculationPlanner(
             client=self.client,
             model=self.model,
             keep_alive=self.keep_alive,
@@ -422,7 +429,11 @@ class ChatEngine:
                 self._active_entity = ""
         if route.topic:
             self._active_topic = route.topic
-        elif route.intent in {"knowledge_question", "web_search"}:
+        elif route.intent in {
+            "knowledge_question",
+            "calculation",
+            "web_search",
+        }:
             self._active_topic = route.normalized_request
         if route.entity:
             previous_entity = self._active_entity
@@ -940,12 +951,42 @@ class ChatEngine:
             history=[] if route.topic_shift else None,
         )
 
+        calculation_plan = None
         if route.intent == "knowledge_question":
             messages = self._build_factual_messages(
                 route.normalized_request,
                 include_grounded=self._grounded_context_is_relevant(route),
                 reset_history=route.topic_shift,
             )
+        elif route.intent == "calculation":
+            # A small local model doing multi-step arithmetic in its head is
+            # exactly where it goes wrong (measured: three different wrong
+            # totals across three temperatures on one proration question).
+            # The planner only asks it to translate the problem into plain
+            # arithmetic expressions -- a sandboxed evaluator computes the
+            # actual numbers, so they can't be a language-model math mistake.
+            calculation_started = time.perf_counter()
+            calculation_plan = self.calculation_planner.plan(
+                route.normalized_request
+            )
+            timings["calculation_plan"] = (
+                time.perf_counter() - calculation_started
+            )
+            if calculation_plan is not None:
+                messages = self._build_tool_result_messages(
+                    user_input=route.normalized_request,
+                    tool_result=calculation_plan.as_trusted_result_text(),
+                )
+            else:
+                # Use the router's self-contained interpretation so a short
+                # follow-up such as "How much did I make?" retains the
+                # values from the immediately preceding turns without
+                # loading personal memory. This is the fallback when the
+                # planner's own request fails or produces untrusted output.
+                messages = self._build_factual_messages(
+                    route.normalized_request,
+                    reset_history=route.topic_shift,
+                )
         elif route.intent == "time_question":
             messages = self._build_factual_messages(
                 route.normalized_request,
@@ -1456,6 +1497,57 @@ class ChatEngine:
             )
             forced_response = ""
 
+        detailed_response = self._wants_detailed_response(user_input)
+        max_words = (
+            self.detailed_response_max_words
+            if detailed_response
+            else self.response_max_words
+        )
+        max_sentences = (
+            self.detailed_response_max_sentences
+            if detailed_response
+            else self.response_max_sentences
+        )
+        response_limits = ResponseLimits(
+            max_words=max_words,
+            max_sentences=max_sentences,
+        )
+        calculation_response = route.intent == "calculation"
+        # A verified plan already has exact, tool-computed numbers baked into
+        # messages as a trusted result -- Elaina only has to phrase it
+        # naturally, the same as any other tool result. Only the fallback
+        # path (the planner failed) still asks the model to do the
+        # arithmetic itself, so only that path needs the unlimited-length
+        # "show your work" instruction below.
+        calculation_verified = (
+            calculation_response and calculation_plan is not None
+        )
+        calculation_needs_own_math = (
+            calculation_response and not calculation_verified
+        )
+        response_instruction = response_limits.instruction(
+            calculation=calculation_needs_own_math,
+        )
+        # The first unverified calculation draft is generated without a
+        # length target so it can show brief working before the result;
+        # response_instruction (with the real voice-length limits) is used
+        # later only to condense a complete draft that ran long, never to
+        # constrain this first pass.
+        generation_instruction = (
+            ResponseLimits().instruction(calculation=True)
+            if calculation_needs_own_math
+            else response_instruction
+        )
+        if calculation_needs_own_math:
+            messages[-1]["content"] += (
+                "\n\nRESOLVED CALCULATION REQUEST\n"
+                f"{route.normalized_request}"
+            )
+        messages[-1]["content"] += (
+            "\n\nVOICE RESPONSE REQUIREMENTS\n"
+            f"{generation_instruction}"
+        )
+
         # Notify the UI before waiting for Ollama's first token.
         print("[ChatEngine] Emitting assistant_started")
         self.events.emit("assistant_started")
@@ -1472,18 +1564,10 @@ class ChatEngine:
         effective_forced_response = (
             forced_response or blocked_identification_reply
         )
-        detailed_response = self._wants_detailed_response(user_input)
-        max_words = (
-            self.detailed_response_max_words
-            if detailed_response
-            else self.response_max_words
+        num_predict = response_limits.generation_budget(
+            detailed=detailed_response,
+            calculation=calculation_needs_own_math,
         )
-        max_sentences = (
-            self.detailed_response_max_sentences
-            if detailed_response
-            else self.response_max_sentences
-        )
-        num_predict = 320 if detailed_response else 100
 
         def collect_answer() -> str:
             """Collect locally streamed tokens before publishing clean speech."""
@@ -1556,7 +1640,69 @@ class ChatEngine:
                 max_sentences=max_sentences,
             )
             if (
-                route.intent in {"conversation", "agent_offer"}
+                not effective_forced_response
+                and AnswerCompletionGuard.needs_retry(
+                    reply,
+                    calculation=calculation_response,
+                )
+            ):
+                print(
+                    "\n[Response Guard] Calculation did not provide the "
+                    "requested result; regenerating once."
+                )
+                completion_messages = [
+                    *messages,
+                    {"role": "assistant", "content": str(raw_reply)},
+                    {
+                        "role": "user",
+                        "content": (
+                            "That draft deferred or stopped before giving the "
+                            "numerical answer. Perform the calculation now. "
+                            "State every requested final amount first, then "
+                            "give only the brief explanation needed. Do not "
+                            "ask permission or promise to calculate later."
+                        ),
+                    },
+                ]
+                completion_response = self.client.chat(
+                    model=active_model,
+                    messages=completion_messages,
+                    stream=False,
+                    options={
+                        "temperature": 0.1,
+                        "num_predict": num_predict,
+                    },
+                    keep_alive=active_keep_alive,
+                    think=False,
+                )
+                completion_message = self._value(
+                    completion_response,
+                    "message",
+                    {},
+                )
+                completion_raw = self._value(
+                    completion_message,
+                    "content",
+                    "",
+                )
+                completion_reply = TextFilter.for_voice_response(
+                    completion_raw,
+                )
+                if (
+                    completion_reply
+                    and not AnswerCompletionGuard.needs_retry(
+                        completion_reply,
+                        calculation=calculation_response,
+                    )
+                ):
+                    raw_reply = completion_raw
+                    reply = completion_reply
+            if (
+                route.intent in {
+                    "conversation",
+                    "calculation",
+                    "agent_offer",
+                }
                 and not effective_forced_response
                 and ResponseQualityGuard.should_retry(
                     reply,
@@ -1607,7 +1753,71 @@ class ChatEngine:
                     max_sentences=max_sentences,
                 )
                 if retry_reply:
+                    raw_reply = retry_raw
                     reply = retry_reply
+
+            # Length limits guide both the first generation and this optional
+            # rewrite. The sanitizer never slices the final answer. If the
+            # model cannot produce a valid shorter version, preserve the
+            # complete draft rather than cutting off its result.
+            if (
+                not effective_forced_response
+                and response_limits.exceeds(reply)
+            ):
+                print(
+                    "\n[Response Length] Rewriting the complete answer to "
+                    "the configured voice limits."
+                )
+                rewrite_messages = build_personality_messages(
+                    system_prompt=self.system_prompt,
+                    history=[],
+                    user_input=(
+                        route.normalized_request or user_input
+                    ),
+                    context_sections=(
+                        ("DRAFT ANSWER", reply),
+                        (
+                            "VOICE RESPONSE REQUIREMENTS",
+                            response_instruction
+                            + " Rewrite the draft; preserve every requested "
+                            "result and do not add a follow-up question.",
+                        ),
+                    ),
+                )
+                rewrite_response = self.client.chat(
+                    model=active_model,
+                    messages=rewrite_messages,
+                    stream=False,
+                    options={
+                        "temperature": 0.1,
+                        "num_predict": num_predict,
+                    },
+                    keep_alive=active_keep_alive,
+                    think=False,
+                )
+                rewrite_message = self._value(
+                    rewrite_response,
+                    "message",
+                    {},
+                )
+                rewrite_reply = TextFilter.for_voice_response(
+                    self._value(rewrite_message, "content", ""),
+                )
+                rewrite_complete = not AnswerCompletionGuard.needs_retry(
+                    rewrite_reply,
+                    calculation=calculation_response,
+                )
+                if (
+                    rewrite_reply
+                    and rewrite_complete
+                    and not response_limits.exceeds(rewrite_reply)
+                ):
+                    reply = rewrite_reply
+                else:
+                    print(
+                        "\n[Response Length] The shorter rewrite was not "
+                        "complete; keeping the complete original answer."
+                    )
             speech_buffer = reply
             if reply:
                 print(
