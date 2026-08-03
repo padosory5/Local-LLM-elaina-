@@ -42,6 +42,11 @@ class PersonalityRoutingTests(unittest.TestCase):
             }],
         )
         self.assertIn("Spain won.", messages[-1]["content"])
+        self.assertIn("EVIDENCE RULES", messages[-1]["content"])
+        self.assertIn(
+            "Do not replace it with training knowledge",
+            messages[-1]["content"],
+        )
 
     def test_tool_result_keeps_personality_as_only_system_prompt(self):
         messages = build_personality_messages(
@@ -67,6 +72,8 @@ class PersonalityRoutingTests(unittest.TestCase):
             "PERSONALITY FILE CONTENT",
         )
         self.assertIn("Nothing changed.", messages[-1]["content"])
+        self.assertIn("TOOL RESULT RULES", messages[-1]["content"])
+        self.assertIn("Do not recalculate", messages[-1]["content"])
 
 
 if __name__ == "__main__":

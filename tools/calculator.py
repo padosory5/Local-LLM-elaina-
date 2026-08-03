@@ -111,32 +111,3 @@ class CalculationStep:
     label: str
     expression: str
     value: float
-
-
-def compute_steps(raw_steps: list) -> list[CalculationStep]:
-    """Evaluate every step's expression, raising on the first untrusted one."""
-    if not isinstance(raw_steps, list) or not raw_steps:
-        raise CalculationError("No calculation steps were provided.")
-
-    steps: list[CalculationStep] = []
-    for raw_step in raw_steps:
-        if not isinstance(raw_step, dict):
-            raise CalculationError(f"Malformed step: {raw_step!r}")
-
-        label = str(raw_step.get("label", "")).strip()
-        expression = str(raw_step.get("expression", "")).strip()
-        if not label or not expression:
-            raise CalculationError(
-                "Each step needs a non-empty label and expression."
-            )
-
-        value = evaluate_expression(expression)
-        steps.append(
-            CalculationStep(
-                label=label,
-                expression=expression,
-                value=value,
-            )
-        )
-
-    return steps

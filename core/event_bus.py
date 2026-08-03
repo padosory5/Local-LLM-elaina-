@@ -32,17 +32,6 @@ class EventBus:
             if handler not in self._handlers[event_name]:
                 self._handlers[event_name].append(handler)
 
-    def unsubscribe(
-        self,
-        event_name: str,
-        handler: EventHandler,
-    ) -> None:
-        with self._lock:
-            handlers = self._handlers.get(event_name, [])
-
-            if handler in handlers:
-                handlers.remove(handler)
-
     def emit(
         self,
         event_name: str,

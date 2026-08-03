@@ -70,7 +70,7 @@ class MemoryManager:
 
         vector = self.embedder.encode(query)
 
-        distances, indices = self.faiss.search(vector, k)
+        _, indices = self.faiss.search(vector, k)
 
         results = []
 
@@ -106,14 +106,6 @@ class MemoryManager:
 
         return results
     
-    def get_all_memories(self):
-
-        return (
-        self.db.query(Memory)
-        .filter_by(is_active=True)
-        .all()
-        )
-
     def update_memory(
         self,
         memory_id,
@@ -136,7 +128,7 @@ class MemoryManager:
 
         vector = self.embedder.encode(text)
 
-        distances, indices = self.faiss.search(vector, k)
+        _, indices = self.faiss.search(vector, k)
 
         memories = []
 

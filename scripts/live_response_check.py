@@ -15,6 +15,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from brain.personality_loader import PersonalityLoader
+from brain.calculation_planner import CalculationPlanner
+from brain.response_messages import build_personality_messages
 from brain.response_policy import AnswerCompletionGuard, ResponseLimits
 from brain.text_filter import TextFilter
 
@@ -101,22 +103,35 @@ def main() -> int:
     )
     personality = PersonalityLoader().load(language)
     client = ollama.Client(host=host)
+    planner = CalculationPlanner(
+        client=client,
+        model=model,
+        keep_alive=keep_alive,
+    )
     failures = 0
 
     print(f"Testing {model} with {len(CASES)} calculation cases.\n")
     for case in CASES:
         instruction = limits.instruction(calculation=True)
-        messages = [
-            {"role": "system", "content": personality},
-            {
-                "role": "user",
-                "content": (
-                    f"CURRENT USER MESSAGE\n{case.prompt}\n\n"
-                    "VOICE RESPONSE REQUIREMENTS\n"
-                    f"{instruction}"
-                ),
-            },
-        ]
+        plan = planner.plan(case.prompt)
+        if plan is None:
+            failures += 1
+            print(f"[FAIL] {case.name}")
+            print("The calculation planner returned no verified result.\n")
+            continue
+        messages = build_personality_messages(
+            system_prompt=personality,
+            history=[],
+            user_input=case.prompt,
+            context_sections=((
+                "TRUSTED TOOL RESULT",
+                plan.as_trusted_result_text(),
+            ),),
+        )
+        messages[-1]["content"] += (
+            "\n\nVOICE RESPONSE REQUIREMENTS\n"
+            f"{instruction}"
+        )
         try:
             response = client.chat(
                 model=model,
@@ -124,10 +139,10 @@ def main() -> int:
                 stream=False,
                 options={
                     "temperature": 0.1,
-                    "num_predict": limits.generation_budget(),
+                    "num_predict": limits.generation_budget(calculation=True),
                 },
                 keep_alive=keep_alive,
-                think=True,
+                think=False,
             )
         except Exception as error:
             print(
@@ -158,10 +173,10 @@ def main() -> int:
                 stream=False,
                 options={
                     "temperature": 0.1,
-                    "num_predict": limits.generation_budget(),
+                    "num_predict": limits.generation_budget(calculation=True),
                 },
                 keep_alive=keep_alive,
-                think=True,
+                think=False,
             )
             reply = TextFilter.for_voice_response(
                 value(value(retry, "message", {}), "content", "")
@@ -186,10 +201,10 @@ def main() -> int:
                 stream=False,
                 options={
                     "temperature": 0.1,
-                    "num_predict": limits.generation_budget(),
+                    "num_predict": limits.generation_budget(calculation=True),
                 },
                 keep_alive=keep_alive,
-                think=True,
+                think=False,
             )
             candidate = TextFilter.for_voice_response(
                 value(value(rewrite, "message", {}), "content", "")

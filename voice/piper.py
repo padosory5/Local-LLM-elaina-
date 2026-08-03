@@ -167,7 +167,6 @@ class PiperTTS(BaseTTS):
 
         with wave.open(wav_path, "rb") as wav_file:
             sample_rate = wav_file.getframerate()
-            channel_count = wav_file.getnchannels()
             sample_width = wav_file.getsampwidth()
 
             if sample_width != 2:

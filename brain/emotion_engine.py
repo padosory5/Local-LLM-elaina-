@@ -109,12 +109,6 @@ class EmotionEngine:
         self.current = state
         return state
 
-    def reset(self) -> None:
-        self.current = EmotionState(
-            name="neutral",
-            intensity=0.3,
-        )
-
     @staticmethod
     def _count_matches(
         text: str,

@@ -63,12 +63,16 @@ class AgentSystemTests(unittest.TestCase):
         builder = AgentBuilder(
             client=FakeClient([
                 {
+                    "capability": "google_calendar",
+                    "cancel_requested": False,
                     "timezone": "",
                     "calendar_id": "",
                     "default_duration_minutes": None,
                     "approval_confirmed": False,
                 },
                 {
+                    "capability": "google_calendar",
+                    "cancel_requested": False,
                     "timezone": "Asia/Seoul",
                     "calendar_id": "primary",
                     "default_duration_minutes": 60,
@@ -90,6 +94,38 @@ class AgentSystemTests(unittest.TestCase):
         )
         self.assertEqual(second.status, "ready")
         self.assertEqual(second.definition["id"], "google_calendar_agent")
+        self.assertFalse(builder.active)
+
+    def test_calendar_builder_understands_semantic_cancellation(self):
+        builder = AgentBuilder(
+            client=FakeClient([
+                {
+                    "capability": "google_calendar",
+                    "cancel_requested": False,
+                    "timezone": "",
+                    "calendar_id": "",
+                    "default_duration_minutes": None,
+                    "approval_confirmed": False,
+                },
+                {
+                    "capability": "google_calendar",
+                    "cancel_requested": True,
+                    "timezone": "",
+                    "calendar_id": "",
+                    "default_duration_minutes": None,
+                    "approval_confirmed": False,
+                },
+            ]),
+            model="test",
+            keep_alive=0,
+        )
+
+        builder.handle("Create a calendar-management agent.")
+        result = builder.handle(
+            "Actually, scrap that setup—I changed my mind."
+        )
+
+        self.assertEqual(result.status, "cancelled")
         self.assertFalse(builder.active)
 
     def test_calendar_agent_prepares_but_does_not_write_event(self):

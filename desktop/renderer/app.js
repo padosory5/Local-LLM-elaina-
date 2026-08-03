@@ -74,7 +74,6 @@ const state = {
     live2dModel: null,
     pythonSocket: null,
     reconnectTimer: null,
-    userCaptionTimer: null,
     cursorTrackingTimer: null,
     activeProposalId: null,
     proposalEditors: [],

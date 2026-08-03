@@ -8,15 +8,13 @@ from collections import deque
 from memory.memory_manager import MemoryManager
 from memory.extractor import MemoryExtractor
 from memory.consolidator import MemoryConsolidator
-from memory.router import MemoryRouter
 from memory.context_builder import ContextBuilder
 from brain.prompt_builder import PromptBuilder
 from brain.conversation_manager import ConversationManager
 from brain.memory_ranker import MemoryRanker
-from brain.attention import Attention
 from voice.audio_manager import AudioManager
 from brain.emotion_engine import EmotionEngine
-from core.event_bus import Event, EventBus
+from core.event_bus import EventBus
 from brain.text_filter import TextFilter
 from tools.web_search import WebSearchTool
 from tools.visual_search import VisualSearchTool
@@ -25,7 +23,11 @@ from config.loader import Config
 from brain.personality_loader import PersonalityLoader
 from brain.response_messages import build_personality_messages
 from brain.response_quality import ResponseQualityGuard
-from brain.response_policy import AnswerCompletionGuard, ResponseLimits
+from brain.response_policy import (
+    AdviceResponseGuard,
+    AnswerCompletionGuard,
+    ResponseLimits,
+)
 from brain.calculation_planner import CalculationPlanner
 from brain.context_policy import should_include_grounded_context
 from datetime import datetime
@@ -34,6 +36,7 @@ from brain.intent_router import IntentDecision, SemanticIntentRouter
 from agents.builder import AgentBuilder
 from agents.calendar_agent import GoogleCalendarAgent
 from agents.coordinator import AgentCoordinator
+from agents.research_agent import ResearchAgent
 from agents.consent import (
     AGENT_EXECUTION_INTENTS,
     AgentConsentGate,
@@ -186,11 +189,9 @@ class ChatEngine:
         self.memory_manager = MemoryManager()
         self.extractor = MemoryExtractor(config=self.config)
         self.consolidator = MemoryConsolidator(config=self.config)
-        self.router = MemoryRouter()
         self.context_builder = ContextBuilder()
         self.conversation = ConversationManager()
         self.memory_ranker = MemoryRanker()
-        self.attention = Attention()
         self.events = EventBus()
 
         # Agent orchestration is intentionally layered above the proven
@@ -235,6 +236,7 @@ class ChatEngine:
         self.calendar_tool = GoogleCalendarTool(self.config)
 
         self.web_search_tool = WebSearchTool()
+        self.research_agent = ResearchAgent(self.search_web)
         self.visual_search_tool = VisualSearchTool(config=self.config)
         self.project_mcp = None
         self._start_project_mcp()
@@ -259,12 +261,6 @@ class ChatEngine:
         self._vision_last_warm = 0.0
         self._turn_lock = threading.Lock()
         self._active_turn_cancel: threading.Event | None = None
-
-    def _print_event(self, event: Event) -> None:
-        print(
-            f"\n[Event] {event.name}: "
-            f"{event.data}"
-        )
 
     def on_speech_start(self) -> None:
         self.events.emit("speech_started")
@@ -348,30 +344,6 @@ class ChatEngine:
             "statement": statement[:1200],
             "source": source.strip(),
         }
-
-    @staticmethod
-    def _should_consider_memory(user_input: str) -> bool:
-        """Queue only likely personal statements, not tools or fact questions."""
-        normalized = " ".join(user_input.lower().split())
-        if normalized.endswith("?"):
-            return False
-        return bool(re.search(
-            r"\b(i am|i'm|i feel|i like|i love|i hate|i prefer|i want|"
-            r"i need|i have|i live|i study|i work|my favorite|my project)\b",
-            normalized,
-        ))
-
-    @staticmethod
-    def _wants_detailed_response(user_input: str) -> bool:
-        """Reserve long voice answers for an explicit request for detail."""
-        normalized = " ".join(user_input.lower().split())
-        return bool(re.search(
-            r"\b(?:in detail|detailed explanation|explain fully|"
-            r"step[- ]by[- ]step|walk me through|complete list|full list|"
-            r"list (?:all|every)|all (?:the )?agents|be thorough|"
-            r"comprehensive)\b",
-            normalized,
-        ))
 
     def _store_memory_candidate(self, user_input: str) -> None:
         """Perform expensive extraction/consolidation outside response latency."""
@@ -723,15 +695,11 @@ class ChatEngine:
             text=user_input,
         )
 
-        self.attention.update(user_input)
-
         ####################################################
         # Retrieve Memories
         ####################################################
 
         memory_text = ""
-
-        attention_text = self.attention.build_context()
 
         ####################################################
         # Build Prompt
@@ -824,6 +792,13 @@ class ChatEngine:
             f"[Router] {route.intent} ({route.confidence:.2f}): "
             f"{route.reason or route.normalized_request}"
         )
+        if route.intent in {"knowledge_question", "web_search"}:
+            print(
+                "[Router Source] "
+                f"freshness={route.information_freshness} "
+                f"external={route.requires_external_evidence} "
+                f"verify={route.verification_required}"
+            )
         if route.normalized_request != user_input:
             print(
                 f"[Router] Interpreted transcript as: "
@@ -866,7 +841,7 @@ class ChatEngine:
         memory_started = time.perf_counter()
         use_memory = (
             route.intent == "conversation"
-            and self.router.should_use_memory(user_input)
+            and route.memory_relevant
         )
         if use_memory:
             memories = self.memory_manager.search(
@@ -887,7 +862,7 @@ class ChatEngine:
         )
         use_screen_vision = route.intent == "screen_analysis"
         forced_response = ""
-        screen_target = self._select_screen_target(user_input)
+        screen_target = route.screen_target or "configured"
         if screen_snapshot is not None:
             pass
         elif screen_region is not None:
@@ -908,7 +883,6 @@ class ChatEngine:
 
         context_prompt = self.prompt_builder.build(
             memory_text=memory_text,
-            attention_text=attention_text,
             screen_text=screen_context,
             user_input=user_input,
         )
@@ -1000,18 +974,21 @@ class ChatEngine:
         if not use_screen_vision and route.intent == "web_search":
             search_started = time.perf_counter()
             try:
-                search_result = self.search_web(
-                    query=route.search_query or route.normalized_request,
-                    max_results=3,
+                research_result = self.research_agent.research(
+                    request=route.normalized_request,
+                    search_query=(
+                        route.search_query or route.normalized_request
+                    ),
+                    max_results=5,
+                    verify=route.verification_required,
                 )
-                self._last_search_query = (
-                    route.search_query or route.normalized_request
-                )
-                if not str(search_result).strip():
-                    raise RuntimeError("The search returned no results.")
+                self._last_search_query = research_result.queries[0]
                 messages = self._build_factual_messages(
                     route.normalized_request,
-                    str(search_result),
+                    (
+                        f"AS-OF DATE: {datetime.now().strftime('%Y-%m-%d')}\n"
+                        f"{research_result.evidence}"
+                    ),
                     include_grounded=self._grounded_context_is_relevant(
                         route
                     ),
@@ -1347,7 +1324,7 @@ class ChatEngine:
                 )
             else:
                 project_started = time.perf_counter()
-                git_context = self._prepare_git_action()
+                self._prepare_git_action()
                 timings["project_tools"] = (
                     time.perf_counter() - project_started
                 )
@@ -1497,7 +1474,7 @@ class ChatEngine:
             )
             forced_response = ""
 
-        detailed_response = self._wants_detailed_response(user_input)
+        detailed_response = route.detailed_response
         max_words = (
             self.detailed_response_max_words
             if detailed_response
@@ -1513,6 +1490,9 @@ class ChatEngine:
             max_sentences=max_sentences,
         )
         calculation_response = route.intent == "calculation"
+        recommendation_response = (
+            route.recommendation_needed or route.speech_act == "advice"
+        )
         # A verified plan already has exact, tool-computed numbers baked into
         # messages as a trusted result -- Elaina only has to phrase it
         # naturally, the same as any other tool result. Only the fallback
@@ -1527,6 +1507,7 @@ class ChatEngine:
         )
         response_instruction = response_limits.instruction(
             calculation=calculation_needs_own_math,
+            recommendation=recommendation_response,
         )
         # The first unverified calculation draft is generated without a
         # length target so it can show brief working before the result;
@@ -1760,13 +1741,39 @@ class ChatEngine:
             # rewrite. The sanitizer never slices the final answer. If the
             # model cannot produce a valid shorter version, preserve the
             # complete draft rather than cutting off its result.
+            advice_needs_rewrite = AdviceResponseGuard.needs_rewrite(
+                reply,
+                recommendation=recommendation_response,
+                urgent_safety=route.urgent_safety,
+                advice_domain=route.advice_domain,
+            )
             if (
                 not effective_forced_response
-                and response_limits.exceeds(reply)
+                and (
+                    response_limits.exceeds(reply)
+                    or advice_needs_rewrite
+                )
             ):
                 print(
-                    "\n[Response Length] Rewriting the complete answer to "
-                    "the configured voice limits."
+                    "\n[Response Rewrite] Rewriting the complete answer to "
+                    "the voice advice and length requirements."
+                )
+                preservation_rule = (
+                    " Preserve the direct recommendation, immediate action, "
+                    "and essential caution; remove background first. Keep at "
+                    "most one question only when a missing safety detail "
+                    "changes the recommendation."
+                    if recommendation_response
+                    else " Preserve every requested result."
+                )
+                advice_footer_rule = (
+                    " Do not add a generic offer or routine referral."
+                    if recommendation_response and not route.urgent_safety
+                    else (
+                        " Preserve the urgent action without softening or delay."
+                        if route.urgent_safety
+                        else " Do not add a follow-up question."
+                    )
                 )
                 rewrite_messages = build_personality_messages(
                     system_prompt=self.system_prompt,
@@ -1779,8 +1786,9 @@ class ChatEngine:
                         (
                             "VOICE RESPONSE REQUIREMENTS",
                             response_instruction
-                            + " Rewrite the draft; preserve every requested "
-                            "result and do not add a follow-up question.",
+                            + " Rewrite the draft."
+                            + preservation_rule
+                            + advice_footer_rule,
                         ),
                     ),
                 )
@@ -1807,17 +1815,82 @@ class ChatEngine:
                     rewrite_reply,
                     calculation=calculation_response,
                 )
+                rewrite_advice_valid = not AdviceResponseGuard.needs_rewrite(
+                    rewrite_reply,
+                    recommendation=recommendation_response,
+                    urgent_safety=route.urgent_safety,
+                    advice_domain=route.advice_domain,
+                )
                 if (
                     rewrite_reply
                     and rewrite_complete
+                    and rewrite_advice_valid
                     and not response_limits.exceeds(rewrite_reply)
                 ):
                     reply = rewrite_reply
                 else:
+                    if recommendation_response and not route.urgent_safety:
+                        finalizer_response = self.client.chat(
+                            model=active_model,
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": self.system_prompt,
+                                },
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "Return only a short final voice reply. "
+                                        "Give the direct recommendation first, "
+                                        "then the immediate action and at most "
+                                        "one essential caution. This is routine "
+                                        "advice: do not mention a doctor, expert, "
+                                        "or professional. For health advice, do "
+                                        "not invent a numeric dose; use label "
+                                        "directions. Ask for one missing "
+                                        "safety detail instead when necessary.\n\n"
+                                        "CURRENT USER MESSAGE\n"
+                                        f"{route.normalized_request or user_input}\n\n"
+                                        f"DRAFT ANSWER\n{reply}\n\n"
+                                        "VOICE LIMITS\n"
+                                        f"{response_instruction}"
+                                    ),
+                                },
+                            ],
+                            stream=False,
+                            options={
+                                "temperature": 0,
+                                "num_predict": num_predict,
+                            },
+                            keep_alive=active_keep_alive,
+                            think=False,
+                        )
+                        finalizer_message = self._value(
+                            finalizer_response,
+                            "message",
+                            {},
+                        )
+                        finalizer_reply = TextFilter.for_voice_response(
+                            self._value(finalizer_message, "content", ""),
+                        )
+                        finalizer_valid = (
+                            bool(finalizer_reply)
+                            and not response_limits.exceeds(finalizer_reply)
+                            and not AdviceResponseGuard.needs_rewrite(
+                                finalizer_reply,
+                                recommendation=True,
+                                urgent_safety=False,
+                                advice_domain=route.advice_domain,
+                            )
+                        )
+                        if finalizer_valid:
+                            reply = finalizer_reply
                     print(
-                        "\n[Response Length] The shorter rewrite was not "
-                        "complete; keeping the complete original answer."
+                        "\n[Response Rewrite] The first rewrite was not "
+                        "complete; applied the advice fallback when valid."
                     )
+            if recommendation_response:
+                reply = response_limits.merge_extra_sentences(reply)
             speech_buffer = reply
             if reply:
                 print(
@@ -1960,7 +2033,7 @@ class ChatEngine:
 
         if (
             route.intent == "conversation"
-            and self._should_consider_memory(user_input)
+            and route.memory_candidate
         ):
             threading.Thread(
                 target=self._store_memory_candidate,
@@ -2266,89 +2339,6 @@ class ChatEngine:
         # Failure must not trigger an unnecessary search or confident guess.
         return "direct"
 
-    def _should_use_screen_vision(self, user_input: str) -> bool:
-        """Give explicit references to visible desktop content top priority."""
-        normalized = " ".join(user_input.lower().split())
-
-        # Screen nouns are the strongest signal. This catches wording such as
-        # "on my left screen" without requiring every possible full sentence.
-        if re.search(r"\b(screens?|monitors?|desktop|windows?)\b", normalized):
-            return True
-
-        visual_phrases = (
-            "what am i watching",
-            "what am i looking at",
-            "what is on my screen",
-            "what's on my screen",
-            "look at my screen",
-            "look at this",
-            "can you see my screen",
-            "can you see this",
-            "read my screen",
-            "read this screen",
-            "read this page",
-            "explain this screen",
-            "explain this error",
-            "what does this error",
-            "what video am i watching",
-            "what game am i playing",
-            "what page am i on",
-            "what do you think about this",
-            "tell me about what you see",
-        )
-
-        return any(phrase in normalized for phrase in visual_phrases)
-
-    def _select_screen_target(self, user_input: str) -> str:
-        """Translate natural monitor wording into a ScreenMonitor target."""
-        normalized = " ".join(user_input.lower().split())
-
-        if re.search(
-            r"\b(all|both|entire|whole)\b.*"
-            r"\b(screens?|monitors?|desktop)\b",
-            normalized,
-        ):
-            return "all"
-        if re.search(r"\bleft(?:most)?\b.*\b(screen|monitor)\b", normalized):
-            return "left"
-        if re.search(r"\bright(?:most)?\b.*\b(screen|monitor)\b", normalized):
-            return "right"
-        if re.search(r"\b(main|primary)\b.*\b(screen|monitor)\b", normalized):
-            return "main"
-
-        return "configured"
-
-    def _should_search_web(self, user_input: str) -> bool:
-        """Detect questions that clearly require recently changing information."""
-        if not self.config.get(
-            "search", "enabled", default=True, required=False
-        ):
-            return False
-
-        normalized = " ".join(user_input.lower().split())
-        current_information_phrases = (
-            "search the web",
-            "search online",
-            "look this up",
-            "look it up",
-            "latest",
-            "current price",
-            "stock price",
-            "weather",
-            "news",
-            "score",
-            "schedule",
-            "who is the current",
-            "who won",
-            "release date",
-            "exchange rate",
-        )
-
-        return any(
-            phrase in normalized
-            for phrase in current_information_phrases
-        )
-
     def _start_project_mcp(self) -> None:
         """Start project access without preventing Elaina from launching."""
         enabled = self.config.get(
@@ -2390,101 +2380,6 @@ class ChatEngine:
             self.project_mcp = None
             print(f"[Project MCP] Could not connect: {error}")
 
-    def _should_use_project_tools(self, user_input: str) -> bool:
-        """Detect requests that require evidence from the selected project."""
-        if self.project_mcp is None:
-            return False
-
-        normalized = " ".join(user_input.lower().split())
-        if self._is_git_action_request(normalized):
-            return True
-        project_phrases = (
-            "my project",
-            "this project",
-            "the project",
-            "my codebase",
-            "this codebase",
-            "the codebase",
-            "my repository",
-            "this repository",
-            "the repository",
-            "my repo",
-            "this repo",
-            "project files",
-            "project structure",
-            "git status",
-            "working tree",
-            "what am i working on",
-            "what have i changed",
-            "what did i change",
-            "read the file",
-            "read this file",
-            "open the file",
-            "open this file",
-            "search the code",
-            "search my code",
-            "find in the project",
-            "find in my code",
-            "which file",
-            "edit the file",
-            "edit my code",
-            "change the code",
-            "change my code",
-            "modify the code",
-            "modify my code",
-            "create a file",
-            "make a file",
-            "add a button",
-            "add this feature",
-            "implement this",
-            "apply a fix",
-            "fix my code",
-        )
-
-        if any(phrase in normalized for phrase in project_phrases):
-            return True
-
-        if self._is_project_edit_request(normalized):
-            return True
-
-        # A concrete source filename or relative path is also a strong signal.
-        return bool(re.search(
-            r"\b[\w./\\-]+\.(py|js|ts|tsx|jsx|html|css|json|ya?ml|md)\b",
-            normalized,
-        ))
-
-    @staticmethod
-    def _is_git_action_request(user_input: str) -> bool:
-        """Detect requests to create a commit or push project changes."""
-        normalized = " ".join(user_input.lower().split())
-        phrases = (
-            "git push",
-            "push to git",
-            "push this to git",
-            "push it to git",
-            "push to github",
-            "push this to github",
-            "push my changes",
-            "push these changes",
-            "commit and push",
-            "commit these changes",
-            "commit my changes",
-            "commit this project",
-        )
-        return any(phrase in normalized for phrase in phrases)
-
-    @staticmethod
-    def _is_project_edit_request(user_input: str) -> bool:
-        """Detect requests whose intended result is a project modification."""
-        normalized = " ".join(user_input.lower().split())
-
-        return bool(re.search(
-            r"\b(add|create|make|edit|change|modify|remove|delete|implement|fix)"
-            r"\b.*\b(button|file|code|feature|function|class|html|css|"
-            r"javascript|python)\b",
-            normalized,
-        ))
-
     @staticmethod
     def _value(item, key: str, default=None):
         """Read a field from either an Ollama object or a plain dictionary."""
@@ -2512,7 +2407,7 @@ class ChatEngine:
         self,
         user_input: str,
         messages: list[dict],
-        edit_requested: bool | None = None,
+        edit_requested: bool,
     ) -> str:
         """
         Let Qwen gather read-only project evidence before writing its answer.
@@ -2524,8 +2419,6 @@ class ChatEngine:
         if self.project_mcp is None:
             return ""
 
-        if edit_requested is None:
-            edit_requested = self._is_project_edit_request(user_input)
         tools = self.project_mcp.ollama_tools()
         if not tools:
             return ""

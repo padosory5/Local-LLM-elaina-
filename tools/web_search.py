@@ -47,11 +47,9 @@ class WebSearchTool:
             summary = result.get("body", "")
 
             formatted_results.append(
-                f"""
-            [{index}]
-
-            {summary}
-            """
+                f"[{index}] {title}\n"
+                f"Source: {url or '(source URL unavailable)'}\n"
+                f"Snippet: {summary or '(no snippet available)'}"
             )
 
         return "\n\n".join(formatted_results)

@@ -3,17 +3,10 @@ class PromptBuilder:
     def build(
         self,
         memory_text: str,
-        attention_text: str,
         user_input: str,
         screen_text: str = "",
     ) -> str:
         sections = []
-
-        if attention_text.strip():
-            sections.append(
-                f"Relevant conversation context:\n"
-                f"{attention_text.strip()}"
-            )
 
         if memory_text.strip():
             sections.append(

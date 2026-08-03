@@ -53,16 +53,16 @@ class AgentBuilder:
     def active(self) -> bool:
         return self.session is not None
 
-    def cancel(self) -> None:
-        self.session = None
-
     def handle(self, user_input: str) -> AgentBuildResult:
         if self.session is None:
             return self._begin(user_input)
         return self._continue(user_input)
 
     def _begin(self, user_input: str) -> AgentBuildResult:
-        if not self._looks_like_calendar_capability(user_input):
+        extracted = self._extract_settings(user_input)
+        capability = extracted.pop("_capability", "unsupported")
+        extracted.pop("_cancel_requested", None)
+        if capability != "google_calendar":
             return AgentBuildResult(
                 status="unsupported",
                 message=(
@@ -78,20 +78,12 @@ class AgentBuilder:
             blueprint="google_calendar",
             original_request=user_input,
         )
-        extracted = self._extract_settings(user_input)
         self.session.values.update(extracted)
         return self._next_result()
 
     def _continue(self, user_input: str) -> AgentBuildResult:
-        normalized = " ".join(user_input.lower().split())
-        if normalized in {
-            "cancel",
-            "stop",
-            "never mind",
-            "nevermind",
-            "don't create it",
-            "do not create it",
-        }:
+        extracted = self._extract_settings(user_input)
+        if extracted.pop("_cancel_requested", False):
             self.session = None
             return AgentBuildResult(
                 status="cancelled",
@@ -99,7 +91,8 @@ class AgentBuilder:
             )
 
         assert self.session is not None
-        self.session.values.update(self._extract_settings(user_input))
+        extracted.pop("_capability", None)
+        self.session.values.update(extracted)
         return self._next_result()
 
     def _next_result(self) -> AgentBuildResult:
@@ -191,8 +184,12 @@ class AgentBuilder:
     def _extract_settings(self, user_input: str) -> dict[str, Any]:
         prompt = (
             "Extract Google Calendar Agent setup preferences from the user's "
-            "message. Return JSON only with timezone, calendar_id, "
-            "default_duration_minutes, and approval_confirmed. Use an empty "
+            "message. Return JSON only with capability, cancel_requested, "
+            "timezone, calendar_id, default_duration_minutes, and "
+            "approval_confirmed. capability is google_calendar only when the "
+            "requested agent manages calendar events; otherwise unsupported. "
+            "cancel_requested is true when the user semantically cancels an "
+            "active setup, regardless of their exact wording. Use an empty "
             "string or null when a value is not provided. timezone must be an "
             "IANA name such as Asia/Seoul. calendar_id should be 'primary' "
             "when the user says main or primary calendar. Do not convert a "
@@ -227,6 +224,15 @@ class AgentBuilder:
             return {}
 
         result: dict[str, Any] = {}
+        capability = str(payload.get("capability") or "").strip().lower()
+        result["_capability"] = (
+            "google_calendar"
+            if capability == "google_calendar"
+            else "unsupported"
+        )
+        result["_cancel_requested"] = (
+            payload.get("cancel_requested") is True
+        )
         timezone_name = str(payload.get("timezone") or "").strip()
         calendar_id = str(payload.get("calendar_id") or "").strip()
 
@@ -246,20 +252,6 @@ class AgentBuilder:
             result["approval_confirmed"] = True
 
         return result
-
-    @staticmethod
-    def _looks_like_calendar_capability(user_input: str) -> bool:
-        normalized = user_input.lower()
-        return any(
-            word in normalized
-            for word in (
-                "calendar",
-                "schedule",
-                "appointment",
-                "event",
-                "class planner",
-            )
-        )
 
     @staticmethod
     def _value(item: Any, key: str, default: Any = None) -> Any:

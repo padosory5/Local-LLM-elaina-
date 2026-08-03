@@ -11,7 +11,12 @@ class ResponseLimits:
     max_words: int = 0
     max_sentences: int = 0
 
-    def instruction(self, *, calculation: bool = False) -> str:
+    def instruction(
+        self,
+        *,
+        calculation: bool = False,
+        recommendation: bool = False,
+    ) -> str:
         limits: list[str] = []
         if self.max_words > 0:
             limits.append(f"at most {self.max_words} spoken words")
@@ -47,6 +52,16 @@ class ResponseLimits:
                     "answer, with no hidden reasoning, then clearly state "
                     "the final result at the end."
                 )
+        if recommendation:
+            rules.extend([
+                "Give a direct, friendly recommendation before background.",
+                "Include an action the user can take now and only one essential caution.",
+                "Never make a referral the whole answer; give useful guidance first.",
+                "Do not append a doctor, expert, or professional referral to routine advice; reserve outside help for a concrete immediate danger.",
+                "When a medicine or condition could change the advice, ask the user for that one detail instead of sending them elsewhere.",
+                "For health advice, never invent a numeric dose; use label directions instead.",
+                "Sound like a practical friend, not a formal report or disclaimer.",
+            ])
         return " ".join(rules)
 
     def exceeds(self, text: str) -> bool:
@@ -58,6 +73,28 @@ class ResponseLimits:
         ):
             return True
         return False
+
+    def merge_extra_sentences(self, text: str) -> str:
+        """Meet a sentence target by joining clauses without deleting content."""
+        if self.max_sentences <= 0:
+            return text
+
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", text.strip())
+            if sentence.strip()
+        ]
+        if len(sentences) <= self.max_sentences:
+            return text
+
+        fixed = sentences[: self.max_sentences - 1]
+        remainder = sentences[self.max_sentences - 1 :]
+        merged = "; ".join(
+            sentence.rstrip(".!?").strip()
+            for sentence in remainder
+        ) + "."
+        candidate = " ".join([*fixed, merged])
+        return candidate if not self.exceeds(candidate) else text
 
     @staticmethod
     def word_count(text: str) -> int:
@@ -118,3 +155,37 @@ class AnswerCompletionGuard:
         if cls._DEFERRAL.search(cleaned):
             return True
         return not bool(re.search(r"\d", cleaned))
+
+
+class AdviceResponseGuard:
+    """Request a rewrite when routine advice turns into a referral footer."""
+
+    _ROUTINE_REFERRAL = re.compile(
+        r"\b(?:ask|consult|contact|call|see|talk|check|speak|visit)\b"
+        r".{0,48}\b(?:doctor|physician|clinician|healthcare\s+(?:provider|"
+        r"professional)|medical\s+professional|expert)\b",
+        flags=re.IGNORECASE,
+    )
+    _NUMERIC_DOSE = re.compile(
+        r"\b\d+(?:\.\d+)?\s*(?:mcg|mg|g|ml|micrograms?|milligrams?|"
+        r"grams?|milliliters?)\b",
+        flags=re.IGNORECASE,
+    )
+
+    @classmethod
+    def needs_rewrite(
+        cls,
+        text: str,
+        *,
+        recommendation: bool,
+        urgent_safety: bool,
+        advice_domain: str = "general",
+    ) -> bool:
+        if not recommendation or urgent_safety:
+            return False
+        if cls._ROUTINE_REFERRAL.search(text):
+            return True
+        return bool(
+            advice_domain == "health"
+            and cls._NUMERIC_DOSE.search(text)
+        )

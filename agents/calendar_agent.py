@@ -40,29 +40,11 @@ class GoogleCalendarAgent:
     def active(self) -> bool:
         return self.draft is not None
 
-    def cancel(self) -> None:
-        self.draft = None
-
     def handle(
         self,
         user_input: str,
         definition: AgentDefinition,
     ) -> CalendarTurnResult:
-        normalized = " ".join(user_input.lower().split())
-        if self.draft is not None and normalized in {
-            "cancel",
-            "stop",
-            "never mind",
-            "nevermind",
-            "don't add it",
-            "do not add it",
-        }:
-            self.draft = None
-            return CalendarTurnResult(
-                status="cancelled",
-                message="Okay, I cancelled that calendar event.",
-            )
-
         if self.draft is None:
             self.draft = CalendarDraft()
 
@@ -82,6 +64,13 @@ class GoogleCalendarAgent:
             current_values=self.draft.values,
             timezone_name=timezone_name,
         )
+        if extracted.pop("cancel_requested", False):
+            self.draft = None
+            return CalendarTurnResult(
+                status="cancelled",
+                message="Okay, I cancelled that calendar event.",
+                calendar_id=calendar_id,
+            )
         self.draft.values.update({
             key: value
             for key, value in extracted.items()
@@ -173,7 +162,10 @@ class GoogleCalendarAgent:
         now = datetime.now(ZoneInfo(timezone_name))
         prompt = (
             "Extract details for one Google Calendar event. Return JSON only "
-            "with summary, start, end, description, and location. Resolve "
+            "with summary, start, end, description, location, and "
+            "cancel_requested. cancel_requested is true when the user "
+            "semantically cancels the active event draft, regardless of exact "
+            "wording. Resolve "
             "relative dates using the supplied current local date and time. "
             "start and end must be ISO 8601 date-time strings including an "
             "offset. Preserve existing draft values unless the user corrects "

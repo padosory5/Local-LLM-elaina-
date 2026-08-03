@@ -113,10 +113,6 @@ class AudioManager:
         with self._lock:
             return self._speaking or not self._queue.empty()
 
-    def wait_until_idle(self) -> None:
-        """Wait until every queued sentence has finished playing."""
-        self._queue.join()
-
     def echo_reference_text(self) -> str:
         """Return recent TTS text so STT can reject speaker-loopback echoes."""
         with self._lock:

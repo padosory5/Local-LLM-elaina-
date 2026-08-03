@@ -225,25 +225,6 @@ class Config:
 
         return provider.strip()
 
-    def active_provider_config(
-        self,
-        category: str,
-    ) -> dict[str, Any]:
-        """
-        Return the configuration of the selected provider.
-
-        Example:
-            provider_config = (
-                config.active_provider_config("llm")
-            )
-        """
-        provider = self.active_provider(category)
-
-        return self.section(
-            category,
-            provider,
-        )
-
     def get_env(
         self,
         *keys: str,

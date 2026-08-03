@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 
 
@@ -41,6 +42,24 @@ ACTION_INTENTS = {
     "fact_check",
 }
 
+INFORMATION_FRESHNESS_VALUES = {
+    "stable",
+    "historical_record",
+    "changing",
+    "live",
+    "unknown",
+}
+
+ADVICE_DOMAINS = {
+    "general",
+    "health",
+    "financial",
+    "legal",
+    "product",
+    "technical",
+    "safety",
+}
+
 
 @dataclass(frozen=True)
 class IntentDecision:
@@ -60,6 +79,16 @@ class IntentDecision:
     consent_decision: str = ""
     offered_intent: str = ""
     offered_request: str = ""
+    memory_relevant: bool = False
+    memory_candidate: bool = False
+    detailed_response: bool = False
+    screen_target: str = "configured"
+    verification_required: bool = False
+    information_freshness: str = "unknown"
+    requires_external_evidence: bool = False
+    recommendation_needed: bool = False
+    urgent_safety: bool = False
+    advice_domain: str = "general"
 
 
 class SemanticIntentRouter:
@@ -145,25 +174,6 @@ class SemanticIntentRouter:
                 is_follow_up=True,
             )
 
-        normalized_follow_up = re.sub(
-            r"[\s,.!?]+$",
-            "",
-            user_input.strip().lower(),
-        )
-        active_topic = str(state.get("active_topic", "")).strip()
-        if normalized_follow_up in {"for example", "give me an example"} and active_topic:
-            return IntentDecision(
-                intent="knowledge_question",
-                confidence=1.0,
-                normalized_request=(
-                    f"Give one concrete example related to {active_topic}."
-                ),
-                reason="Resolved a short example request from the active topic.",
-                topic=active_topic,
-                entity=str(state.get("active_entity", "")).strip(),
-                is_follow_up=True,
-            )
-
         routed_input = self._apply_scoped_entity_alias(
             user_input,
             state,
@@ -196,7 +206,7 @@ class SemanticIntentRouter:
                 format="json",
                 options={
                     "temperature": 0,
-                    "num_predict": 180,
+                    "num_predict": 260,
                 },
                 keep_alive=self.keep_alive,
                 think=False,
@@ -224,7 +234,13 @@ class SemanticIntentRouter:
                                 "reason, search_query, topic, entity, aliases, "
                                 "is_follow_up, speech_act, action_requested, "
                                 "action_target, topic_shift, consent_decision, "
-                                "offered_intent, offered_request. Intent must "
+                                "offered_intent, offered_request, "
+                                "memory_relevant, memory_candidate, "
+                                "detailed_response, screen_target, "
+                                "verification_required, information_freshness, "
+                                "requires_external_evidence, "
+                                "recommendation_needed, urgent_safety, "
+                                "advice_domain. Intent must "
                                 "be one of: "
                                 + ", ".join(sorted(ALLOWED_INTENTS))
                                 + ". Do not answer the user."
@@ -241,7 +257,7 @@ class SemanticIntentRouter:
                     ],
                     stream=False,
                     format="json",
-                    options={"temperature": 0, "num_predict": 180},
+                    options={"temperature": 0, "num_predict": 260},
                     keep_alive=self.keep_alive,
                     think=False,
                 )
@@ -255,48 +271,9 @@ class SemanticIntentRouter:
                     routed_input,
                 )
             if decision is not None:
-                if (
-                    decision.intent not in {"agent_create", "pending_approval"}
-                    and self._is_direct_agent_creation_request(user_input)
-                ):
-                    decision = replace(
-                        decision,
-                        intent="agent_create",
-                        confidence=max(decision.confidence, 0.98),
-                        normalized_request=user_input.strip(),
-                        reason=(
-                            "Local action policy recognized a direct request "
-                            "to create an agent."
-                        ),
-                        speech_act="action_request",
-                        action_requested=True,
-                        action_target="new agent",
-                    )
-                elif (
-                    decision.intent not in {
-                        "calendar_action",
-                        "agent_create",
-                        "pending_approval",
-                    }
-                    and self._is_direct_calendar_write_request(user_input)
-                ):
-                    decision = replace(
-                        decision,
-                        intent="calendar_action",
-                        confidence=max(decision.confidence, 0.98),
-                        normalized_request=user_input.strip(),
-                        reason=(
-                            "Local action policy recognized a direct calendar "
-                            "write request."
-                        ),
-                        speech_act="action_request",
-                        action_requested=True,
-                        action_target="calendar event",
-                    )
                 safe_decision = self._apply_action_safety_policy(
                     decision,
                     original_input=user_input,
-                    conversation_state=state,
                 )
                 if (
                     self.safety_mode == "shadow"
@@ -313,6 +290,21 @@ class SemanticIntentRouter:
                     decision.intent in ACTION_INTENTS
                     and decision.speech_act == "action_request"
                 ):
+                    decision = replace(
+                        decision,
+                        action_requested=True,
+                    )
+                if decision.intent in {
+                    "web_search",
+                    "entity_correction",
+                    "fact_check",
+                    "project_question",
+                    "screen_analysis",
+                }:
+                    # These capabilities only retrieve evidence. Once the
+                    # semantic router determines that the user directly needs
+                    # them, do not require magic words or a duplicate consent
+                    # turn before doing the read-only work.
                     decision = replace(
                         decision,
                         action_requested=True,
@@ -352,10 +344,7 @@ class SemanticIntentRouter:
                         "agent_offer",
                         "agent_create",
                     }
-                    and (
-                        decision.speech_act == "advice"
-                        or self._is_subjective_advice_request(routed_input)
-                    )
+                    and decision.speech_act == "advice"
                 ):
                     decision = replace(
                         decision,
@@ -371,75 +360,7 @@ class SemanticIntentRouter:
                         action_requested=False,
                         action_target="",
                     )
-                grounded = dict(state.get("grounded_context", {}))
-                if (
-                    grounded.get("statement")
-                    and decision.intent in {"conversation", "clarification"}
-                    and self._looks_like_fact_challenge(routed_input)
-                ):
-                    subject = str(
-                        grounded.get("subject")
-                        or state.get("active_entity")
-                        or decision.entity
-                    ).strip()
-                    simple_acknowledgment = bool(re.search(
-                        r"\b(?:i was right|you were wrong|told you)\b",
-                        routed_input,
-                        flags=re.IGNORECASE,
-                    ))
-                    return IntentDecision(
-                        intent="fact_check",
-                        confidence=max(decision.confidence, 0.95),
-                        normalized_request=decision.normalized_request,
-                        reason=(
-                            "The user is challenging or revisiting a recent "
-                            "grounded factual result."
-                        ),
-                        search_query=(
-                            ""
-                            if simple_acknowledgment
-                            else (
-                                f"{subject} official current facts verify "
-                                f"{routed_input}"
-                            ).strip()
-                        ),
-                        topic=decision.topic or subject,
-                        entity=decision.entity or subject,
-                        aliases=decision.aliases,
-                        is_follow_up=True,
-                    )
-                # Current clock/calendar questions are different from release
-                # or publication dates, which may require current web facts.
-                if (
-                    decision.intent == "time_question"
-                    and not self._asks_current_clock_or_calendar(routed_input)
-                ):
-                    grounded = dict(state.get("grounded_context", {}))
-                    subject = str(
-                        grounded.get("subject")
-                        or decision.entity
-                        or state.get("active_entity")
-                        or decision.topic
-                    ).strip()
-                    query = decision.search_query or (
-                        f"{subject} official release date"
-                        if subject
-                        else f"{routed_input} official"
-                    )
-                    return IntentDecision(
-                        intent="web_search",
-                        confidence=max(decision.confidence, 0.95),
-                        normalized_request=decision.normalized_request,
-                        reason=(
-                            "Release and historical dates are factual lookup "
-                            "questions, not current clock/calendar questions."
-                        ),
-                        search_query=query,
-                        topic=decision.topic or subject,
-                        entity=decision.entity or subject,
-                        aliases=decision.aliases,
-                        is_follow_up=decision.is_follow_up,
-                    )
+                decision = self._apply_factual_source_policy(decision)
                 return decision
         except Exception as error:
             print(
@@ -523,116 +444,27 @@ class SemanticIntentRouter:
         return ("".join(encoded) + "000")[:4]
 
     @staticmethod
-    def _asks_current_clock_or_calendar(user_input: str) -> bool:
-        normalized = " ".join(user_input.lower().split())
-        current_phrases = (
-            "what time is it",
-            "what's the time",
-            "current time",
-            "time right now",
-            "what day is it",
-            "what's the date",
-            "what is the date",
-            "today's date",
-            "date today",
-            "what year is it",
-        )
-        return any(phrase in normalized for phrase in current_phrases)
-
-    @staticmethod
-    def _looks_like_fact_challenge(user_input: str) -> bool:
-        return bool(re.search(
-            r"\b(?:i was right|you were wrong|told you|"
-            r"after (?:my )?research|i found out|but you said|"
-            r"that(?:'s| is) (?:not right|wrong)|"
-            r"you got that wrong)\b",
-            user_input,
-            flags=re.IGNORECASE,
-        ))
-
-    @staticmethod
-    def _is_subjective_advice_request(user_input: str) -> bool:
-        """Recognize requests for Elaina's judgment rather than a fact report."""
-        normalized = " ".join(user_input.lower().split())
-        return bool(re.search(
-            r"\b(?:do you think|what do you think|in your opinion)\b|"
-            r"\b(?:is|are|was|were)\s+.+\s+worth\s+(?:it|doing|going|"
-            r"studying|buying|trying)\b|"
-            r"\b(?:would|should)\s+i\b",
-            normalized,
-        ))
-
-    @classmethod
     def _apply_action_safety_policy(
-        cls,
         decision: IntentDecision,
         *,
         original_input: str,
-        conversation_state: dict[str, Any],
     ) -> IntentDecision:
         """
         Prevent vague conversation from reaching project write tools.
 
         The semantic model proposes an intent, but a local policy owns the
         authorization boundary. Only a direct request for a concrete change may
-        remain project_edit. Uncertainty falls back to a read-only or
-        conversational intent.
+        remain project_edit. Uncertainty falls back to conversation.
         """
         if decision.intent != "project_edit":
             return decision
 
-        if cls._is_direct_project_change_request(original_input):
-            return replace(
-                decision,
-                speech_act=decision.speech_act or "action_request",
-                action_requested=True,
-            )
-
-        normalized = " ".join(original_input.lower().split())
-        active_topic = str(
-            conversation_state.get("active_topic", "")
-        ).lower()
-        asks_for_advice = (
-            decision.speech_act == "advice"
-            or bool(re.search(
-            r"\b(?:what|which)\s+should\s+(?:i|we)\b|"
-            r"\bwhat\s+should\s+(?:be\s+)?(?:add|change|improve)|"
-            r"\b(?:recommend|suggest|any ideas)\b",
-            normalized,
-            ))
-        )
-        personal_work_status = bool(re.search(
-            r"\b(?:i am|i'm|im|i was|i'll|i will|i'm gonna|"
-            r"i am going to)\s+(?:keep\s+)?(?:work|working|edit|editing|"
-            r"build|building|continue|continuing)\b|"
-            r"\b(?:back on|continue|continuing)\b.*\bproject\b|"
-            r"\bproject\b.*\b(?:continue|continuing)\b",
-            normalized,
-        ))
-        project_context = bool(re.search(
-            r"\b(project|code|codebase|repository|repo|app|ui|feature)\b",
-            normalized,
-        )) or "project" in active_topic
-
-        if project_context and not asks_for_advice and not personal_work_status:
-            return replace(
-                decision,
-                intent="agent_offer",
-                normalized_request=original_input.strip(),
-                reason=(
-                    "The user described a concrete project problem but did "
-                    "not authorize an edit, so Coding Agent help is optional."
-                ),
-                search_query="",
-                action_requested=False,
-                action_target="",
-                offered_intent="project_edit",
-                offered_request=(
-                    decision.offered_request
-                    or decision.normalized_request
-                    or original_input.strip()
-                ),
-            )
+        if (
+            decision.speech_act == "action_request"
+            and decision.action_requested
+            and decision.action_target.strip()
+        ):
+            return decision
 
         return replace(
             decision,
@@ -640,7 +472,7 @@ class SemanticIntentRouter:
             normalized_request=original_input.strip(),
             reason=(
                 "Safety policy downgraded project_edit because the user did "
-                "not directly request a concrete file change."
+                "not semantically authorize a concrete file change."
             ),
             search_query="",
             action_requested=False,
@@ -648,80 +480,73 @@ class SemanticIntentRouter:
         )
 
     @staticmethod
-    def _is_direct_project_change_request(user_input: str) -> bool:
-        normalized = " ".join(user_input.lower().split())
+    def _apply_factual_source_policy(
+        decision: IntentDecision,
+    ) -> IntentDecision:
+        """Keep local factual answers behind an explicit stability contract."""
+        if decision.intent == "web_search":
+            return replace(
+                decision,
+                requires_external_evidence=True,
+                verification_required=(
+                    decision.verification_required
+                    or decision.information_freshness in {"changing", "live"}
+                ),
+            )
 
-        advice_or_status = bool(re.search(
-            r"\b(?:what|which)\s+should\s+(?:i|we)\b|"
-            r"\bwhat\s+should\s+(?:be\s+)?(?:add|change|improve)|"
-            r"\b(?:i am|i'm|im|i was|i'll|i will|i'm gonna|"
-            r"i am going to)\s+(?:keep\s+)?(?:work|working|edit|editing|"
-            r"build|building|continue|continuing)\b",
-            normalized,
-        ))
-        explicit_delegation = bool(re.search(
-            r"\b(?:can|could|would|will)\s+you\b|"
-            r"\bi\s+want\s+you\s+to\b|\bplease\b",
-            normalized,
-        ))
-        imperative = bool(re.match(
-            r"^(?:add|create|edit|change|modify|fix|delete|remove|rename|"
-            r"move|implement|refactor|update|replace)\b",
-            normalized,
-        ))
-        delegated_mutation = bool(re.search(
-            r"\b(?:add|create|edit|change|modify|fix|delete|remove|rename|"
-            r"move|implement|refactor|update|replace)\b",
-            normalized,
-        ))
+        if (
+            decision.intent == "conversation"
+            and decision.recommendation_needed
+            and decision.requires_external_evidence
+            and not decision.urgent_safety
+        ):
+            return replace(
+                decision,
+                intent="web_search",
+                reason=(
+                    "The requested recommendation depends on current external "
+                    "evidence rather than model knowledge alone."
+                ),
+                search_query=(
+                    decision.search_query or decision.normalized_request
+                ),
+                action_requested=True,
+                verification_required=(
+                    decision.verification_required
+                    or decision.information_freshness
+                    in {"changing", "live", "unknown"}
+                ),
+                requires_external_evidence=True,
+            )
 
-        if advice_or_status and not explicit_delegation:
-            return False
-        return imperative or (
-            explicit_delegation and delegated_mutation
+        if decision.intent != "knowledge_question":
+            return decision
+
+        can_use_local_knowledge = (
+            decision.information_freshness == "stable"
+            and not decision.requires_external_evidence
         )
+        if can_use_local_knowledge:
+            return decision
 
-    @staticmethod
-    def _is_direct_agent_creation_request(user_input: str) -> bool:
-        normalized = " ".join(user_input.lower().split())
-        mentions_agent = bool(re.search(
-            r"\b(?:ai\s+)?agents?\b",
-            normalized,
-        ))
-        requests_creation = bool(re.search(
-            r"\b(?:create|build|make|add|install|configure|set up)\b",
-            normalized,
-        ))
-        direct = bool(re.match(
-            r"^(?:create|build|make|add|install|configure|set up)\b",
-            normalized,
-        )) or bool(re.search(
-            r"\b(?:can|could|would|will)\s+you\b|"
-            r"\bi\s+want\s+you\s+to\b|\bplease\b",
-            normalized,
-        ))
-        return mentions_agent and requests_creation and direct
-
-    @staticmethod
-    def _is_direct_calendar_write_request(user_input: str) -> bool:
-        normalized = " ".join(user_input.lower().split())
-        mentions_calendar = bool(re.search(
-            r"\b(?:calendar|schedule|appointment|event)\b",
-            normalized,
-        ))
-        mutation = bool(re.search(
-            r"\b(?:add|create|put|schedule|write|book)\b",
-            normalized,
-        ))
-        direct = bool(re.match(
-            r"^(?:add|create|put|schedule|write|book)\b",
-            normalized,
-        )) or bool(re.search(
-            r"\b(?:can|could|would|will)\s+you\b|"
-            r"\bi\s+want\s+you\s+to\b|\bplease\b",
-            normalized,
-        ))
-        return mentions_calendar and mutation and direct
+        return replace(
+            decision,
+            intent="web_search",
+            reason=(
+                "Factual source policy requires external evidence because the "
+                "answer is not explicitly classified as stable local knowledge."
+            ),
+            search_query=(
+                decision.search_query or decision.normalized_request
+            ),
+            action_requested=True,
+            verification_required=(
+                decision.verification_required
+                or decision.information_freshness
+                in {"changing", "live", "unknown"}
+            ),
+            requires_external_evidence=True,
+        )
 
     @staticmethod
     def _value(item: Any, key: str, default: Any = None) -> Any:
@@ -740,6 +565,7 @@ class SemanticIntentRouter:
         conversation_state: dict[str, Any],
         pending_action: str,
     ) -> str:
+        now = datetime.now()
         state = {
             "screen_selection_attached": has_screen_selection,
             "selected_text_attached": has_selected_text,
@@ -748,6 +574,8 @@ class SemanticIntentRouter:
             "pending_agent_offer": conversation_state.get(
                 "pending_agent_offer"
             ),
+            "current_date": now.strftime("%A, %B %d, %Y"),
+            "current_year": now.year,
         }
 
         return (
@@ -760,8 +588,8 @@ class SemanticIntentRouter:
             "pending_approval, agent_create, calendar_action, "
             "entity_correction, fact_check, clarification.\n\n"
             "Infer meaning instead of matching exact phrases. Account for "
-            "speech-to-text mistakes and similar-sounding words. For example, "
-            "'push my changes to get' usually means git_publish. Use recent "
+            "speech-to-text mistakes and similar-sounding words by selecting "
+            "the intended capability rather than literal wording. Use recent "
             "turns to resolve short follow-ups, pronouns, and corrections. "
             "The immediately previous user/assistant exchange has higher "
             "priority than an older active_topic. Treat active_topic only as a "
@@ -775,9 +603,14 @@ class SemanticIntentRouter:
             "- agent_offer: the user expresses a concrete problem, desire, or "
             "dissatisfaction that an available specialist could help with, "
             "but does not ask Elaina to perform the work. Do not invoke the "
-            "agent. Set offered_intent to the relevant specialist intent and "
+            "agent. Prefer agent_offer over conversation when a listed "
+            "specialist can directly solve that concrete dissatisfaction. "
+            "Set offered_intent to the relevant specialist intent and "
             "offered_request to a concrete proposed task. Example: 'The "
-            "buttons in this project look boring' may offer project_edit. A "
+            "buttons in this project look boring' may offer project_edit. "
+            "Example: musing about something visible but unidentified with "
+            "no screen selection attached ('I wonder who drew this') may "
+            "offer screen_analysis -- suggest selecting the area first. A "
             "general life update such as 'I'm working on my project tonight' "
             "does not justify an offer.\n"
             "- agent_consent: use only when pending_agent_offer is present and "
@@ -785,9 +618,8 @@ class SemanticIntentRouter:
             "semantically from the offer and recent exchange, not from a list "
             "of yes/no phrases. Set consent_decision to accept, reject, "
             "modify, or unclear. For modify, put the complete revised task in "
-            "offered_request. Replies such as 'sure', 'yeah let's do that', "
-            "and 'let's go for it' often accept in the right context, but the "
-            "same words may mean something else in another context. If the "
+            "offered_request. Interpret acceptance or rejection from the "
+            "meaning of the reply in context, not a phrase list. If the "
             "user changes topics, route the new topic normally instead.\n"
             "- git_publish: commit/upload/push current code to Git or GitHub.\n"
             "- git_commit: commit locally without requesting a push.\n"
@@ -800,19 +632,32 @@ class SemanticIntentRouter:
             "  Use it only when the user directly asks Elaina to inspect or "
             "read project files. Asking for an opinion, recommendation, or a "
             "choice such as Live2D versus 3D is conversation.\n"
-            "- screen_analysis: answer from an attached selection or inspect "
-            "visible screen content.\n"
+            "- screen_analysis: use only when screen_selection_attached is "
+            "true, or the user explicitly asks Elaina to look at the "
+            "screen right now. Without an attachment, a vague musing about "
+            "something visible is agent_offer instead (see example below), "
+            "never screen_analysis. Set screen_target to configured, main, "
+            "left, right, or all from the user's meaning.\n"
             "- selected_text_question: answer about copied/highlighted text.\n"
             "  If the transcript contains a substantial pasted passage or code "
             "block and asks about that content, use selected_text_question.\n"
-            "- web_search: the user asks to search/look something up, asks for "
-            "current information, or asks about a specific person/entity that "
-            "may require factual lookup. Also use it for release dates and "
-            "similarly time-sensitive product or media facts.\n"
-            "  A direct request such as 'Can you search for when Elon Musk "
-            "was born?' is already permission: use web_search with "
-            "speech_act action_request and action_requested true. Do not ask "
-            "whether to use Research Agent a second time.\n"
+            "- web_search: external evidence is required for any answer that "
+            "depends on real-world state, a recorded value, or information "
+            "that may differ from model training. This includes live or dated "
+            "exchange and market rates, prices, availability, weather, news, "
+            "sports, schedules, officeholders, laws, policies, statistics, "
+            "software versions and documentation, product specifications, "
+            "release information, and other changing external facts. It also "
+            "applies when the user asks to search or when stability is "
+            "uncertain. A direct request for the information is already permission: web_search "
+            "with action_requested true, never agent_offer.\n"
+            "  Runtime state has current_date/current_year. For 'latest/"
+            "newest/most recent' editions of a periodic event (a World "
+            "Cup, an Olympics, a model release), ask for the latest completed "
+            "event or actually released product as of current_date. Do not "
+            "assume the nearest scheduled edition has already finished. "
+            "Never answer 'latest' from training knowledge -- it is likely "
+            "stale.\n"
             "- time_question: only asks for the user's current local clock "
             "time, today's date/day, or current year. Never use it for a game "
             "release, publication, launch, historical event, or product date.\n"
@@ -834,8 +679,13 @@ class SemanticIntentRouter:
             "class, appointment, reminder, or other schedule entry in Google "
             "Calendar. Asking for scheduling advice without requesting a "
             "calendar change is conversation or knowledge_question.\n"
-            "- knowledge_question: a factual how/why/what question that can be "
-            "answered from stable general knowledge without a tool.\n"
+            "- knowledge_question: only a definition, concept, mathematical or "
+            "logical explanation, established scientific principle, broad "
+            "settled historical fact, or other answer explicitly known to be "
+            "stable and independent of current external state. Asking how a "
+            "changing system works may be stable knowledge; asking for its "
+            "present or recorded value requires web_search. When uncertain, "
+            "choose web_search.\n"
             "- calculation: the user asks for arithmetic, a numerical result, "
             "a proportional split, a percentage, a price, a duration, or a "
             "quantitative follow-up to an earlier calculation. Resolve short "
@@ -851,8 +701,10 @@ class SemanticIntentRouter:
             "is worth doing also use conversation, even when a university, "
             "product, career, or other factual entity is mentioned.\n"
             "  If the user is choosing between options or asking what you "
-            "recommend, answer conversationally without offering an agent "
-            "unless they explicitly ask you to inspect external information.\n"
+            "recommend, answer conversationally without offering an agent. "
+            "Recommendations that depend on current medical, legal, financial, "
+            "product, or other external evidence use web_search while keeping "
+            "a conversational final response.\n"
             "- clarification: only when a write/action request is genuinely "
             "ambiguous. Never execute writes from this router.\n"
             "An attached screen selection strongly implies screen_analysis "
@@ -866,7 +718,12 @@ class SemanticIntentRouter:
             "normalized_request, reason, search_query, topic, entity, aliases, "
             "is_follow_up, speech_act, action_requested, action_target, and "
             "topic_shift, consent_decision, offered_intent, and "
-            "offered_request. speech_act is one of social, statement, advice, "
+            "offered_request, memory_relevant, memory_candidate, "
+            "detailed_response, screen_target, verification_required, "
+            "information_freshness, requires_external_evidence, and "
+            "recommendation_needed, urgent_safety, and advice_domain. "
+            "speech_act is one of "
+            "social, statement, advice, "
             "information_request, action_request, correction, or "
             "approval_response. Always provide the current conversational "
             "topic, including for ordinary conversation. action_requested is "
@@ -877,7 +734,41 @@ class SemanticIntentRouter:
             "web_search and include the resolved canonical entity; otherwise "
             "use an empty string. consent_decision, offered_intent, and "
             "offered_request must be empty unless their agent routing rule "
-            "requires them. Do not answer the user's question.\n\n"
+            "requires them. memory_relevant is true whenever answering depends "
+            "on the user's saved identity, preferences, relationships, past "
+            "experiences, projects, or goals, including requests about what "
+            "Elaina remembers. It is false for impersonal factual answers. "
+            "memory_candidate is true only when the current message contains "
+            "a durable personal fact or preference worth considering for "
+            "storage; questions and temporary states are false. "
+            "detailed_response is true when the user asks for a thorough, "
+            "stepwise, comprehensive, or complete answer, regardless of exact "
+            "wording. information_freshness is exactly one of stable, "
+            "historical_record, changing, live, or unknown. stable means the "
+            "answer is independent of real-world state. historical_record "
+            "means a value must be retrieved for a specified past time. "
+            "changing means external information can change between model "
+            "updates. live means it may change within hours or minutes. Use "
+            "unknown rather than guessing stability. "
+            "requires_external_evidence is false only when local model "
+            "knowledge is explicitly sufficient; it is true for "
+            "historical_record, changing, live, unknown, or any requested web "
+            "lookup. verification_required is true for changing, current, "
+            "latest, externally disputed, or otherwise time-sensitive facts "
+            "that need an independent second source. recommendation_needed is "
+            "true when the user asks what they should do, choose, try, use, "
+            "take, or change, or describes a problem while seeking a practical "
+            "next step. It is false for social remarks and purely descriptive "
+            "factual questions. Medical, legal, and financial recommendations "
+            "normally require external evidence. "
+            "urgent_safety is true only when delay could expose the user or "
+            "someone else to immediate serious harm. Urgent safety advice must "
+            "be answered immediately instead of waiting for web research. "
+            "advice_domain is exactly one of general, health, financial, legal, "
+            "product, technical, or safety. Use health for medicines, "
+            "supplements, symptoms, sleep disorders, and other health choices. "
+            "Do not answer the user's "
+            "question.\n\n"
             f"Runtime state: {json.dumps(state)}\n"
             "Conversation state:\n"
             f"{json.dumps(conversation_state, ensure_ascii=False)}\n"
@@ -912,6 +803,34 @@ class SemanticIntentRouter:
         normalized_request = str(
             payload.get("normalized_request") or original_input
         ).strip()
+        screen_target = str(
+            payload.get("screen_target") or "configured"
+        ).strip().lower()
+        if screen_target not in {"configured", "main", "left", "right", "all"}:
+            screen_target = "configured"
+
+        information_freshness = str(
+            payload.get("information_freshness") or "unknown"
+        ).strip().lower()
+        if information_freshness not in INFORMATION_FRESHNESS_VALUES:
+            information_freshness = "unknown"
+
+        external_value = payload.get("requires_external_evidence")
+        if isinstance(external_value, bool):
+            requires_external_evidence = external_value
+        else:
+            requires_external_evidence = information_freshness != "stable"
+
+        speech_act = str(payload.get("speech_act", "")).strip()
+        recommendation_needed = (
+            payload.get("recommendation_needed") is True
+            or speech_act == "advice"
+        )
+        advice_domain = str(
+            payload.get("advice_domain") or "general"
+        ).strip().lower()
+        if advice_domain not in ADVICE_DOMAINS:
+            advice_domain = "general"
 
         return IntentDecision(
             intent=intent,
@@ -927,7 +846,7 @@ class SemanticIntentRouter:
                 if str(item).strip()
             ) if isinstance(payload.get("aliases", []), list) else (),
             is_follow_up=bool(payload.get("is_follow_up", False)),
-            speech_act=str(payload.get("speech_act", "")).strip(),
+            speech_act=speech_act,
             action_requested=bool(payload.get("action_requested", False)),
             action_target=str(payload.get("action_target", "")).strip(),
             topic_shift=bool(payload.get("topic_shift", False)),
@@ -940,6 +859,18 @@ class SemanticIntentRouter:
             offered_request=str(
                 payload.get("offered_request", "")
             ).strip(),
+            memory_relevant=bool(payload.get("memory_relevant", False)),
+            memory_candidate=bool(payload.get("memory_candidate", False)),
+            detailed_response=bool(payload.get("detailed_response", False)),
+            screen_target=screen_target,
+            verification_required=bool(
+                payload.get("verification_required", False)
+            ),
+            information_freshness=information_freshness,
+            requires_external_evidence=requires_external_evidence,
+            recommendation_needed=recommendation_needed,
+            urgent_safety=payload.get("urgent_safety") is True,
+            advice_domain=advice_domain,
         )
 
     @staticmethod
@@ -954,11 +885,6 @@ class SemanticIntentRouter:
             intent = "screen_analysis"
         elif has_selected_text:
             intent = "selected_text_question"
-        elif SemanticIntentRouter._looks_like_calculation_request(user_input):
-            # This is used only after both semantic JSON attempts fail. The
-            # normal route remains model-based, but an obvious numeric request
-            # should not lose its answer-first policy because of bad JSON.
-            intent = "calculation"
         else:
             intent = "conversation"
 
@@ -968,14 +894,3 @@ class SemanticIntentRouter:
             normalized_request=user_input,
             reason="Safe fallback after router failure.",
         )
-
-    @staticmethod
-    def _looks_like_calculation_request(user_input: str) -> bool:
-        normalized = " ".join(user_input.lower().split())
-        has_number = bool(re.search(r"\d", normalized))
-        quantitative_request = bool(re.search(
-            r"\b(?:calculate|math|total|split|distribution|percentage|"
-            r"percent|profit|how much|how many|each person|each of us)\b",
-            normalized,
-        ))
-        return has_number and quantitative_request

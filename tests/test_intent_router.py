@@ -26,6 +26,299 @@ class SemanticIntentRouterTests(unittest.TestCase):
         def chat(self, **_kwargs):
             raise AssertionError("The LLM router should have been bypassed.")
 
+    def test_latest_periodic_event_uses_date_aware_completed_event_search(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "web_search",
+                "confidence": 1.0,
+                "normalized_request": "latest FIFA World Cup winner",
+                "reason": "Current sports result.",
+                "search_query": (
+                    "latest completed edition FIFA World Cup winner "
+                    "as of 2026-08-03"
+                ),
+                "speech_act": "information_request",
+                "verification_required": True,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Can you tell me who won the latest FIFA World Cup?"
+        )
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.action_requested)
+        self.assertIn("latest completed edition", result.search_query)
+        self.assertIn("as of", result.search_query)
+        self.assertNotEqual(
+            result.search_query,
+            "winner of the 2026 FIFA World Cup",
+        )
+
+    def test_read_only_research_does_not_require_magic_search_words(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "web_search",
+                "confidence": 0.96,
+                "normalized_request": "Nvidia's current stock price",
+                "reason": "The fact changes throughout the day.",
+                "search_query": "Nvidia current stock price",
+                "speech_act": "information_request",
+                "action_requested": False,
+                "verification_required": True,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("I wonder what Nvidia is trading at right now.")
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.action_requested)
+
+    def test_live_exchange_rate_cannot_remain_local_knowledge(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "knowledge_question",
+                "confidence": 0.95,
+                "normalized_request": "current USD to KRW exchange rate",
+                "reason": "A factual question.",
+                "search_query": "",
+                "speech_act": "information_request",
+                "information_freshness": "live",
+                "requires_external_evidence": True,
+                "verification_required": False,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("What is the current USD to KRW exchange rate?")
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.action_requested)
+        self.assertTrue(result.verification_required)
+        self.assertIn("USD", result.search_query)
+
+    def test_historical_market_value_uses_external_record(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "knowledge_question",
+                "confidence": 0.94,
+                "normalized_request": (
+                    "USD to KRW exchange rate on January 15, 2024"
+                ),
+                "reason": "The requested date is in the past.",
+                "search_query": "",
+                "speech_act": "information_request",
+                "information_freshness": "historical_record",
+                "requires_external_evidence": True,
+                "verification_required": False,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "What was the USD to KRW exchange rate on January 15, 2024?"
+        )
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.action_requested)
+        self.assertIn("January 15, 2024", result.search_query)
+
+    def test_stable_concept_stays_local_knowledge(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "knowledge_question",
+                "confidence": 0.98,
+                "normalized_request": "Explain why exchange rates fluctuate.",
+                "reason": "This asks for a stable economic concept.",
+                "search_query": "",
+                "speech_act": "information_request",
+                "information_freshness": "stable",
+                "requires_external_evidence": False,
+                "verification_required": False,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Why do exchange rates fluctuate?")
+
+        self.assertEqual(result.intent, "knowledge_question")
+        self.assertFalse(result.action_requested)
+
+    def test_medication_recommendation_uses_external_evidence(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "conversation",
+                "confidence": 0.96,
+                "normalized_request": "Recommend an option for insomnia.",
+                "reason": "The user wants health advice.",
+                "speech_act": "advice",
+                "recommendation_needed": True,
+                "advice_domain": "health",
+                "information_freshness": "changing",
+                "requires_external_evidence": True,
+                "verification_required": True,
+                "search_query": "official insomnia treatment options",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Can you recommend medication for my insomnia?")
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.recommendation_needed)
+        self.assertEqual(result.advice_domain, "health")
+        self.assertTrue(result.action_requested)
+        self.assertTrue(result.verification_required)
+
+    def test_low_risk_personal_advice_stays_conversational(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "conversation",
+                "confidence": 0.98,
+                "normalized_request": "Recommend an avatar format.",
+                "reason": "This is a low-risk personal choice.",
+                "speech_act": "advice",
+                "recommendation_needed": True,
+                "advice_domain": "general",
+                "information_freshness": "stable",
+                "requires_external_evidence": False,
+                "verification_required": False,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Should I use Live2D or a 3D avatar?")
+
+        self.assertEqual(result.intent, "conversation")
+        self.assertTrue(result.recommendation_needed)
+        self.assertFalse(result.action_requested)
+
+    def test_urgent_health_advice_does_not_wait_for_web_research(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "conversation",
+                "confidence": 1.0,
+                "normalized_request": (
+                    "Respond immediately to a possible sleep-aid overdose."
+                ),
+                "reason": "Delay could expose the user to immediate harm.",
+                "speech_act": "advice",
+                "recommendation_needed": True,
+                "advice_domain": "health",
+                "urgent_safety": True,
+                "information_freshness": "changing",
+                "requires_external_evidence": True,
+                "verification_required": True,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "I took too many sleep pills and I'm struggling to breathe."
+        )
+
+        self.assertEqual(result.intent, "conversation")
+        self.assertTrue(result.recommendation_needed)
+        self.assertTrue(result.urgent_safety)
+        self.assertEqual(result.advice_domain, "health")
+        self.assertFalse(result.action_requested)
+
+    def test_unclassified_factual_source_fails_closed_to_web(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "knowledge_question",
+                "confidence": 0.70,
+                "normalized_request": "the requested factual value",
+                "reason": "The source requirement is uncertain.",
+                "search_query": "",
+                "speech_act": "information_request",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Tell me the requested factual value.")
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.action_requested)
+        self.assertTrue(result.verification_required)
+
+    def test_read_only_project_inspection_is_implicitly_authorized(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "project_question",
+                "confidence": 0.97,
+                "normalized_request": "Explain the voice input flow.",
+                "reason": "The user asked to inspect the configured project.",
+                "speech_act": "information_request",
+                "action_requested": False,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Inspect the codebase and explain how voice input reaches chat."
+        )
+
+        self.assertEqual(result.intent, "project_question")
+        self.assertTrue(result.action_requested)
+
+    def test_latest_release_is_a_semantic_web_search_decision(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "web_search",
+                "confidence": 0.98,
+                "normalized_request": "When was the latest Qwen series released?",
+                "reason": "The latest release requires current evidence.",
+                "search_query": "latest Qwen series release official as of 2026-08-03",
+                "speech_act": "information_request",
+                "verification_required": True,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "When was the latest Qwen series released?"
+        )
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.action_requested)
+        self.assertIn("official as of", result.search_query)
+
+    def test_router_failure_falls_back_to_conversation_without_trigger_lists(self):
+        class BrokenClient:
+            def chat(self, **_kwargs):
+                raise RuntimeError("offline")
+
+        router = SemanticIntentRouter(BrokenClient(), "qwen3:8b")
+        result = router.route(
+            "Who won the latest FIFA World Cup?"
+        )
+
+        self.assertEqual(result.intent, "conversation")
+        self.assertFalse(result.action_requested)
+
+    def test_visual_creator_musing_offers_screen_agent(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "agent_offer",
+                "confidence": 0.97,
+                "normalized_request": "I wonder who drew this picture.",
+                "reason": "Screen analysis could identify the visible work.",
+                "speech_act": "statement",
+                "offered_intent": "screen_analysis",
+                "offered_request": "Identify the creator of the selected picture.",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("I wonder who drew this picture.")
+
+        self.assertEqual(result.intent, "agent_offer")
+        self.assertEqual(result.offered_intent, "screen_analysis")
+        self.assertFalse(result.action_requested)
+
     def test_accepts_git_publish_decision(self):
         router = SemanticIntentRouter(
             FakeClient({
@@ -67,7 +360,45 @@ class SemanticIntentRouterTests(unittest.TestCase):
         self.assertEqual(result.intent, "calculation")
         self.assertIn("650", result.normalized_request)
 
-    def test_router_failure_keeps_obvious_numeric_question_in_calculation_mode(self):
+    def test_semantic_metadata_controls_memory_detail_and_screen_target(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "conversation",
+                "confidence": 0.99,
+                "normalized_request": "Explain what you remember in detail.",
+                "reason": "Personal-memory follow-up requesting detail.",
+                "memory_relevant": True,
+                "memory_candidate": False,
+                "detailed_response": True,
+                "screen_target": "all",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Walk me through everything you remember.")
+
+        self.assertTrue(result.memory_relevant)
+        self.assertFalse(result.memory_candidate)
+        self.assertTrue(result.detailed_response)
+        self.assertEqual(result.screen_target, "all")
+
+    def test_invalid_screen_target_falls_back_to_configured_monitor(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "screen_analysis",
+                "confidence": 0.99,
+                "normalized_request": "Look at another monitor.",
+                "screen_target": "monitor-99",
+                "action_requested": True,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Look at another monitor.")
+
+        self.assertEqual(result.screen_target, "configured")
+
+    def test_router_failure_uses_safe_conversation_fallback(self):
         class BrokenClient:
             def chat(self, **_kwargs):
                 raise RuntimeError("offline")
@@ -77,7 +408,7 @@ class SemanticIntentRouterTests(unittest.TestCase):
             "We put in 100, 100, and 50 and made 650. What's the distribution?"
         )
 
-        self.assertEqual(result.intent, "calculation")
+        self.assertEqual(result.intent, "conversation")
 
     def test_rejects_unknown_intent_safely(self):
         router = SemanticIntentRouter(
@@ -346,9 +677,20 @@ class SemanticIntentRouterTests(unittest.TestCase):
             captured["messages"][-1]["content"],
         )
 
-    def test_for_example_uses_active_topic_without_llm(self):
+    def test_semantic_router_resolves_example_from_active_topic(self):
         router = SemanticIntentRouter(
-            self.MustNotRunClient(),
+            FakeClient({
+                "intent": "knowledge_question",
+                "confidence": 0.98,
+                "normalized_request": (
+                    "Give one example of how mental illness develops."
+                ),
+                "reason": "Resolved the follow-up from the active topic.",
+                "topic": "how mental illness develops",
+                "is_follow_up": True,
+                "information_freshness": "stable",
+                "requires_external_evidence": False,
+            }),
             "qwen3:8b",
         )
 
@@ -370,11 +712,11 @@ class SemanticIntentRouterTests(unittest.TestCase):
     def test_release_date_is_not_current_time_intent(self):
         router = SemanticIntentRouter(
             FakeClient({
-                "intent": "time_question",
+                "intent": "web_search",
                 "confidence": 0.95,
                 "normalized_request": "When was Marathon released?",
-                "reason": "The user asked for a date.",
-                "search_query": "",
+                "reason": "A release date requires factual lookup.",
+                "search_query": "Marathon official release date",
                 "topic": "Marathon",
                 "entity": "Marathon",
                 "aliases": [],
@@ -418,7 +760,10 @@ class SemanticIntentRouterTests(unittest.TestCase):
                 "entity": "University of Washington",
                 "aliases": [],
                 "is_follow_up": True,
-                "speech_act": "information_request",
+                "speech_act": "advice",
+                "recommendation_needed": True,
+                "information_freshness": "stable",
+                "requires_external_evidence": False,
             }),
             "qwen3:8b",
         )
@@ -449,13 +794,13 @@ class SemanticIntentRouterTests(unittest.TestCase):
     def test_factual_challenge_uses_grounded_context_and_search(self):
         router = SemanticIntentRouter(
             FakeClient({
-                "intent": "clarification",
+                "intent": "fact_check",
                 "confidence": 0.95,
                 "normalized_request": (
                     "I found that Marathon was a recent game."
                 ),
                 "reason": "The user contradicts the previous answer.",
-                "search_query": "",
+                "search_query": "Marathon official current facts verify recent game",
             }),
             "qwen3:8b",
         )
@@ -480,10 +825,10 @@ class SemanticIntentRouterTests(unittest.TestCase):
     def test_i_was_right_uses_verified_fact_without_another_search(self):
         router = SemanticIntentRouter(
             FakeClient({
-                "intent": "conversation",
+                "intent": "fact_check",
                 "confidence": 0.95,
                 "normalized_request": "I was right about Marathon.",
-                "reason": "Conversational follow-up.",
+                "reason": "The user revisits the verified correction.",
                 "search_query": "",
             }),
             "qwen3:8b",
@@ -536,7 +881,7 @@ class SemanticIntentRouterTests(unittest.TestCase):
     def test_button_complaint_becomes_tracked_optional_offer(self):
         router = SemanticIntentRouter(
             FakeClient({
-                "intent": "project_edit",
+                "intent": "agent_offer",
                 "confidence": 0.95,
                 "normalized_request": "Improve the project button design.",
                 "reason": "The user dislikes the button design.",
@@ -544,6 +889,8 @@ class SemanticIntentRouterTests(unittest.TestCase):
                 "speech_act": "statement",
                 "action_requested": False,
                 "action_target": "button design",
+                "offered_intent": "project_edit",
+                "offered_request": "Improve the project button design.",
             }),
             "qwen3:8b",
         )
@@ -610,6 +957,9 @@ class SemanticIntentRouterTests(unittest.TestCase):
                 "action_requested": False,
                 "offered_intent": "agent_create",
                 "offered_request": "Create a custom avatar agent.",
+                "recommendation_needed": True,
+                "information_freshness": "stable",
+                "requires_external_evidence": False,
             }),
             "qwen3:8b",
         )
@@ -760,6 +1110,9 @@ class SemanticIntentRouterTests(unittest.TestCase):
                 ),
                 "reason": "Direct concrete edit request.",
                 "topic": "Elaina project UI",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "Screen button controls",
             }),
             "qwen3:8b",
         )
@@ -822,6 +1175,9 @@ class SemanticIntentRouterTests(unittest.TestCase):
                 ),
                 "reason": "Direct concrete UI request.",
                 "topic": "Elaina project UI",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "chat panel styling",
             }),
             "qwen3:8b",
         )
@@ -878,24 +1234,6 @@ class SemanticIntentRouterTests(unittest.TestCase):
         self.assertEqual(result.intent, "calendar_action")
         self.assertTrue(result.action_requested)
 
-    def test_direct_agent_request_recovers_from_bad_model_route(self):
-        router = SemanticIntentRouter(
-            FakeClient({
-                "intent": "conversation",
-                "confidence": 0.95,
-                "normalized_request": "Discuss calendar agents.",
-                "reason": "Incorrect model route.",
-            }),
-            "qwen3:8b",
-        )
-
-        result = router.route(
-            "Can you create an agent that adds Google Calendar events?"
-        )
-
-        self.assertEqual(result.intent, "agent_create")
-        self.assertTrue(result.action_requested)
-
     def test_calendar_advice_does_not_become_calendar_write(self):
         router = SemanticIntentRouter(
             FakeClient({
@@ -905,6 +1243,9 @@ class SemanticIntentRouterTests(unittest.TestCase):
                     "Explain how to add an event to Google Calendar."
                 ),
                 "reason": "The user asked for instructions.",
+                "search_query": "official Google Calendar add event instructions",
+                "information_freshness": "changing",
+                "requires_external_evidence": True,
             }),
             "qwen3:8b",
         )
@@ -913,8 +1254,9 @@ class SemanticIntentRouterTests(unittest.TestCase):
             "How do I add an event to Google Calendar?"
         )
 
-        self.assertEqual(result.intent, "knowledge_question")
-        self.assertFalse(result.action_requested)
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.action_requested)
+        self.assertNotEqual(result.intent, "calendar_action")
 
 
 if __name__ == "__main__":

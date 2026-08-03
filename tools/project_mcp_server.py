@@ -287,55 +287,6 @@ def _git_path_allowed(relative_path: str) -> bool:
     return True
 
 
-def _git_status_entries() -> list[dict]:
-    pathspecs = _git_safe_pathspecs()
-
-    result = _run_git([
-        "status",
-        "--porcelain=v1",
-        "--untracked-files=all",
-        "--",
-        *pathspecs,
-    ])
-    if result.returncode != 0:
-        raise RuntimeError(
-            result.stderr.strip() or "Could not read Git status."
-        )
-
-    entries: list[dict] = []
-    for line in result.stdout.splitlines():
-        if len(line) < 4:
-            continue
-
-        status = line[:2]
-        displayed_path = line[3:]
-        paths = (
-            displayed_path.split(" -> ", 1)
-            if " -> " in displayed_path
-            else [displayed_path]
-        )
-
-        for relative_path in paths:
-            relative_path = relative_path.strip().strip('"')
-            if not relative_path:
-                continue
-            entries.append({
-                "status": status,
-                "path": relative_path.replace("\\", "/"),
-            })
-
-    # Preserve status order while removing duplicate rename paths.
-    unique: list[dict] = []
-    seen: set[str] = set()
-    for entry in entries:
-        if entry["path"] in seen:
-            continue
-        seen.add(entry["path"])
-        unique.append(entry)
-
-    return unique
-
-
 def _git_safe_pathspecs() -> list[str]:
     """Select the project while excluding generated and sensitive locations."""
     pathspecs = ["."]
@@ -359,57 +310,6 @@ def _git_safe_pathspecs() -> list[str]:
     pathspecs.append(":(exclude,glob)**/*.key")
     pathspecs.append(":(exclude,glob)**/*.pem")
     return pathspecs
-
-
-def _reviewable_git_entries() -> tuple[list[dict], list[str]]:
-    """Separate safe commit candidates from generated and blocked changes."""
-    reviewable: list[dict] = []
-    blocked: list[str] = []
-
-    for entry in _git_status_entries():
-        parts = Path(entry["path"]).parts
-        if any(part in IGNORED_DIRECTORIES for part in parts):
-            continue
-        if _git_path_allowed(entry["path"]):
-            reviewable.append(entry)
-        else:
-            blocked.append(entry["path"])
-
-    return reviewable, blocked
-
-
-def _git_snapshot(entries: list[dict]) -> str:
-    digest = hashlib.sha256()
-
-    for entry in entries:
-        relative_path = entry["path"]
-        target = safe_path(relative_path)
-        digest.update(entry["status"].encode("utf-8"))
-        digest.update(relative_path.encode("utf-8"))
-
-        if target.is_file():
-            digest.update(target.read_bytes())
-        else:
-            digest.update(b"<missing>")
-
-    return digest.hexdigest()
-
-
-def _default_commit_message(entries: list[dict]) -> str:
-    if len(entries) == 1:
-        name = Path(entries[0]["path"]).name
-        return f"Update {name}"
-
-    parent_names = {
-        Path(entry["path"]).parts[0]
-        for entry in entries
-        if Path(entry["path"]).parts
-    }
-    if len(parent_names) == 1:
-        area = next(iter(parent_names))
-        return f"Update {area} files"
-
-    return "Update Elaina project files"
 
 
 def _proposal_preview(
