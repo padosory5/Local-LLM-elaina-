@@ -26,6 +26,289 @@ class SemanticIntentRouterTests(unittest.TestCase):
         def chat(self, **_kwargs):
             raise AssertionError("The LLM router should have been bypassed.")
 
+    def test_takeover_authorizes_a_grounded_open_app_action(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.99,
+                "normalized_request": "Open Spotify.",
+                "reason": "The user authorized local computer control.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "spotify",
+                "computer_operation": "open_app",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Takeover, open Spotify.")
+
+        self.assertEqual(result.intent, "computer_action")
+        self.assertTrue(result.action_requested)
+        self.assertEqual(result.action_target, "spotify")
+
+    def test_open_app_without_takeover_waits_for_contextual_consent(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.99,
+                "normalized_request": "Open Spotify.",
+                "reason": "The user asked to open an app.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "spotify",
+                "computer_operation": "open_app",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Could you open Spotify?")
+
+        self.assertEqual(result.intent, "computer_action")
+        self.assertFalse(result.action_requested)
+        self.assertEqual(result.action_target, "spotify")
+        self.assertEqual(result.computer_operation, "open_app")
+
+    def test_contextual_consent_authorizes_the_pending_app(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.99,
+                "normalized_request": "Open Discord.",
+                "reason": "The user requested an installed app.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "Discord",
+                "computer_operation": "open_app",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Open Discord.",
+            computer_action_authorized=True,
+        )
+
+        self.assertEqual(result.intent, "computer_action")
+        self.assertTrue(result.action_requested)
+        self.assertEqual(result.action_target, "Discord")
+
+    def test_takeover_authorizes_a_grounded_graceful_close(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.99,
+                "normalized_request": "Close Discord.",
+                "reason": "The user requested a graceful app close.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "Discord",
+                "computer_operation": "close_app",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Takeover, close Discord.")
+
+        self.assertEqual(result.computer_operation, "close_app")
+        self.assertTrue(result.action_requested)
+
+    def test_force_quit_is_structured_separately_from_close(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.99,
+                "normalized_request": "Completely quit VS Code.",
+                "reason": "The user requested complete termination.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "VS Code",
+                "computer_operation": "force_quit_app",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Takeover, completely quit VS Code.")
+
+        self.assertEqual(result.computer_operation, "force_quit_app")
+        self.assertTrue(result.action_requested)
+
+    def test_file_creation_keeps_name_and_location_separate(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.99,
+                "normalized_request": "Create notes.txt in Documents.",
+                "reason": "The user requested a new empty file.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "notes.txt",
+                "computer_operation": "create_file",
+                "computer_location": "Documents",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Takeover, create notes.txt in Documents."
+        )
+
+        self.assertEqual(result.computer_operation, "create_file")
+        self.assertEqual(result.action_target, "notes.txt")
+        self.assertEqual(result.computer_location, "Documents")
+        self.assertTrue(result.action_requested)
+
+    def test_model_cannot_invent_a_filesystem_location(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.99,
+                "normalized_request": "Create notes.txt.",
+                "reason": "The user requested a new file.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "notes.txt",
+                "computer_operation": "create_file",
+                "computer_location": "Documents",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Takeover, create notes.txt.")
+
+        self.assertEqual(result.computer_operation, "unsupported")
+        self.assertFalse(result.action_requested)
+
+    def test_open_url_keeps_spoken_target_and_validated_url_separate(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.99,
+                "normalized_request": "Open YouTube in a new tab.",
+                "reason": "The user requested browser navigation.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "YouTube",
+                "computer_operation": "open_url",
+                "computer_url": "https://www.youtube.com",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Takeover, open YouTube in a new tab.")
+
+        self.assertEqual(result.computer_operation, "open_url")
+        self.assertEqual(result.computer_url, "https://www.youtube.com")
+        self.assertTrue(result.action_requested)
+
+    def test_varied_folder_deletion_is_structured_semantically(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.99,
+                "normalized_request": "Remove the Notes folder from Documents.",
+                "reason": "The user wants an existing folder recycled.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "Notes",
+                "computer_operation": "delete_folder",
+                "computer_location": "Documents",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Takeover, get rid of my Notes folder inside Documents."
+        )
+
+        self.assertEqual(result.computer_operation, "delete_folder")
+        self.assertEqual(result.action_target, "Notes")
+        self.assertEqual(result.computer_location, "Documents")
+        self.assertTrue(result.action_requested)
+
+    def test_delete_without_takeover_waits_for_contextual_consent(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.99,
+                "normalized_request": "Trash draft.txt in Downloads.",
+                "reason": "The user wants an existing file recycled.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "draft.txt",
+                "computer_operation": "delete_file",
+                "computer_location": "Downloads",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Trash draft.txt from my Downloads folder.")
+
+        self.assertEqual(result.computer_operation, "delete_file")
+        self.assertFalse(result.action_requested)
+
+    def test_closing_one_browser_tab_remains_unsupported(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.99,
+                "normalized_request": "Close the github.com browser tab.",
+                "reason": "Specific browser-tab control is not available.",
+                "speech_act": "action_request",
+                "action_requested": False,
+                "action_target": "github.com tab",
+                "computer_operation": "unsupported",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Takeover, close the github.com tab.")
+
+        self.assertEqual(result.computer_operation, "unsupported")
+        self.assertFalse(result.action_requested)
+
+    def test_model_cannot_substitute_an_allowed_app_for_the_requested_target(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.99,
+                "normalized_request": "Open PowerShell.",
+                "reason": "The user requested computer control.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "spotify",
+                "computer_operation": "open_app",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Takeover, open PowerShell.")
+
+        self.assertEqual(result.intent, "computer_action")
+        self.assertFalse(result.action_requested)
+        self.assertEqual(result.computer_operation, "unsupported")
+
+    def test_non_open_pc_action_stays_in_blocked_computer_path(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.99,
+                "normalized_request": "Disable Smart App Control.",
+                "reason": "The user requested a Windows settings change.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "Smart App Control",
+                "computer_operation": "unsupported",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Takeover, disable Smart App Control.")
+
+        self.assertEqual(result.intent, "computer_action")
+        self.assertFalse(result.action_requested)
+        self.assertEqual(result.computer_operation, "unsupported")
+
     def test_latest_periodic_event_uses_date_aware_completed_event_search(self):
         router = SemanticIntentRouter(
             FakeClient({
@@ -172,6 +455,31 @@ class SemanticIntentRouterTests(unittest.TestCase):
         self.assertTrue(result.action_requested)
         self.assertTrue(result.verification_required)
 
+    def test_health_web_recommendation_always_requires_verification(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "web_search",
+                "confidence": 0.96,
+                "normalized_request": "OTC options for occasional heartburn",
+                "reason": "The user wants current health advice.",
+                "search_query": "official occasional heartburn OTC options",
+                "speech_act": "advice",
+                "recommendation_needed": True,
+                "advice_domain": "health",
+                "information_freshness": "stable",
+                "requires_external_evidence": True,
+                "verification_required": False,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "What over-the-counter option could help occasional heartburn?"
+        )
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.verification_required)
+
     def test_low_risk_personal_advice_stays_conversational(self):
         router = SemanticIntentRouter(
             FakeClient({
@@ -243,6 +551,132 @@ class SemanticIntentRouterTests(unittest.TestCase):
         self.assertEqual(result.intent, "web_search")
         self.assertTrue(result.action_requested)
         self.assertTrue(result.verification_required)
+
+    def test_current_role_holder_cannot_remain_local_knowledge(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "knowledge_question",
+                "confidence": 0.95,
+                "normalized_request": "Nvidia's current CEO",
+                "reason": "A factual identity question.",
+                "speech_act": "information_request",
+                "time_scope": "current",
+                "information_freshness": "stable",
+                "requires_external_evidence": False,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Who is Nvidia's CEO right now?")
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.requires_external_evidence)
+        self.assertTrue(result.verification_required)
+
+    def test_external_live_value_cannot_remain_time_question(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "time_question",
+                "confidence": 0.94,
+                "normalized_request": "Nvidia's current stock price",
+                "speech_act": "information_request",
+                "time_scope": "current",
+                "information_freshness": "live",
+                "requires_external_evidence": True,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("What is Nvidia stock trading at now?")
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.verification_required)
+
+    def test_indirect_screen_interest_becomes_optional_offer(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "screen_analysis",
+                "confidence": 0.95,
+                "normalized_request": "Identify the artist on screen.",
+                "speech_act": "information_request",
+                "request_explicitness": "indirect",
+                "action_requested": False,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("I wonder who drew the picture on my screen.")
+
+        self.assertEqual(result.intent, "agent_offer")
+        self.assertEqual(result.offered_intent, "screen_analysis")
+        self.assertFalse(result.action_requested)
+
+    def test_health_domain_recommendation_requires_external_evidence(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "conversation",
+                "confidence": 0.92,
+                "normalized_request": "Recommend an option for allergies.",
+                "speech_act": "information_request",
+                "recommendation_needed": True,
+                "advice_domain": "health",
+                "information_freshness": "stable",
+                "requires_external_evidence": False,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("I get seasonal allergies. What could I try?")
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.requires_external_evidence)
+
+    def test_health_recommendation_cannot_hide_as_stable_knowledge(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "knowledge_question",
+                "confidence": 0.93,
+                "normalized_request": "Recommend an option for heartburn.",
+                "speech_act": "information_request",
+                "recommendation_needed": True,
+                "advice_domain": "health",
+                "time_scope": "timeless",
+                "information_freshness": "stable",
+                "requires_external_evidence": False,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "What over-the-counter option could help with occasional heartburn?"
+        )
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.requires_external_evidence)
+        self.assertTrue(result.verification_required)
+
+    def test_memory_based_project_choice_does_not_inspect_files(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "project_question",
+                "confidence": 0.91,
+                "normalized_request": "Recommend which project to finish.",
+                "speech_act": "information_request",
+                "recommendation_needed": True,
+                "memory_relevant": True,
+                "request_explicitness": "direct",
+                "information_freshness": "stable",
+                "requires_external_evidence": False,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Based on what you know about me, which project should I finish first?"
+        )
+
+        self.assertEqual(result.intent, "conversation")
+        self.assertFalse(result.action_requested)
 
     def test_read_only_project_inspection_is_implicitly_authorized(self):
         router = SemanticIntentRouter(
@@ -783,6 +1217,9 @@ class SemanticIntentRouterTests(unittest.TestCase):
                 "normalized_request": "What time is it?",
                 "reason": "Current local time requested.",
                 "search_query": "",
+                "time_scope": "current",
+                "information_freshness": "live",
+                "requires_external_evidence": False,
             }),
             "qwen3:8b",
         )

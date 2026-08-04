@@ -27,6 +27,42 @@ class PolicyEngine:
             False,
             "Analyze a region explicitly selected by the user.",
         ),
+        "computer.open_app": ActionPolicy(
+            "computer.open_app",
+            "local_reversible_action",
+            False,
+            "Open one locally allowlisted application.",
+        ),
+        "computer.close_app": ActionPolicy(
+            "computer.close_app",
+            "local_reversible_action",
+            False,
+            "Ask one locally resolved application to close gracefully.",
+        ),
+        "computer.force_quit_app": ActionPolicy(
+            "computer.force_quit_app",
+            "local_destructive_action",
+            True,
+            "Terminate locally resolved application processes after confirmation.",
+        ),
+        "browser.open_url": ActionPolicy(
+            "browser.open_url",
+            "local_reversible_action",
+            False,
+            "Open one grounded HTTP or HTTPS address in the default browser.",
+        ),
+        "filesystem.create": ActionPolicy(
+            "filesystem.create",
+            "reversible_write",
+            False,
+            "Create one new empty file or folder beneath an allowed root.",
+        ),
+        "filesystem.delete": ActionPolicy(
+            "filesystem.delete",
+            "recoverable_destructive_action",
+            True,
+            "Move one exact allowlisted file or folder to the Recycle Bin.",
+        ),
         "project.read": ActionPolicy(
             "project.read",
             "read_only",

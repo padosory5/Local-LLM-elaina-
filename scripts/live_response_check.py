@@ -19,6 +19,7 @@ from brain.calculation_planner import CalculationPlanner
 from brain.response_messages import build_personality_messages
 from brain.response_policy import AnswerCompletionGuard, ResponseLimits
 from brain.text_filter import TextFilter
+from scripts.console_style import status_label
 
 
 @dataclass(frozen=True)
@@ -116,7 +117,7 @@ def main() -> int:
         plan = planner.plan(case.prompt)
         if plan is None:
             failures += 1
-            print(f"[FAIL] {case.name}")
+            print(f"[{status_label(False)}] {case.name}")
             print("The calculation planner returned no verified result.\n")
             continue
         messages = build_personality_messages(
@@ -227,7 +228,7 @@ def main() -> int:
         passed = has_numbers and complete and within_limits
         failures += 0 if passed else 1
 
-        print(f"[{'PASS' if passed else 'FAIL'}] {case.name}")
+        print(f"[{status_label(passed)}] {case.name}")
         print(f"Prompt: {case.prompt}")
         print(f"Elaina: {reply}")
         print(

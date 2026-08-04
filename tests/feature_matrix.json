@@ -1,0 +1,126 @@
+{
+  "minimum_variants_per_feature": 3,
+  "cases": [
+    {"id":"conversation_1","feature":"conversation","tier":"smoke","input":"I'm continuing my project tonight.","expected":{"intent":"conversation","recommendation_needed":false}},
+    {"id":"conversation_2","feature":"conversation","tier":"extended","input":"That movie was much better than I expected.","expected":{"intent":"conversation","recommendation_needed":false}},
+    {"id":"conversation_3","feature":"conversation","tier":"extended","input":"Good morning, I finally got enough sleep.","expected":{"intent":"conversation","recommendation_needed":false}},
+
+    {"id":"knowledge_1","feature":"stable_knowledge","tier":"smoke","input":"Why do currency exchange rates fluctuate?","expected":{"intent":"knowledge_question","information_freshness":"stable","requires_external_evidence":false}},
+    {"id":"knowledge_2","feature":"stable_knowledge","tier":"extended","input":"What causes ocean tides?","expected":{"intent":"knowledge_question","information_freshness":"stable","requires_external_evidence":false}},
+    {"id":"knowledge_3","feature":"stable_knowledge","tier":"extended","input":"Explain the difference between RAM and storage.","expected":{"intent":"knowledge_question","information_freshness":"stable","requires_external_evidence":false}},
+
+    {"id":"research_1","feature":"current_research","tier":"smoke","input":"What is the current exchange rate from US dollars to Korean won?","expected":{"intent":"web_search","requires_external_evidence":true,"verification_required":true}},
+    {"id":"research_2","feature":"current_research","tier":"extended","input":"Who is Nvidia's CEO right now?","expected":{"intent":"web_search","requires_external_evidence":true,"verification_required":true}},
+    {"id":"research_3","feature":"current_research","tier":"extended","input":"What is the weather in Seoul today?","expected":{"intent":"web_search","requires_external_evidence":true,"verification_required":true}},
+    {"id":"research_4","feature":"current_research","tier":"extended","input":"Which Qwen model was released most recently?","expected":{"intent":"web_search","requires_external_evidence":true,"verification_required":true}},
+    {"id":"research_5","feature":"current_research","tier":"extended","input":"What is Nvidia stock trading at now?","expected":{"intent":"web_search","requires_external_evidence":true,"verification_required":true}},
+
+    {"id":"calculation_1","feature":"calculation","tier":"smoke","input":"Split 650 proportionally among contributions of 100, 100, and 50.","expected":{"intent":"calculation"}},
+    {"id":"calculation_2","feature":"calculation","tier":"extended","input":"An 80 dollar jacket is 25 percent off. What is the final price?","expected":{"intent":"calculation"}},
+    {"id":"calculation_3","feature":"calculation","tier":"extended","input":"A 96 dollar restaurant total is split equally among three people. How much each?","expected":{"intent":"calculation"}},
+    {"id":"calculation_4","feature":"calculation","tier":"extended","input":"How long does 150 kilometers take at 50 kilometers per hour?","expected":{"intent":"calculation"}},
+
+    {"id":"general_advice_1","feature":"general_advice","tier":"smoke","input":"Should I use Live2D or a 3D model for an expressive avatar that is easy to build?","expected":{"intent":"conversation","recommendation_needed":true,"urgent_safety":false}},
+    {"id":"general_advice_2","feature":"general_advice","tier":"extended","input":"I keep procrastinating on my project. What should I try first?","expected":{"intent":"conversation","recommendation_needed":true,"urgent_safety":false}},
+    {"id":"general_advice_3","feature":"general_advice","tier":"extended","input":"Which should I learn first for this app, Python or JavaScript?","expected":{"intent":"conversation","recommendation_needed":true,"urgent_safety":false}},
+
+    {"id":"health_advice_1","feature":"health_advice","tier":"smoke","input":"Can you recommend something I can take for insomnia?","expected":{"intent":"web_search","recommendation_needed":true,"advice_domain":"health","requires_external_evidence":true,"verification_required":true}},
+    {"id":"health_advice_2","feature":"health_advice","tier":"extended","input":"What over-the-counter option could help with occasional heartburn?","expected":{"intent":"web_search","recommendation_needed":true,"advice_domain":"health","requires_external_evidence":true,"verification_required":true}},
+    {"id":"health_advice_3","feature":"health_advice","tier":"extended","input":"I get seasonal allergies. What could I try?","expected":{"intent":"web_search","recommendation_needed":true,"advice_domain":"health","requires_external_evidence":true,"verification_required":true}},
+
+    {"id":"urgent_1","feature":"urgent_safety","tier":"smoke","input":"I took too many sleep pills and I'm struggling to breathe. What should I do?","expected":{"intent":"conversation","recommendation_needed":true,"urgent_safety":true}},
+    {"id":"urgent_2","feature":"urgent_safety","tier":"extended","input":"There is smoke filling my apartment and the door feels hot. What do I do?","expected":{"intent":"conversation","recommendation_needed":true,"urgent_safety":true}},
+    {"id":"urgent_3","feature":"urgent_safety","tier":"extended","input":"My friend is unconscious and won't wake up. Tell me what to do now.","expected":{"intent":"conversation","recommendation_needed":true,"urgent_safety":true}},
+
+    {"id":"project_read_1","feature":"project_question","tier":"smoke","input":"Inspect the codebase and explain how voice input reaches chat.","route_kwargs":{"project_tools_available":true},"expected":{"intent":"project_question","action_requested":true}},
+    {"id":"project_read_2","feature":"project_question","tier":"extended","input":"Look through this project and tell me where web searches are handled.","route_kwargs":{"project_tools_available":true},"expected":{"intent":"project_question","action_requested":true}},
+    {"id":"project_read_3","feature":"project_question","tier":"extended","input":"Read the current folder and summarize the memory architecture.","route_kwargs":{"project_tools_available":true},"expected":{"intent":"project_question","action_requested":true}},
+
+    {"id":"project_edit_1","feature":"project_edit","tier":"smoke","input":"Change the main button color to blue in this project.","route_kwargs":{"project_tools_available":true},"expected":{"intent":"project_edit","action_requested":true}},
+    {"id":"project_edit_2","feature":"project_edit","tier":"extended","input":"Fix the typo in the README introduction.","route_kwargs":{"project_tools_available":true},"expected":{"intent":"project_edit","action_requested":true}},
+    {"id":"project_edit_3","feature":"project_edit","tier":"extended","input":"Add a unit test for the calculator's division-by-zero behavior.","route_kwargs":{"project_tools_available":true},"expected":{"intent":"project_edit","action_requested":true}},
+
+    {"id":"git_commit_1","feature":"git_commit","tier":"smoke","input":"Record my current changes in local Git history without uploading them.","expected":{"intent":"git_commit","action_requested":true}},
+    {"id":"git_commit_2","feature":"git_commit","tier":"extended","input":"Create a local commit for everything I've changed, but keep it offline.","expected":{"intent":"git_commit","action_requested":true}},
+    {"id":"git_commit_3","feature":"git_commit","tier":"extended","input":"Save these edits as a Git commit only on this computer.","expected":{"intent":"git_commit","action_requested":true}},
+
+    {"id":"git_publish_1","feature":"git_publish","tier":"smoke","input":"Publish everything I changed to the remote repository.","expected":{"intent":"git_publish","action_requested":true}},
+    {"id":"git_publish_2","feature":"git_publish","tier":"extended","input":"Commit the current work and upload it to GitHub.","expected":{"intent":"git_publish","action_requested":true}},
+    {"id":"git_publish_3","feature":"git_publish","tier":"extended","input":"Send my local changes to the remote Git branch.","expected":{"intent":"git_publish","action_requested":true}},
+
+    {"id":"screen_1","feature":"screen_analysis","tier":"smoke","input":"Look across both monitors and tell me what is visible.","expected":{"intent":"screen_analysis","screen_target":"all","action_requested":true}},
+    {"id":"screen_2","feature":"screen_analysis","tier":"extended","input":"Check my left screen and explain the error shown there.","expected":{"intent":"screen_analysis","screen_target":"left","action_requested":true}},
+    {"id":"screen_3","feature":"screen_analysis","tier":"extended","input":"Analyze what is currently open on my main display.","expected":{"intent":"screen_analysis","screen_target":"main","action_requested":true}},
+
+    {"id":"computer_action_1","feature":"computer_action","tier":"smoke","input":"Takeover, open my default browser.","expected":{"intent":"computer_action","action_requested":true,"action_target":"default browser","computer_operation":"open_app"}},
+    {"id":"computer_action_2","feature":"computer_action","tier":"extended","input":"Takeover and launch Discord for me.","expected":{"intent":"computer_action","action_requested":true,"action_target":"Discord","computer_operation":"open_app"}},
+    {"id":"computer_action_3","feature":"computer_action","tier":"extended","input":"Takeover, could you start Battle.net?","expected":{"intent":"computer_action","action_requested":true,"action_target":"Battle.net","computer_operation":"open_app"}},
+    {"id":"computer_action_4","feature":"computer_action","tier":"extended","input":"Takeover and open Steam.","expected":{"intent":"computer_action","action_requested":true,"action_target":"Steam","computer_operation":"open_app"}},
+    {"id":"computer_action_5","feature":"computer_action","tier":"extended","input":"Takeover, launch VSCode.","expected":{"intent":"computer_action","action_requested":true,"action_target":"VSCode","computer_operation":"open_app"}},
+
+    {"id":"computer_close_1","feature":"computer_close","tier":"smoke","input":"Takeover, close Discord normally.","expected":{"intent":"computer_action","action_requested":true,"action_target":"Discord","computer_operation":"close_app"}},
+    {"id":"computer_close_2","feature":"computer_close","tier":"extended","input":"Please close Spotify for me.","expected":{"intent":"computer_action","action_requested":false,"action_target":"Spotify","computer_operation":"close_app"}},
+    {"id":"computer_close_3","feature":"computer_close","tier":"extended","input":"Takeover and exit Steam gracefully.","expected":{"intent":"computer_action","action_requested":true,"action_target":"Steam","computer_operation":"close_app"}},
+
+    {"id":"computer_force_quit_1","feature":"computer_force_quit","tier":"smoke","input":"Takeover, completely quit Discord.","expected":{"intent":"computer_action","action_requested":true,"action_target":"Discord","computer_operation":"force_quit_app"}},
+    {"id":"computer_force_quit_2","feature":"computer_force_quit","tier":"extended","input":"Force close VSCode completely.","expected":{"intent":"computer_action","action_requested":false,"action_target":"VSCode","computer_operation":"force_quit_app"}},
+    {"id":"computer_force_quit_3","feature":"computer_force_quit","tier":"extended","input":"Takeover and terminate Spotify entirely.","expected":{"intent":"computer_action","action_requested":true,"action_target":"Spotify","computer_operation":"force_quit_app"}},
+
+    {"id":"browser_tab_1","feature":"browser_tab","tier":"smoke","input":"Takeover, open youtube.com in a new browser tab.","expected":{"intent":"computer_action","action_requested":true,"action_target":"youtube.com","computer_operation":"open_url"}},
+    {"id":"browser_tab_2","feature":"browser_tab","tier":"extended","input":"Open github.com in a new tab for me.","expected":{"intent":"computer_action","action_requested":false,"action_target":"github.com","computer_operation":"open_url"}},
+    {"id":"browser_tab_3","feature":"browser_tab","tier":"extended","input":"Takeover and go to wikipedia.org in my browser.","expected":{"intent":"computer_action","action_requested":true,"action_target":"wikipedia.org","computer_operation":"open_url"}},
+
+    {"id":"create_file_1","feature":"create_file","tier":"smoke","input":"Takeover, create an empty file named notes.txt in Documents.","expected":{"intent":"computer_action","action_requested":true,"action_target":"notes.txt","computer_operation":"create_file","computer_location":"Documents"}},
+    {"id":"create_file_2","feature":"create_file","tier":"extended","input":"Create todo.md in my Downloads folder.","expected":{"intent":"computer_action","action_requested":false,"action_target":"todo.md","computer_operation":"create_file","computer_location":"Downloads"}},
+    {"id":"create_file_3","feature":"create_file","tier":"extended","input":"Takeover and make a blank budget.csv file on my Desktop.","expected":{"intent":"computer_action","action_requested":true,"action_target":"budget.csv","computer_operation":"create_file","computer_location":"Desktop"}},
+    {"id":"create_file_4","feature":"create_file","tier":"extended","input":"Takeover, make me an empty notes.txt inside Documents.","expected":{"intent":"computer_action","action_requested":true,"action_target":"notes.txt","computer_operation":"create_file","computer_location":"Documents"}},
+
+    {"id":"create_folder_1","feature":"create_folder","tier":"smoke","input":"Takeover, create a folder called Receipts in Documents.","expected":{"intent":"computer_action","action_requested":true,"action_target":"Receipts","computer_operation":"create_folder","computer_location":"Documents"}},
+    {"id":"create_folder_2","feature":"create_folder","tier":"extended","input":"Make a Screenshots folder in Downloads.","expected":{"intent":"computer_action","action_requested":false,"action_target":"Screenshots","computer_operation":"create_folder","computer_location":"Downloads"}},
+    {"id":"create_folder_3","feature":"create_folder","tier":"extended","input":"Takeover and add a folder named Ideas to my Desktop.","expected":{"intent":"computer_action","action_requested":true,"action_target":"Ideas","computer_operation":"create_folder","computer_location":"Desktop"}},
+    {"id":"create_folder_4","feature":"create_folder","tier":"extended","input":"Takeover, make me a Notes folder inside Documents.","expected":{"intent":"computer_action","action_requested":true,"action_target":"Notes","computer_operation":"create_folder","computer_location":"Documents"}},
+
+    {"id":"delete_file_1","feature":"delete_file","tier":"smoke","input":"Takeover, delete notes.txt from Documents.","expected":{"intent":"computer_action","action_requested":true,"action_target":"notes.txt","computer_operation":"delete_file","computer_location":"Documents"}},
+    {"id":"delete_file_2","feature":"delete_file","tier":"extended","input":"Trash the draft.md file inside my Downloads folder.","expected":{"intent":"computer_action","action_requested":false,"action_target":"draft.md","computer_operation":"delete_file","computer_location":"Downloads"}},
+    {"id":"delete_file_3","feature":"delete_file","tier":"extended","input":"Takeover and move old-budget.csv from Desktop to the Recycle Bin.","expected":{"intent":"computer_action","action_requested":true,"action_target":"old-budget.csv","computer_operation":"delete_file","computer_location":"Desktop"}},
+    {"id":"delete_file_4","feature":"delete_file","tier":"extended","input":"Get rid of the temporary.txt file under Documents.","expected":{"intent":"computer_action","action_requested":false,"action_target":"temporary.txt","computer_operation":"delete_file","computer_location":"Documents"}},
+
+    {"id":"delete_folder_1","feature":"delete_folder","tier":"smoke","input":"Takeover, delete the Hello folder in Documents.","expected":{"intent":"computer_action","action_requested":true,"action_target":"Hello","computer_operation":"delete_folder","computer_location":"Documents"}},
+    {"id":"delete_folder_2","feature":"delete_folder","tier":"extended","input":"Remove my Notes directory from Documents.","expected":{"intent":"computer_action","action_requested":false,"action_target":"Notes","computer_operation":"delete_folder","computer_location":"Documents"}},
+    {"id":"delete_folder_3","feature":"delete_folder","tier":"extended","input":"Takeover and trash the Old Screenshots folder inside Downloads.","expected":{"intent":"computer_action","action_requested":true,"action_target":"Old Screenshots","computer_operation":"delete_folder","computer_location":"Downloads"}},
+    {"id":"delete_folder_4","feature":"delete_folder","tier":"extended","input":"Get rid of the Ideas folder on my Desktop.","expected":{"intent":"computer_action","action_requested":false,"action_target":"Ideas","computer_operation":"delete_folder","computer_location":"Desktop"}},
+
+    {"id":"computer_safety_1","feature":"computer_action_safety","tier":"smoke","input":"Open Discord for me.","expected":{"intent":"computer_action","action_requested":false,"action_target":"Discord","computer_operation":"open_app"}},
+    {"id":"computer_safety_2","feature":"computer_action_safety","tier":"extended","input":"I saw the word takeover in an article today.","expected":{"intent":"conversation","action_requested":false}},
+    {"id":"computer_safety_3","feature":"computer_action_safety","tier":"extended","input":"Takeover, disable Smart App Control.","expected":{"intent":"computer_action","action_requested":false,"computer_operation":"unsupported"}},
+    {"id":"computer_safety_4","feature":"computer_action_safety","tier":"extended","input":"How do I open Discord myself?","expected":{"intent":"knowledge_question","action_requested":false}},
+    {"id":"computer_safety_5","feature":"computer_action_safety","tier":"extended","input":"Takeover, create notes.txt in Documents and write hello inside it.","expected":{"intent":"computer_action","action_requested":false,"computer_operation":"unsupported"}},
+    {"id":"computer_safety_6","feature":"computer_action_safety","tier":"extended","input":"Takeover, permanently erase notes.txt without using the Recycle Bin.","expected":{"intent":"computer_action","action_requested":false,"computer_operation":"unsupported"}},
+    {"id":"computer_safety_7","feature":"computer_action_safety","tier":"extended","input":"Takeover, shut down this computer now.","expected":{"intent":"computer_action","action_requested":false,"computer_operation":"unsupported"}},
+    {"id":"computer_safety_8","feature":"computer_action_safety","tier":"extended","input":"Takeover, close the github.com browser tab.","expected":{"intent":"computer_action","action_requested":false,"computer_operation":"unsupported"}},
+
+    {"id":"offer_1","feature":"agent_offer","tier":"smoke","input":"I think the buttons on this project look boring.","expected":{"intent":"agent_offer","action_requested":false}},
+    {"id":"offer_2","feature":"agent_offer","tier":"extended","input":"I wonder who drew the picture on my screen.","expected":{"intent":"agent_offer","action_requested":false}},
+    {"id":"offer_3","feature":"agent_offer","tier":"extended","input":"It would be nice if something could inspect this error for me.","expected":{"intent":"agent_offer","action_requested":false}},
+
+    {"id":"agent_create_1","feature":"agent_create","tier":"smoke","input":"Create a Google Calendar agent for me.","expected":{"intent":"agent_create","action_requested":true}},
+    {"id":"agent_create_2","feature":"agent_create","tier":"extended","input":"Set up a new agent that can add approved calendar events.","expected":{"intent":"agent_create","action_requested":true}},
+    {"id":"agent_create_3","feature":"agent_create","tier":"extended","input":"Install the reviewed calendar capability as an agent.","expected":{"intent":"agent_create","action_requested":true}},
+
+    {"id":"calendar_1","feature":"calendar_action","tier":"smoke","input":"Add a math class tomorrow at 3 PM to my calendar.","expected":{"intent":"calendar_action","action_requested":true}},
+    {"id":"calendar_2","feature":"calendar_action","tier":"extended","input":"Create a calendar event called dentist on Friday at 10 in the morning.","expected":{"intent":"calendar_action","action_requested":true}},
+    {"id":"calendar_3","feature":"calendar_action","tier":"extended","input":"Put my team meeting next Monday from 2 to 3 PM on Google Calendar.","expected":{"intent":"calendar_action","action_requested":true}},
+
+    {"id":"time_1","feature":"time_question","tier":"smoke","input":"What time is it right now?","expected":{"intent":"time_question"}},
+    {"id":"time_2","feature":"time_question","tier":"extended","input":"What day of the week is today?","expected":{"intent":"time_question"}},
+    {"id":"time_3","feature":"time_question","tier":"extended","input":"Tell me today's date.","expected":{"intent":"time_question"}},
+
+    {"id":"selected_text_1","feature":"selected_text","tier":"smoke","input":"Explain this in simple terms.","route_kwargs":{"has_selected_text":true},"expected":{"intent":"selected_text_question"}},
+    {"id":"selected_text_2","feature":"selected_text","tier":"extended","input":"Translate the highlighted passage into English.","route_kwargs":{"has_selected_text":true},"expected":{"intent":"selected_text_question"}},
+    {"id":"selected_text_3","feature":"selected_text","tier":"extended","input":"Find the bug in this selected code.","route_kwargs":{"has_selected_text":true},"expected":{"intent":"selected_text_question"}},
+
+    {"id":"memory_1","feature":"memory_context","tier":"smoke","input":"What do you remember about my favorite foods?","expected":{"intent":"conversation","memory_relevant":true}},
+    {"id":"memory_2","feature":"memory_context","tier":"extended","input":"Based on what you know about me, which project should I finish first?","expected":{"intent":"conversation","memory_relevant":true,"recommendation_needed":true}},
+    {"id":"memory_3","feature":"memory_context","tier":"extended","input":"Explain in detail what you remember about my long-term goals.","expected":{"intent":"conversation","memory_relevant":true,"detailed_response":true}}
+  ]
+}

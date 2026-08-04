@@ -6,6 +6,13 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
+from tools.computer_control import (
+    COMPUTER_OPERATIONS,
+    takeover_authorized,
+    transcript_names_location,
+    transcript_names_target,
+)
+
 
 ALLOWED_INTENTS = {
     "conversation",
@@ -18,6 +25,7 @@ ALLOWED_INTENTS = {
     "git_commit",
     "git_publish",
     "screen_analysis",
+    "computer_action",
     "selected_text_question",
     "knowledge_question",
     "time_question",
@@ -60,6 +68,9 @@ ADVICE_DOMAINS = {
     "safety",
 }
 
+TIME_SCOPES = {"timeless", "current", "historical", "future", "unknown"}
+REQUEST_EXPLICITNESS_VALUES = {"direct", "indirect", "statement", "unknown"}
+
 
 @dataclass(frozen=True)
 class IntentDecision:
@@ -89,6 +100,11 @@ class IntentDecision:
     recommendation_needed: bool = False
     urgent_safety: bool = False
     advice_domain: str = "general"
+    time_scope: str = "unknown"
+    request_explicitness: str = "unknown"
+    computer_operation: str = "none"
+    computer_location: str = ""
+    computer_url: str = ""
 
 
 class SemanticIntentRouter:
@@ -120,6 +136,7 @@ class SemanticIntentRouter:
         project_tools_available: bool = False,
         conversation_state: dict[str, Any] | None = None,
         pending_action: str = "",
+        computer_action_authorized: bool = False,
     ) -> IntentDecision:
         # Clicking Screen is an explicit user action, not an ambiguous phrase.
         # The next spoken request must use the attached image even if the
@@ -206,7 +223,7 @@ class SemanticIntentRouter:
                 format="json",
                 options={
                     "temperature": 0,
-                    "num_predict": 260,
+                    "num_predict": 320,
                 },
                 keep_alive=self.keep_alive,
                 think=False,
@@ -240,7 +257,10 @@ class SemanticIntentRouter:
                                 "verification_required, information_freshness, "
                                 "requires_external_evidence, "
                                 "recommendation_needed, urgent_safety, "
-                                "advice_domain. Intent must "
+                                "advice_domain, time_scope, "
+                                "request_explicitness, computer_operation, "
+                                "computer_location, computer_url. "
+                                "Intent must "
                                 "be one of: "
                                 + ", ".join(sorted(ALLOWED_INTENTS))
                                 + ". Do not answer the user."
@@ -257,7 +277,7 @@ class SemanticIntentRouter:
                     ],
                     stream=False,
                     format="json",
-                    options={"temperature": 0, "num_predict": 260},
+                    options={"temperature": 0, "num_predict": 320},
                     keep_alive=self.keep_alive,
                     think=False,
                 )
@@ -271,6 +291,11 @@ class SemanticIntentRouter:
                     routed_input,
                 )
             if decision is not None:
+                decision = self._apply_computer_control_policy(
+                    decision,
+                    original_input=user_input,
+                    context_authorized=computer_action_authorized,
+                )
                 safe_decision = self._apply_action_safety_policy(
                     decision,
                     original_input=user_input,
@@ -286,6 +311,7 @@ class SemanticIntentRouter:
                     )
                 elif self.safety_mode == "enforce":
                     decision = safe_decision
+                decision = self._apply_optional_capability_policy(decision)
                 if (
                     decision.intent in ACTION_INTENTS
                     and decision.speech_act == "action_request"
@@ -480,6 +506,59 @@ class SemanticIntentRouter:
         )
 
     @staticmethod
+    def _apply_computer_control_policy(
+        decision: IntentDecision,
+        *,
+        original_input: str,
+        context_authorized: bool = False,
+    ) -> IntentDecision:
+        """Enforce grounded Phase 3A operations and takeover consent."""
+        if decision.intent != "computer_action":
+            return decision
+
+        target = decision.action_target.strip()
+        operation = decision.computer_operation
+        location_is_grounded = (
+            not decision.computer_location
+            or transcript_names_location(original_input, decision.computer_location)
+        )
+        if (
+            decision.speech_act != "action_request"
+            or operation not in COMPUTER_OPERATIONS
+            or operation in {"none", "unsupported"}
+            or not transcript_names_target(original_input, target)
+            or not location_is_grounded
+        ):
+            return replace(
+                decision,
+                normalized_request=original_input.strip(),
+                reason=(
+                    "The computer request is not a grounded Phase 3A action "
+                    "and must not reach a computer tool."
+                ),
+                action_requested=False,
+                computer_operation="unsupported",
+            )
+
+        if not (context_authorized or takeover_authorized(original_input)):
+            return replace(
+                decision,
+                normalized_request=original_input.strip(),
+                reason=(
+                    "The computer action is understood but still needs "
+                    "takeover consent."
+                ),
+                action_requested=False,
+                action_target=target,
+            )
+
+        return replace(
+            decision,
+            action_requested=True,
+            action_target=target,
+        )
+
+    @staticmethod
     def _apply_factual_source_policy(
         decision: IntentDecision,
     ) -> IntentDecision:
@@ -491,13 +570,40 @@ class SemanticIntentRouter:
                 verification_required=(
                     decision.verification_required
                     or decision.information_freshness in {"changing", "live"}
+                    or (
+                        decision.recommendation_needed
+                        and decision.advice_domain
+                        in {"health", "financial", "legal"}
+                    )
                 ),
+            )
+
+        if (
+            decision.intent == "time_question"
+            and decision.requires_external_evidence
+        ):
+            return replace(
+                decision,
+                intent="web_search",
+                reason=(
+                    "The requested live value depends on external evidence, "
+                    "not only the user's local clock or calendar."
+                ),
+                search_query=(
+                    decision.search_query or decision.normalized_request
+                ),
+                action_requested=True,
+                verification_required=True,
+                requires_external_evidence=True,
             )
 
         if (
             decision.intent == "conversation"
             and decision.recommendation_needed
-            and decision.requires_external_evidence
+            and (
+                decision.requires_external_evidence
+                or decision.advice_domain in {"health", "financial", "legal"}
+            )
             and not decision.urgent_safety
         ):
             return replace(
@@ -525,6 +631,11 @@ class SemanticIntentRouter:
         can_use_local_knowledge = (
             decision.information_freshness == "stable"
             and not decision.requires_external_evidence
+            and decision.time_scope not in {"current", "future"}
+            and not (
+                decision.recommendation_needed
+                and decision.advice_domain in {"health", "financial", "legal"}
+            )
         )
         if can_use_local_knowledge:
             return decision
@@ -544,8 +655,54 @@ class SemanticIntentRouter:
                 decision.verification_required
                 or decision.information_freshness
                 in {"changing", "live", "unknown"}
+                or decision.time_scope in {"current", "future"}
+                or (
+                    decision.recommendation_needed
+                    and decision.advice_domain
+                    in {"health", "financial", "legal"}
+                )
             ),
             requires_external_evidence=True,
+        )
+
+    @staticmethod
+    def _apply_optional_capability_policy(
+        decision: IntentDecision,
+    ) -> IntentDecision:
+        """Turn indirect interest in a read-only capability into an offer."""
+        if (
+            decision.intent == "project_question"
+            and decision.recommendation_needed
+            and decision.memory_relevant
+        ):
+            return replace(
+                decision,
+                intent="conversation",
+                reason=(
+                    "A personal recommendation based on memory does not require "
+                    "inspecting project files."
+                ),
+                action_requested=False,
+                action_target="",
+            )
+
+        if (
+            decision.intent not in {"screen_analysis", "project_question"}
+            or decision.request_explicitness not in {"indirect", "statement"}
+        ):
+            return decision
+
+        return replace(
+            decision,
+            intent="agent_offer",
+            reason=(
+                "The user expressed indirect interest in a capability rather "
+                "than directly asking Elaina to run it."
+            ),
+            action_requested=False,
+            action_target="",
+            offered_intent=decision.intent,
+            offered_request=decision.normalized_request,
         )
 
     @staticmethod
@@ -583,7 +740,7 @@ class SemanticIntentRouter:
             "intent from this allowlist:\n"
             "conversation, calculation, agent_offer, agent_consent, web_search, "
             "project_question, project_edit, "
-            "git_commit, git_publish, screen_analysis, "
+            "git_commit, git_publish, screen_analysis, computer_action, "
             "selected_text_question, knowledge_question, time_question, "
             "pending_approval, agent_create, calendar_action, "
             "entity_correction, fact_check, clarification.\n\n"
@@ -637,7 +794,62 @@ class SemanticIntentRouter:
             "screen right now. Without an attachment, a vague musing about "
             "something visible is agent_offer instead (see example below), "
             "never screen_analysis. Set screen_target to configured, main, "
-            "left, right, or all from the user's meaning.\n"
+            "left, right, or all from the user's meaning. Requests covering "
+            "both monitors, every monitor, or across monitors use all.\n"
+            "- computer_action: a direct request to control this Windows PC. "
+            "Use it even when the user does not say takeover; local policy "
+            "will request contextual consent before execution. Select one "
+            "computer_operation: open_app, close_app, force_quit_app, open_url, "
+            "create_file, create_folder, delete_file, delete_folder, or "
+            "unsupported. Use close_app for a "
+            "normal or graceful close, exit, or quit. The word exit or quit by "
+            "itself never means force termination. Use force_quit_app only "
+            "when the user explicitly says force, terminate, kill, entirely, "
+            "or completely and means bypassing the normal close flow. For app "
+            "operations, copy only the requested application name into "
+            "action_target. For open_url, action_target is the exact spoken "
+            "website name or address and computer_url is its HTTP(S) address. "
+            "For filesystem operations, action_target is only the exact item "
+            "name and computer_location is the exact spoken parent location. "
+            "Use delete_file when the user means an existing file and "
+            "delete_folder when they mean an existing folder or directory. "
+            "Delete means move to the Windows Recycle Bin, not permanent "
+            "erasure. Leave computer_location empty if none was provided. "
+            "Creation supports only one new empty item. If the same request "
+            "also asks to write content, overwrite, move, rename, or perform "
+            "another operation, "
+            "the entire operation is unsupported; never execute only the safe "
+            "part of a compound request. Deleting an existing folder is "
+            "delete_folder, never create_folder. Permanent deletion that "
+            "bypasses the Recycle Bin is unsupported. Shutting down, "
+            "restarting, or sleeping the PC, "
+            "computer, Windows, or machine is never force_quit_app; it is "
+            "unsupported because force_quit_app requires a named application. "
+            "Never invent a filesystem location, executable path, shell "
+            "command, process ID, or command argument. Use unsupported for "
+            "settings changes, clicking, typing, permanent deletion, moving, "
+            "renaming, file content writing, closing a particular browser tab, "
+            "system shutdown, or other PC operations. "
+            "A question asking for instructions so the user can do an action "
+            "themselves, such as 'How do I open Discord myself?', is always "
+            "knowledge_question with "
+            "speech_act information_request, never computer_action, and must "
+            "not create a takeover offer.\n"
+            "Critical computer-action contrasts:\n"
+            "  'Create notes.txt in Documents' -> create_file.\n"
+            "  'Create notes.txt and write hello in it' -> unsupported because "
+            "content writing is a second unsupported operation.\n"
+            "  'Create a Receipts folder' -> create_folder.\n"
+            "  'Delete or remove the old Receipts folder from Documents' -> "
+            "delete_folder with target Receipts and location Documents.\n"
+            "  'Trash notes.txt in Downloads' -> delete_file with target "
+            "notes.txt and location Downloads.\n"
+            "  'Permanently erase notes.txt without using Recycle Bin' -> "
+            "unsupported, never delete_file or delete_folder.\n"
+            "  'Close Discord' -> close_app.\n"
+            "  'Close the github.com browser tab' -> unsupported, never "
+            "close_app; close_app requires an installed application target.\n"
+            "  'Shut down the computer' -> unsupported, never force_quit_app.\n"
             "- selected_text_question: answer about copied/highlighted text.\n"
             "  If the transcript contains a substantial pasted passage or code "
             "block and asks about that content, use selected_text_question.\n"
@@ -645,7 +857,8 @@ class SemanticIntentRouter:
             "depends on real-world state, a recorded value, or information "
             "that may differ from model training. This includes live or dated "
             "exchange and market rates, prices, availability, weather, news, "
-            "sports, schedules, officeholders, laws, policies, statistics, "
+            "sports, schedules, officeholders, current CEOs or executives, "
+            "employers and other current role occupants, laws, policies, statistics, "
             "software versions and documentation, product specifications, "
             "release information, and other changing external facts. It also "
             "applies when the user asks to search or when stability is "
@@ -705,6 +918,9 @@ class SemanticIntentRouter:
             "Recommendations that depend on current medical, legal, financial, "
             "product, or other external evidence use web_search while keeping "
             "a conversational final response.\n"
+            "  Any recommendation about a symptom, health condition, medicine, "
+            "supplement, allergy, pain, sleep problem, or bodily effect uses "
+            "advice_domain health, never general.\n"
             "- clarification: only when a write/action request is genuinely "
             "ambiguous. Never execute writes from this router.\n"
             "An attached screen selection strongly implies screen_analysis "
@@ -721,7 +937,9 @@ class SemanticIntentRouter:
             "offered_request, memory_relevant, memory_candidate, "
             "detailed_response, screen_target, verification_required, "
             "information_freshness, requires_external_evidence, and "
-            "recommendation_needed, urgent_safety, and advice_domain. "
+            "recommendation_needed, urgent_safety, advice_domain, time_scope, "
+            "request_explicitness, computer_operation, computer_location, and "
+            "computer_url. "
             "speech_act is one of "
             "social, statement, advice, "
             "information_request, action_request, correction, or "
@@ -737,7 +955,9 @@ class SemanticIntentRouter:
             "requires them. memory_relevant is true whenever answering depends "
             "on the user's saved identity, preferences, relationships, past "
             "experiences, projects, or goals, including requests about what "
-            "Elaina remembers. It is false for impersonal factual answers. "
+            "Elaina remembers. A request beginning 'based on what you know "
+            "about me' always has memory_relevant true, including when it asks "
+            "for a recommendation. It is false for impersonal factual answers. "
             "memory_candidate is true only when the current message contains "
             "a durable personal fact or preference worth considering for "
             "storage; questions and temporary states are false. "
@@ -767,6 +987,20 @@ class SemanticIntentRouter:
             "advice_domain is exactly one of general, health, financial, legal, "
             "product, technical, or safety. Use health for medicines, "
             "supplements, symptoms, sleep disorders, and other health choices. "
+            "time_scope is exactly one of timeless, current, historical, future, "
+            "or unknown. Questions about who currently holds a role, live "
+            "values, present status, or what is true now use current even when "
+            "the fact seems familiar. request_explicitness is exactly one of "
+            "direct, indirect, statement, or unknown. direct means the user "
+            "plainly asks Elaina to answer or run a capability. indirect means "
+            "they express curiosity, a wish, or say a capability would be nice "
+            "without directly delegating it. Indirect interest in screen or "
+            "project inspection must be agent_offer, not immediate execution. "
+            "computer_operation is exactly none, open_app, close_app, "
+            "force_quit_app, open_url, create_file, create_folder, delete_file, "
+            "delete_folder, or unsupported. computer_location and computer_url "
+            "are strings and "
+            "must be empty unless required by the selected computer operation. "
             "Do not answer the user's "
             "question.\n\n"
             f"Runtime state: {json.dumps(state)}\n"
@@ -831,6 +1065,25 @@ class SemanticIntentRouter:
         ).strip().lower()
         if advice_domain not in ADVICE_DOMAINS:
             advice_domain = "general"
+        time_scope = str(
+            payload.get("time_scope") or "unknown"
+        ).strip().lower()
+        if time_scope not in TIME_SCOPES:
+            time_scope = "unknown"
+        request_explicitness = str(
+            payload.get("request_explicitness") or "unknown"
+        ).strip().lower()
+        if request_explicitness not in REQUEST_EXPLICITNESS_VALUES:
+            request_explicitness = "unknown"
+        computer_operation = str(
+            payload.get("computer_operation") or "none"
+        ).strip().lower()
+        if computer_operation not in COMPUTER_OPERATIONS:
+            computer_operation = "none"
+        computer_location = str(
+            payload.get("computer_location") or ""
+        ).strip()
+        computer_url = str(payload.get("computer_url") or "").strip()
 
         return IntentDecision(
             intent=intent,
@@ -871,6 +1124,11 @@ class SemanticIntentRouter:
             recommendation_needed=recommendation_needed,
             urgent_safety=payload.get("urgent_safety") is True,
             advice_domain=advice_domain,
+            time_scope=time_scope,
+            request_explicitness=request_explicitness,
+            computer_operation=computer_operation,
+            computer_location=computer_location,
+            computer_url=computer_url,
         )
 
     @staticmethod

@@ -1,0 +1,142 @@
+"""Validated default-browser navigation for local computer actions."""
+
+from __future__ import annotations
+
+import ipaddress
+import re
+import webbrowser
+from dataclasses import dataclass
+from urllib.parse import urlparse, urlunparse
+
+
+@dataclass(frozen=True)
+class BrowserResolution:
+    status: str
+    requested_target: str
+    url: str = ""
+    message: str = ""
+
+
+class SafeBrowserControl:
+    """Open only grounded HTTP(S) destinations in the default browser."""
+
+    def __init__(self, opener=None, *, allow_local_urls: bool = False) -> None:
+        self._opener = opener or webbrowser.open_new_tab
+        self.allow_local_urls = bool(allow_local_urls)
+
+    def resolve(self, requested_target: str, proposed_url: str = "") -> BrowserResolution:
+        target = str(requested_target).strip()
+        candidate = str(proposed_url or requested_target).strip()
+        if not target or not candidate:
+            return BrowserResolution(
+                "invalid_target",
+                target,
+                message="A website or URL is required.",
+            )
+
+        if "://" not in candidate:
+            if not self._looks_like_host(candidate):
+                return BrowserResolution(
+                    "invalid_target",
+                    target,
+                    message=(
+                        "Please include the website address, such as "
+                        "youtube.com."
+                    ),
+                )
+            candidate = f"https://{candidate}"
+
+        parsed = urlparse(candidate)
+        if parsed.scheme.casefold() not in {"http", "https"}:
+            return BrowserResolution(
+                "invalid_target",
+                target,
+                message="Only HTTP and HTTPS websites can be opened.",
+            )
+        if not parsed.hostname or parsed.username or parsed.password:
+            return BrowserResolution(
+                "invalid_target",
+                target,
+                message="That website address is not valid.",
+            )
+        try:
+            port = parsed.port
+        except ValueError:
+            return BrowserResolution(
+                "invalid_target",
+                target,
+                message="That website port is not valid.",
+            )
+
+        host = parsed.hostname.rstrip(".").casefold()
+        if not self.allow_local_urls and self._is_local_host(host):
+            return BrowserResolution(
+                "blocked",
+                target,
+                message="Local and private network pages are disabled.",
+            )
+
+        # A model may expand "YouTube" to youtube.com, but it may not silently
+        # substitute an unrelated destination. User-spoken hostnames are exact.
+        if not self._destination_is_grounded(target, host):
+            return BrowserResolution(
+                "invalid_target",
+                target,
+                message="The website address does not match the request.",
+            )
+
+        netloc = host if port is None else f"{host}:{port}"
+        normalized = urlunparse((
+            parsed.scheme.casefold(),
+            netloc,
+            parsed.path or "",
+            "",
+            parsed.query or "",
+            "",
+        ))
+        return BrowserResolution(
+            "resolved",
+            target,
+            url=normalized,
+            message=f"Ready to open {host}.",
+        )
+
+    def open(self, url: str) -> None:
+        if not self._opener(str(url)):
+            raise OSError("Windows did not accept the browser tab request.")
+
+    @staticmethod
+    def _looks_like_host(value: str) -> bool:
+        return bool(re.fullmatch(
+            r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+            r"[A-Za-z]{2,63}(?::\d{1,5})?(?:/[^\s]*)?",
+            value,
+        ))
+
+    @staticmethod
+    def _is_local_host(host: str) -> bool:
+        if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+            return True
+        try:
+            address = ipaddress.ip_address(host.strip("[]"))
+        except ValueError:
+            return False
+        return not address.is_global
+
+    @staticmethod
+    def _destination_is_grounded(target: str, host: str) -> bool:
+        target_host = urlparse(
+            target if "://" in target else f"https://{target}"
+        ).hostname
+        if target_host and "." in target_host:
+            expected = target_host.rstrip(".").casefold().removeprefix("www.")
+            actual = host.removeprefix("www.")
+            return expected == actual
+
+        spoken = re.sub(r"[^a-z0-9]", "", target.casefold())
+        host_labels = [
+            re.sub(r"[^a-z0-9]", "", label)
+            for label in host.split(".")
+            if label.casefold() != "www"
+        ]
+        return bool(spoken and spoken in host_labels)

@@ -30,6 +30,7 @@ from brain.response_policy import (
 )
 from brain.calculation_planner import CalculationPlanner
 from brain.context_policy import should_include_grounded_context
+from brain.brief_response import BriefResponseGenerator
 from datetime import datetime
 from vision.screen_monitor import ScreenMonitor
 from brain.intent_router import IntentDecision, SemanticIntentRouter
@@ -47,7 +48,17 @@ from agents.registry import AgentRegistry
 from agents.task_manager import AgentTaskManager
 from security.approval_manager import ApprovalManager
 from security.policy import PolicyEngine
+from security.computer_consent import ComputerConsentGate
 from tools.google_calendar import GoogleCalendarTool
+from tools.computer_control import (
+    ComputerActionRequest,
+    ComputerActionResult,
+    ComputerControl,
+    PreparedComputerAction,
+)
+from tools.safe_browser import SafeBrowserControl
+from tools.safe_filesystem import SafeFilesystemControl
+from tools.windows_app_catalog import WindowsAppCatalog
 
 class ChatEngine:
 
@@ -223,6 +234,51 @@ class ChatEngine:
         )
         self.policy = PolicyEngine()
         self.approvals = ApprovalManager(self.policy)
+        configured_aliases = self.config.get(
+            "computer_control",
+            "aliases",
+            default={},
+            required=False,
+        )
+        if not isinstance(configured_aliases, dict):
+            configured_aliases = {}
+        self.computer_control = ComputerControl(
+            self.policy,
+            enabled=bool(self.config.get(
+                "computer_control",
+                "enabled",
+                default=False,
+                required=False,
+            )),
+            catalog=WindowsAppCatalog(user_aliases=configured_aliases),
+            browser=SafeBrowserControl(
+                allow_local_urls=bool(self.config.get(
+                    "computer_control",
+                    "allow_local_urls",
+                    default=False,
+                    required=False,
+                ))
+            ),
+            filesystem=SafeFilesystemControl(self.config.get(
+                "computer_control",
+                "allowed_file_roots",
+                default=["Desktop", "Documents", "Downloads"],
+                required=False,
+            )),
+        )
+        self.computer_consent = ComputerConsentGate(
+            expiry_seconds=int(self.config.get(
+                "computer_control",
+                "consent_expiry_seconds",
+                default=90,
+                required=False,
+            ))
+        )
+        self.brief_responses = BriefResponseGenerator(
+            self.client,
+            self.model,
+            keep_alive=self.keep_alive,
+        )
         self.agent_builder = AgentBuilder(
             client=self.client,
             model=self.model,
@@ -288,6 +344,7 @@ class ChatEngine:
 
     def _build_conversation_state(self) -> dict:
         pending_offer = self.agent_consent.peek()
+        pending_computer = self.computer_consent.peek()
         return {
             "active_topic": self._active_topic,
             "active_entity": self._active_entity,
@@ -296,6 +353,11 @@ class ChatEngine:
             "pending_agent_offer": (
                 pending_offer.public_context()
                 if pending_offer is not None
+                else None
+            ),
+            "pending_computer_action": (
+                pending_computer.public_context()
+                if pending_computer is not None
                 else None
             ),
             "available_agents": [
@@ -536,132 +598,11 @@ class ChatEngine:
         if not work:
             return
 
-        recent = " | ".join(self._recent_work_statuses)
-        status_request = (
-            f"The user said: {user_input.strip()}\n"
-            f"Work beginning now: {work}\n"
-            "Give one casual acknowledgement in one sentence. Keep it under "
-            f"{self.status_max_words} words. Do not answer the request, use "
-            "formatting, or imply that the work already finished."
+        text = self.brief_responses.generate(
+            "work_started",
+            subject=intent.replace("_", " "),
+            detail=f"User request: {user_input.strip()} Work: {work}",
         )
-        if recent:
-            status_request += (
-                "\nAvoid repeating these recent acknowledgements: "
-                f"{recent}"
-            )
-
-        fallbacks_by_intent = {
-            "web_search": (
-                "Okay, I'll check that now.",
-                "Sure, give me a second.",
-                "Got it, I'll look it up.",
-            ),
-            "entity_correction": (
-                "Got it, I'll search the corrected name.",
-                "Okay, I'll try that name instead.",
-                "Sure, I'll check the right name.",
-            ),
-            "screen_analysis": (
-                "Okay, I'll take a look.",
-                "Sure, let me check that.",
-                "Got it, I'm looking now.",
-            ),
-            "project_question": (
-                "Sure, I'll check the project.",
-                "Okay, let me inspect that.",
-                "Got it, I'll look through the files.",
-            ),
-            "project_edit": (
-                "Okay, I'll prepare that change for you.",
-                "Sure, let me work on that.",
-                "Got it, I'll set up the change.",
-            ),
-            "git_commit": (
-                "Sure, I'll prepare the commit.",
-                "Okay, let me check the Git changes.",
-                "Got it, I'll set up the commit.",
-            ),
-            "git_publish": (
-                "Okay, I'll prepare the push.",
-                "Sure, let me check the Git changes.",
-                "Got it, I'll set up the push.",
-            ),
-            "agent_create": (
-                "Sure, I'll check what that agent needs.",
-                "Okay, let me look into that agent.",
-                "Got it, I'll check the requirements.",
-            ),
-            "calendar_action": (
-                "Okay, I'll prepare the event.",
-                "Sure, let me set that up.",
-                "Got it, I'll check the event details.",
-            ),
-        }
-
-        text = ""
-        try:
-            response = self.client.chat(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": self.system_prompt,
-                    },
-                    {
-                        "role": "user",
-                        "content": status_request,
-                    },
-                ],
-                stream=False,
-                options={
-                    "temperature": max(float(self.temperature), 0.7),
-                    "num_predict": 24,
-                },
-                keep_alive=self.keep_alive,
-                think=False,
-            )
-            message = self._value(response, "message", {})
-            text = TextFilter.for_voice_response(
-                self._value(message, "content", ""),
-                max_words=self.status_max_words,
-                max_sentences=1,
-            )
-        except Exception as error:
-            print(
-                "[Status Generation Warning] "
-                f"{type(error).__name__}: {error}"
-            )
-
-        # A status must never turn a pending action into a false success claim.
-        completed_action = re.search(
-            r"\b(?:done|finished|completed|added|changed|edited|created|"
-            r"committed|pushed|scheduled|found it)\b",
-            text,
-            flags=re.IGNORECASE,
-        )
-        repeated = bool(
-            text
-            and any(
-                text.casefold() == previous.casefold()
-                for previous in self._recent_work_statuses
-            )
-        )
-        if not text or completed_action or repeated:
-            recent_normalized = {
-                previous.casefold()
-                for previous in self._recent_work_statuses
-            }
-            fallbacks = fallbacks_by_intent[intent]
-            text = next(
-                (
-                    fallback
-                    for fallback in fallbacks
-                    if fallback.casefold() not in recent_normalized
-                ),
-                fallbacks[
-                    len(self._recent_work_statuses) % len(fallbacks)
-                ],
-            )
 
         self._recent_work_statuses.append(text)
         print(f"[Status] Elaina: {text}")
@@ -671,6 +612,99 @@ class ChatEngine:
             intent=intent,
         )
         self.audio.speak(text)
+
+    def _handle_computer_action(
+        self,
+        route: IntentDecision,
+        *,
+        approved_action: PreparedComputerAction | None = None,
+    ) -> tuple[str, ComputerActionResult | None]:
+        """Return one outcome-locked line and one trusted action result."""
+        if route.computer_operation in {"none", "unsupported"}:
+            return self.brief_responses.generate(
+                "blocked",
+                subject=route.action_target,
+            ), None
+
+        if approved_action is not None:
+            result = self.computer_control.execute(
+                approved_action,
+                confirmed=True,
+            )
+        else:
+            prepared_result = self.computer_control.prepare(
+                ComputerActionRequest(
+                    operation=route.computer_operation,
+                    target=route.action_target,
+                    location=route.computer_location,
+                    url=route.computer_url,
+                )
+            )
+            if prepared_result.prepared is not None and (
+                not route.action_requested
+                or self.computer_control.requires_extra_confirmation(
+                    route.computer_operation
+                )
+            ):
+                self.agent_consent.clear()
+                self.computer_consent.offer(
+                    prepared=prepared_result.prepared,
+                    reason=route.reason,
+                )
+                return self.brief_responses.generate(
+                    (
+                        "force_quit_offer"
+                        if route.computer_operation == "force_quit_app"
+                        else "delete_offer"
+                        if route.computer_operation in {
+                            "delete_file", "delete_folder"
+                        }
+                        else "action_offer"
+                    ),
+                    subject=prepared_result.display_name,
+                    detail=prepared_result.prepared.request,
+                    operation=route.computer_operation,
+                ), prepared_result
+            result = (
+                self.computer_control.execute(prepared_result.prepared)
+                if prepared_result.prepared is not None
+                else prepared_result
+            )
+
+        response_kind = {
+            "opened": "opened",
+            "closed": "closed",
+            "close_requested": "close_requested",
+            "force_quit": "force_quit",
+            "url_opened": "url_opened",
+            "file_created": "file_created",
+            "folder_created": "folder_created",
+            "file_deleted": "file_deleted",
+            "folder_deleted": "folder_deleted",
+            "not_found": "not_found",
+            "not_running": "not_running",
+            "ambiguous": "ambiguous",
+            "already_exists": "already_exists",
+            "item_not_found": "item_not_found",
+            "wrong_type": "wrong_type",
+            "invalid_target": "invalid_target",
+            "outside_allowed": "outside_allowed",
+            "parent_not_found": "invalid_target",
+            "needs_location": "needs_location",
+            "failed": "failed",
+            "disabled": "blocked",
+            "blocked": "blocked",
+        }.get(result.status, "blocked")
+        return self.brief_responses.generate(
+            response_kind,
+            subject=(
+                result.display_name
+                or result.target
+                or route.action_target
+            ),
+            detail=result.message,
+            operation=result.operation,
+        ), result
     
     def chat(
         self,
@@ -712,6 +746,25 @@ class ChatEngine:
             screen_region is not None or screen_snapshot is not None
         )
         pending_offer = self.agent_consent.peek()
+        pending_computer = self.computer_consent.peek()
+        locked_response = ""
+        approved_computer_action: PreparedComputerAction | None = None
+
+        def route_current(
+            transcript: str,
+            *,
+            computer_authorized: bool = False,
+        ) -> IntentDecision:
+            return self.intent_router.route(
+                transcript,
+                recent_turns=list(self._router_history),
+                has_screen_selection=has_explicit_attachment,
+                project_tools_available=self.project_mcp is not None,
+                conversation_state=self._build_conversation_state(),
+                pending_action=self._pending_action,
+                computer_action_authorized=computer_authorized,
+            )
+
         if self.agent_builder.active:
             route = IntentDecision(
                 intent="agent_create",
@@ -732,6 +785,72 @@ class ChatEngine:
                 action_requested=True,
                 action_target="calendar event",
             )
+        elif pending_computer is not None and not has_explicit_attachment:
+            consent = self.consent_classifier.classify(
+                user_input,
+                pending_computer,
+                recent_turns=list(self._router_history),
+            )
+            if consent.decision == "accept":
+                self.computer_consent.clear()
+                approved_computer_action = pending_computer.prepared
+                route = IntentDecision(
+                    intent="computer_action",
+                    confidence=consent.confidence,
+                    normalized_request=pending_computer.request,
+                    reason="The user accepted the exact pending takeover action.",
+                    is_follow_up=True,
+                    speech_act="action_request",
+                    action_requested=True,
+                    action_target=pending_computer.target_name,
+                    computer_operation=pending_computer.operation,
+                )
+            elif consent.decision == "modify":
+                self.computer_consent.clear()
+                revised_request = consent.modified_request.strip()
+                route = route_current(
+                    revised_request or user_input,
+                    computer_authorized=True,
+                )
+            elif consent.decision == "reject":
+                self.computer_consent.clear()
+                route = IntentDecision(
+                    intent="conversation",
+                    confidence=consent.confidence,
+                    normalized_request=user_input,
+                    reason="The user declined the pending computer action.",
+                    is_follow_up=True,
+                )
+                locked_response = self.brief_responses.generate(
+                    "declined",
+                    subject=pending_computer.target_name,
+                    operation=pending_computer.operation,
+                )
+            elif consent.decision == "unrelated":
+                self.computer_consent.clear()
+                route = route_current(user_input)
+            else:
+                route = IntentDecision(
+                    intent="conversation",
+                    confidence=consent.confidence,
+                    normalized_request=user_input,
+                    reason="The takeover reply was unclear.",
+                    is_follow_up=True,
+                )
+                locked_response = self.brief_responses.generate(
+                    (
+                        "force_quit_offer"
+                        if pending_computer.operation == "force_quit_app"
+                        else "delete_offer"
+                        if pending_computer.operation in {
+                            "delete_file", "delete_folder"
+                        }
+                        else "action_offer"
+                    ),
+                    subject=pending_computer.target_name,
+                    detail=pending_computer.request,
+                    operation=pending_computer.operation,
+                )
         elif pending_offer is not None and not has_explicit_attachment:
             consent = self.consent_classifier.classify(
                 user_input,
@@ -742,14 +861,7 @@ class ChatEngine:
                 # The dedicated consent classifier has established that this
                 # is a new topic. Clear the stale offer before normal routing.
                 self.agent_consent.clear()
-                route = self.intent_router.route(
-                    user_input,
-                    recent_turns=list(self._router_history),
-                    has_screen_selection=has_explicit_attachment,
-                    project_tools_available=self.project_mcp is not None,
-                    conversation_state=self._build_conversation_state(),
-                    pending_action=self._pending_action,
-                )
+                route = route_current(user_input)
             else:
                 route = IntentDecision(
                     intent="agent_consent",
@@ -762,17 +874,9 @@ class ChatEngine:
                     offered_request=consent.modified_request,
                 )
         else:
-            route = self.intent_router.route(
-                user_input,
-                recent_turns=list(self._router_history),
-                has_screen_selection=(
-                    screen_region is not None
-                    or screen_snapshot is not None
-                ),
-                project_tools_available=self.project_mcp is not None,
-                conversation_state=self._build_conversation_state(),
-                pending_action=self._pending_action,
-            )
+            if has_explicit_attachment and pending_computer is not None:
+                self.computer_consent.clear()
+            route = route_current(user_input)
         route, agent_permission_context = apply_agent_permission(
             self.agent_consent,
             route,
@@ -862,6 +966,20 @@ class ChatEngine:
         )
         use_screen_vision = route.intent == "screen_analysis"
         forced_response = ""
+        if route.intent == "computer_action" and not locked_response:
+            locked_response, computer_result = self._handle_computer_action(
+                route,
+                approved_action=approved_computer_action,
+            )
+
+            if computer_result is not None:
+                self.events.emit(
+                    "computer_action_completed",
+                    status=computer_result.status,
+                    operation=computer_result.operation,
+                    target=computer_result.target,
+                    message=computer_result.message,
+                )
         screen_target = route.screen_target or "configured"
         if screen_snapshot is not None:
             pass
@@ -1466,7 +1584,7 @@ class ChatEngine:
         # approval" or "nothing changed." The same language model now phrases
         # that state through personality.txt instead of exposing a canned agent
         # response. Keep the original result as a no-hallucination fallback.
-        tool_result_fallback = forced_response
+        tool_result_fallback = locked_response or forced_response
         if forced_response:
             messages = self._build_tool_result_messages(
                 user_input=user_input,
@@ -1543,7 +1661,7 @@ class ChatEngine:
         speech_buffer = ""
         tts_buffer = ""
         effective_forced_response = (
-            forced_response or blocked_identification_reply
+            locked_response or forced_response or blocked_identification_reply
         )
         num_predict = response_limits.generation_budget(
             detailed=detailed_response,

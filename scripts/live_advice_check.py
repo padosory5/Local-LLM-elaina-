@@ -20,6 +20,7 @@ from brain.response_messages import build_personality_messages  # noqa: E402
 from brain.response_policy import ResponseLimits  # noqa: E402
 from brain.text_filter import TextFilter  # noqa: E402
 from config.loader import Config  # noqa: E402
+from scripts.console_style import status_label  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -268,7 +269,7 @@ def main() -> int:
         )
         failures += 0 if passed else 1
 
-        print(f"[{'PASS' if passed else 'FAIL'}] {case.name}")
+        print(f"[{status_label(passed)}] {case.name}")
         print(f"Prompt: {case.prompt}")
         print(f"Elaina: {reply}")
         print(

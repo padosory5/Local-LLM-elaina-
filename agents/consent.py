@@ -82,7 +82,7 @@ class SemanticConsentDecision:
 
 
 class SemanticConsentClassifier:
-    """Judge one reply against one pending offer before normal routing."""
+    """Judge one reply against one pending action before normal routing."""
 
     def __init__(
         self,
@@ -97,12 +97,12 @@ class SemanticConsentClassifier:
     def classify(
         self,
         user_input: str,
-        offer: PendingAgentOffer,
+        offer: Any,
         recent_turns: list[dict[str, str]] | None = None,
     ) -> SemanticConsentDecision:
         prompt = (
             "Decide how the user's latest reply relates to Elaina's one "
-            "pending optional agent offer. Judge conversational meaning, not "
+            "pending optional action. Judge conversational meaning, not "
             "keywords. Return JSON only.\n\n"
             "decision must be exactly one of:\n"
             "accept: the user authorizes the offered task\n"

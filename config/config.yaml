@@ -145,7 +145,7 @@ responses:
   detailed_max_sentences: 8
 
   # Short Ollama-generated acknowledgement before a slower agent starts.
-  status_max_words: 10
+  status_max_words: 6
 
 
 ############################################################
@@ -161,6 +161,39 @@ routing:
   # Optional agent offers expire so a later unrelated "yes" cannot start an
   # old task. The router also clears an offer when the user changes topics.
   agent_offer_expiry_seconds: 300
+
+
+############################################################
+# Bounded Windows Computer Control
+############################################################
+
+computer_control:
+  # Phase 3A discovers registered Windows applications instead of maintaining
+  # an application-name allowlist. App and process descriptors always come
+  # from local discovery, never from model-generated commands or paths.
+  enabled: true
+
+  # "Open Discord" creates a one-shot takeover offer. A later unrelated reply
+  # or an expired offer cannot authorize the stored application launch.
+  consent_expiry_seconds: 90
+
+  # Empty item creation and recoverable deletion are restricted to these
+  # Windows Known Folders. Absolute paths may be added when another root is
+  # trusted. Existing items are never overwritten; deletions use Recycle Bin.
+  allowed_file_roots:
+    - "Desktop"
+    - "Documents"
+    - "Downloads"
+
+  # Keep localhost and private-network browser navigation disabled unless the
+  # user deliberately enables it for local development tools.
+  allow_local_urls: false
+
+  # Optional spoken aliases for portable or unusually named applications.
+  # The value must match the application's discovered Windows display name.
+  aliases: {}
+  # aliases:
+  #   code: "Visual Studio Code"
 
 
 ############################################################

@@ -98,6 +98,49 @@ require approval.
 - Audit records for tasks and approval decisions under `runtime/audit/`.
 - Secrets and OAuth tokens kept out of source files.
 
+### Bounded computer control (Phase 3A)
+
+- Say `Takeover, open Discord` to launch a discoverable Windows application
+  immediately.
+- If you say `Open Discord` without takeover authorization, Elaina resolves
+  the exact app without launching it and asks whether she should take over.
+  A contextual reply such as `Yeah, go ahead` authorizes only that one pending
+  app, and the offer expires automatically.
+- Applications are discovered locally from Start Menu shortcuts, registered
+  application paths, Microsoft Store IDs, and supported registered protocols.
+  Names such as `Battle.net`, `battle net`, and `BattleNet` normalize to the
+  same catalog lookup. `VSCode` is derived from `Visual Studio Code`.
+- Launch descriptors always come from the Windows catalog. Elaina never turns
+  model output into a shell command, executable path, or command-line argument.
+- `close_app` sends a normal window-close request. `force_quit_app` terminates
+  only processes matched to a locally resolved catalog entry and always asks
+  for a separate data-loss confirmation, even when the first request includes
+  `takeover`. These mutations use verified native Windows handles and window
+  messages rather than model-generated or PowerShell process arguments. System
+  shutdown is a different, unsupported action.
+- Browser tabs accept only validated HTTP or HTTPS destinations grounded in the
+  spoken website. A model-produced URL cannot silently substitute another
+  domain. Localhost and private-network destinations are disabled by default.
+- Empty files and folders can be created only beneath the configured allowed
+  roots (Desktop, Documents, and Downloads by default). Existing files and
+  folders can be deleted from the same roots only after a separate confirmation;
+  deletion moves the exact resolved item to the Windows Recycle Bin. Paths are
+  normalized locally, traversal is blocked, parents must already exist, and
+  existing items are never overwritten.
+- Every attempt has a trusted state such as opened, closed, force-quit,
+  created, not found, already exists, failed, or blocked. A short response
+  cannot claim success unless the relevant tool returned a verified result.
+- Action and agent-start responses are generated under a six-word limit, with
+  recent-response deduplication and generic closings removed.
+- Set `computer_control.enabled` to `false` in `config/config.yaml` for an
+  immediate kill switch. Optional spoken aliases can be added under
+  `computer_control.aliases`. File roots and local-URL access are controlled by
+  `computer_control.allowed_file_roots` and `allow_local_urls`.
+- Settings changes, mouse and keyboard control, file contents, overwriting,
+  permanent deletion, arbitrary moving or renaming, credentials, arbitrary
+  command arguments, elevation, UAC interaction, and system shutdown are not
+  part of Phase 3A.
+
 Current limitations:
 
 - Agent Builder installs reviewed blueprints; it does not generate and execute
@@ -106,6 +149,35 @@ Current limitations:
   deleting, or inviting attendees.
 - Booking, payments, purchasing, and university registration are not yet
   implemented.
+
+## Testing
+
+Run the fast deterministic suite after ordinary code changes:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_feature_regression.py
+```
+
+Run one live Ollama smoke case for every feature, plus live advice and
+calculation-response checks:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_feature_regression.py --mode all
+```
+
+Run every natural-language variant in `tests/feature_matrix.json`:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_feature_regression.py --mode all --exhaustive
+```
+
+The exhaustive run is intentionally slower because each semantic-routing case
+calls the configured local model. Write-capable cases stop at classification,
+proposal, approval-policy, or mocked-tool boundaries; the regression runner
+never edits project files, creates commits, pushes, installs an agent, or adds
+a real calendar event. Computer-control tests never open the browser or a user
+application; the native force-quit regression creates and removes only its own
+temporary hidden test process.
 
 ## Installation
 
