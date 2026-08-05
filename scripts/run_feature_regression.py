@@ -51,12 +51,46 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print matrix feature names and variant counts, then exit.",
     )
+    parser.add_argument(
+        "--list-cases",
+        action="store_true",
+        help=(
+            "Print the natural-language test phrases and expected decisions "
+            "without calling Ollama; combine with --feature to filter."
+        ),
+    )
     return parser.parse_args()
 
 
-def matrix_counts() -> Counter:
+def matrix_cases() -> list[dict]:
     payload = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
-    return Counter(case["feature"] for case in payload["cases"])
+    return list(payload["cases"])
+
+
+def expected_summary(expected: dict) -> str:
+    fields = (
+        "intent",
+        "computer_operation",
+        "action_target",
+        "computer_location",
+        "action_requested",
+    )
+    return ", ".join(
+        f"{field}={expected[field]!r}"
+        for field in fields
+        if field in expected
+    )
+
+
+def print_cases(cases: list[dict]) -> None:
+    current_feature = None
+    for case in cases:
+        if case["feature"] != current_feature:
+            current_feature = case["feature"]
+            print(f"\n{current_feature}:")
+        print(f"  [{case['tier']}] {case['input']}")
+        print(f"    -> {expected_summary(case['expected'])}")
+    print(f"\nTotal: {len(cases)} test phrases")
 
 
 def quick_checks() -> list[Check]:
@@ -99,6 +133,11 @@ def live_checks(args: argparse.Namespace) -> list[Check]:
         router_command.extend(("--feature", feature))
 
     checks = [Check("live semantic routing", tuple(router_command))]
+    if not args.feature or "computer_ui_action" in args.feature:
+        checks.append(Check(
+            "live simulated desktop planner",
+            (python, "scripts/live_desktop_planner_check.py"),
+        ))
     if not args.feature:
         checks.extend([
             Check("live voice advice", (python, "scripts/live_advice_check.py")),
@@ -147,7 +186,8 @@ def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    counts = matrix_counts()
+    cases = matrix_cases()
+    counts = Counter(case["feature"] for case in cases)
     if args.list_features:
         for feature in sorted(counts):
             print(f"{feature}: {counts[feature]} variants")
@@ -158,6 +198,13 @@ def main() -> int:
     if unknown:
         print("Unknown feature group(s): " + ", ".join(sorted(unknown)))
         return 2
+
+    if args.list_cases:
+        if args.feature:
+            selected = set(args.feature)
+            cases = [case for case in cases if case["feature"] in selected]
+        print_cases(cases)
+        return 0
 
     checks: list[Check] = []
     if args.mode in {"quick", "all"}:

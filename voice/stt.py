@@ -436,6 +436,12 @@ class SpeechToText:
         spoken = normalize(spoken_text)
         if len(heard) < 8 or not spoken:
             return False
-        if heard in spoken:
+        # A short new utterance can coincidentally appear as a literal
+        # substring of a much longer, unrelated earlier reply (e.g. Elaina
+        # recommending "open Spotify" just before the user actually says
+        # "open Spotify"). Require it to cover most of what was said before
+        # treating containment alone as echo; a real echo captures close to
+        # the full recent utterance, not a small fragment of it.
+        if heard in spoken and len(heard) >= 0.6 * len(spoken):
             return True
         return SequenceMatcher(None, heard, spoken).ratio() >= 0.78

@@ -98,14 +98,16 @@ require approval.
 - Audit records for tasks and approval decisions under `runtime/audit/`.
 - Secrets and OAuth tokens kept out of source files.
 
-### Bounded computer control (Phase 3A)
+### Bounded computer control (Phase 4A)
 
-- Say `Takeover, open Discord` to launch a discoverable Windows application
-  immediately.
-- If you say `Open Discord` without takeover authorization, Elaina resolves
-  the exact app without launching it and asks whether she should take over.
-  A contextual reply such as `Yeah, go ahead` authorizes only that one pending
-  app, and the offer expires automatically.
+- The main Electron screen has a `Control Off` / `Control On` toggle that
+  blends with the Screen and Chat controls. Desktop Control Mode starts off on
+  every launch and its state is owned by the Python backend.
+- While the mode is off, supported computer requests never prepare or execute
+  an action. Elaina can explain what to do and recommend turning on the visible
+  Computer Control toggle when it would make the task easier.
+- While the mode is on, direct requests such as `Open Discord` can run without
+  saying a special authorization word on every turn.
 - Applications are discovered locally from Start Menu shortcuts, registered
   application paths, Microsoft Store IDs, and supported registered protocols.
   Names such as `Battle.net`, `battle net`, and `BattleNet` normalize to the
@@ -114,10 +116,11 @@ require approval.
   model output into a shell command, executable path, or command-line argument.
 - `close_app` sends a normal window-close request. `force_quit_app` terminates
   only processes matched to a locally resolved catalog entry and always asks
-  for a separate data-loss confirmation, even when the first request includes
-  `takeover`. These mutations use verified native Windows handles and window
+  for a separate data-loss confirmation, even while Desktop Control Mode is
+  on. These mutations use verified native Windows handles and window
   messages rather than model-generated or PowerShell process arguments. System
-  shutdown is a different, unsupported action.
+  shutdown is a different, unsupported action. Desktop Control Mode does not
+  remove the separate confirmation for force-quit or Recycle Bin deletion.
 - Browser tabs accept only validated HTTP or HTTPS destinations grounded in the
   spoken website. A model-produced URL cannot silently substitute another
   domain. Localhost and private-network destinations are disabled by default.
@@ -130,16 +133,42 @@ require approval.
 - Every attempt has a trusted state such as opened, closed, force-quit,
   created, not found, already exists, failed, or blocked. A short response
   cannot claim success unless the relevant tool returned a verified result.
-- Action and agent-start responses are generated under a six-word limit, with
+- Action and agent-start responses are generated under a seven-word limit, with
   recent-response deduplication and generic closings removed.
 - Set `computer_control.enabled` to `false` in `config/config.yaml` for an
   immediate kill switch. Optional spoken aliases can be added under
   `computer_control.aliases`. File roots and local-URL access are controlled by
   `computer_control.allowed_file_roots` and `allow_local_urls`.
-- Settings changes, mouse and keyboard control, file contents, overwriting,
-  permanent deletion, arbitrary moving or renaming, credentials, arbitrary
-  command arguments, elevation, UAC interaction, and system shutdown are not
-  part of Phase 3A.
+- The Phase 4A command set does not include settings changes, generic mouse or
+  keyboard control, file contents, overwriting, permanent deletion, arbitrary
+  moving or renaming, credentials, arbitrary command arguments, elevation, UAC
+  interaction, or system shutdown.
+
+### Scoped native UI control (Phase 4B.2 stabilization)
+
+- Elaina can observe controls exposed through Windows UI Automation and use
+  generic focus, click, and text-entry operations. This supports requests such
+  as searching for `BTS` in Spotify or typing into an open Notepad window
+  without adding a separate Python function for each application.
+- The foreground application or browser surface is captured when a request
+  begins and frozen for the task. References such as `this page` stay attached
+  to that surface; a missing GitHub `Settings` control can never fall through
+  to opening the unrelated Windows Settings application.
+- UI work uses a bounded action budget with repeated-state detection and one
+  controlled recovery attempt. Observations do not consume the action budget,
+  and Elaina reports a specific incomplete result when the task cannot make
+  progress instead of continuing an unbounded loop.
+- Success requires an observable postcondition. A click or typing API returning
+  without an exception is not enough for Elaina to claim that the requested
+  outcome happened.
+- Native control names remain available internally for grounding and audit
+  details. When `language.response` is `en`, spoken results describe those
+  controls in English and do not pass Korean UI labels directly to the English
+  Piper voice.
+- Phase 4B.2 does not claim reliable webpage DOM control. It may operate only on
+  controls that the browser exposes through Windows UI Automation and otherwise
+  fails within the frozen browser surface. DOM-aware navigation, form filling,
+  and webpage element control remain planned for Phase 4C.
 
 Current limitations:
 
@@ -170,6 +199,24 @@ Run every natural-language variant in `tests/feature_matrix.json`:
 ```powershell
 .\.venv\Scripts\python.exe scripts\run_feature_regression.py --mode all --exhaustive
 ```
+
+Run the live semantic cases for native UI requests:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_feature_regression.py --mode live --exhaustive --feature computer_ui_action
+```
+
+List the available feature groups or print every voice phrase without running
+Ollama:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_feature_regression.py --list-features
+.\.venv\Scripts\python.exe scripts\run_feature_regression.py --list-cases
+```
+
+Use `--list-cases --feature create_folder` to inspect one capability. For real
+voice and Windows integration checks, follow
+[`REINFORCEMENT_TEST_CASES.md`](REINFORCEMENT_TEST_CASES.md).
 
 The exhaustive run is intentionally slower because each semantic-routing case
 calls the configured local model. Write-capable cases stop at classification,

@@ -26,7 +26,20 @@ class SemanticIntentRouterTests(unittest.TestCase):
         def chat(self, **_kwargs):
             raise AssertionError("The LLM router should have been bypassed.")
 
-    def test_takeover_authorizes_a_grounded_open_app_action(self):
+    class RecordingClient:
+        def __init__(self, payload):
+            self.payload = payload
+            self.calls = []
+
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            return {
+                "message": {
+                    "content": json.dumps(self.payload),
+                },
+            }
+
+    def test_control_mode_authorizes_a_grounded_open_app_action(self):
         router = SemanticIntentRouter(
             FakeClient({
                 "intent": "computer_action",
@@ -41,13 +54,16 @@ class SemanticIntentRouterTests(unittest.TestCase):
             "qwen3:8b",
         )
 
-        result = router.route("Takeover, open Spotify.")
+        result = router.route(
+            "Open Spotify.",
+            computer_control_enabled=True,
+        )
 
         self.assertEqual(result.intent, "computer_action")
         self.assertTrue(result.action_requested)
         self.assertEqual(result.action_target, "spotify")
 
-    def test_open_app_without_takeover_waits_for_contextual_consent(self):
+    def test_open_app_with_control_mode_off_cannot_execute(self):
         router = SemanticIntentRouter(
             FakeClient({
                 "intent": "computer_action",
@@ -69,7 +85,111 @@ class SemanticIntentRouterTests(unittest.TestCase):
         self.assertEqual(result.action_target, "spotify")
         self.assertEqual(result.computer_operation, "open_app")
 
-    def test_contextual_consent_authorizes_the_pending_app(self):
+    def test_active_desktop_surface_is_available_for_deictic_page_actions(self):
+        client = self.RecordingClient({
+            "intent": "computer_action",
+            "confidence": 0.99,
+            "normalized_request": "Click Settings on this GitHub page.",
+            "reason": "Settings is a control on the active browser page.",
+            "speech_act": "action_request",
+            "action_requested": True,
+            "action_target": "Click Settings on this GitHub page.",
+            "computer_operation": "ui_action",
+        })
+        router = SemanticIntentRouter(client, "qwen3:8b")
+
+        result = router.route(
+            "Click Settings on this page.",
+            computer_control_enabled=True,
+            conversation_state={
+                "active_desktop_surface": {
+                    "title": "Settings · repository-name - GitHub",
+                    "application": "Chrome",
+                    "kind": "browser",
+                },
+            },
+        )
+
+        self.assertEqual(result.computer_operation, "ui_action")
+        prompt = client.calls[0]["messages"][0]["content"]
+        self.assertIn("active_desktop_surface", prompt)
+        self.assertIn("GitHub", prompt)
+        self.assertIn("is not an application", prompt)
+
+    def test_open_app_cannot_discard_a_requested_spotify_playback_goal(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.96,
+                "normalized_request": "Play Dynamite in Spotify.",
+                "reason": "Spotify may need to be opened.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "Spotify",
+                "computer_operation": "open_app",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Can you play Dynamite in Spotify for me?",
+            computer_control_enabled=True,
+        )
+
+        self.assertEqual(result.computer_operation, "ui_action")
+        self.assertEqual(
+            result.action_target,
+            "Can you play Dynamite in Spotify for me?",
+        )
+        self.assertTrue(result.action_requested)
+
+    def test_open_app_policy_keeps_a_plain_natural_launch_request(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.99,
+                "normalized_request": "Open Spotify.",
+                "reason": "The user requested an application launch.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "Spotify",
+                "computer_operation": "open_app",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Could you open Spotify on my PC now?",
+            computer_control_enabled=True,
+        )
+
+        self.assertEqual(result.computer_operation, "open_app")
+        self.assertEqual(result.action_target, "Spotify")
+
+    def test_open_app_cannot_replace_a_control_on_the_current_page(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.95,
+                "normalized_request": "Open Settings.",
+                "reason": "Settings looks like an application.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "Settings",
+                "computer_operation": "open_app",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Click Settings on this page.",
+            computer_control_enabled=True,
+        )
+
+        self.assertEqual(result.computer_operation, "ui_action")
+        self.assertEqual(result.action_target, "Click Settings on this page.")
+
+    def test_control_mode_state_authorizes_the_requested_app(self):
         router = SemanticIntentRouter(
             FakeClient({
                 "intent": "computer_action",
@@ -86,14 +206,14 @@ class SemanticIntentRouterTests(unittest.TestCase):
 
         result = router.route(
             "Open Discord.",
-            computer_action_authorized=True,
+            computer_control_enabled=True,
         )
 
         self.assertEqual(result.intent, "computer_action")
         self.assertTrue(result.action_requested)
         self.assertEqual(result.action_target, "Discord")
 
-    def test_takeover_authorizes_a_grounded_graceful_close(self):
+    def test_control_mode_authorizes_a_grounded_graceful_close(self):
         router = SemanticIntentRouter(
             FakeClient({
                 "intent": "computer_action",
@@ -108,7 +228,10 @@ class SemanticIntentRouterTests(unittest.TestCase):
             "qwen3:8b",
         )
 
-        result = router.route("Takeover, close Discord.")
+        result = router.route(
+            "Close Discord.",
+            computer_control_enabled=True,
+        )
 
         self.assertEqual(result.computer_operation, "close_app")
         self.assertTrue(result.action_requested)
@@ -128,7 +251,10 @@ class SemanticIntentRouterTests(unittest.TestCase):
             "qwen3:8b",
         )
 
-        result = router.route("Takeover, completely quit VS Code.")
+        result = router.route(
+            "Completely quit VS Code.",
+            computer_control_enabled=True,
+        )
 
         self.assertEqual(result.computer_operation, "force_quit_app")
         self.assertTrue(result.action_requested)
@@ -150,7 +276,8 @@ class SemanticIntentRouterTests(unittest.TestCase):
         )
 
         result = router.route(
-            "Takeover, create notes.txt in Documents."
+            "Create notes.txt in Documents.",
+            computer_control_enabled=True,
         )
 
         self.assertEqual(result.computer_operation, "create_file")
@@ -174,7 +301,10 @@ class SemanticIntentRouterTests(unittest.TestCase):
             "qwen3:8b",
         )
 
-        result = router.route("Takeover, create notes.txt.")
+        result = router.route(
+            "Create notes.txt.",
+            computer_control_enabled=True,
+        )
 
         self.assertEqual(result.computer_operation, "unsupported")
         self.assertFalse(result.action_requested)
@@ -195,7 +325,10 @@ class SemanticIntentRouterTests(unittest.TestCase):
             "qwen3:8b",
         )
 
-        result = router.route("Takeover, open YouTube in a new tab.")
+        result = router.route(
+            "Open YouTube in a new tab.",
+            computer_control_enabled=True,
+        )
 
         self.assertEqual(result.computer_operation, "open_url")
         self.assertEqual(result.computer_url, "https://www.youtube.com")
@@ -218,7 +351,8 @@ class SemanticIntentRouterTests(unittest.TestCase):
         )
 
         result = router.route(
-            "Takeover, get rid of my Notes folder inside Documents."
+            "Get rid of my Notes folder inside Documents.",
+            computer_control_enabled=True,
         )
 
         self.assertEqual(result.computer_operation, "delete_folder")
@@ -226,7 +360,7 @@ class SemanticIntentRouterTests(unittest.TestCase):
         self.assertEqual(result.computer_location, "Documents")
         self.assertTrue(result.action_requested)
 
-    def test_delete_without_takeover_waits_for_contextual_consent(self):
+    def test_delete_with_control_mode_off_cannot_execute(self):
         router = SemanticIntentRouter(
             FakeClient({
                 "intent": "computer_action",
@@ -262,7 +396,10 @@ class SemanticIntentRouterTests(unittest.TestCase):
             "qwen3:8b",
         )
 
-        result = router.route("Takeover, close the github.com tab.")
+        result = router.route(
+            "Close the github.com tab.",
+            computer_control_enabled=True,
+        )
 
         self.assertEqual(result.computer_operation, "unsupported")
         self.assertFalse(result.action_requested)
@@ -282,7 +419,10 @@ class SemanticIntentRouterTests(unittest.TestCase):
             "qwen3:8b",
         )
 
-        result = router.route("Takeover, open PowerShell.")
+        result = router.route(
+            "Open PowerShell.",
+            computer_control_enabled=True,
+        )
 
         self.assertEqual(result.intent, "computer_action")
         self.assertFalse(result.action_requested)
@@ -303,11 +443,58 @@ class SemanticIntentRouterTests(unittest.TestCase):
             "qwen3:8b",
         )
 
-        result = router.route("Takeover, disable Smart App Control.")
+        result = router.route(
+            "Disable Smart App Control.",
+            computer_control_enabled=True,
+        )
 
         self.assertEqual(result.intent, "computer_action")
         self.assertFalse(result.action_requested)
         self.assertEqual(result.computer_operation, "unsupported")
+
+    def test_spoken_takeover_does_not_replace_the_ui_mode(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.99,
+                "normalized_request": "Open Spotify.",
+                "reason": "The user asked to open an app.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "Spotify",
+                "computer_operation": "open_app",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Takeover, open Spotify.")
+
+        self.assertEqual(result.computer_operation, "open_app")
+        self.assertFalse(result.action_requested)
+
+    def test_local_policy_blocks_model_misclassified_permanent_deletion(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.99,
+                "normalized_request": "Permanently erase notes.txt.",
+                "reason": "Delete the file.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "notes.txt",
+                "computer_operation": "delete_file",
+                "computer_location": "Documents",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Permanently erase notes.txt from Documents.",
+            computer_control_enabled=True,
+        )
+
+        self.assertEqual(result.computer_operation, "unsupported")
+        self.assertFalse(result.action_requested)
 
     def test_latest_periodic_event_uses_date_aware_completed_event_search(self):
         router = SemanticIntentRouter(

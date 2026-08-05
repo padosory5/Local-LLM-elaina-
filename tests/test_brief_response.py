@@ -48,46 +48,36 @@ class BriefResponseGeneratorTests(unittest.TestCase):
             for phrase in ("couldn't", "can't", "isn't", "not found")
         ))
 
-    def test_takeover_offer_names_the_app_and_asks_permission(self):
+    def test_control_mode_off_recommends_the_visible_toggle(self):
         generator = BriefResponseGenerator(
-            FakeClient(["Want me to take over and open Discord?"]),
-            "test",
-        )
-
-        reply = generator.generate("takeover_offer", subject="Discord")
-
-        self.assertIn("discord", reply.casefold())
-        self.assertIn("take over", reply.casefold())
-        self.assertTrue(reply.endswith("?"))
-
-    def test_generic_action_offer_names_the_exact_action(self):
-        generator = BriefResponseGenerator(
-            FakeClient(["Take over and close Discord?"]),
+            FakeClient(["Enable Computer Control to open Discord."]),
             "test",
         )
 
         reply = generator.generate(
-            "action_offer",
+            "control_mode_off",
             subject="Discord",
-            operation="close_app",
+            operation="open_app",
         )
 
-        self.assertIn("close discord", reply.casefold())
-        self.assertTrue(reply.endswith("?"))
+        self.assertIn("computer control", reply.casefold())
+        self.assertIn("discord", reply.casefold())
+        self.assertNotIn("opened", reply.casefold())
+        self.assertFalse(reply.endswith("?"))
 
-    def test_domain_dot_does_not_reject_a_creative_takeover_question(self):
+    def test_control_mode_off_handles_a_spoken_domain(self):
         generator = BriefResponseGenerator(
-            FakeClient(["Want takeover to open github.com?"]),
+            FakeClient(["Enable Computer Control to open github.com."]),
             "test",
         )
 
         reply = generator.generate(
-            "action_offer",
+            "control_mode_off",
             subject="github.com",
             operation="open_url",
         )
 
-        self.assertEqual(reply, "Want takeover to open github.com?")
+        self.assertEqual(reply, "Enable Computer Control to open github.com.")
 
     def test_delete_offer_names_target_and_recoverable_action(self):
         generator = BriefResponseGenerator(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -10,8 +11,11 @@ import subprocess
 import unicodedata
 import webbrowser
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Iterable
+
+from tools.app_name_aliases import alias_candidates
 
 
 DEFAULT_BROWSER_START_URL = "https://www.google.com"
@@ -151,6 +155,21 @@ class WindowsAppCatalog:
         alias_target = self.user_aliases.get(normalized_query)
         lookup = alias_target or normalized_query
         matches = [entry for entry in self._entries if lookup in entry.aliases]
+
+        if not matches:
+            # The query and the app's real registered display name can be
+            # in different languages (e.g. "Settings" vs. an OS whose
+            # Settings app is only registered as "설정") -- retry with any
+            # known translation before giving up.
+            for candidate in alias_candidates(query.casefold()):
+                candidate_lookup = normalize_app_name(candidate)
+                matches = [
+                    entry for entry in self._entries
+                    if candidate_lookup in entry.aliases
+                ]
+                if matches:
+                    break
+
         matches = self._unique_app_matches(matches)
 
         if len(matches) == 1:
@@ -173,7 +192,29 @@ class WindowsAppCatalog:
                 str(query),
                 candidates=tuple(suggestions),
             )
+
+        # A likely STT mishearing (e.g. "battle nest" for "Battle.net") is
+        # still a real, close name -- surface it as a candidate to confirm
+        # rather than silently guessing or giving up outright.
+        fuzzy_match = self._fuzzy_suggestion(normalized_query)
+        if fuzzy_match:
+            return AppResolution(
+                "ambiguous", str(query), candidates=(fuzzy_match,),
+            )
         return AppResolution("not_found", str(query))
+
+    def _fuzzy_suggestion(self, query: str) -> str | None:
+        """The closest installed app name if it's a near-miss, else None."""
+        best_name: str | None = None
+        best_ratio = 0.0
+        for entry in self._unique_app_matches(list(self._entries)):
+            for alias in entry.aliases:
+                if len(alias) < 4:
+                    continue
+                ratio = SequenceMatcher(None, query, alias).ratio()
+                if ratio > best_ratio:
+                    best_ratio, best_name = ratio, entry.display_name
+        return best_name if best_ratio >= 0.82 else None
 
     def get(self, entry_id: str) -> AppEntry | None:
         self._ensure_loaded()
@@ -292,9 +333,17 @@ class WindowsAppCatalog:
 
     @staticmethod
     def _discover_start_apps() -> list[AppEntry]:
+        # Windows PowerShell 5.1 writes redirected stdout in the console's
+        # OEM codepage (cp949 on a Korean-locale system), not UTF-8 --
+        # decoding that as UTF-8 silently turned every non-ASCII app name
+        # (e.g. Settings' real "설정") into unmatchable U+FFFD replacement
+        # characters. Base64-encoding the JSON inside PowerShell first
+        # makes the pipe itself pure ASCII, so no codepage survives to be
+        # guessed wrong on the Python side.
         command = (
-            "Get-StartApps | Select-Object Name,AppID | "
-            "ConvertTo-Json -Compress"
+            "$json = Get-StartApps | Select-Object Name,AppID | "
+            "ConvertTo-Json -Compress; "
+            "[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($json))"
         )
         try:
             result = subprocess.run(
@@ -307,7 +356,7 @@ class WindowsAppCatalog:
                 ],
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
+                encoding="ascii",
                 errors="replace",
                 timeout=12,
                 check=False,
@@ -315,8 +364,16 @@ class WindowsAppCatalog:
             )
             if result.returncode or not result.stdout.strip():
                 return []
-            payload = json.loads(result.stdout)
-        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            payload_json = base64.b64decode(result.stdout.strip()).decode(
+                "utf-8", errors="replace"
+            )
+            payload = json.loads(payload_json)
+        except (
+            OSError,
+            subprocess.SubprocessError,
+            json.JSONDecodeError,
+            ValueError,  # base64.b64decode on malformed input
+        ):
             return []
 
         items = payload if isinstance(payload, list) else [payload]

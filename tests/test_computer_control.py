@@ -2,8 +2,8 @@ import unittest
 
 from security.policy import PolicyEngine
 from tools.computer_control import (
+    ComputerActionRequest,
     ComputerControl,
-    takeover_authorized,
     transcript_names_target,
 )
 from tools.windows_app_catalog import (
@@ -44,11 +44,6 @@ class ComputerControlTests(unittest.TestCase):
             launcher=self.launched.append,
         )
 
-    def test_authorization_word_is_standalone_and_case_insensitive(self):
-        self.assertTrue(takeover_authorized("Takeover, open Spotify."))
-        self.assertFalse(takeover_authorized("takeovers are interesting"))
-        self.assertFalse(takeover_authorized("open Spotify"))
-
     def test_target_must_be_named_in_the_transcript(self):
         self.assertTrue(
             transcript_names_target("Open my web browser.", "browser")
@@ -58,6 +53,27 @@ class ComputerControlTests(unittest.TestCase):
         )
         self.assertFalse(
             transcript_names_target("Open PowerShell.", "Spotify")
+        )
+
+    def test_target_grounds_against_a_model_completed_domain_suffix(self):
+        # "Can you open github" -> the model may reasonably resolve the
+        # target to "github.com" even though the user never said ".com".
+        # The suffix the user never spoke must not defeat grounding.
+        self.assertTrue(
+            transcript_names_target(
+                "Can you open github on my web browser", "github.com"
+            )
+        )
+        self.assertTrue(
+            transcript_names_target(
+                "open reddit please", "reddit.com"
+            )
+        )
+        # A completely different site must still be rejected.
+        self.assertFalse(
+            transcript_names_target(
+                "Can you open github on my web browser", "gitlab.com"
+            )
         )
 
     def test_name_normalization_ignores_case_spaces_and_punctuation(self):
@@ -171,6 +187,139 @@ class ComputerControlTests(unittest.TestCase):
 
         self.assertEqual(policy.risk, "recoverable_destructive_action")
         self.assertTrue(policy.approval_required)
+
+    def test_observe_ui_policy_is_read_only_and_never_confirmed(self):
+        policy = PolicyEngine().get("computer.observe_ui")
+
+        self.assertEqual(policy.risk, "read_only")
+        self.assertFalse(policy.approval_required)
+
+
+class _FakeObserverWindow:
+    def __init__(self, title, is_active=False):
+        self.title = title
+        self.is_active = is_active
+
+
+class _FakeObservation:
+    def __init__(self, status, title="", controls=(), message=""):
+        self.status = status
+        self.title = title
+        self.controls = controls
+        self.message = message
+
+    def as_tree_text(self):
+        return self.message or f"Window: {self.title}"
+
+
+class _FakeControl:
+    def __init__(self, role, name):
+        self.role = role
+        self.name = name
+
+
+class _FakeUIObserver:
+    def __init__(self, windows=(), observation=None):
+        self._windows = windows
+        self._observation = observation or _FakeObservation("not_found", message="not found")
+
+    def list_windows(self):
+        return self._windows
+
+    def get_active_window(self):
+        for window in self._windows:
+            if window.is_active:
+                return window
+        return None
+
+    def describe_window(self, _query):
+        return self._observation
+
+
+class Phase4B1ObservationTests(unittest.TestCase):
+    def setUp(self):
+        self.catalog = WindowsAppCatalog(entries=())
+
+    def _control(self, ui_observer):
+        return ComputerControl(
+            PolicyEngine(),
+            catalog=self.catalog,
+            ui_observer=ui_observer,
+        )
+
+    def test_list_windows_never_requires_confirmation(self):
+        self.assertFalse(
+            ComputerControl.requires_extra_confirmation("list_windows")
+        )
+        self.assertFalse(
+            ComputerControl.requires_extra_confirmation("describe_window")
+        )
+
+    def test_list_windows_prepares_and_executes_without_a_target(self):
+        observer = _FakeUIObserver(windows=[
+            _FakeObserverWindow("Notepad"),
+            _FakeObserverWindow("Calculator", is_active=True),
+        ])
+        control = self._control(observer)
+
+        prepared = control.prepare(
+            ComputerActionRequest("list_windows", "")
+        )
+        self.assertEqual(prepared.status, "prepared")
+
+        result = control.execute(prepared.prepared)
+
+        self.assertEqual(result.status, "windows_listed")
+        self.assertIn("Notepad", result.message)
+        self.assertIn("Calculator", result.message)
+        self.assertTrue(result.succeeded)
+
+    def test_describe_window_reports_the_underlying_observation_status(self):
+        observer = _FakeUIObserver(
+            observation=_FakeObservation(
+                "observed",
+                title="Sound Settings",
+                controls=(_FakeControl("ComboBox", "Choose a device"),),
+                message="Window: Sound Settings\n- ComboBox: Choose a device",
+            )
+        )
+        control = self._control(observer)
+
+        prepared = control.prepare(
+            ComputerActionRequest("describe_window", "Sound Settings")
+        )
+        result = control.execute(prepared.prepared)
+
+        self.assertEqual(result.status, "window_described")
+        self.assertEqual(result.display_name, "Sound Settings")
+        self.assertIn("Choose a device", result.message)
+
+    def test_describe_window_not_found_does_not_claim_success(self):
+        observer = _FakeUIObserver(
+            observation=_FakeObservation("not_found", message="not found")
+        )
+        control = self._control(observer)
+
+        prepared = control.prepare(
+            ComputerActionRequest("describe_window", "Nonexistent")
+        )
+        result = control.execute(prepared.prepared)
+
+        self.assertEqual(result.status, "not_found")
+        self.assertFalse(result.succeeded)
+
+    def test_observation_operations_respect_the_control_mode_disabled_flag(self):
+        observer = _FakeUIObserver(windows=[_FakeObserverWindow("Notepad")])
+        control = ComputerControl(
+            PolicyEngine(),
+            catalog=self.catalog,
+            ui_observer=observer,
+            enabled=False,
+        )
+
+        result = control.prepare(ComputerActionRequest("list_windows", ""))
+
+        self.assertEqual(result.status, "disabled")
 
 
 if __name__ == "__main__":

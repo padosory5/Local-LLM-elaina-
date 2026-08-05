@@ -2,11 +2,21 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 
 from voice.manager import VoiceManager
 from core.event_bus import EventBus
 from config.loader import Config
 from brain.text_filter import TextFilter
+
+# How long a just-finished TTS line remains usable as an echo reference.
+# Real speaker-loopback echo arrives within about a second of Elaina
+# finishing; without a bound, _recent_text stayed "the last thing Elaina
+# said" for the rest of the session, so an unrelated later reply that
+# happened to mention the same words (e.g. recommending "open Spotify"
+# just before the user actually says "open Spotify") could silently
+# swallow a real, unrelated command as an echo.
+_ECHO_REFERENCE_WINDOW_SECONDS = 6.0
 
 class AudioManager:
 
@@ -20,6 +30,15 @@ class AudioManager:
             event_bus=event_bus,
         )
         self.events = event_bus
+        self._response_language = str(
+            config.get(
+                "language",
+                "response",
+                default="en",
+                required=False,
+            )
+            or "en"
+        ).strip().lower()
 
         self._queue: queue.Queue[
             tuple[int, str]
@@ -30,6 +49,7 @@ class AudioManager:
         self._speaking = False
         self._current_text = ""
         self._recent_text = ""
+        self._recent_text_expires_at = 0.0
 
         self._worker_thread = threading.Thread(
             target=self._worker_loop,
@@ -38,7 +58,10 @@ class AudioManager:
         self._worker_thread.start()
 
     def speak(self, text: str) -> None:
-        text = TextFilter.for_speech(text)
+        text = TextFilter.for_configured_speech(
+            text,
+            response_language=self._response_language,
+        )
 
         if not text:
             return
@@ -86,6 +109,9 @@ class AudioManager:
                 with self._lock:
                     self._speaking = False
                     self._current_text = ""
+                    self._recent_text_expires_at = (
+                        time.monotonic() + _ECHO_REFERENCE_WINDOW_SECONDS
+                    )
 
                 self._queue.task_done()
 
@@ -114,6 +140,16 @@ class AudioManager:
             return self._speaking or not self._queue.empty()
 
     def echo_reference_text(self) -> str:
-        """Return recent TTS text so STT can reject speaker-loopback echoes."""
+        """Return recent TTS text so STT can reject speaker-loopback echoes.
+
+        Only valid for a short window after speech ends -- a real echo
+        arrives almost immediately, and an unbounded reference would keep
+        comparing brand new, unrelated user requests against whatever
+        Elaina happened to say much earlier in the conversation.
+        """
         with self._lock:
-            return self._current_text or self._recent_text
+            if self._current_text:
+                return self._current_text
+            if time.monotonic() < self._recent_text_expires_at:
+                return self._recent_text
+            return ""

@@ -30,6 +30,8 @@ const elements = {
     activityText: document.getElementById("activity-text"),
     chatHistory: document.getElementById("chat-history"),
     chatDrawer: document.getElementById("chat-drawer"),
+    computerControlButton: document.getElementById("computer-control-button"),
+    computerControlText: document.getElementById("computer-control-text"),
     screenButton: document.getElementById("screen-button"),
     chatToggleButton: document.getElementById("chat-toggle-button"),
     chatDrawerClose: document.getElementById("chat-drawer-close"),
@@ -82,7 +84,10 @@ const state = {
     activeActionProposalId: null,
     targetMouthValue: 0,
     currentMouthValue: 0,
-    inputMode: "voice"
+    inputMode: "voice",
+    computerControlEnabled: false,
+    computerControlAvailable: false,
+    computerControlPending: false
 };
 
 /* -------------------------- Window controls -------------------------- */
@@ -198,6 +203,58 @@ function updateChatInputAvailability() {
     const canType = isConnected && state.inputMode === "text";
     elements.chatTextInput.disabled = !canType;
     elements.chatSendButton.disabled = !canType;
+}
+
+/* ---------------------- Computer Control toggle --------------------- */
+
+function setupComputerControlToggle() {
+    elements.computerControlButton.addEventListener("click", () => {
+        if (
+            state.computerControlPending ||
+            !state.pythonSocket ||
+            state.pythonSocket.readyState !== WebSocket.OPEN
+        ) {
+            return;
+        }
+
+        state.computerControlPending = true;
+        updateComputerControlAvailability();
+        state.pythonSocket.send(JSON.stringify({
+            command: "set_computer_control_mode",
+            enabled: !state.computerControlEnabled
+        }));
+    });
+}
+
+function applyComputerControlMode(enabled, available = true) {
+    state.computerControlEnabled = Boolean(enabled) && Boolean(available);
+    state.computerControlAvailable = Boolean(available);
+    state.computerControlPending = false;
+
+    elements.computerControlButton.classList.toggle(
+        "active",
+        state.computerControlEnabled
+    );
+    elements.computerControlButton.setAttribute(
+        "aria-pressed",
+        String(state.computerControlEnabled)
+    );
+    elements.computerControlText.textContent = state.computerControlAvailable
+        ? `Control ${state.computerControlEnabled ? "On" : "Off"}`
+        : "Control Unavailable";
+    elements.computerControlButton.title = state.computerControlAvailable
+        ? `Turn ${state.computerControlEnabled ? "off" : "on"} Computer Control Mode`
+        : "Computer control is disabled in configuration";
+    updateComputerControlAvailability();
+}
+
+function updateComputerControlAvailability() {
+    const isConnected = Boolean(
+        state.pythonSocket &&
+        state.pythonSocket.readyState === WebSocket.OPEN
+    );
+    elements.computerControlButton.disabled = !isConnected ||
+        !state.computerControlAvailable || state.computerControlPending;
 }
 
 /* ----------------------- Project change approval -------------------- */
@@ -554,6 +611,7 @@ function setConnectionState(className, text) {
 
     elements.connectionText.textContent = text;
     updateChatInputAvailability();
+    updateComputerControlAvailability();
 }
 
 function setActivity(activityName, text) {
@@ -582,6 +640,17 @@ function addUserMessage(text) {
 
 function addAssistantMessage(text) {
     appendChatMessage("assistant", text);
+}
+
+function addObservationMessage(text) {
+    const cleanedText = cleanText(text);
+    if (!cleanedText) return;
+
+    const message = document.createElement("pre");
+    message.className = "message observation";
+    message.textContent = cleanedText;
+    elements.chatHistory.appendChild(message);
+    elements.chatHistory.scrollTop = elements.chatHistory.scrollHeight;
 }
 
 /* ---------------------------- Live2D model --------------------------- */
@@ -720,6 +789,9 @@ function connectToPython() {
         setConnectionState("connected", "Connected");
         setActivity("listening", "Listening...");
         console.log("Connected to the Elaina Python backend.");
+        state.pythonSocket.send(JSON.stringify({
+            command: "get_computer_control_mode"
+        }));
     });
 
     state.pythonSocket.addEventListener("message", handlePythonMessage);
@@ -763,6 +835,20 @@ function handlePythonMessage(event) {
                 break;
             case "input_mode_changed":
                 applyInputMode(message.mode);
+                break;
+            case "computer_control_mode_changed":
+                applyComputerControlMode(message.enabled, message.available);
+                break;
+            case "computer_action_completed":
+                if (
+                    message.operation === "list_windows" ||
+                    message.operation === "describe_window"
+                ) {
+                    // Elaina's spoken reply is deliberately trimmed for
+                    // voice; this shows the complete, unabridged list of
+                    // windows or controls she actually observed.
+                    addObservationMessage(message.message);
+                }
                 break;
             case "screen_region_ready":
                 setActivity("listening", "Ask about selection...");
@@ -925,6 +1011,7 @@ function startApplication() {
     setupChatDrawer();
     setupChatTextInput();
     setupInputModeToggle();
+    setupComputerControlToggle();
     setupProjectApproval();
     setupGitApproval();
     setupActionApproval();

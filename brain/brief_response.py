@@ -22,15 +22,10 @@ class BriefResponseGenerator:
             "All set with {subject}.",
             "Opened {subject}.",
         ),
-        "takeover_offer": (
-            "Take over and open {subject}?",
-            "Open {subject} with takeover?",
-            "Want takeover for {subject}?",
-        ),
-        "action_offer": (
-            "Take over and {action} {subject}?",
-            "Want takeover to {action} {subject}?",
-            "Should I take over and {action} {subject}?",
+        "control_mode_off": (
+            "Enable Computer Control to {action} {subject}.",
+            "Turn on Computer Control for that.",
+            "{subject} needs Computer Control enabled.",
         ),
         "force_quit_offer": (
             "Force-quit {subject}? Unsaved work?",
@@ -42,6 +37,11 @@ class BriefResponseGenerator:
             "Recycle {subject} now?",
             "Delete {subject} to Recycle Bin?",
             "Trash {subject} now?",
+        ),
+        "ui_action_offer": (
+            "Click {subject}?",
+            "Go ahead and click {subject}?",
+            "Confirm clicking {subject}?",
         ),
         "closed": (
             "Got it—{subject} is closed.",
@@ -224,10 +224,13 @@ class BriefResponseGenerator:
     ) -> str:
         rules = {
             "opened": "The app really opened. Give a varied casual acknowledgement.",
-            "takeover_offer": "Ask to take over and open this exact app.",
-            "action_offer": "Ask to take over and perform this exact action.",
+            "control_mode_off": (
+                "Desktop Control Mode is off. Recommend enabling the visible "
+                "Computer Control toggle for this supported action."
+            ),
             "force_quit_offer": "Ask to force quit and mention unsaved work.",
             "delete_offer": "Ask to move this exact item to the Recycle Bin.",
+            "ui_action_offer": "Ask to click this exact, real on-screen control.",
             "closed": "The app really closed. Give a varied acknowledgement.",
             "close_requested": "A close was requested; do not claim full exit.",
             "force_quit": "The app was fully stopped. Acknowledge that result.",
@@ -318,14 +321,17 @@ class BriefResponseGenerator:
         } and not negative:
             return False
 
-        if kind in {"takeover_offer", "action_offer"}:
-            if "?" not in text or not (
-                "take over" in lowered or "takeover" in lowered
+        if kind == "control_mode_off":
+            if "computer control" not in lowered:
+                return False
+            if not any(word in lowered for word in ("enable", "turn on", "switch on")):
+                return False
+            if "?" in text:
+                return False
+            if any(
+                word in lowered
+                for word in ("opened", "closed", "created", "deleted", "done")
             ):
-                return False
-            if not self._subject_is_named(text, subject):
-                return False
-            if operation and not self._operation_is_named(text, operation):
                 return False
         if kind == "force_quit_offer":
             if "?" not in text or not self._operation_is_named(
@@ -336,6 +342,11 @@ class BriefResponseGenerator:
                 return False
         if kind == "delete_offer":
             if "?" not in text or not self._operation_is_named(text, operation):
+                return False
+            if not self._subject_is_named(text, subject):
+                return False
+        if kind == "ui_action_offer":
+            if "?" not in text:
                 return False
             if not self._subject_is_named(text, subject):
                 return False
@@ -366,6 +377,10 @@ class BriefResponseGenerator:
             "open_url": "open",
             "create_file": "create",
             "create_folder": "create",
+            "delete_file": "recycle",
+            "delete_folder": "recycle",
+            "force_quit_app": "force-quit",
+            "ui_action": "click",
         }.get(operation, "do")
         options = [
             template.format(

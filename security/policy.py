@@ -45,6 +45,23 @@ class PolicyEngine:
             True,
             "Terminate locally resolved application processes after confirmation.",
         ),
+        "computer.observe_ui": ActionPolicy(
+            "computer.observe_ui",
+            "read_only",
+            False,
+            "List open windows or read one window's accessible control names.",
+        ),
+        "computer.ui_action": ActionPolicy(
+            "computer.ui_action",
+            "local_reversible_action",
+            False,
+            (
+                "Click, type into, focus, select within, or scroll a "
+                "verified control in an open window. Any step that "
+                "resolves to a committing control (send, submit, pay, "
+                "delete, ...) is confirmed separately before it runs."
+            ),
+        ),
         "browser.open_url": ActionPolicy(
             "browser.open_url",
             "local_reversible_action",

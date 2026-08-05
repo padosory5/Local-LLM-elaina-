@@ -168,13 +168,14 @@ routing:
 ############################################################
 
 computer_control:
-  # Phase 3A discovers registered Windows applications instead of maintaining
+  # Phase 4A discovers registered Windows applications instead of maintaining
   # an application-name allowlist. App and process descriptors always come
   # from local discovery, never from model-generated commands or paths.
   enabled: true
 
-  # "Open Discord" creates a one-shot takeover offer. A later unrelated reply
-  # or an expired offer cannot authorize the stored application launch.
+  # Computer Control Mode starts OFF on every launch and is enabled only by
+  # the visible Electron toggle. This timeout applies to the separate pending
+  # confirmation required for force-quit and Recycle Bin deletion.
   consent_expiry_seconds: 90
 
   # Empty item creation and recoverable deletion are restricted to these

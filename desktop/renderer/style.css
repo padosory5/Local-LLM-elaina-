@@ -243,7 +243,12 @@ body.position-locked #live2d-canvas {
 }
 
 #screen-button,
-#chat-toggle-button {
+#chat-toggle-button,
+#computer-control-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
     padding: 7px 12px;
     border: 1px solid rgb(255 255 255 / 18%);
     border-radius: 999px;
@@ -256,9 +261,38 @@ body.position-locked #live2d-canvas {
 }
 
 #screen-button:hover,
-#chat-toggle-button:hover {
+#chat-toggle-button:hover,
+#computer-control-button:hover:not(:disabled) {
     background: rgb(105 72 142 / 96%);
     transform: translateY(-1px);
+}
+
+#computer-control-button:disabled {
+    cursor: wait;
+    opacity: 0.58;
+}
+
+#computer-control-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: rgb(176 151 191);
+    box-shadow: 0 0 0 3px rgb(176 151 191 / 12%);
+    transition: background 160ms ease, box-shadow 160ms ease;
+}
+
+#computer-control-button.active {
+    border-color: rgb(116 232 162 / 46%);
+    background: rgb(55 115 82 / 94%);
+}
+
+#computer-control-button.active:hover:not(:disabled) {
+    background: rgb(65 139 96 / 96%);
+}
+
+#computer-control-button.active #computer-control-dot {
+    background: var(--connected);
+    box-shadow: 0 0 0 3px rgb(75 210 125 / 16%);
 }
 
 /* Slide-out chat history. */
@@ -348,6 +382,22 @@ body.position-locked #live2d-canvas {
     align-self: flex-start;
     border-bottom-left-radius: 5px;
     background: rgb(82 65 105 / 94%);
+}
+
+/* Full, unabridged desktop-observation data (window lists, control
+   trees) -- distinct from the spoken/chat bubbles since Elaina's voice
+   reply is deliberately trimmed but this shows everything she saw. */
+.message.observation {
+    align-self: stretch;
+    max-width: 100%;
+    margin: 0;
+    overflow-x: auto;
+    border: 1px solid rgb(120 200 170 / 22%);
+    background: rgb(18 30 27 / 90%);
+    font-family: Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre-wrap;
 }
 
 /* Voice/Text mode toggle, sitting just above the typed-message row. */

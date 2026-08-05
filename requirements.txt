@@ -35,3 +35,8 @@ websockets>=15,<17
 PyYAML>=6,<7
 python-dotenv>=1,<2
 tzdata>=2025
+
+# Desktop control (Windows only) -- Phase 4A app/process/file control and
+# Phase 4B.1 read-only UI Automation window/control observation.
+pywin32>=306
+pywinauto>=0.6,<1

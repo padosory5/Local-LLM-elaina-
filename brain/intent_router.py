@@ -8,7 +8,8 @@ from typing import Any
 
 from tools.computer_control import (
     COMPUTER_OPERATIONS,
-    takeover_authorized,
+    OBSERVATION_OPERATIONS,
+    UI_ACTION_OPERATIONS,
     transcript_names_location,
     transcript_names_target,
 )
@@ -67,6 +68,40 @@ ADVICE_DOMAINS = {
     "technical",
     "safety",
 }
+
+_IRREVERSIBLE_DELETE_REQUEST = re.compile(
+    r"(?:"
+    r"\bpermanent(?:ly)?\b.{0,40}\b(?:delete|erase|remove|wipe)\b|"
+    r"\b(?:delete|erase|remove|wipe)\b.{0,40}\bpermanent(?:ly)?\b|"
+    r"\b(?:without|bypass|skip|avoid)\b.{0,40}\brecycl(?:e|ing)\s+bin\b"
+    r")",
+    flags=re.IGNORECASE,
+)
+
+# ``open_app`` has a deliberately narrow semantic contract: launching one
+# application is the whole requested outcome. These are grammar/function words
+# that can surround that outcome, not sentence triggers. Any other substantive
+# word left after removing the grounded app name means the request contains an
+# in-app goal and belongs to the verified UI planner instead. This prevents a
+# model from silently reducing "play Dynamite in Spotify" to merely opening
+# Spotify while still accepting arbitrary natural launch phrasing.
+_OPEN_APP_GRAMMAR_WORDS = frozenset({
+    "a", "an", "app", "application", "bring", "can", "could", "default",
+    "desktop", "for", "in", "launch", "me", "my", "now", "on", "open",
+    "over", "pc", "please", "run", "start", "take", "takeover", "the",
+    "to", "up", "would", "you",
+})
+
+
+def _open_app_has_unresolved_goal(transcript: str, target: str) -> bool:
+    words = re.findall(r"[^\W_]+", str(transcript).casefold())
+    target_words = set(re.findall(r"[^\W_]+", str(target).casefold()))
+    remaining = [
+        word
+        for word in words
+        if word not in target_words and word not in _OPEN_APP_GRAMMAR_WORDS
+    ]
+    return bool(remaining)
 
 TIME_SCOPES = {"timeless", "current", "historical", "future", "unknown"}
 REQUEST_EXPLICITNESS_VALUES = {"direct", "indirect", "statement", "unknown"}
@@ -136,7 +171,7 @@ class SemanticIntentRouter:
         project_tools_available: bool = False,
         conversation_state: dict[str, Any] | None = None,
         pending_action: str = "",
-        computer_action_authorized: bool = False,
+        computer_control_enabled: bool = False,
     ) -> IntentDecision:
         # Clicking Screen is an explicit user action, not an ambiguous phrase.
         # The next spoken request must use the attached image even if the
@@ -204,6 +239,7 @@ class SemanticIntentRouter:
             project_tools_available=project_tools_available,
             conversation_state=state,
             pending_action=pending_action,
+            computer_control_enabled=computer_control_enabled,
         )
 
         try:
@@ -294,7 +330,7 @@ class SemanticIntentRouter:
                 decision = self._apply_computer_control_policy(
                     decision,
                     original_input=user_input,
-                    context_authorized=computer_action_authorized,
+                    computer_control_enabled=computer_control_enabled,
                 )
                 safe_decision = self._apply_action_safety_policy(
                     decision,
@@ -510,43 +546,101 @@ class SemanticIntentRouter:
         decision: IntentDecision,
         *,
         original_input: str,
-        context_authorized: bool = False,
+        computer_control_enabled: bool = False,
     ) -> IntentDecision:
-        """Enforce grounded Phase 3A operations and takeover consent."""
+        """Enforce grounded Phase 4A operations and UI mode authorization."""
         if decision.intent != "computer_action":
             return decision
 
         target = decision.action_target.strip()
         operation = decision.computer_operation
+        if (
+            operation == "open_app"
+            and target
+            and transcript_names_target(original_input, target)
+            and _open_app_has_unresolved_goal(original_input, target)
+        ):
+            decision = replace(
+                decision,
+                normalized_request=original_input.strip(),
+                reason=(
+                    "The request contains an in-app outcome, so local policy "
+                    "preserved the complete goal for the verified UI planner."
+                ),
+                action_target=original_input.strip(),
+                computer_operation="ui_action",
+            )
+            target = decision.action_target.strip()
+            operation = decision.computer_operation
+        if (
+            operation in {"delete_file", "delete_folder"}
+            and _IRREVERSIBLE_DELETE_REQUEST.search(original_input)
+        ):
+            return replace(
+                decision,
+                normalized_request=original_input.strip(),
+                reason=(
+                    "Permanent deletion is outside the recoverable desktop "
+                    "control policy and cannot reach a filesystem tool."
+                ),
+                action_requested=False,
+                computer_operation="unsupported",
+            )
         location_is_grounded = (
             not decision.computer_location
             or transcript_names_location(original_input, decision.computer_location)
         )
+        # list_windows has no target to name ("what's open?"), and
+        # describe_window may reasonably omit one too ("what's on my
+        # screen?" defaults to the active window). Grounding a target that
+        # was never spoken would reject every legitimate targetless
+        # observation request, so only require it when one was provided.
+        # ui_action's target is a paraphrase of the whole goal, not one
+        # named entity -- exact substring grounding doesn't apply to it,
+        # and it doesn't need to: the desktop action planner verifies every
+        # window and control it touches against the live UI Automation
+        # tree before acting, so grounding is enforced downstream instead.
+        target_is_grounded = (
+            (operation in OBSERVATION_OPERATIONS and not target)
+            or operation in UI_ACTION_OPERATIONS
+            or transcript_names_target(original_input, target)
+        )
+        # Observation questions are naturally phrased, and correctly
+        # classified, as information_request ("what windows are open?"),
+        # not action_request. Every other computer operation changes
+        # something and rightly needs a command-shaped request; these two
+        # have no side effect at all, so there is no safety reason to
+        # reject the phrasing the model got right.
+        speech_act_is_grounded = decision.speech_act == "action_request" or (
+            operation in OBSERVATION_OPERATIONS
+            and decision.speech_act == "information_request"
+        )
         if (
-            decision.speech_act != "action_request"
+            not speech_act_is_grounded
             or operation not in COMPUTER_OPERATIONS
             or operation in {"none", "unsupported"}
-            or not transcript_names_target(original_input, target)
+            or not target_is_grounded
             or not location_is_grounded
         ):
             return replace(
                 decision,
                 normalized_request=original_input.strip(),
                 reason=(
-                    "The computer request is not a grounded Phase 3A action "
+                    "The computer request is not a grounded Phase 4A action "
                     "and must not reach a computer tool."
                 ),
                 action_requested=False,
                 computer_operation="unsupported",
             )
 
-        if not (context_authorized or takeover_authorized(original_input)):
+        if not computer_control_enabled:
             return replace(
                 decision,
                 normalized_request=original_input.strip(),
                 reason=(
-                    "The computer action is understood but still needs "
-                    "takeover consent."
+                    "The computer action is understood, but Desktop Control "
+                    "Mode is off. Elaina may explain the action or recommend "
+                    "turning the mode on, but cannot execute it."
                 ),
                 action_requested=False,
                 action_target=target,
@@ -721,12 +815,14 @@ class SemanticIntentRouter:
         project_tools_available: bool,
         conversation_state: dict[str, Any],
         pending_action: str,
+        computer_control_enabled: bool,
     ) -> str:
         now = datetime.now()
         state = {
             "screen_selection_attached": has_screen_selection,
             "selected_text_attached": has_selected_text,
             "project_tools_available": project_tools_available,
+            "computer_control_enabled": computer_control_enabled,
             "pending_action": pending_action,
             "pending_agent_offer": conversation_state.get(
                 "pending_agent_offer"
@@ -744,265 +840,216 @@ class SemanticIntentRouter:
             "selected_text_question, knowledge_question, time_question, "
             "pending_approval, agent_create, calendar_action, "
             "entity_correction, fact_check, clarification.\n\n"
-            "Infer meaning instead of matching exact phrases. Account for "
-            "speech-to-text mistakes and similar-sounding words by selecting "
-            "the intended capability rather than literal wording. Use recent "
-            "turns to resolve short follow-ups, pronouns, and corrections. "
-            "The immediately previous user/assistant exchange has higher "
-            "priority than an older active_topic. Treat active_topic only as a "
-            "fallback when recent turns do not establish the subject.\n\n"
-            "Preserve corrected named entities. If the user spells or corrects "
-            "a name, make entity the corrected canonical form and put earlier "
-            "misheard forms in aliases. Resolve words such as it, that, them, "
-            "the model, the person, and short follow-ups from conversation "
-            "state. A correction such as 'Q W E N' means Qwen.\n\n"
+            "Infer meaning instead of matching exact phrases; account for "
+            "speech-to-text errors. Recent turns outrank an older active_topic "
+            "for resolving follow-ups, pronouns, and corrections.\n\n"
+            "If the user spells or corrects a name, set entity to the "
+            "corrected form and put earlier misheard forms in aliases (e.g. "
+            "'Q W E N' means Qwen).\n\n"
+            "If the most recent turn was a computer_action that failed "
+            "(not found, ambiguous, or similar) and this message is just a "
+            "short correction of the same target's name (a likely "
+            "mishearing, e.g. the target was 'battle nest' and this message "
+            "is 'Battle.net'), that is still computer_action retrying the "
+            "same operation with the corrected target, never conversation. "
+            "conversation must never claim a specific application opened, "
+            "closed, or changed state -- only computer_action can report "
+            "that, and only when it actually ran.\n\n"
             "Routing rules:\n"
-            "- agent_offer: the user expresses a concrete problem, desire, or "
-            "dissatisfaction that an available specialist could help with, "
-            "but does not ask Elaina to perform the work. Do not invoke the "
-            "agent. Prefer agent_offer over conversation when a listed "
-            "specialist can directly solve that concrete dissatisfaction. "
-            "Set offered_intent to the relevant specialist intent and "
-            "offered_request to a concrete proposed task. Example: 'The "
-            "buttons in this project look boring' may offer project_edit. "
-            "Example: musing about something visible but unidentified with "
-            "no screen selection attached ('I wonder who drew this') may "
-            "offer screen_analysis -- suggest selecting the area first. A "
-            "general life update such as 'I'm working on my project tonight' "
-            "does not justify an offer.\n"
-            "- agent_consent: use only when pending_agent_offer is present and "
-            "the new message responds to that exact offer. Decide its meaning "
-            "semantically from the offer and recent exchange, not from a list "
-            "of yes/no phrases. Set consent_decision to accept, reject, "
-            "modify, or unclear. For modify, put the complete revised task in "
-            "offered_request. Interpret acceptance or rejection from the "
-            "meaning of the reply in context, not a phrase list. If the "
-            "user changes topics, route the new topic normally instead.\n"
-            "- git_publish: commit/upload/push current code to Git or GitHub.\n"
-            "- git_commit: commit locally without requesting a push.\n"
-            "- project_edit: create, edit, fix, delete, or modify project files.\n"
-            "  Use project_edit only when the user directly delegates a "
-            "specific change to Elaina. A statement about what the user plans "
-            "to work on is conversation. Asking what they should add or asking "
-            "for ideas is project_question, not project_edit.\n"
-            "- project_question: inspect or explain the user's local project.\n"
-            "  Use it only when the user directly asks Elaina to inspect or "
-            "read project files. Asking for an opinion, recommendation, or a "
-            "choice such as Live2D versus 3D is conversation.\n"
-            "- screen_analysis: use only when screen_selection_attached is "
-            "true, or the user explicitly asks Elaina to look at the "
-            "screen right now. Without an attachment, a vague musing about "
-            "something visible is agent_offer instead (see example below), "
-            "never screen_analysis. Set screen_target to configured, main, "
-            "left, right, or all from the user's meaning. Requests covering "
-            "both monitors, every monitor, or across monitors use all.\n"
-            "- computer_action: a direct request to control this Windows PC. "
-            "Use it even when the user does not say takeover; local policy "
-            "will request contextual consent before execution. Select one "
-            "computer_operation: open_app, close_app, force_quit_app, open_url, "
-            "create_file, create_folder, delete_file, delete_folder, or "
-            "unsupported. Use close_app for a "
-            "normal or graceful close, exit, or quit. The word exit or quit by "
-            "itself never means force termination. Use force_quit_app only "
-            "when the user explicitly says force, terminate, kill, entirely, "
-            "or completely and means bypassing the normal close flow. For app "
-            "operations, copy only the requested application name into "
-            "action_target. For open_url, action_target is the exact spoken "
-            "website name or address and computer_url is its HTTP(S) address. "
-            "For filesystem operations, action_target is only the exact item "
-            "name and computer_location is the exact spoken parent location. "
-            "Use delete_file when the user means an existing file and "
-            "delete_folder when they mean an existing folder or directory. "
-            "Delete means move to the Windows Recycle Bin, not permanent "
-            "erasure. Leave computer_location empty if none was provided. "
-            "Creation supports only one new empty item. If the same request "
-            "also asks to write content, overwrite, move, rename, or perform "
-            "another operation, "
-            "the entire operation is unsupported; never execute only the safe "
-            "part of a compound request. Deleting an existing folder is "
-            "delete_folder, never create_folder. Permanent deletion that "
-            "bypasses the Recycle Bin is unsupported. Shutting down, "
-            "restarting, or sleeping the PC, "
-            "computer, Windows, or machine is never force_quit_app; it is "
-            "unsupported because force_quit_app requires a named application. "
-            "Never invent a filesystem location, executable path, shell "
-            "command, process ID, or command argument. Use unsupported for "
-            "settings changes, clicking, typing, permanent deletion, moving, "
-            "renaming, file content writing, closing a particular browser tab, "
-            "system shutdown, or other PC operations. "
-            "A question asking for instructions so the user can do an action "
-            "themselves, such as 'How do I open Discord myself?', is always "
-            "knowledge_question with "
-            "speech_act information_request, never computer_action, and must "
-            "not create a takeover offer.\n"
-            "Critical computer-action contrasts:\n"
-            "  'Create notes.txt in Documents' -> create_file.\n"
-            "  'Create notes.txt and write hello in it' -> unsupported because "
-            "content writing is a second unsupported operation.\n"
-            "  'Create a Receipts folder' -> create_folder.\n"
-            "  'Delete or remove the old Receipts folder from Documents' -> "
-            "delete_folder with target Receipts and location Documents.\n"
-            "  'Trash notes.txt in Downloads' -> delete_file with target "
-            "notes.txt and location Downloads.\n"
-            "  'Permanently erase notes.txt without using Recycle Bin' -> "
-            "unsupported, never delete_file or delete_folder.\n"
-            "  'Close Discord' -> close_app.\n"
-            "  'Close the github.com browser tab' -> unsupported, never "
-            "close_app; close_app requires an installed application target.\n"
-            "  'Shut down the computer' -> unsupported, never force_quit_app.\n"
-            "- selected_text_question: answer about copied/highlighted text.\n"
-            "  If the transcript contains a substantial pasted passage or code "
-            "block and asks about that content, use selected_text_question.\n"
-            "- web_search: external evidence is required for any answer that "
-            "depends on real-world state, a recorded value, or information "
-            "that may differ from model training. This includes live or dated "
-            "exchange and market rates, prices, availability, weather, news, "
-            "sports, schedules, officeholders, current CEOs or executives, "
-            "employers and other current role occupants, laws, policies, statistics, "
-            "software versions and documentation, product specifications, "
-            "release information, and other changing external facts. It also "
-            "applies when the user asks to search or when stability is "
-            "uncertain. A direct request for the information is already permission: web_search "
-            "with action_requested true, never agent_offer.\n"
-            "  Runtime state has current_date/current_year. For 'latest/"
-            "newest/most recent' editions of a periodic event (a World "
-            "Cup, an Olympics, a model release), ask for the latest completed "
-            "event or actually released product as of current_date. Do not "
-            "assume the nearest scheduled edition has already finished. "
-            "Never answer 'latest' from training knowledge -- it is likely "
-            "stale.\n"
-            "- time_question: only asks for the user's current local clock "
-            "time, today's date/day, or current year. Never use it for a game "
-            "release, publication, launch, historical event, or product date.\n"
-            "- fact_check: the user challenges or corrects an earlier factual "
-            "answer, says they were right or Elaina was wrong, or asks to "
-            "reconcile contradictory claims. Resolve it from grounded context. "
-            "If the correction is not already verified, provide a self-contained "
-            "search_query so it can be checked on the web.\n"
-            "- pending_approval: a proposal is already waiting and the user "
-            "asks about it, confirms it verbally, repeats the same action, or "
-            "says a short response such as yes/no. Approval still happens only "
-            "in Electron.\n"
-            "- agent_create: the user directly asks Elaina to create, install, "
-            "or configure a new AI agent or capability. Do not use this merely "
-            "because the user discusses agents. Never suggest Agent Builder "
-            "for creating avatars, images, UI assets, documents, or arbitrary "
-            "code; it only supports reviewed agent blueprints.\n"
-            "- calendar_action: the user asks Elaina to create or add an event, "
-            "class, appointment, reminder, or other schedule entry in Google "
-            "Calendar. Asking for scheduling advice without requesting a "
-            "calendar change is conversation or knowledge_question.\n"
-            "- knowledge_question: only a definition, concept, mathematical or "
-            "logical explanation, established scientific principle, broad "
-            "settled historical fact, or other answer explicitly known to be "
-            "stable and independent of current external state. Asking how a "
-            "changing system works may be stable knowledge; asking for its "
-            "present or recorded value requires web_search. When uncertain, "
-            "choose web_search.\n"
-            "- calculation: the user asks for arithmetic, a numerical result, "
-            "a proportional split, a percentage, a price, a duration, or a "
-            "quantitative follow-up to an earlier calculation. Resolve short "
-            "follow-ups such as 'how much did I make?' from recent turns and "
-            "put the complete self-contained problem in normalized_request. "
-            "Calculation is a normal answer mode, not an action agent, and it "
-            "never needs permission.\n"
-            "- conversation: ordinary dialogue or stable knowledge that needs "
-            "no factual explanation. This includes statements such as 'I'm "
-            "continuing my project tonight' because they describe the user's "
-            "activity rather than delegating an edit. Questions asking for "
-            "Elaina's opinion, personal judgment, advice, or whether something "
-            "is worth doing also use conversation, even when a university, "
-            "product, career, or other factual entity is mentioned.\n"
-            "  If the user is choosing between options or asking what you "
-            "recommend, answer conversationally without offering an agent. "
-            "Recommendations that depend on current medical, legal, financial, "
-            "product, or other external evidence use web_search while keeping "
-            "a conversational final response.\n"
-            "  Any recommendation about a symptom, health condition, medicine, "
-            "supplement, allergy, pain, sleep problem, or bodily effect uses "
-            "advice_domain health, never general.\n"
-            "- clarification: only when a write/action request is genuinely "
-            "ambiguous. Never execute writes from this router.\n"
+            "- agent_offer: a concrete problem/desire/dissatisfaction a listed "
+            "specialist could solve, without the user asking Elaina to do the "
+            "work. Set offered_intent/offered_request; never auto-invoke. "
+            "'The buttons look boring' -> agent_offer(project_edit), not "
+            "project_edit. Unidentified visual musing with no screen "
+            "selection ('I wonder who drew this') -> agent_offer"
+            "(screen_analysis). A plain status update ('I'm working on my "
+            "project tonight') is not an offer.\n"
+            "- agent_consent: only when pending_agent_offer is present and "
+            "this message responds to it. Set consent_decision to accept, "
+            "reject, modify, or unclear from meaning, not a phrase list; "
+            "modify carries the revised task in offered_request. A topic "
+            "change routes normally instead.\n"
+            "- git_publish: commit/push code to Git or GitHub. git_commit: "
+            "commit locally, no push.\n"
+            "- project_edit: the user directly delegates a specific project-"
+            "file change. A plan or idea-request is project_question/"
+            "conversation, not this.\n"
+            "- project_question: the user directly asks Elaina to inspect or "
+            "read project files -- not an indirect wish ('it would be nice "
+            "if something could inspect this error'), which is agent_offer "
+            "instead. An opinion or choice (e.g. Live2D vs 3D) is "
+            "conversation.\n"
+            "- screen_analysis: only with screen_selection_attached true, or "
+            "an explicit visual look at a monitor/display right now ('look "
+            "across both monitors', 'check my left screen', 'what's on my "
+            "main display'). A plain 'what's on my screen'/'what's in this "
+            "window' with no monitor/display cue is describe_window instead. "
+            "Without an attachment, a vague visual musing is agent_offer. "
+            "screen_target is configured, main, left, right, or all -- use "
+            "all for both/every/across monitors.\n"
+            "- computer_action: a direct request to control this Windows PC, "
+            "based on outcome, no magic word needed. When "
+            "computer_control_enabled is false, still identify the operation/"
+            "target/location -- local policy blocks execution and Elaina "
+            "recommends the Computer Control toggle. When true, a grounded "
+            "request may execute. Pick one computer_operation: open_app, "
+            "close_app, force_quit_app, open_url, create_file, create_folder, "
+            "delete_file, delete_folder, list_windows, describe_window, "
+            "ui_action, or unsupported.\n"
+            "  * open_app/close_app/force_quit_app: 'open', 'launch', "
+            "'start', and 'run' all mean open_app -- action_target is only "
+            "the bare application name ('Start the Calculator' -> open_app, "
+            "target 'Calculator', never intent calculation). close_app is a "
+            "normal close/exit/quit, including 'gracefully' ('Exit Steam "
+            "gracefully' -> close_app, never force_quit_app); force_quit_app "
+            "needs an explicit force/terminate/kill/entirely/completely "
+            "word. close_app needs an installed application, never a "
+            "browser tab ('Close the github.com browser tab' -> "
+            "unsupported, never close_app).\n"
+            "  * list_windows: any question about which apps, windows, or "
+            "programs are open or running, or which one is currently active/"
+            "in front/focused -- 'what apps are open', 'what windows do I "
+            "have open', 'what's running', 'show me what's open', 'what "
+            "window is in front right now' -- action_target is always "
+            "empty. Never mark this unsupported. This is distinct from "
+            "screen_analysis, which needs an explicit monitor/display/"
+            "visual cue.\n"
+            "  * describe_window: the default for 'what's on my screen', "
+            "'what's in this window', or naming a window ('what controls "
+            "are in Sound Settings', 'what controls are in the Notepad "
+            "window') -- reads real accessible controls, not an image. "
+            "action_target is the named window or empty for the active "
+            "one. Whenever computer_operation is describe_window, intent "
+            "must be computer_action, never screen_analysis.\n"
+            "  * ui_action: click/type/focus/select/scroll inside a window "
+            "('search for Laufey in Spotify', 'click Settings on this page', "
+            "'bring VS Code to the front') -- action_target is the complete "
+            "request verbatim; never name the exact control yourself. Keep "
+            "the requested outcome ('play Dynamite in Spotify' stays "
+            "ui_action, not open_app) even if the app must open first. "
+            "Resolve 'this page/window/here/in it' against conversation "
+            "state's active_desktop_surface. A control on the current page "
+            "(e.g. 'Settings' on a GitHub page) is not an application.\n"
+            "  * open_url: action_target is only the exact site name/address, "
+            "never the whole sentence ('Open youtube.com in a new browser "
+            "tab' -> target 'youtube.com'), computer_url its https address; "
+            "'new tab'/'go to'/'visit'/'navigate to' all qualify, never "
+            "web_search merely for being online. Closing/switching/editing "
+            "one existing tab is unsupported.\n"
+            "  * create_file/create_folder/delete_file/delete_folder: "
+            "action_target is only the bare item name ('Delete the Hello "
+            "folder' -> target 'Hello', not 'Hello folder'), computer_location "
+            "the exact parent folder or empty. Delete means Recycle Bin, "
+            "never permanent. A request that also writes content, "
+            "overwrites, moves, or renames is entirely unsupported -- never "
+            "execute just the safe part ('Create notes.txt in Documents and "
+            "write hello inside it' -> unsupported, never create_file).\n"
+            "  * unsupported: permanent deletion, moving/renaming, writing "
+            "file content, closing one browser tab, shutting down/"
+            "restarting/sleeping the PC (never force_quit_app), or inventing "
+            "any path/command/PID.\n"
+            "  'How do I open Discord myself?' is knowledge_question "
+            "(information_request), never computer_action or web_search, "
+            "and must not claim Desktop Control Mode is on.\n"
+            "- selected_text_question: a substantial pasted passage/code "
+            "block is present and the question is about it.\n"
+            "- web_search: external evidence is needed for anything tied to "
+            "real-world or current state (rates, prices, weather, news, "
+            "sports, officeholders, employers, laws, versions, specs, "
+            "releases, or any other fact that can change or is dated). A "
+            "direct ask is already permission (action_requested true), never "
+            "agent_offer. For 'latest/newest' periodic events, resolve "
+            "against current_date/current_year rather than training "
+            "knowledge -- never assume the nearest scheduled edition already "
+            "happened.\n"
+            "- time_question: only the user's current clock time, today's "
+            "date/day, or year -- never a release/historical date.\n"
+            "- fact_check: the user disputes or corrects an earlier answer, "
+            "or says they were right/Elaina was wrong. Resolve from grounded "
+            "context; give a search_query if unverified.\n"
+            "- pending_approval: a proposal is already waiting and this "
+            "message responds to, confirms, or repeats it.\n"
+            "- agent_create: the user directly asks to create, install, or "
+            "configure a new agent. Never for avatars, images, UI assets, "
+            "documents, or arbitrary code.\n"
+            "- calendar_action: the user asks to add an event/class/"
+            "appointment/reminder to Google Calendar. Scheduling advice "
+            "alone is conversation/knowledge_question.\n"
+            "- knowledge_question: a stable definition/concept/explanation/"
+            "settled fact, independent of current state. Its present/"
+            "recorded value needs web_search instead. When unsure, prefer "
+            "web_search.\n"
+            "- calculation: arithmetic, a numeric result, a split/percentage/"
+            "price/duration, or a quantitative follow-up. Resolve short "
+            "follow-ups from recent turns; put the full self-contained "
+            "problem in normalized_request. Never needs permission.\n"
+            "- conversation: ordinary dialogue, stable knowledge with no "
+            "explanation needed, status updates, opinions/advice/judgment "
+            "calls (even about a real product/university/career), or "
+            "choosing between options -- answer directly, no agent offer. A "
+            "recommendation needing current medical/legal/financial/product "
+            "evidence still uses web_search but stays conversational in "
+            "tone; any health-related recommendation uses advice_domain "
+            "health.\n"
+            "- clarification: only a genuinely ambiguous write/action "
+            "request. Never execute writes from here.\n"
             "An attached screen selection strongly implies screen_analysis "
-            "unless the user clearly asks for another action. A request to add "
-            "a UI control beside the Screen button is project_edit, not vision.\n\n"
+            "unless another action is clearly requested.\n\n"
             "A specialist intent may execute only when action_requested is "
-            "true because the user directly requested it, or after a pending "
-            "offer is semantically accepted. Merely noticing a problem is not "
-            "permission.\n\n"
-            "Return one JSON object only with: intent, confidence from 0 to 1, "
-            "normalized_request, reason, search_query, topic, entity, aliases, "
-            "is_follow_up, speech_act, action_requested, action_target, and "
-            "topic_shift, consent_decision, offered_intent, and "
-            "offered_request, memory_relevant, memory_candidate, "
-            "detailed_response, screen_target, verification_required, "
-            "information_freshness, requires_external_evidence, and "
-            "recommendation_needed, urgent_safety, advice_domain, time_scope, "
-            "request_explicitness, computer_operation, computer_location, and "
-            "computer_url. "
-            "speech_act is one of "
-            "social, statement, advice, "
-            "information_request, action_request, correction, or "
-            "approval_response. Always provide the current conversational "
-            "topic, including for ordinary conversation. action_requested is "
-            "true only when the user directly asks Elaina to perform an action; "
-            "action_target names the concrete requested target. topic_shift is "
-            "true when the latest exchange establishes a newer topic than the "
-            "stored active topic. search_query must be self-contained for "
-            "web_search and include the resolved canonical entity; otherwise "
-            "use an empty string. consent_decision, offered_intent, and "
-            "offered_request must be empty unless their agent routing rule "
-            "requires them. memory_relevant is true whenever answering depends "
-            "on the user's saved identity, preferences, relationships, past "
-            "experiences, projects, or goals, including requests about what "
-            "Elaina remembers. A request beginning 'based on what you know "
-            "about me' always has memory_relevant true, including when it asks "
-            "for a recommendation. It is false for impersonal factual answers. "
-            "memory_candidate is true only when the current message contains "
-            "a durable personal fact or preference worth considering for "
-            "storage; questions and temporary states are false. "
-            "detailed_response is true when the user asks for a thorough, "
-            "stepwise, comprehensive, or complete answer, regardless of exact "
-            "wording. information_freshness is exactly one of stable, "
-            "historical_record, changing, live, or unknown. stable means the "
-            "answer is independent of real-world state. historical_record "
-            "means a value must be retrieved for a specified past time. "
-            "changing means external information can change between model "
-            "updates. live means it may change within hours or minutes. Use "
-            "unknown rather than guessing stability. "
-            "requires_external_evidence is false only when local model "
-            "knowledge is explicitly sufficient; it is true for "
-            "historical_record, changing, live, unknown, or any requested web "
-            "lookup. verification_required is true for changing, current, "
-            "latest, externally disputed, or otherwise time-sensitive facts "
-            "that need an independent second source. recommendation_needed is "
-            "true when the user asks what they should do, choose, try, use, "
-            "take, or change, or describes a problem while seeking a practical "
-            "next step. It is false for social remarks and purely descriptive "
-            "factual questions. Medical, legal, and financial recommendations "
-            "normally require external evidence. "
-            "urgent_safety is true only when delay could expose the user or "
-            "someone else to immediate serious harm. Urgent safety advice must "
-            "be answered immediately instead of waiting for web research. "
-            "advice_domain is exactly one of general, health, financial, legal, "
-            "product, technical, or safety. Use health for medicines, "
-            "supplements, symptoms, sleep disorders, and other health choices. "
-            "time_scope is exactly one of timeless, current, historical, future, "
-            "or unknown. Questions about who currently holds a role, live "
-            "values, present status, or what is true now use current even when "
-            "the fact seems familiar. request_explicitness is exactly one of "
-            "direct, indirect, statement, or unknown. direct means the user "
-            "plainly asks Elaina to answer or run a capability. indirect means "
-            "they express curiosity, a wish, or say a capability would be nice "
-            "without directly delegating it. Indirect interest in screen or "
-            "project inspection must be agent_offer, not immediate execution. "
-            "computer_operation is exactly none, open_app, close_app, "
-            "force_quit_app, open_url, create_file, create_folder, delete_file, "
-            "delete_folder, or unsupported. computer_location and computer_url "
-            "are strings and "
-            "must be empty unless required by the selected computer operation. "
-            "Do not answer the user's "
-            "question.\n\n"
+            "true (direct request or an accepted offer) -- noticing a "
+            "problem is not permission.\n\n"
+            "Return one JSON object only, with these keys: intent, "
+            "confidence (0-1), normalized_request, reason, search_query, "
+            "topic, entity, aliases, is_follow_up, speech_act, "
+            "action_requested, action_target, topic_shift, consent_decision, "
+            "offered_intent, offered_request, memory_relevant, "
+            "memory_candidate, detailed_response, screen_target, "
+            "verification_required, information_freshness, "
+            "requires_external_evidence, recommendation_needed, "
+            "urgent_safety, advice_domain, time_scope, request_explicitness, "
+            "computer_operation, computer_location, computer_url.\n"
+            "speech_act: social, statement, advice, information_request, "
+            "action_request, correction, or approval_response. "
+            "action_requested is true only for a direct ask; action_target "
+            "is the concrete target. topic_shift is true when this exchange "
+            "moves past the stored active_topic. search_query is self-"
+            "contained (resolved entity included) for web_search, else "
+            "empty. consent_decision/offered_intent/offered_request stay "
+            "empty outside their own rule.\n"
+            "memory_relevant is true whenever the answer depends on saved "
+            "identity/preferences/relationships/experiences/projects/goals "
+            "(including 'based on what you know about me'), false for "
+            "impersonal facts. memory_candidate is true only when this "
+            "message itself states a durable personal fact/preference worth "
+            "saving.\n"
+            "detailed_response is true for an explicit request for a "
+            "thorough/complete/stepwise answer.\n"
+            "information_freshness: stable (state-independent), "
+            "historical_record (needs a specific past value), changing (can "
+            "shift between model updates), live (can shift within hours), "
+            "or unknown -- never guess toward stable. "
+            "requires_external_evidence is true for anything but stable. "
+            "verification_required is true for changing/current/latest/"
+            "disputed facts needing a second source.\n"
+            "recommendation_needed is true when the user asks what to do/"
+            "choose/try/use/take, or describes a problem seeking a next "
+            "step; false for social remarks and plain factual questions. "
+            "urgent_safety is true only when delay risks immediate serious "
+            "harm, and must be answered immediately rather than researched. "
+            "advice_domain: general, health, financial, legal, product, "
+            "technical, or safety. Whenever advice_domain is health, legal, "
+            "or financial, verification_required must also be true.\n"
+            "time_scope: timeless, current, historical, future, or unknown "
+            "-- a present role/value/status is current even if familiar. "
+            "request_explicitness: direct, indirect, statement, or unknown "
+            "-- indirect interest in screen/project inspection is "
+            "agent_offer, not execution.\n"
+            "computer_operation: none, open_app, close_app, force_quit_app, "
+            "open_url, create_file, create_folder, delete_file, "
+            "delete_folder, list_windows, describe_window, ui_action, or "
+            "unsupported. computer_location/computer_url stay empty unless "
+            "the chosen operation needs them.\n"
+            "Do not answer the user's question.\n\n"
             f"Runtime state: {json.dumps(state)}\n"
             "Conversation state:\n"
             f"{json.dumps(conversation_state, ensure_ascii=False)}\n"

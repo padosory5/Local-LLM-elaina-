@@ -41,7 +41,7 @@ def main() -> int:
         ("open Discord", "opened", "Discord", "Opened Discord", "open_app"),
         ("open Steam", "opened", "Steam", "Opened Steam", "open_app"),
         ("open Battle.net", "opened", "Battle.net", "Opened Battle.net", "open_app"),
-        ("website consent", "action_offer", "github.com", "Open github.com", "open_url"),
+        ("control mode off", "control_mode_off", "github.com", "Mode is off", "open_url"),
         ("website opened", "url_opened", "github.com", "Opened new tab", "open_url"),
         ("folder created", "folder_created", "Notes", "Created folder", "create_folder"),
         ("delete consent", "delete_offer", "Notes", "Recycle folder", "delete_folder"),
@@ -71,10 +71,10 @@ def main() -> int:
                 phrase in reply.casefold()
                 for phrase in ("can't", "couldn't", "isn't", "not found")
             )
-        if kind == "action_offer":
-            truthful = "?" in reply and (
-                "take over" in reply.casefold()
-                or "takeover" in reply.casefold()
+        if kind == "control_mode_off":
+            truthful = "computer control" in reply.casefold() and any(
+                phrase in reply.casefold()
+                for phrase in ("enable", "turn on", "switch on")
             )
         if kind == "delete_offer":
             truthful = "?" in reply and any(

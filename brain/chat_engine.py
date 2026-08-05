@@ -29,6 +29,10 @@ from brain.response_policy import (
     ResponseLimits,
 )
 from brain.calculation_planner import CalculationPlanner
+from brain.desktop_action_planner import (
+    DesktopActionPlanner,
+    DesktopSurfaceContext,
+)
 from brain.context_policy import should_include_grounded_context
 from brain.brief_response import BriefResponseGenerator
 from datetime import datetime
@@ -49,12 +53,23 @@ from agents.task_manager import AgentTaskManager
 from security.approval_manager import ApprovalManager
 from security.policy import PolicyEngine
 from security.computer_consent import ComputerConsentGate
+from security.computer_control_mode import ComputerControlMode
 from tools.google_calendar import GoogleCalendarTool
 from tools.computer_control import (
     ComputerActionRequest,
     ComputerActionResult,
     ComputerControl,
     PreparedComputerAction,
+)
+
+
+_BROWSER_SURFACE_HINTS = (
+    "google chrome",
+    "microsoft edge",
+    "mozilla firefox",
+    "brave browser",
+    "opera",
+    "vivaldi",
 )
 from tools.safe_browser import SafeBrowserControl
 from tools.safe_filesystem import SafeFilesystemControl
@@ -188,13 +203,13 @@ class ChatEngine:
         self.prompt_builder = PromptBuilder()
         self.personality_loader = PersonalityLoader()
 
-        language = self.config.get(
+        self.response_language = str(self.config.get(
             "language",
             "response",
-        )
+        )).strip().lower()
 
         self.system_prompt = self.personality_loader.load(
-            language
+            self.response_language
         )
 
         self.memory_manager = MemoryManager()
@@ -274,6 +289,19 @@ class ChatEngine:
                 required=False,
             ))
         )
+        # Shares computer_control's own live UI observer rather than
+        # standing up a second one, so both see the same real window state.
+        self.desktop_action_planner = DesktopActionPlanner(
+            client=self.client,
+            model=self.model,
+            keep_alive=self.keep_alive,
+            observer=self.computer_control.ui_observer,
+            computer_control=self.computer_control,
+            response_language=self.response_language,
+        )
+        # Desktop Control is deliberately session-only and starts off after
+        # every launch. The config flag remains the master kill switch.
+        self.computer_control_mode = ComputerControlMode(enabled=False)
         self.brief_responses = BriefResponseGenerator(
             self.client,
             self.model,
@@ -311,6 +339,10 @@ class ChatEngine:
         # spoken message. The image remains in memory and is never saved.
         self._pending_screen_lock = threading.Lock()
         self._pending_screen_snapshot = None
+        self._desktop_surface_lock = threading.Lock()
+        self._captured_desktop_surface: dict[str, object] = {}
+        self._turn_desktop_surface: dict[str, object] = {}
+        self._last_desktop_surface: dict[str, object] = {}
         self._memory_store_lock = threading.Lock()
         self._vision_warm_lock = threading.Lock()
         self._vision_warming = False
@@ -319,6 +351,15 @@ class ChatEngine:
         self._active_turn_cancel: threading.Event | None = None
 
     def on_speech_start(self) -> None:
+        # Freeze the foreground surface before Electron status events or an
+        # interrupted response can move focus. Deictic requests such as
+        # "click Settings on this page" must stay bound to what was active
+        # when the user began speaking, not whatever is active several model
+        # round-trips later.
+        surface = self._capture_active_desktop_surface()
+        with self._desktop_surface_lock:
+            self._captured_desktop_surface = surface
+
         self.events.emit("speech_started")
 
         was_speaking = self.audio.is_speaking()
@@ -328,12 +369,123 @@ class ChatEngine:
                 if self._active_turn_cancel is not None:
                     self._active_turn_cancel.set()
 
+    def _capture_active_desktop_surface(self) -> dict[str, object]:
+        """Return a small, stable snapshot of the foreground UI surface."""
+        try:
+            window = self.computer_control.ui_observer.get_active_window()
+        except Exception:
+            window = None
+        if window is None:
+            return {}
+
+        title = str(getattr(window, "title", "") or "").strip()
+        application = str(
+            getattr(window, "app_name", "")
+            or getattr(window, "class_name", "")
+            or ""
+        ).strip()
+        # Text entry and status animations can briefly focus Elaina's own
+        # Electron window. That UI is not what "this page" normally refers
+        # to; preserve the most recent externally controlled surface instead
+        # of rebinding the task to the assistant overlay.
+        if "elaina" in title.casefold() and hasattr(
+            self, "_desktop_surface_lock"
+        ):
+            with self._desktop_surface_lock:
+                previous = dict(self._last_desktop_surface)
+            if previous:
+                return previous
+        title_key = title.casefold()
+        application_key = application.casefold()
+        kind = (
+            "browser"
+            if any(hint in title_key for hint in _BROWSER_SURFACE_HINTS)
+            or application_key in {
+                "chrome", "google chrome", "msedge", "microsoft edge",
+                "firefox", "mozilla firefox", "brave", "brave browser",
+                "opera", "vivaldi",
+            }
+            else "native"
+        )
+        return {
+            "title": title,
+            "application": application,
+            "kind": kind,
+            "identity": str(getattr(window, "identity", "") or ""),
+            "handle": getattr(window, "handle", None),
+            "process_id": getattr(window, "process_id", None),
+        }
+
+    def _desktop_surface_for_turn(self) -> dict[str, object]:
+        """Use the utterance-time surface, with a live fallback for API calls."""
+        if not hasattr(self, "_desktop_surface_lock"):
+            return {}
+        with self._desktop_surface_lock:
+            current = dict(self._turn_desktop_surface)
+            captured = dict(self._captured_desktop_surface)
+            previous = dict(self._last_desktop_surface)
+        if current:
+            return current
+        if captured:
+            return captured
+
+        captured = self._capture_active_desktop_surface()
+        if captured:
+            with self._desktop_surface_lock:
+                self._captured_desktop_surface = dict(captured)
+            return captured
+        return previous
+
+    def _begin_desktop_turn(self) -> dict[str, object]:
+        """Consume the utterance snapshot so it cannot leak into a later turn."""
+        with self._desktop_surface_lock:
+            captured = dict(self._captured_desktop_surface)
+            self._captured_desktop_surface = {}
+        if not captured:
+            captured = self._capture_active_desktop_surface()
+        with self._desktop_surface_lock:
+            self._turn_desktop_surface = dict(captured)
+        return captured
+
+    def _remember_desktop_surface(self, surface: dict[str, object]) -> None:
+        if not surface:
+            return
+        if not hasattr(self, "_desktop_surface_lock"):
+            return
+        with self._desktop_surface_lock:
+            self._last_desktop_surface = dict(surface)
+
     def cancel_active_turn(self) -> None:
         """Unconditionally stop active generation and queued speech."""
         self.audio.stop()
         with self._turn_lock:
             if self._active_turn_cancel is not None:
                 self._active_turn_cancel.set()
+
+    def set_computer_control_mode(self, enabled: bool) -> bool:
+        """Set the UI-owned session mode and publish the authoritative state."""
+        available = bool(self.computer_control.enabled)
+        active = self.computer_control_mode.set_enabled(
+            bool(enabled) and available
+        )
+        if not active:
+            # A later "yes" must never revive an action prepared while control
+            # was enabled. High-risk operations can be requested again.
+            self.computer_consent.clear()
+        self.publish_computer_control_mode()
+        print(
+            "[Computer Control Mode] "
+            f"{'ON' if active else 'OFF'}"
+        )
+        return active
+
+    def publish_computer_control_mode(self) -> None:
+        """Synchronize Electron with backend state after toggles/reconnects."""
+        self.events.emit(
+            "computer_control_mode_changed",
+            enabled=self.computer_control_mode.enabled,
+            available=bool(self.computer_control.enabled),
+        )
 
     def _turn_is_cancelled(self) -> bool:
         with self._turn_lock:
@@ -350,6 +502,8 @@ class ChatEngine:
             "active_entity": self._active_entity,
             "entity_aliases": self._entity_aliases,
             "grounded_context": dict(self._grounded_context),
+            "computer_control_enabled": self.computer_control_mode.enabled,
+            "active_desktop_surface": self._desktop_surface_for_turn(),
             "pending_agent_offer": (
                 pending_offer.public_context()
                 if pending_offer is not None
@@ -372,7 +526,24 @@ class ChatEngine:
         }
 
     def _capability_context(self) -> str:
-        return self.agent_registry.capability_context()
+        mode = "ON" if self.computer_control_mode.enabled else "OFF"
+        desktop = (
+            "Desktop Control Mode: " + mode + ". Elaina can open, close, and "
+            "force-quit discovered Windows applications; open validated public "
+            "websites; and create or recycle exact files and folders inside "
+            "allowed roots. She can inspect the active native Windows UI and "
+            "use verified common controls to focus, click, type, select, and "
+            "scroll. A request about 'this page' stays locked to the captured "
+            "foreground surface and never falls back to an unrelated app. "
+            "Reliable DOM-level browser-page control is not available until "
+            "Phase 4C. When the mode is OFF, these actions cannot run. "
+            "If one of these supported controls would make the user's task "
+            "easier, recommend the visible Computer Control toggle without "
+            "claiming the mode is active. Force-quit and deletion always need "
+            "a separate confirmation. Unsupported controls must not be "
+            "promised merely because the mode can be enabled."
+        )
+        return self.agent_registry.capability_context() + "\n" + desktop
 
     def _grounded_context_text(self) -> str:
         subject = self._grounded_context.get("subject", "").strip()
@@ -613,17 +784,80 @@ class ChatEngine:
         )
         self.audio.speak(text)
 
+    @staticmethod
+    def _speak_window_list(windows) -> str:
+        if not windows:
+            return "I don't see any windows open right now."
+        titles = [window.title for window in windows]
+        active = next((window.title for window in windows if window.is_active), "")
+        if len(titles) == 1:
+            return f"You have one window open: {titles[0]}."
+        preview = titles[:6]
+        summary = ", ".join(preview)
+        remaining = len(titles) - len(preview)
+        if remaining > 0:
+            summary += f", and {remaining} more"
+        front = f" {active} is currently in front." if active else ""
+        return f"You have {len(titles)} windows open: {summary}.{front}"
+
+    @staticmethod
+    def _speak_window_description(observation) -> str:
+        if observation.status != "observed":
+            return observation.message
+        names = [control.name for control in observation.controls]
+        preview = names[:6]
+        summary = ", ".join(preview)
+        remaining = len(names) - len(preview)
+        if remaining > 0:
+            summary += f", and {remaining} more"
+        return f"{observation.title} has {len(names)} controls: {summary}."
+
     def _handle_computer_action(
         self,
         route: IntentDecision,
         *,
         approved_action: PreparedComputerAction | None = None,
+        original_request: str = "",
     ) -> tuple[str, ComputerActionResult | None]:
         """Return one outcome-locked line and one trusted action result."""
         if route.computer_operation in {"none", "unsupported"}:
             return self.brief_responses.generate(
                 "blocked",
                 subject=route.action_target,
+            ), None
+
+        if not self.computer_control_mode.enabled:
+            return self.brief_responses.generate(
+                "control_mode_off",
+                subject=route.action_target,
+                detail=(
+                    "Desktop Control Mode is off. Recommend turning on the "
+                    "visible Computer Control toggle for this supported action."
+                ),
+                operation=route.computer_operation,
+            ), None
+
+        # ui_action is goal-driven and multi-step, not a single resolved
+        # target like open_app/delete_file -- brain.desktop_action_planner
+        # owns the whole loop, deciding per-click whether confirmation is
+        # needed, so it never goes through prepare()/execute() below.
+        if route.computer_operation == "ui_action" or (
+            approved_action is not None and approved_action.operation == "ui_action"
+        ):
+            return self._handle_ui_action(
+                route,
+                approved_action=approved_action,
+                original_request=original_request,
+            )
+
+        if approved_action is not None and not (
+            self.computer_control.requires_extra_confirmation(
+                approved_action.operation
+            )
+        ):
+            return self.brief_responses.generate(
+                "blocked",
+                subject=approved_action.display_name,
             ), None
 
         if approved_action is not None:
@@ -641,8 +875,7 @@ class ChatEngine:
                 )
             )
             if prepared_result.prepared is not None and (
-                not route.action_requested
-                or self.computer_control.requires_extra_confirmation(
+                self.computer_control.requires_extra_confirmation(
                     route.computer_operation
                 )
             ):
@@ -656,10 +889,6 @@ class ChatEngine:
                         "force_quit_offer"
                         if route.computer_operation == "force_quit_app"
                         else "delete_offer"
-                        if route.computer_operation in {
-                            "delete_file", "delete_folder"
-                        }
-                        else "action_offer"
                     ),
                     subject=prepared_result.display_name,
                     detail=prepared_result.prepared.request,
@@ -670,6 +899,27 @@ class ChatEngine:
                 if prepared_result.prepared is not None
                 else prepared_result
             )
+
+        # Observation results carry real information (which windows exist,
+        # what a window contains), not just a pass/fail outcome, so they
+        # can't go through brief_responses' generic short acknowledgements
+        # (built for "Got it, X is open," capped near 7 words) without
+        # losing the actual content the user asked for. The spoken summary
+        # here is built directly from the same real data, never an LLM
+        # paraphrase, so it carries no hallucination risk -- but the full
+        # detail (every control, every window) still reaches Electron
+        # through computer_result.message on the completed event below,
+        # unabridged, for "what Elaina currently sees."
+        if result.status == "windows_listed":
+            return (
+                self._speak_window_list(self.computer_control.ui_observer.list_windows()),
+                result,
+            )
+        if result.status == "window_described":
+            observation = self.computer_control.ui_observer.describe_window(
+                result.target or result.display_name
+            )
+            return self._speak_window_description(observation), result
 
         response_kind = {
             "opened": "opened",
@@ -705,7 +955,102 @@ class ChatEngine:
             detail=result.message,
             operation=result.operation,
         ), result
-    
+
+    def _handle_ui_action(
+        self,
+        route: IntentDecision,
+        *,
+        approved_action: PreparedComputerAction | None,
+        original_request: str = "",
+    ) -> tuple[str, ComputerActionResult | None]:
+        """Phase 4B.2: goal-driven UI actions (click/type/focus/select/scroll).
+
+        Every step is a real, verified tools.windows_ui_control call, not an
+        LLM claim -- so the spoken result here is the planner's own
+        tool-grounded summary, never re-paraphrased by brief_responses.
+        The one exception is the confirmation *question* itself, which goes
+        through brief_responses' "ui_action_offer" kind for the same varied,
+        natural phrasing already used for force-quit/delete offers.
+        """
+        if approved_action is not None:
+            plan_result = self.desktop_action_planner.resume_confirmed_click(
+                window_title=approved_action.window_title,
+                control_name=approved_action.display_name,
+                window_snapshot=approved_action.window_snapshot,
+            )
+        else:
+            # The router may improve the semantic goal while accidentally
+            # dropping deictic scope such as "on this page". Keep both forms:
+            # the normalized request tells the planner what to do, while the
+            # original wording preserves which foreground surface is allowed.
+            normalized_goal = str(route.normalized_request or "").strip()
+            original_goal = str(original_request or "").strip()
+            planner_goal = normalized_goal or original_goal
+            if (
+                original_goal
+                and original_goal.casefold() != planner_goal.casefold()
+            ):
+                planner_goal = (
+                    f"{planner_goal}\n"
+                    f"Original user request: {original_goal}"
+                )
+            plan_result = self.desktop_action_planner.act(
+                planner_goal,
+                surface_context=DesktopSurfaceContext.from_public_snapshot(
+                    self._desktop_surface_for_turn()
+                ),
+            )
+
+        print(
+            "[Computer Control] action=ui_action target="
+            f"{route.action_target or '(none)'} status={plan_result.status} "
+            f"rounds={plan_result.model_rounds} "
+            f"action_steps={plan_result.action_steps} "
+            f"recovery={plan_result.recovery_used} "
+            f"failure={plan_result.failure_code or '(none)'}"
+        )
+
+        resolved_surface = plan_result.surface_context.to_public_snapshot()
+        if resolved_surface:
+            self._remember_desktop_surface(resolved_surface)
+
+        if plan_result.status == "needs_confirmation":
+            pending = plan_result.pending
+            prepared = PreparedComputerAction(
+                operation="ui_action",
+                target=pending.control_name,
+                display_name=pending.control_name,
+                window_title=pending.window_title,
+                window_snapshot=pending.window_snapshot,
+            )
+            self.agent_consent.clear()
+            self.computer_consent.offer(prepared=prepared, reason=route.reason)
+            return self.brief_responses.generate(
+                "ui_action_offer",
+                subject=pending.control_name,
+                detail=plan_result.summary,
+                operation="ui_action",
+            ), ComputerActionResult(
+                status="prepared",
+                target=pending.control_name,
+                display_name=pending.control_name,
+                message=plan_result.summary,
+                operation="ui_action",
+                prepared=prepared,
+            )
+
+        succeeded = plan_result.status == "done"
+        message = plan_result.summary.strip() or (
+            "That's done." if succeeded else "I couldn't complete that."
+        )
+        return message, ComputerActionResult(
+            status="ui_action_done" if succeeded else "ui_action_failed",
+            target=route.action_target,
+            display_name=route.action_target,
+            message=message,
+            operation="ui_action",
+        )
+
     def chat(
         self,
         user_input,
@@ -718,6 +1063,8 @@ class ChatEngine:
 
         if not user_input:
             return ""
+
+        self._begin_desktop_turn()
 
         turn_cancel = threading.Event()
         with self._turn_lock:
@@ -752,8 +1099,6 @@ class ChatEngine:
 
         def route_current(
             transcript: str,
-            *,
-            computer_authorized: bool = False,
         ) -> IntentDecision:
             return self.intent_router.route(
                 transcript,
@@ -762,7 +1107,7 @@ class ChatEngine:
                 project_tools_available=self.project_mcp is not None,
                 conversation_state=self._build_conversation_state(),
                 pending_action=self._pending_action,
-                computer_action_authorized=computer_authorized,
+                computer_control_enabled=self.computer_control_mode.enabled,
             )
 
         if self.agent_builder.active:
@@ -798,7 +1143,7 @@ class ChatEngine:
                     intent="computer_action",
                     confidence=consent.confidence,
                     normalized_request=pending_computer.request,
-                    reason="The user accepted the exact pending takeover action.",
+                    reason="The user accepted the exact high-risk confirmation.",
                     is_follow_up=True,
                     speech_act="action_request",
                     action_requested=True,
@@ -810,7 +1155,6 @@ class ChatEngine:
                 revised_request = consent.modified_request.strip()
                 route = route_current(
                     revised_request or user_input,
-                    computer_authorized=True,
                 )
             elif consent.decision == "reject":
                 self.computer_consent.clear()
@@ -834,7 +1178,7 @@ class ChatEngine:
                     intent="conversation",
                     confidence=consent.confidence,
                     normalized_request=user_input,
-                    reason="The takeover reply was unclear.",
+                    reason="The high-risk confirmation reply was unclear.",
                     is_follow_up=True,
                 )
                 locked_response = self.brief_responses.generate(
@@ -845,7 +1189,9 @@ class ChatEngine:
                         if pending_computer.operation in {
                             "delete_file", "delete_folder"
                         }
-                        else "action_offer"
+                        else "ui_action_offer"
+                        if pending_computer.operation == "ui_action"
+                        else "blocked"
                     ),
                     subject=pending_computer.target_name,
                     detail=pending_computer.request,
@@ -970,6 +1316,7 @@ class ChatEngine:
             locked_response, computer_result = self._handle_computer_action(
                 route,
                 approved_action=approved_computer_action,
+                original_request=user_input,
             )
 
             if computer_result is not None:

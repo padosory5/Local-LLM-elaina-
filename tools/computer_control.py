@@ -16,10 +16,11 @@ from tools.windows_app_catalog import (
     normalize_app_name,
 )
 from tools.windows_process_control import WindowsProcessControl
+from tools.windows_ui_observer import WindowInfo, WindowsUIObserver
 
 
-_TAKEOVER_AUTHORIZATION = re.compile(r"\btakeover\b", flags=re.IGNORECASE)
 _GENERIC_TARGET_WORDS = {"app", "application", "launcher", "the"}
+_COMMON_URL_SUFFIXES = {"com", "org", "net", "io", "co", "gov", "edu", "dev"}
 
 COMPUTER_OPERATIONS = frozenset({
     "none",
@@ -31,18 +32,36 @@ COMPUTER_OPERATIONS = frozenset({
     "create_folder",
     "delete_file",
     "delete_folder",
+    "list_windows",
+    "describe_window",
+    "ui_action",
     "unsupported",
 })
+
+# Phase 4B.1: pure observation, never a state change. Always safe to run the
+# instant Desktop Control Mode is on -- these can never enter
+# HIGH_RISK_OPERATIONS or need a confirmation turn.
+OBSERVATION_OPERATIONS = frozenset({"list_windows", "describe_window"})
+
+# Phase 4B.2: a natural-language UI request (click/type/focus/select/scroll)
+# handled by brain.desktop_action_planner's tool-calling loop rather than a
+# single structured operation -- the loop itself resolves the real window
+# and control names and enforces per-step confirmation, so this operation
+# has no single named target to ground the way open_app/open_url do.
+UI_ACTION_OPERATIONS = frozenset({"ui_action"})
+# ui_action itself never runs through ComputerControl.execute()'s generic
+# HIGH_RISK gate below -- brain.chat_engine calls DesktopActionPlanner
+# directly, and the planner/WindowsUIControl decide per-control whether a
+# specific click needs confirmation. It's listed here only so
+# ComputerConsentGate.offer() (which checks this same set) will accept a
+# pending ui_action confirmation for a click the planner flagged as
+# committing.
 HIGH_RISK_OPERATIONS = frozenset({
     "force_quit_app",
     "delete_file",
     "delete_folder",
+    "ui_action",
 })
-
-
-def takeover_authorized(transcript: str) -> bool:
-    """Require the deliberate standalone authorization word in this turn."""
-    return bool(_TAKEOVER_AUTHORIZATION.search(str(transcript)))
 
 
 def transcript_names_target(transcript: str, target: str) -> bool:
@@ -53,6 +72,12 @@ def transcript_names_target(transcript: str, target: str) -> bool:
         for word in re.findall(r"[^\W_]+", str(target).casefold())
         if word not in _GENERIC_TARGET_WORDS
     ]
+    # A model may reasonably complete a spoken site name with its standard
+    # domain suffix ("github" -> "github.com"). Strip one trailing suffix
+    # like that before grounding, so the check still requires the actual
+    # name the user said, not a TLD they never spoke.
+    if len(target_words) > 1 and target_words[-1] in _COMMON_URL_SUFFIXES:
+        target_words = target_words[:-1]
     target_name = normalize_app_name("".join(target_words))
     return bool(target_name and target_name in transcript_name)
 
@@ -84,6 +109,10 @@ class PreparedComputerAction:
     entry_id: str = ""
     path: str = ""
     url: str = ""
+    # Phase 4B.2: which window a ui_action control lives in, so a confirmed
+    # click can be re-resolved and re-verified rather than replayed blind.
+    window_title: str = ""
+    window_snapshot: WindowInfo | None = None
 
     @property
     def request(self) -> str:
@@ -96,6 +125,7 @@ class PreparedComputerAction:
             "create_folder": "Create folder",
             "delete_file": "Delete file",
             "delete_folder": "Delete folder",
+            "ui_action": "Click",
         }
         return f"{verbs.get(self.operation, 'Run')} {self.display_name}".strip()
 
@@ -109,6 +139,7 @@ class PreparedComputerAction:
             "create_folder": "create",
             "delete_file": "delete",
             "delete_folder": "delete",
+            "ui_action": "click",
         }
         verb = verbs.get(self.operation, self.operation.replace("_", " "))
         return f"{verb} {self.display_name}".strip()
@@ -140,6 +171,9 @@ class ComputerActionResult:
             "folder_created",
             "file_deleted",
             "folder_deleted",
+            "windows_listed",
+            "window_described",
+            "ui_action_done",
         }
 
 
@@ -156,6 +190,7 @@ class ComputerControl:
         processes: WindowsProcessControl | None = None,
         browser: SafeBrowserControl | None = None,
         filesystem: SafeFilesystemControl | None = None,
+        ui_observer: WindowsUIObserver | None = None,
     ) -> None:
         self.policy = policy
         self.enabled = bool(enabled)
@@ -164,6 +199,7 @@ class ComputerControl:
         self.processes = processes or WindowsProcessControl()
         self.browser = browser or SafeBrowserControl()
         self.filesystem = filesystem or SafeFilesystemControl()
+        self.ui_observer = ui_observer or WindowsUIObserver()
 
     def prepare(self, request: ComputerActionRequest) -> ComputerActionResult:
         operation = str(request.operation).strip().lower()
@@ -178,6 +214,19 @@ class ComputerControl:
                 "disabled", request.target, "",
                 "Computer control is disabled in Elaina's configuration.",
                 operation=operation,
+            )
+
+        if operation in OBSERVATION_OPERATIONS:
+            # Nothing to resolve ahead of time; there is no side effect to
+            # stage, so preparing and executing happen in the same step.
+            prepared = PreparedComputerAction(
+                operation=operation,
+                target=request.target,
+                display_name=request.target or "the desktop",
+            )
+            return self._result(
+                "prepared", request.target, prepared.display_name,
+                "Ready to look.", operation=operation, prepared=prepared,
             )
 
         if operation in {"open_app", "close_app", "force_quit_app"}:
@@ -269,6 +318,45 @@ class ComputerControl:
                 operation=operation,
             )
         try:
+            if operation == "list_windows":
+                windows = self.ui_observer.list_windows()
+                if not windows:
+                    return self._result(
+                        "windows_listed", prepared.target, prepared.display_name,
+                        "I don't see any open windows right now.",
+                        operation=operation,
+                    )
+                summary = "; ".join(
+                    f"{window.title}{' (active)' if window.is_active else ''}"
+                    for window in windows
+                )
+                return self._result(
+                    "windows_listed", prepared.target, prepared.display_name,
+                    f"Open windows: {summary}.", operation=operation,
+                )
+
+            if operation == "describe_window":
+                query = prepared.target.strip()
+                if not query:
+                    active = self.ui_observer.get_active_window()
+                    query = active.title if active is not None else ""
+                if not query:
+                    return self._result(
+                        "not_found", prepared.target, prepared.display_name,
+                        "I can't tell which window you mean.",
+                        operation=operation,
+                    )
+                observation = self.ui_observer.describe_window(query)
+                if observation.status != "observed":
+                    return self._result(
+                        observation.status, prepared.target, observation.title,
+                        observation.message, operation=operation,
+                    )
+                return self._result(
+                    "window_described", prepared.target, observation.title,
+                    observation.as_tree_text(), operation=operation,
+                )
+
             if operation == "open_app":
                 entry = self.catalog.get(prepared.entry_id)
                 if entry is None:
@@ -417,6 +505,9 @@ class ComputerControl:
             "create_folder": "filesystem.create",
             "delete_file": "filesystem.delete",
             "delete_folder": "filesystem.delete",
+            "list_windows": "computer.observe_ui",
+            "describe_window": "computer.observe_ui",
+            "ui_action": "computer.ui_action",
         }[operation]
 
     def _from_app_resolution(
@@ -425,10 +516,14 @@ class ComputerControl:
         operation: str,
     ) -> ComputerActionResult:
         if resolution.status == "ambiguous":
-            choices = ", ".join(resolution.candidates)
+            if len(resolution.candidates) == 1:
+                message = f"Did you mean {resolution.candidates[0]}?"
+            else:
+                choices = ", ".join(resolution.candidates)
+                message = f"I found more than one match: {choices}."
             return self._result(
                 "ambiguous", resolution.query, "",
-                f"I found more than one match: {choices}.", operation=operation,
+                message, operation=operation,
                 candidates=resolution.candidates,
             )
         return self._result(

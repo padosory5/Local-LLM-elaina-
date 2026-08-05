@@ -86,6 +86,81 @@ class TextFilterTests(unittest.TestCase):
             "OpenAI was founded in 2015.",
         )
 
+    def test_english_speech_replaces_korean_clicked_control(self):
+        result = TextFilter.for_configured_speech(
+            "Clicked 설정.",
+            response_language="en",
+        )
+
+        self.assertEqual(result, "Clicked the requested control.")
+        self.assertIsNone(TextFilter.HANGUL_PATTERN.search(result))
+
+    def test_english_speech_keeps_native_control_confirmation_as_question(self):
+        result = TextFilter.for_configured_speech(
+            "Click 설정?",
+            response_language="en",
+        )
+
+        self.assertEqual(result, "Click the requested control?")
+        self.assertIsNone(TextFilter.HANGUL_PATTERN.search(result))
+
+    def test_english_speech_replaces_korean_focused_window(self):
+        result = TextFilter.for_configured_speech(
+            "Focused 제목 없음 - 메모장.",
+            response_language="en-US",
+        )
+
+        self.assertEqual(result, "Focused the requested window.")
+        self.assertIsNone(TextFilter.HANGUL_PATTERN.search(result))
+
+    def test_english_speech_replaces_korean_typed_target(self):
+        result = TextFilter.for_configured_speech(
+            "grocery list typed into제목 없음 - 메모장.",
+            response_language="en",
+        )
+
+        self.assertEqual(
+            result,
+            "Entered the text in the requested field.",
+        )
+        self.assertIsNone(TextFilter.HANGUL_PATTERN.search(result))
+
+    def test_english_speech_uses_safe_fallback_for_native_title(self):
+        result = TextFilter.for_configured_speech(
+            "제목 없음 - 메모장.",
+            response_language="en",
+        )
+
+        self.assertEqual(result, "The result is shown on screen.")
+        self.assertIsNone(TextFilter.HANGUL_PATTERN.search(result))
+
+    def test_english_speech_preserves_truthful_failure(self):
+        result = TextFilter.for_configured_speech(
+            "I couldn't click 설정.",
+            response_language="en",
+        )
+
+        self.assertEqual(result, "I couldn't click.")
+        self.assertIsNone(TextFilter.HANGUL_PATTERN.search(result))
+
+    def test_english_text_is_unchanged_by_language_guard(self):
+        self.assertEqual(
+            TextFilter.for_configured_speech(
+                "Clicked Settings.",
+                response_language="en",
+            ),
+            "Clicked Settings.",
+        )
+
+    def test_non_english_speech_keeps_native_text(self):
+        self.assertEqual(
+            TextFilter.for_configured_speech(
+                "Clicked 설정.",
+                response_language="ko",
+            ),
+            "Clicked 설정.",
+        )
+
     def test_length_arguments_never_delete_a_complete_answer(self):
         result = TextFilter.for_voice_response(
             "This is Eros, the Greek god of love. "

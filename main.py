@@ -133,6 +133,19 @@ def handle_desktop_command(message):
     """Handle actions sent by the Electron interface."""
     command = message.get("command")
 
+    if command == "get_computer_control_mode":
+        engine.publish_computer_control_mode()
+        return
+
+    if command == "set_computer_control_mode":
+        enabled = message.get("enabled")
+        if not isinstance(enabled, bool):
+            print("[Computer Control Mode] Invalid state.")
+            engine.publish_computer_control_mode()
+            return
+        engine.set_computer_control_mode(enabled)
+        return
+
     if command == "queue_screen_region":
         region = message.get("region")
 

@@ -20,6 +20,57 @@ class TextFilter:
         flags=re.UNICODE,
     )
 
+    # Korean Windows installations expose native app, window, and control
+    # names through UI Automation. Those labels are valuable for grounding
+    # and should remain untouched in logs and the on-screen response, but an
+    # English Piper voice should never be asked to pronounce them.
+    HANGUL_PATTERN = re.compile(
+        "["
+        "\u1100-\u11FF"  # Hangul Jamo
+        "\u3130-\u318F"  # Hangul Compatibility Jamo
+        "\uA960-\uA97F"  # Hangul Jamo Extended-A
+        "\uAC00-\uD7AF"  # Hangul syllables
+        "\uD7B0-\uD7FF"  # Hangul Jamo Extended-B
+        "]+",
+        flags=re.UNICODE,
+    )
+
+    _FAILED_ACTION_PATTERN = re.compile(
+        r"(?i)\b(?:could\s+not|couldn['’]?t|did\s+not|"
+        r"didn['’]?t|failed|unable|not\s+found)\b"
+    )
+
+    _ENGLISH_ACTION_FALLBACKS = (
+        (
+            re.compile(r"(?i)\btyped\b.*?into|\bentered\b.*?into"),
+            "Entered the text in the requested field.",
+        ),
+        (
+            re.compile(r"(?i)\bclicked\b"),
+            "Clicked the requested control.",
+        ),
+        (
+            re.compile(r"(?i)\bfocused\b|\bswitched\s+to\b"),
+            "Focused the requested window.",
+        ),
+        (
+            re.compile(r"(?i)\bopened\b|\bis\s+open\b"),
+            "Opened the requested item.",
+        ),
+        (
+            re.compile(r"(?i)\bclosed\b|\bforce[- ]?quit\b"),
+            "Closed the requested window.",
+        ),
+        (
+            re.compile(r"(?i)\bselected\b"),
+            "Selected the requested option.",
+        ),
+        (
+            re.compile(r"(?i)\bscrolled\b"),
+            "Scrolled the requested view.",
+        ),
+    )
+
     @classmethod
     def clean(cls, text: str) -> str:
         text = cls.EMOJI_PATTERN.sub("", text)
@@ -78,6 +129,59 @@ class TextFilter:
         text = re.sub(r"[ \t]+", " ", text)
         text = re.sub(r"\s*\n+\s*", " ", text)
         return text.strip()
+
+    @classmethod
+    def for_configured_speech(
+        cls,
+        text: str,
+        *,
+        response_language: str = "en",
+    ) -> str:
+        """Create TTS input that respects the configured response language.
+
+        This filter is intentionally applied at the audio boundary. It does
+        not modify the assistant response shown in Electron, planner state,
+        accessibility labels, or audit logs.
+
+        English voices receive concise semantic descriptions for native
+        Korean UI action results. Unexpected Korean metadata is removed while
+        preserving the surrounding English text; if nothing meaningful is
+        left, a short screen-reference fallback is spoken.
+        """
+        text = cls.for_speech(text)
+        language = str(response_language or "").strip().lower()
+
+        if not language.startswith("en"):
+            return text
+
+        if not cls.HANGUL_PATTERN.search(text):
+            return text
+
+        # Do not turn a reported failure into a success acknowledgement. A
+        # negative result instead falls through to the metadata-only scrub so
+        # phrases such as "I couldn't click 설정" remain truthful.
+        if not cls._FAILED_ACTION_PATTERN.search(text):
+            if "?" in text and re.search(
+                r"(?i)\bclick(?:ed|ing)?\b", text,
+            ):
+                return "Click the requested control?"
+            for pattern, fallback in cls._ENGLISH_ACTION_FALLBACKS:
+                if pattern.search(text):
+                    return fallback
+
+        text = cls.HANGUL_PATTERN.sub("", text)
+        text = re.sub(r"\(\s*\)|\[\s*\]", "", text)
+        text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+        text = re.sub(r"(?:^|\s)[\-–—]+\s*(?=[.!?]|$)", " ", text)
+        text = re.sub(r"[ \t]+", " ", text).strip(" \t\r\n-\u2013\u2014,:;")
+
+        # A native title such as "제목 없음 - 메모장" has no useful English
+        # speech left after sanitizing. Avoid silence while keeping Piper from
+        # attempting an unsupported pronunciation.
+        if not re.search(r"[A-Za-z]", text):
+            return "The result is shown on screen."
+
+        return text
 
     @classmethod
     def for_voice_response(

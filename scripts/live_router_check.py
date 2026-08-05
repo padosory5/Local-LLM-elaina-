@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
+import unicodedata
 from pathlib import Path
 
 import ollama
@@ -27,6 +29,7 @@ from brain.intent_router import SemanticIntentRouter  # noqa: E402
 from config.loader import Config  # noqa: E402
 from scripts.console_style import status_label  # noqa: E402
 from security.computer_consent import ComputerConsentGate  # noqa: E402
+from tools.computer_control import PreparedComputerAction  # noqa: E402
 
 
 DEFAULT_MATRIX = PROJECT_ROOT / "tests" / "feature_matrix.json"
@@ -82,11 +85,30 @@ def mismatches(result, expected: dict) -> list[str]:
     differences = []
     for field, expected_value in expected.items():
         actual_value = getattr(result, field, None)
-        if actual_value != expected_value:
+        matches = actual_value == expected_value
+        if (
+            not matches
+            and field == "action_target"
+            and isinstance(actual_value, str)
+            and isinstance(expected_value, str)
+        ):
+            matches = (
+                _semantic_action_target(actual_value)
+                == _semantic_action_target(expected_value)
+            )
+        if not matches:
             differences.append(
                 f"{field}: expected={expected_value!r} actual={actual_value!r}"
             )
     return differences
+
+
+def _semantic_action_target(value: str) -> tuple[str, ...]:
+    """Ignore punctuation and politeness without ignoring target content."""
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    words = re.findall(r"[^\W_]+", normalized)
+    politeness = {"can", "could", "would", "you", "please", "for", "me"}
+    return tuple(word for word in words if word not in politeness)
 
 
 def main() -> int:
@@ -165,10 +187,10 @@ def main() -> int:
 
         computer_consent_cases = (
             ("computer_consent_accept", "Yeah, go ahead.", "accept"),
-            ("computer_consent_reject", "No, leave it closed.", "reject"),
+            ("computer_consent_reject", "No, leave it running.", "reject"),
             (
                 "computer_consent_modify",
-                "Actually, open Steam instead.",
+                "Actually, force quit Steam instead.",
                 "modify",
             ),
             (
@@ -179,8 +201,12 @@ def main() -> int:
         )
         for name, reply, expected in computer_consent_cases:
             pending = ComputerConsentGate(expiry_seconds=90).offer(
-                target_name="Discord",
-                entry_id="test-discord-entry",
+                prepared=PreparedComputerAction(
+                    operation="force_quit_app",
+                    target="Discord",
+                    display_name="Discord",
+                    entry_id="test-discord-entry",
+                )
             )
             decision = SemanticConsentClassifier(
                 client,

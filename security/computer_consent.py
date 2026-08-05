@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from tools.computer_control import PreparedComputerAction
+from tools.computer_control import HIGH_RISK_OPERATIONS, PreparedComputerAction
 
 
 @dataclass(frozen=True)
@@ -44,25 +44,16 @@ class ComputerConsentGate:
     def offer(
         self,
         *,
-        prepared: PreparedComputerAction | None = None,
-        target_name: str = "",
-        entry_id: str = "",
+        prepared: PreparedComputerAction,
         reason: str = "",
     ) -> PendingComputerAction:
-        if prepared is None:
-            target_name = str(target_name).strip()
-            entry_id = str(entry_id).strip()
-            if not target_name or not entry_id:
-                raise ValueError("A computer takeover offer needs a resolved action.")
-            prepared = PreparedComputerAction(
-                operation="open_app",
-                target=target_name,
-                display_name=target_name,
-                entry_id=entry_id,
+        if prepared.operation not in HIGH_RISK_OPERATIONS:
+            raise ValueError(
+                "Only high-risk computer actions use a pending confirmation."
             )
         target_name = prepared.display_name.strip()
         if not target_name:
-            raise ValueError("A computer takeover offer needs a display name.")
+            raise ValueError("A computer confirmation needs a display name.")
         now = time.monotonic()
         self._pending = PendingComputerAction(
             intent="computer_action",

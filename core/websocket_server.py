@@ -38,6 +38,7 @@ class WebSocketServer:
             "lip_sync",
 
             "input_mode_changed",
+            "computer_control_mode_changed",
 
             "user_message",
             "assistant_started",

@@ -1,5 +1,12 @@
 # Elaina reinforcement test cases
 
+> The canonical, complete checklist is
+> [`REINFORCEMENT_TEST_CASES.md`](../REINFORCEMENT_TEST_CASES.md). It includes
+> the latest application, scoped native-UI, browser-surface, file/folder,
+> deletion, response-variety, and automated regression cases. The cases below
+> are retained as deeper diagnostics for conversation, vision, microphone, and
+> the Phase 4B.2 stabilization boundary.
+
 Restart both Python and Electron after replacing the files.
 
 ## 0. Semantic agent permission
@@ -277,3 +284,51 @@ Expected:
   English rather than being sent to Elaina immediately.
 - A segment that is both highly likely to be silence and low-confidence is
   discarded.
+
+## 15. Phase 4B.2 native UI stabilization diagnostics
+
+With Computer Control Mode on, exercise the same semantic goal across different
+starting states:
+
+1. With Spotify closed, say "Search for BTS in Spotify."
+2. Repeat with Spotify open, minimized, and already focused.
+3. Say "Play Dynamite in Spotify for me."
+4. With Notepad in front, say "Type grocery list in this Notepad window."
+
+Expected:
+
+- Native UI work is scoped to the foreground application captured at the start
+  of each task and uses generic observe, focus, click, type, and verify actions.
+- Observations do not exhaust the action budget. Repeated states trigger one
+  bounded recovery, and an unrecoverable task returns a specific incomplete
+  result instead of a false success or an unbounded planning loop.
+- Spotify search and Notepad typing are reported as complete only after their
+  observable target state is verified. Opening Spotify is not sufficient to
+  complete the Dynamite playback request.
+
+Open a GitHub repository page in the foreground and say:
+
+> Click Settings on this page.
+
+Expected:
+
+- The phrase `this page` remains bound to the captured GitHub browser surface.
+- Windows Settings never opens as a fallback for a missing webpage control.
+- If the browser does not expose the GitHub control through Windows UI
+  Automation, Elaina reports that it could not complete the native UI action.
+  Reliable DOM-based page interaction remains future Phase 4C work.
+
+With `language.response` set to `en`, repeat an action against a Windows control
+whose native label is Korean.
+
+Expected:
+
+- Diagnostic output may retain the exact Korean label for grounding.
+- The spoken completion contains only English semantic UI wording; raw Korean
+  metadata is never passed to the English Piper voice.
+
+Run all semantic router variants for this capability with:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_feature_regression.py --mode live --exhaustive --feature computer_ui_action
+```
