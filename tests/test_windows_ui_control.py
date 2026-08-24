@@ -1,11 +1,11 @@
 import unittest
 
-from tools.windows_ui_control import (
+from tools.computer_control.windows_ui_control import (
     WindowsUIControl,
     is_committing_control,
     is_credential_field,
 )
-from tools.windows_ui_observer import WindowInfo, WindowsUIObserver
+from tools.computer_control.windows_ui_observer import WindowInfo, WindowsUIObserver
 
 
 _UNCHANGED = object()
@@ -89,6 +89,36 @@ class _FakeControl:
 
     def has_keyboard_focus(self):
         return self.focused
+
+
+class _DocumentTextRange:
+    def __init__(self, text_source):
+        self._text_source = text_source
+
+    def GetText(self, max_length):
+        return self._text_source()
+
+
+class _DocumentTextPattern:
+    def __init__(self, text_source):
+        self.DocumentRange = _DocumentTextRange(text_source)
+
+
+class _FakeDocumentControl(_FakeControl):
+    """A rich-text/Document-role control exposing only TextPattern, not
+    ValuePattern -- matching a real Windows 11 Notepad editable surface,
+    where get_value()/iface_value both raise."""
+
+    def get_value(self):
+        raise AttributeError("no ValuePattern on this control")
+
+    @property
+    def iface_value(self):
+        raise AttributeError("no ValuePattern on this control")
+
+    @property
+    def iface_text(self):
+        return _DocumentTextPattern(lambda: self._value)
 
 
 class _SlowToSettleControl(_FakeControl):
@@ -459,6 +489,126 @@ class WindowsUIControlTests(unittest.TestCase):
 
         self.assertEqual(result.status, "failed")
         self.assertIsNone(listbox.scrolled)
+
+    def test_click_control_by_element_id_invokes_the_same_control_the_name_path_would(self):
+        button = _FakeControl("Button", "Next")
+        window = _FakeWindow("Setup Wizard", descendants=[button])
+        control, _ = self._control(window)
+        observation = control.observer.describe_window("Setup Wizard")
+        element_id = observation.controls[0].element_id
+
+        result = control.click_control(
+            "Setup Wizard", "", element_id=element_id,
+        )
+
+        self.assertEqual(result.status, "clicked")
+        self.assertTrue(button.invoked)
+
+    def test_click_control_prefers_element_id_over_a_conflicting_control_name(self):
+        real_target = _FakeControl("Button", "Next")
+        decoy = _FakeControl("Button", "Cancel")
+        window = _FakeWindow(
+            "Setup Wizard", descendants=[real_target, decoy],
+        )
+        control, _ = self._control(window)
+        observation = control.observer.describe_window("Setup Wizard")
+        real_id = next(
+            c.element_id for c in observation.controls if c.name == "Next"
+        )
+
+        result = control.click_control(
+            "Setup Wizard", "Cancel", element_id=real_id,
+        )
+
+        self.assertEqual(result.status, "clicked")
+        self.assertTrue(real_target.invoked)
+        self.assertFalse(decoy.invoked)
+
+    def test_click_control_by_element_id_still_requires_confirmation_for_a_committing_control(self):
+        button = _FakeControl("Button", "Submit Order")
+        window = _FakeWindow("Checkout", descendants=[button])
+        control, _ = self._control(window)
+        observation = control.observer.describe_window("Checkout")
+        element_id = observation.controls[0].element_id
+
+        result = control.click_control(
+            "Checkout", "", element_id=element_id,
+        )
+
+        self.assertEqual(result.status, "confirmation_required")
+        self.assertFalse(button.invoked)
+
+    def test_click_control_with_a_stale_element_id_fails_safely_with_a_re_observe_hint(self):
+        button = _FakeControl("Button", "Next")
+        window = _FakeWindow("Setup Wizard", descendants=[button])
+        control, _ = self._control(window)
+        control.observer.describe_window("Setup Wizard")  # superseded scan
+        observation = control.observer.describe_window("Setup Wizard")
+        stale_id = observation.controls[0].element_id
+        control.observer.describe_window("Setup Wizard")  # invalidates stale_id
+
+        result = control.click_control(
+            "Setup Wizard", "", element_id=stale_id,
+        )
+
+        self.assertEqual(result.status, "not_found")
+        self.assertFalse(button.invoked)
+        self.assertIn("describe_window", result.message)
+
+    def test_type_text_by_element_id_still_refuses_a_credential_field(self):
+        field = _FakeControl("Edit", "Password")
+        window = _FakeWindow("Login", descendants=[field])
+        control, _ = self._control(window)
+        observation = control.observer.describe_window("Login")
+        element_id = observation.controls[0].element_id
+
+        result = control.type_text(
+            "Login", "", "hunter2", element_id=element_id,
+        )
+
+        self.assertEqual(result.status, "refused")
+        self.assertIsNone(field.typed_text)
+
+    def test_type_text_by_element_id_still_refuses_a_non_text_role(self):
+        button = _FakeControl("Button", "Search")
+        window = _FakeWindow("App", descendants=[button])
+        control, _ = self._control(window)
+        observation = control.observer.describe_window("App")
+        element_id = observation.controls[0].element_id
+
+        result = control.type_text(
+            "App", "", "hello", element_id=element_id,
+        )
+
+        self.assertEqual(result.status, "refused")
+
+    def test_type_text_verifies_via_text_pattern_when_no_value_pattern_exists(self):
+        # Reproduced live against Windows 11's real Notepad: a Document-role
+        # control's keystrokes genuinely land, but _read_text_value's
+        # ValuePattern-only reads can't see them, so a fully correct action
+        # was reported as verification_failed.
+        editor = _FakeDocumentControl("Document", "텍스트 편집기")
+        window = _FakeWindow("Notepad", descendants=[editor])
+        control, _ = self._control(window)
+
+        result = control.type_text("Notepad", "텍스트 편집기", "hello world")
+
+        self.assertEqual(result.status, "typed")
+        self.assertTrue(result.verified)
+
+    def test_type_text_by_element_id_succeeds_into_a_document_role(self):
+        editor = _FakeControl("Document", "텍스트 편집기")
+        window = _FakeWindow("Notepad", descendants=[editor])
+        control, _ = self._control(window)
+        observation = control.observer.describe_window("Notepad")
+        element_id = observation.controls[0].element_id
+
+        result = control.type_text(
+            "Notepad", "", "hello world", element_id=element_id,
+        )
+
+        self.assertEqual(result.status, "typed")
+        self.assertEqual(editor.typed_text, "hello world")
 
     def test_unavailable_when_no_desktop_backend(self):
         observer = WindowsUIObserver(desktop=None)

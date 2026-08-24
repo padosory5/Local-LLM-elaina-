@@ -6,7 +6,9 @@ import ipaddress
 import re
 import webbrowser
 from dataclasses import dataclass
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import quote_plus, urlparse, urlunparse
+
+_DEFAULT_SEARCH_URL_TEMPLATE = "https://www.google.com/search?q={query}"
 
 
 @dataclass(frozen=True)
@@ -18,11 +20,35 @@ class BrowserResolution:
 
 
 class SafeBrowserControl:
-    """Open only grounded HTTP(S) destinations in the default browser."""
+    """Open only grounded HTTP(S) destinations through the configured opener."""
 
-    def __init__(self, opener=None, *, allow_local_urls: bool = False) -> None:
+    def __init__(
+        self,
+        opener=None,
+        *,
+        allow_local_urls: bool = False,
+        search_url_template: str = _DEFAULT_SEARCH_URL_TEMPLATE,
+    ) -> None:
         self._opener = opener or webbrowser.open_new_tab
         self.allow_local_urls = bool(allow_local_urls)
+        self.search_url_template = (
+            str(search_url_template).strip() or _DEFAULT_SEARCH_URL_TEMPLATE
+        )
+
+    def resolve_search(self, query: str) -> BrowserResolution:
+        """Build a search-engine URL for a spoken query -- never a model-
+        invented address. The domain is fixed by local configuration; only
+        the query text, always percent-encoded, comes from the request.
+        """
+        text = str(query).strip()
+        if not text:
+            return BrowserResolution(
+                "invalid_target", text, message="A search query is required.",
+            )
+        url = self.search_url_template.format(query=quote_plus(text))
+        return BrowserResolution(
+            "resolved", text, url=url, message=f"Ready to search for {text}.",
+        )
 
     def resolve(self, requested_target: str, proposed_url: str = "") -> BrowserResolution:
         target = str(requested_target).strip()

@@ -13,7 +13,7 @@ from typing import Iterable
 
 from ctypes import wintypes
 
-from tools.windows_app_catalog import AppEntry, normalize_app_name
+from tools.computer_control.windows_app_catalog import AppEntry, normalize_app_name
 
 
 @dataclass(frozen=True)

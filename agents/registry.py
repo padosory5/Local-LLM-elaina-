@@ -28,6 +28,12 @@ class AgentRegistry:
             "Can inspect the selected local project and prepare approval-gated "
             "file changes. It cannot edit anything before approval."
         ),
+        "computer_control": (
+            "Can observe and act on native Windows windows and browser pages "
+            "the user is already looking at, once Desktop Control Mode is on. "
+            "It cannot act while that mode is off, or on a window/page it "
+            "hasn't verified is actually open."
+        ),
         "conversation_agent": (
             "Handles ordinary voice conversation, personality, memory, and "
             "stable knowledge without performing external actions."

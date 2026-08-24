@@ -23,7 +23,12 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
-from tools.windows_ui_observer import ControlLookup, WindowInfo, WindowsUIObserver
+from tools.computer_control.windows_ui_observer import ControlLookup, WindowInfo, WindowsUIObserver
+
+try:
+    from pywinauto.keyboard import send_keys as _send_keys
+except Exception:  # pragma: no cover - exercised only when pywinauto is absent
+    _send_keys = None
 
 _MAX_TYPE_LENGTH = 500
 
@@ -145,6 +150,7 @@ class WindowsUIControl:
         control_name: str,
         *,
         confirmed: bool = False,
+        element_id: str = "",
     ) -> UIActionResult:
         window = self._require_window(title_query)
         if isinstance(window, UIActionResult):
@@ -153,11 +159,13 @@ class WindowsUIControl:
             self.observer._safe_text(window) or self._target_title(title_query)
         )
 
-        lookup = self.observer.resolve_control(
-            window, control_name, expected_roles=_CLICK_ROLES,
+        lookup = self._resolve(
+            window, control_name, element_id, expected_roles=_CLICK_ROLES,
         )
         if lookup.status != "matched":
-            return self._lookup_failure(lookup, window_title, control_name)
+            return self._lookup_failure(
+                lookup, window_title, element_id or control_name,
+            )
         control = lookup.control
         real_name = lookup.name or control_name
 
@@ -189,11 +197,83 @@ class WindowsUIControl:
             evidence=evidence,
         )
 
+    def click_then_type(
+        self,
+        title_query: str | WindowInfo,
+        control_name: str,
+        text: str,
+        *,
+        confirmed: bool = False,
+        element_id: str = "",
+    ) -> UIActionResult:
+        """Click a named control that reveals a field, then type into
+        whatever gains keyboard focus as a result.
+
+        Chromium/CEF-based apps (Spotify, Battle.net, Discord, and similar)
+        render their real search/text fields without ever exposing them as
+        a named, verifiable UIA control -- clicking the button that reveals
+        one (a search icon, for example) is the only reliably named,
+        verifiable step available. The click itself goes through the exact
+        same lookup and committing-control confirmation gate as
+        click_control(); if that control turns out to be committing, this
+        stops there and never sends the follow-up keystrokes.
+        Unlike type_text(), there is no named field left to read back, so
+        this can never independently prove the keystrokes landed in the
+        right place -- verified is always None, honestly reporting a
+        weaker guarantee than typing into a verified control.
+        """
+        click_result = self.click_control(
+            title_query, control_name, confirmed=confirmed, element_id=element_id,
+        )
+        if click_result.status != "clicked":
+            return click_result
+
+        if _send_keys is None:
+            return UIActionResult(
+                "failed",
+                "Keyboard input isn't available on this system.",
+                window_title=click_result.window_title,
+                control_name=click_result.control_name,
+            )
+
+        time.sleep(_VERIFY_SETTLE_INTERVAL_SECONDS)
+        bounded_text = str(text)[:_MAX_TYPE_LENGTH]
+        try:
+            _send_keys(
+                bounded_text, with_spaces=True, with_tabs=False, pause=0.03,
+            )
+        except Exception as error:
+            return UIActionResult(
+                "failed",
+                (
+                    f"Clicked {click_result.control_name!r}, but couldn't "
+                    f"type: {error}"
+                ),
+                window_title=click_result.window_title,
+                control_name=click_result.control_name,
+            )
+        return UIActionResult(
+            "typed",
+            (
+                f"Clicked {click_result.control_name} and typed into "
+                "whatever field it opened."
+            ),
+            window_title=click_result.window_title,
+            control_name=click_result.control_name,
+            verified=None,
+            evidence=(
+                "No named, verifiable field exists for this control; typed "
+                "into whatever held keyboard focus after the click."
+            ),
+        )
+
     def type_text(
         self,
         title_query: str | WindowInfo,
         control_name: str,
         text: str,
+        *,
+        element_id: str = "",
     ) -> UIActionResult:
         window = self._require_window(title_query)
         if isinstance(window, UIActionResult):
@@ -202,11 +282,13 @@ class WindowsUIControl:
             self.observer._safe_text(window) or self._target_title(title_query)
         )
 
-        lookup = self.observer.resolve_control(
-            window, control_name, expected_roles=_TEXT_ROLES,
+        lookup = self._resolve(
+            window, control_name, element_id, expected_roles=_TEXT_ROLES,
         )
         if lookup.status != "matched":
-            return self._lookup_failure(lookup, window_title, control_name)
+            return self._lookup_failure(
+                lookup, window_title, element_id or control_name,
+            )
         control = lookup.control
         role = lookup.role
         real_name = lookup.name or control_name
@@ -278,6 +360,8 @@ class WindowsUIControl:
         title_query: str | WindowInfo,
         control_name: str,
         option: str,
+        *,
+        element_id: str = "",
     ) -> UIActionResult:
         window = self._require_window(title_query)
         if isinstance(window, UIActionResult):
@@ -286,11 +370,13 @@ class WindowsUIControl:
             self.observer._safe_text(window) or self._target_title(title_query)
         )
 
-        lookup = self.observer.resolve_control(
-            window, control_name, expected_roles=_SELECT_ROLES,
+        lookup = self._resolve(
+            window, control_name, element_id, expected_roles=_SELECT_ROLES,
         )
         if lookup.status != "matched":
-            return self._lookup_failure(lookup, window_title, control_name)
+            return self._lookup_failure(
+                lookup, window_title, element_id or control_name,
+            )
         control = lookup.control
         real_name = lookup.name or control_name
 
@@ -327,6 +413,8 @@ class WindowsUIControl:
         title_query: str | WindowInfo,
         control_name: str,
         direction: str,
+        *,
+        element_id: str = "",
     ) -> UIActionResult:
         direction = direction.strip().casefold()
         if direction not in _SCROLLABLE_DIRECTIONS:
@@ -341,11 +429,13 @@ class WindowsUIControl:
             self.observer._safe_text(window) or self._target_title(title_query)
         )
 
-        lookup = self.observer.resolve_control(
-            window, control_name, expected_roles=_SCROLL_ROLES,
+        lookup = self._resolve(
+            window, control_name, element_id, expected_roles=_SCROLL_ROLES,
         )
         if lookup.status != "matched":
-            return self._lookup_failure(lookup, window_title, control_name)
+            return self._lookup_failure(
+                lookup, window_title, element_id or control_name,
+            )
         control = lookup.control
         real_name = lookup.name or control_name
 
@@ -379,6 +469,28 @@ class WindowsUIControl:
             control_name=real_name,
             verified=verified,
             evidence=evidence,
+        )
+
+    def _resolve(
+        self,
+        window: Any,
+        control_name: str,
+        element_id: str,
+        *,
+        expected_roles: frozenset[str],
+    ) -> ControlLookup:
+        """Prefer a scan-scoped id when given; fall back to name matching.
+
+        An id is meant to be copied verbatim from the most recent
+        describe_window, so it resolves exactly, never fuzzily. Every
+        safety gate downstream (committing/credential checks, role
+        refusal) reads the resolved lookup.name/lookup.role either way --
+        it never knows or cares which addressing method produced it.
+        """
+        if element_id:
+            return self.observer.resolve_control_by_id(window, element_id)
+        return self.observer.resolve_control(
+            window, control_name, expected_roles=expected_roles,
         )
 
     def _require_window(self, title_query: str | WindowInfo) -> Any:
@@ -540,6 +652,18 @@ class WindowsUIControl:
             pass
         try:
             return str(control.iface_value.CurrentValue), "UI Automation value", True
+        except Exception:
+            pass
+        try:
+            # Rich-text/Document-role controls (Windows 11's modern Notepad,
+            # WordPad, and similar) do not implement ValuePattern at all --
+            # their content is only readable through TextPattern's whole-
+            # document range. Reproduced live: without this, a real,
+            # verified keystroke sequence into Notepad's Document control
+            # was reported as unverifiable even though the text was
+            # genuinely there afterward.
+            text = control.iface_text.DocumentRange.GetText(-1)
+            return str(text), "UI Automation text range", True
         except Exception:
             pass
         try:

@@ -162,6 +162,11 @@ routing:
   # old task. The router also clears an offer when the user changes topics.
   agent_offer_expiry_seconds: 300
 
+  # Below this confidence, an ability-boundary decision (web_search vs.
+  # computer_action) asks a short clarifying question instead of guessing.
+  confidence_medium_threshold: 0.5
+  confidence_clarification_enabled: true
+
 
 ############################################################
 # Bounded Windows Computer Control
@@ -190,11 +195,39 @@ computer_control:
   # user deliberately enables it for local development tools.
   allow_local_urls: false
 
+  # Used for "open the browser and search for X" -- a fresh tab with no
+  # specific site named. The domain here is fixed by this config, never
+  # model-invented; only the query text (always percent-encoded) is filled
+  # into {query}. Change this to your preferred search engine.
+  default_search_url: "https://www.google.com/search?q={query}"
+
   # Optional spoken aliases for portable or unusually named applications.
   # The value must match the application's discovered Windows display name.
   aliases: {}
   # aliases:
   #   code: "Visual Studio Code"
+
+
+############################################################
+# Browser Control (Phase 4C)
+############################################################
+
+browser_control:
+  # Elaina opens pages she needs to operate in this Chromium-based browser,
+  # using a private browser profile and the Chrome DevTools Protocol. This
+  # keeps follow-up requests such as "click Images" in the same controllable
+  # session and never exposes the user's normal browser profile or cookies.
+  # Must match the browser's discovered Windows display name (the same
+  # discovery Phase 4A/4B use for computer_control).
+  enabled: true
+  browser_name: "Whale"
+
+  # The remote port binds only to localhost. A dedicated profile is required
+  # by current Chromium releases and prevents normal browsing data from being
+  # exposed through automation. Leave this blank to use Elaina's private
+  # runtime profile; set an absolute path only if you want to manage it.
+  remote_debugging_port: 9222
+  user_data_dir: ""
 
 
 ############################################################
@@ -502,3 +535,4 @@ debug:
   print_search: true
   print_tool_calls: true
   print_timings: true
+  print_router_confidence: true

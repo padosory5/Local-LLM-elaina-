@@ -40,3 +40,9 @@ tzdata>=2025
 # Phase 4B.1 read-only UI Automation window/control observation.
 pywin32>=306
 pywinauto>=0.6,<1
+
+# Phase 4C browser-page control -- connects to Elaina's dedicated
+# Chromium-based browser profile (for example, Whale) over the Chrome DevTools
+# Protocol. Only the Python client is needed; no bundled browser download
+# (`playwright install`), because Elaina launches the installed browser itself.
+playwright>=1.62,<2

@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from agents.consent import SemanticConsentClassifier
 from security.computer_consent import ComputerConsentGate
-from tools.computer_control import PreparedComputerAction
+from tools.computer_control.computer_control import PreparedComputerAction
 
 
 class ComputerConsentTests(unittest.TestCase):

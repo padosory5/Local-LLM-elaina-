@@ -94,6 +94,42 @@ class SemanticIntentRouterTests(unittest.TestCase):
             "speech_act": "action_request",
             "action_requested": True,
             "action_target": "Click Settings on this GitHub page.",
+            "computer_operation": "browser_action",
+        })
+        router = SemanticIntentRouter(client, "qwen3:8b")
+
+        result = router.route(
+            "Click Settings on this page.",
+            computer_control_enabled=True,
+            conversation_state={
+                "active_desktop_surface": {
+                    "title": "Settings · repository-name - GitHub",
+                    "application": "Chrome",
+                    "kind": "browser",
+                },
+            },
+        )
+
+        self.assertEqual(result.computer_operation, "browser_action")
+        prompt = client.calls[0]["messages"][0]["content"]
+        self.assertIn("active_desktop_surface", prompt)
+        self.assertIn("GitHub", prompt)
+        self.assertIn("already looking at", prompt)
+
+    def test_deictic_page_reference_corrects_a_mislabeled_ui_action_to_browser_action(self):
+        # ui_action vs. browser_action is a hard call for the model to get
+        # right from wording alone every time -- when the request is
+        # deictic ("this page") and the real active surface is a known
+        # browser page, that is ground truth the router already has and
+        # should trust over a mislabeled model guess.
+        client = self.RecordingClient({
+            "intent": "computer_action",
+            "confidence": 0.9,
+            "normalized_request": "Click Settings on this page.",
+            "reason": "A control on the active page.",
+            "speech_act": "action_request",
+            "action_requested": True,
+            "action_target": "Click Settings on this page.",
             "computer_operation": "ui_action",
         })
         router = SemanticIntentRouter(client, "qwen3:8b")
@@ -110,11 +146,119 @@ class SemanticIntentRouterTests(unittest.TestCase):
             },
         )
 
+        self.assertEqual(result.computer_operation, "browser_action")
+
+    def test_short_click_follow_up_inherits_the_recent_browser_page(self):
+        client = self.RecordingClient({
+            "intent": "computer_action",
+            "confidence": 0.9,
+            "normalized_request": "Click Images.",
+            "reason": "A generic click request.",
+            "speech_act": "action_request",
+            "action_requested": True,
+            "action_target": "Click Images.",
+            "computer_operation": "ui_action",
+        })
+        router = SemanticIntentRouter(client, "qwen3:8b")
+
+        result = router.route(
+            "click the Images button",
+            computer_control_enabled=True,
+            conversation_state={
+                "active_desktop_surface": {
+                    "kind": "browser",
+                    "title": "best hotels in Guam - Google Search",
+                    "url": "https://www.google.com/search?q=best+hotels+in+Guam",
+                },
+            },
+        )
+
+        self.assertEqual(result.computer_operation, "browser_action")
+        self.assertTrue(result.action_requested)
+
+    def test_short_click_follow_up_overrides_a_misclassified_browser_search(self):
+        client = self.RecordingClient({
+            "intent": "computer_action",
+            "confidence": 0.9,
+            "normalized_request": "Images",
+            "reason": "The model mistook a button label for a query.",
+            "speech_act": "action_request",
+            "action_requested": True,
+            "action_target": "Images",
+            "computer_operation": "open_search",
+        })
+        router = SemanticIntentRouter(client, "qwen3:8b")
+
+        result = router.route(
+            "click Images",
+            computer_control_enabled=True,
+            conversation_state={
+                "active_desktop_surface": {
+                    "kind": "browser",
+                    "url": "https://www.google.com/search?q=best+hotels+in+Guam",
+                },
+            },
+        )
+
+        self.assertEqual(result.computer_operation, "browser_action")
+        self.assertEqual(result.action_target, "click Images")
+
+    def test_deictic_window_reference_corrects_a_mislabeled_browser_action_to_ui_action(self):
+        client = self.RecordingClient({
+            "intent": "computer_action",
+            "confidence": 0.9,
+            "normalized_request": "Click Save in this window.",
+            "reason": "A control on the active window.",
+            "speech_act": "action_request",
+            "action_requested": True,
+            "action_target": "Click Save in this window.",
+            "computer_operation": "browser_action",
+        })
+        router = SemanticIntentRouter(client, "qwen3:8b")
+
+        result = router.route(
+            "Click Save in this window.",
+            computer_control_enabled=True,
+            conversation_state={
+                "active_desktop_surface": {
+                    "title": "notes.txt - Notepad",
+                    "application": "Notepad",
+                    "kind": "native",
+                },
+            },
+        )
+
         self.assertEqual(result.computer_operation, "ui_action")
-        prompt = client.calls[0]["messages"][0]["content"]
-        self.assertIn("active_desktop_surface", prompt)
-        self.assertIn("GitHub", prompt)
-        self.assertIn("is not an application", prompt)
+
+    def test_a_named_app_is_not_forced_by_an_unrelated_active_browser_surface(self):
+        # No deictic wording here ("in Spotify" names the target directly),
+        # so the active surface being a browser must not override it --
+        # the correction is scoped to genuinely ambiguous deictic requests.
+        client = self.RecordingClient({
+            "intent": "computer_action",
+            "confidence": 0.9,
+            "normalized_request": "Search for Laufey in Spotify.",
+            "reason": "Spotify is a native app.",
+            "speech_act": "action_request",
+            "action_requested": True,
+            "action_target": "Search for Laufey in Spotify.",
+            "computer_operation": "ui_action",
+        })
+        router = SemanticIntentRouter(client, "qwen3:8b")
+
+        result = router.route(
+            "Search for Laufey in Spotify.",
+            computer_control_enabled=True,
+            conversation_state={
+                "active_desktop_surface": {
+                    "title": "GitHub",
+                    "application": "Chrome",
+                    "kind": "browser",
+                },
+            },
+        )
+
+        self.assertEqual(result.computer_operation, "ui_action")
 
     def test_open_app_cannot_discard_a_requested_spotify_playback_goal(self):
         router = SemanticIntentRouter(
@@ -142,6 +286,28 @@ class SemanticIntentRouterTests(unittest.TestCase):
             "Can you play Dynamite in Spotify for me?",
         )
         self.assertTrue(result.action_requested)
+
+    def test_explicit_spotify_browser_search_remains_browser_search(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.94,
+                "normalized_request": "Bang Bang from IVE",
+                "reason": "The user named a browser search.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "Bang Bang from IVE",
+                "computer_operation": "open_search",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Search Spotify for Bang Bang from IVE in my browser.",
+            computer_control_enabled=True,
+        )
+
+        self.assertEqual(result.computer_operation, "open_search")
 
     def test_open_app_policy_keeps_a_plain_natural_launch_request(self):
         router = SemanticIntentRouter(
@@ -1881,6 +2047,179 @@ class SemanticIntentRouterTests(unittest.TestCase):
         self.assertEqual(result.intent, "web_search")
         self.assertTrue(result.action_requested)
         self.assertNotEqual(result.intent, "calendar_action")
+
+    def test_low_confidence_web_search_becomes_clarification(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "web_search",
+                "confidence": 0.35,
+                "normalized_request": "hotels in Guam",
+                "reason": (
+                    "Uncertain whether this wants a summary or the browser."
+                ),
+                "speech_act": "action_request",
+                "action_requested": True,
+                "search_query": "hotels in Guam",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("search Guam hotels")
+
+        self.assertEqual(result.intent, "clarification")
+        self.assertFalse(result.action_requested)
+
+    def test_high_confidence_web_search_is_unaffected_by_clarification_policy(
+        self,
+    ):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "web_search",
+                "confidence": 0.95,
+                "normalized_request": "hotels in Guam",
+                "reason": "The user wants information about hotels.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "search_query": "hotels in Guam",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("what are good hotels in Guam")
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.action_requested)
+
+    def test_confidence_clarification_can_be_disabled(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "web_search",
+                "confidence": 0.2,
+                "normalized_request": "hotels in Guam",
+                "reason": "Uncertain.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "search_query": "hotels in Guam",
+            }),
+            "qwen3:8b",
+            clarification_enabled=False,
+        )
+
+        result = router.route("search Guam hotels")
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertTrue(result.action_requested)
+
+    def test_referential_delete_resolves_from_recently_created_items(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.95,
+                "normalized_request": "Delete the folder we just made.",
+                "reason": (
+                    "The user asked to delete the folder they just created."
+                ),
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "Test Notes",
+                "computer_operation": "delete_folder",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Delete the folder we just made.",
+            computer_control_enabled=True,
+            conversation_state={
+                "recently_created_items": [
+                    {
+                        "name": "Test Notes",
+                        "location": "Desktop",
+                        "kind": "folder",
+                    },
+                ],
+            },
+        )
+
+        self.assertEqual(result.computer_operation, "delete_folder")
+        self.assertTrue(result.action_requested)
+        self.assertEqual(result.action_target, "Test Notes")
+        self.assertEqual(result.computer_location, "Desktop")
+
+    def test_referential_delete_does_not_resolve_with_multiple_recent_items(
+        self,
+    ):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.95,
+                "normalized_request": "Delete the folder we just made.",
+                "reason": (
+                    "The user asked to delete the folder they just created."
+                ),
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "Test Notes",
+                "computer_operation": "delete_folder",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Delete the folder we just made.",
+            computer_control_enabled=True,
+            conversation_state={
+                "recently_created_items": [
+                    {
+                        "name": "Test Notes",
+                        "location": "Desktop",
+                        "kind": "folder",
+                    },
+                    {
+                        "name": "Another Folder",
+                        "location": "Desktop",
+                        "kind": "folder",
+                    },
+                ],
+            },
+        )
+
+        self.assertFalse(result.action_requested)
+        self.assertEqual(result.computer_operation, "unsupported")
+
+    def test_delete_without_referential_language_still_requires_grounding(
+        self,
+    ):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "computer_action",
+                "confidence": 0.95,
+                "normalized_request": "Delete something.",
+                "reason": "Vague delete request.",
+                "speech_act": "action_request",
+                "action_requested": True,
+                "action_target": "Old Report",
+                "computer_operation": "delete_folder",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route(
+            "Delete something.",
+            computer_control_enabled=True,
+            conversation_state={
+                "recently_created_items": [
+                    {
+                        "name": "Test Notes",
+                        "location": "Desktop",
+                        "kind": "folder",
+                    },
+                ],
+            },
+        )
+
+        self.assertFalse(result.action_requested)
+        self.assertEqual(result.computer_operation, "unsupported")
 
 
 if __name__ == "__main__":

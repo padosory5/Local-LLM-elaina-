@@ -1,0 +1,21 @@
+id: computer_control
+name: Computer Control
+description: Observes and controls native Windows windows and browser pages the user is already looking at.
+enabled: true
+intents:
+  - computer_action
+tools:
+  - computer.ui_action
+  - computer.browser_action
+use_when:
+  - The user wants to open, close, or control an installed application or a specific browser tab.
+  - The user wants to click, type, select, or scroll inside a window or webpage that is already open.
+avoid_when:
+  - The user only wants information or a summary, with nothing to click or open (that is Web Research instead).
+  - No specific application or page is named or already in view, and the user has not asked to open one.
+instructions:
+  - Only act while Desktop Control Mode is on; otherwise explain what would happen and offer to enable it.
+  - Every window, tab, and control is verified against the live system before acting -- never assume a name exists.
+preconditions:
+  - computer_control_mode_enabled
+settings: {}

@@ -3,14 +3,14 @@ import unittest
 from pathlib import Path
 
 from security.policy import PolicyEngine
-from tools.computer_control import (
+from tools.computer_control.computer_control import (
     ComputerActionRequest,
     ComputerControl,
 )
-from tools.safe_browser import SafeBrowserControl
-from tools.safe_filesystem import SafeFilesystemControl
-from tools.windows_app_catalog import AppEntry, WindowsAppCatalog
-from tools.windows_process_control import ProcessInfo, ProcessResolution
+from tools.browser_control.safe_browser import SafeBrowserControl
+from tools.computer_control.safe_filesystem import SafeFilesystemControl
+from tools.computer_control.windows_app_catalog import AppEntry, WindowsAppCatalog
+from tools.computer_control.windows_process_control import ProcessInfo, ProcessResolution
 
 
 class SafeBrowserControlTests(unittest.TestCase):

@@ -7,16 +7,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from security.policy import PolicyEngine
-from tools.safe_browser import SafeBrowserControl
-from tools.safe_filesystem import SafeFilesystemControl
-from tools.windows_app_catalog import (
+from tools.browser_control.safe_browser import SafeBrowserControl
+from tools.computer_control.safe_filesystem import SafeFilesystemControl
+from tools.computer_control.windows_app_catalog import (
     AppEntry,
     AppResolution,
     WindowsAppCatalog,
     normalize_app_name,
 )
-from tools.windows_process_control import WindowsProcessControl
-from tools.windows_ui_observer import WindowInfo, WindowsUIObserver
+from tools.computer_control.windows_process_control import WindowsProcessControl
+from tools.computer_control.windows_ui_observer import WindowInfo, WindowsUIObserver
 
 
 _GENERIC_TARGET_WORDS = {"app", "application", "launcher", "the"}
@@ -28,6 +28,7 @@ COMPUTER_OPERATIONS = frozenset({
     "close_app",
     "force_quit_app",
     "open_url",
+    "open_search",
     "create_file",
     "create_folder",
     "delete_file",
@@ -35,6 +36,7 @@ COMPUTER_OPERATIONS = frozenset({
     "list_windows",
     "describe_window",
     "ui_action",
+    "browser_action",
     "unsupported",
 })
 
@@ -43,24 +45,25 @@ COMPUTER_OPERATIONS = frozenset({
 # HIGH_RISK_OPERATIONS or need a confirmation turn.
 OBSERVATION_OPERATIONS = frozenset({"list_windows", "describe_window"})
 
-# Phase 4B.2: a natural-language UI request (click/type/focus/select/scroll)
-# handled by brain.desktop_action_planner's tool-calling loop rather than a
-# single structured operation -- the loop itself resolves the real window
-# and control names and enforces per-step confirmation, so this operation
-# has no single named target to ground the way open_app/open_url do.
-UI_ACTION_OPERATIONS = frozenset({"ui_action"})
-# ui_action itself never runs through ComputerControl.execute()'s generic
-# HIGH_RISK gate below -- brain.chat_engine calls DesktopActionPlanner
-# directly, and the planner/WindowsUIControl decide per-control whether a
-# specific click needs confirmation. It's listed here only so
+# Phase 4B.2/4C.2: a natural-language UI request (click/type/focus/select/
+# scroll for ui_action; click/fill/select/scroll/navigate for browser_action
+# on a webpage's real DOM) handled by a tool-calling planner rather than a
+# single structured operation -- the loop itself resolves the real window/
+# tab and control/element, so this operation has no single named target to
+# ground the way open_app/open_url do.
+UI_ACTION_OPERATIONS = frozenset({"ui_action", "browser_action"})
+# Neither ui_action nor browser_action runs through ComputerControl.execute()'s
+# generic HIGH_RISK gate below -- brain.chat_engine calls the planner
+# directly, and the planner/control layer decide per-step whether a specific
+# action needs confirmation. They're listed here only so
 # ComputerConsentGate.offer() (which checks this same set) will accept a
-# pending ui_action confirmation for a click the planner flagged as
-# committing.
+# pending confirmation for a click either planner flagged as committing.
 HIGH_RISK_OPERATIONS = frozenset({
     "force_quit_app",
     "delete_file",
     "delete_folder",
     "ui_action",
+    "browser_action",
 })
 
 
@@ -113,6 +116,17 @@ class PreparedComputerAction:
     # click can be re-resolved and re-verified rather than replayed blind.
     window_title: str = ""
     window_snapshot: WindowInfo | None = None
+    # Phase 4C.2: which browser tab a browser_action element lives in, the
+    # same "resolve the exact frozen target, never replay blind" pattern.
+    tab_index: int | None = None
+    # The exact browser operation and fresh DOM fingerprint retained across a
+    # confirmation turn.  Browser page state is volatile, so the approved
+    # action must be re-resolved against the same URL, scan, label, and link
+    # rather than replaying a mutable selector or tab fallback.
+    browser_action: str = ""
+    browser_text: str = ""
+    browser_scan_id: str = ""
+    browser_href: str = ""
 
     @property
     def request(self) -> str:
@@ -121,11 +135,15 @@ class PreparedComputerAction:
             "close_app": "Close",
             "force_quit_app": "Force quit",
             "open_url": "Open",
+            "open_search": "Search",
             "create_file": "Create file",
             "create_folder": "Create folder",
             "delete_file": "Delete file",
             "delete_folder": "Delete folder",
             "ui_action": "Click",
+            "browser_action": (
+                "Paste into" if self.browser_action == "fill" else "Click"
+            ),
         }
         return f"{verbs.get(self.operation, 'Run')} {self.display_name}".strip()
 
@@ -135,11 +153,15 @@ class PreparedComputerAction:
             "open_app": "open",
             "close_app": "close",
             "open_url": "open",
+            "open_search": "search for",
             "create_file": "create",
             "create_folder": "create",
             "delete_file": "delete",
             "delete_folder": "delete",
             "ui_action": "click",
+            "browser_action": (
+                "paste into" if self.browser_action == "fill" else "click"
+            ),
         }
         verb = verbs.get(self.operation, self.operation.replace("_", " "))
         return f"{verb} {self.display_name}".strip()
@@ -246,8 +268,12 @@ class ComputerControl:
                 operation=operation, entry_id=entry.id, prepared=prepared,
             )
 
-        if operation == "open_url":
-            resolution = self.browser.resolve(request.target, request.url)
+        if operation in {"open_url", "open_search"}:
+            resolution = (
+                self.browser.resolve_search(request.target)
+                if operation == "open_search"
+                else self.browser.resolve(request.target, request.url)
+            )
             if resolution.status != "resolved":
                 return self._result(
                     resolution.status, request.target, request.target,
@@ -400,12 +426,16 @@ class ComputerControl:
                     ),
                 )
 
-            if operation == "open_url":
+            if operation in {"open_url", "open_search"}:
                 self.browser.open(prepared.url)
+                message = (
+                    f"Searching for {prepared.display_name}."
+                    if operation == "open_search"
+                    else f"Opened {prepared.url} in a new tab."
+                )
                 return self._result(
                     "url_opened", prepared.target, prepared.display_name,
-                    f"Opened {prepared.url} in a new tab.", operation=operation,
-                    url=prepared.url,
+                    message, operation=operation, url=prepared.url,
                 )
 
             if operation == "create_file":
@@ -449,6 +479,7 @@ class ComputerControl:
             failure_message = {
                 "open_app": f"I couldn't open {prepared.display_name}.",
                 "open_url": f"I couldn't open {prepared.display_name}.",
+                "open_search": f"I couldn't search for {prepared.display_name}.",
                 "close_app": f"I couldn't close {prepared.display_name}.",
                 "force_quit_app": f"I couldn't force quit {prepared.display_name}.",
                 "create_file": f"I couldn't create {prepared.display_name}.",
@@ -501,6 +532,7 @@ class ComputerControl:
             "close_app": "computer.close_app",
             "force_quit_app": "computer.force_quit_app",
             "open_url": "browser.open_url",
+            "open_search": "browser.open_search",
             "create_file": "filesystem.create",
             "create_folder": "filesystem.create",
             "delete_file": "filesystem.delete",
@@ -508,6 +540,7 @@ class ComputerControl:
             "list_windows": "computer.observe_ui",
             "describe_window": "computer.observe_ui",
             "ui_action": "computer.ui_action",
+            "browser_action": "computer.browser_action",
         }[operation]
 
     def _from_app_resolution(

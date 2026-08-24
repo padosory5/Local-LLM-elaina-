@@ -1,12 +1,12 @@
 import unittest
 
 from security.policy import PolicyEngine
-from tools.computer_control import (
+from tools.computer_control.computer_control import (
     ComputerActionRequest,
     ComputerControl,
     transcript_names_target,
 )
-from tools.windows_app_catalog import (
+from tools.computer_control.windows_app_catalog import (
     AppEntry,
     WindowsAppCatalog,
     app_name_aliases,

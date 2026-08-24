@@ -29,7 +29,7 @@ from brain.intent_router import SemanticIntentRouter  # noqa: E402
 from config.loader import Config  # noqa: E402
 from scripts.console_style import status_label  # noqa: E402
 from security.computer_consent import ComputerConsentGate  # noqa: E402
-from tools.computer_control import PreparedComputerAction  # noqa: E402
+from tools.computer_control.computer_control import PreparedComputerAction  # noqa: E402
 
 
 DEFAULT_MATRIX = PROJECT_ROOT / "tests" / "feature_matrix.json"

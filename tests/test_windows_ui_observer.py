@@ -1,6 +1,6 @@
 import unittest
 
-from tools.windows_ui_observer import WindowInfo, WindowsUIObserver
+from tools.computer_control.windows_ui_observer import WindowInfo, WindowsUIObserver
 
 
 class _FakeElementInfo:
@@ -11,17 +11,44 @@ class _FakeElementInfo:
         self.enabled = enabled
 
 
+class _FakeRectangle:
+    def __init__(self, width, height):
+        self._width = width
+        self._height = height
+
+    def width(self):
+        return self._width
+
+    def height(self):
+        return self._height
+
+
 class _FakeElement:
-    def __init__(self, control_type, name, *, visible=True, enabled=True):
+    def __init__(
+        self,
+        control_type,
+        name,
+        *,
+        visible=True,
+        enabled=True,
+        rectangle=(10, 10),
+    ):
         self.element_info = _FakeElementInfo(
             control_type, name, visible=visible, enabled=enabled,
         )
+        self._rectangle = rectangle
 
     def is_visible(self):
         return self.element_info.visible
 
     def is_enabled(self):
         return self.element_info.enabled
+
+    def rectangle(self):
+        if self._rectangle is None:
+            raise AttributeError("no rectangle exposed")
+        width, height = self._rectangle
+        return _FakeRectangle(width, height)
 
 
 class _FakeWindow:
@@ -212,6 +239,30 @@ class WindowsUIObserverTests(unittest.TestCase):
 
         self.assertIsNone(observer.find_window(captured))
 
+    def test_find_window_accepts_a_handle_match_despite_a_drifted_class_name(self):
+        # Some apps (observed on Windows 11's modern Notepad) report a
+        # different UI Automation class name between scans even though the
+        # same real window is still open. A live handle match is proof
+        # enough on its own; the class_name from the original snapshot
+        # must not become a second point of failure.
+        target = _FakeWindow(
+            "Untitled - Notepad",
+            class_name="Notepad",
+            handle=787988,
+            process_id=23928,
+        )
+        observer = WindowsUIObserver(
+            desktop=_FakeDesktop([target]), foreground_window=lambda: "",
+        )
+        captured = WindowInfo(
+            title="Untitled - Notepad",
+            handle=787988,
+            process_id=23928,
+            class_name="Dialog",
+        )
+
+        self.assertIs(observer.find_window(captured), target)
+
     def test_pid_only_snapshot_uses_title_to_choose_same_process_window(self):
         other_tab = _FakeWindow(
             "Gmail - Chrome",
@@ -321,6 +372,157 @@ class WindowsUIObserverTests(unittest.TestCase):
         )
         self.assertTrue(observation.truncated)
 
+    def test_describe_window_ranks_a_document_editor_above_unrelated_text(self):
+        # Reproduced live: modern Windows 11 Notepad exposes its whole
+        # editable surface as a single Document node with no separate Edit
+        # control. Ranking Document as a low-priority container buried it
+        # below status-bar Text nodes like "Line 1, Column 1" -- the model
+        # picked one of those instead of the real text-entry control.
+        descendants = [
+            _FakeElement("Text", "Line 1, Column 1"),
+            _FakeElement("Text", "0 characters"),
+            _FakeElement("Document", "Text editor"),
+        ]
+        observer = WindowsUIObserver(
+            desktop=_FakeDesktop([_FakeWindow("Notepad", descendants=descendants)]),
+            foreground_window=lambda: "",
+        )
+
+        observation = observer.describe_window("Notepad")
+
+        self.assertEqual(observation.controls[0].name, "Text editor")
+        self.assertTrue(observation.controls[0].is_actionable)
+
+    def test_describe_window_assigns_fresh_ids_on_every_scan(self):
+        window = _FakeWindow(
+            "Notepad",
+            descendants=[_FakeElement("Document", "Text editor")],
+        )
+        observer = WindowsUIObserver(
+            desktop=_FakeDesktop([window]), foreground_window=lambda: "",
+        )
+
+        first = observer.describe_window("Notepad")
+        second = observer.describe_window("Notepad")
+
+        first_id = first.controls[0].element_id
+        second_id = second.controls[0].element_id
+        self.assertTrue(first_id)
+        self.assertTrue(second_id)
+        self.assertNotEqual(first_id, second_id)
+        self.assertNotEqual(first.scan_id, second.scan_id)
+
+    def test_resolve_control_by_id_matches_the_scanned_element(self):
+        element = _FakeElement("Document", "Text editor")
+        window = _FakeWindow("Notepad", handle=101, descendants=[element])
+        observer = WindowsUIObserver(
+            desktop=_FakeDesktop([window]), foreground_window=lambda: "",
+        )
+        observation = observer.describe_window("Notepad")
+        element_id = observation.controls[0].element_id
+
+        lookup = observer.resolve_control_by_id(window, element_id)
+
+        self.assertEqual(lookup.status, "matched")
+        self.assertIs(lookup.control, element)
+        self.assertEqual(lookup.name, "Text editor")
+
+    def test_resolve_control_by_id_rejects_an_id_from_a_superseded_scan(self):
+        window = _FakeWindow(
+            "Notepad", handle=101,
+            descendants=[_FakeElement("Document", "Text editor")],
+        )
+        observer = WindowsUIObserver(
+            desktop=_FakeDesktop([window]), foreground_window=lambda: "",
+        )
+        first = observer.describe_window("Notepad")
+        stale_id = first.controls[0].element_id
+        observer.describe_window("Notepad")
+
+        lookup = observer.resolve_control_by_id(window, stale_id)
+
+        self.assertEqual(lookup.status, "not_found")
+
+    def test_resolve_control_by_id_rejects_an_id_from_a_different_window(self):
+        window_a = _FakeWindow(
+            "Notepad", handle=101,
+            descendants=[_FakeElement("Document", "Text editor")],
+        )
+        window_b = _FakeWindow(
+            "Calculator", handle=202,
+            descendants=[_FakeElement("Button", "Equals")],
+        )
+        observer = WindowsUIObserver(
+            desktop=_FakeDesktop([window_a, window_b]),
+            foreground_window=lambda: "",
+        )
+        observation_a = observer.describe_window("Notepad")
+        observer.describe_window("Calculator")
+
+        lookup = observer.resolve_control_by_id(
+            window_b, observation_a.controls[0].element_id,
+        )
+
+        self.assertEqual(lookup.status, "not_found")
+
+    def test_resolve_control_by_id_detects_a_destroyed_element_as_stale(self):
+        element = _FakeElement("Document", "Text editor")
+        window = _FakeWindow("Notepad", handle=101, descendants=[element])
+        observer = WindowsUIObserver(
+            desktop=_FakeDesktop([window]), foreground_window=lambda: "",
+        )
+        observation = observer.describe_window("Notepad")
+        element_id = observation.controls[0].element_id
+        element.element_info = _FakeElementInfo("", "")  # simulate teardown
+
+        lookup = observer.resolve_control_by_id(window, element_id)
+
+        self.assertEqual(lookup.status, "stale")
+
+    def test_resolve_control_by_id_detects_a_renamed_element_as_stale(self):
+        element = _FakeElement("Document", "Text editor")
+        window = _FakeWindow("Notepad", handle=101, descendants=[element])
+        observer = WindowsUIObserver(
+            desktop=_FakeDesktop([window]), foreground_window=lambda: "",
+        )
+        observation = observer.describe_window("Notepad")
+        element_id = observation.controls[0].element_id
+        element.element_info = _FakeElementInfo("Document", "Something else")
+
+        lookup = observer.resolve_control_by_id(window, element_id)
+
+        self.assertEqual(lookup.status, "stale")
+
+    def test_resolve_control_by_id_rejects_an_empty_id(self):
+        window = _FakeWindow("Notepad", handle=101)
+        observer = WindowsUIObserver(
+            desktop=_FakeDesktop([window]), foreground_window=lambda: "",
+        )
+
+        lookup = observer.resolve_control_by_id(window, "")
+
+        self.assertEqual(lookup.status, "invalid")
+
+    def test_scan_cache_evicts_the_oldest_window_once_the_bound_is_exceeded(self):
+        windows = [
+            _FakeWindow(
+                f"App{i}", handle=i,
+                descendants=[_FakeElement("Button", "Go")],
+            )
+            for i in range(8)
+        ]
+        observer = WindowsUIObserver(
+            desktop=_FakeDesktop(windows), foreground_window=lambda: "",
+        )
+        first_observation = observer.describe_window("App0")
+        first_id = first_observation.controls[0].element_id
+        for window in windows[1:]:
+            observer.describe_window(window._title)
+
+        lookup = observer.resolve_control_by_id(windows[0], first_id)
+
+        self.assertEqual(lookup.status, "not_found")
+
     def test_describe_window_omits_known_hidden_controls(self):
         observer = WindowsUIObserver(
             desktop=_FakeDesktop([_FakeWindow(
@@ -336,6 +538,28 @@ class WindowsUIObserverTests(unittest.TestCase):
         observation = observer.describe_window("App")
 
         self.assertEqual([item.name for item in observation.controls], ["Visible"])
+
+    def test_describe_window_omits_a_zero_size_phantom_element(self):
+        # Chromium/CEF-based apps (Spotify, Battle.net, ...) expose a
+        # permanent zero-size "Edit" node named after their embedded
+        # browser shell's own address bar, reported as visible and
+        # enabled even though it occupies no real screen space.
+        observer = WindowsUIObserver(
+            desktop=_FakeDesktop([_FakeWindow(
+                "App",
+                descendants=[
+                    _FakeElement(
+                        "Edit", "Address and search bar", rectangle=(0, 0),
+                    ),
+                    _FakeElement("Button", "Search"),
+                ],
+            )]),
+            foreground_window=lambda: "",
+        )
+
+        observation = observer.describe_window("App")
+
+        self.assertEqual([item.name for item in observation.controls], ["Search"])
 
     def test_find_control_prefers_exact_name_over_earlier_partial_match(self):
         partial = _FakeElement("Button", "Search settings")
@@ -385,6 +609,19 @@ class WindowsUIObserverTests(unittest.TestCase):
         )
 
         self.assertIs(observer.find_control(window, "Search"), enabled)
+
+    def test_find_control_never_matches_a_zero_size_phantom_element(self):
+        phantom = _FakeElement(
+            "Edit", "Address and search bar", rectangle=(0, 0),
+        )
+        window = _FakeWindow("App", descendants=[phantom])
+        observer = WindowsUIObserver(
+            desktop=_FakeDesktop([window]), foreground_window=lambda: "",
+        )
+
+        lookup = observer.resolve_control(window, "Address and search bar")
+
+        self.assertEqual(lookup.status, "not_found")
 
     def test_find_control_preserves_english_korean_alias_resolution(self):
         korean = _FakeElement("Button", "설정")

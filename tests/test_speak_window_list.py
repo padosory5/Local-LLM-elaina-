@@ -1,7 +1,7 @@
 import unittest
 
 from brain.chat_engine import ChatEngine
-from tools.windows_ui_observer import WindowInfo
+from tools.computer_control.windows_ui_observer import WindowInfo
 
 
 class SpeakWindowListTests(unittest.TestCase):

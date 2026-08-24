@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from tools.computer_control import HIGH_RISK_OPERATIONS, PreparedComputerAction
+from tools.computer_control.computer_control import HIGH_RISK_OPERATIONS, PreparedComputerAction
 
 
 @dataclass(frozen=True)

@@ -9,11 +9,11 @@ from brain.desktop_action_planner import (
 from brain.intent_router import IntentDecision
 from security.computer_consent import ComputerConsentGate
 from security.computer_control_mode import ComputerControlMode
-from tools.computer_control import (
+from tools.computer_control.computer_control import (
     ComputerActionResult,
     PreparedComputerAction,
 )
-from tools.windows_ui_observer import WindowInfo
+from tools.computer_control.windows_ui_observer import WindowInfo
 
 
 class FakeBriefResponses:

@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
-from tools.computer_control import (
+from tools.computer_control.computer_control import (
     COMPUTER_OPERATIONS,
     OBSERVATION_OPERATIONS,
     UI_ACTION_OPERATIONS,
@@ -78,6 +78,57 @@ _IRREVERSIBLE_DELETE_REQUEST = re.compile(
     flags=re.IGNORECASE,
 )
 
+# ui_action vs. browser_action is a genuinely hard call for the model to get
+# right from wording alone every time (both use nearly the same phrasing).
+# When the request is deictic ("this page", "here", "in it") and the real,
+# already-known active surface is a browser page, that is ground truth the
+# model doesn't have to guess at -- correct the operation deterministically
+# rather than hoping the prompt alone lands it every time.
+_DEICTIC_SURFACE_REFERENCE = re.compile(
+    r"\bthis\s+(?:page|window|screen)\b|\bhere\b|\bin\s+it\b",
+    flags=re.IGNORECASE,
+)
+
+# A short follow-up after an Elaina-opened search rarely repeats "on this
+# page" ("click Images", "show pictures", "open the first result").  The
+# foreground browser is stronger evidence than a small model's ambiguous
+# ui_action/browser_action label.  Explicit native-app names retain their
+# desktop route.
+_IMPLICIT_BROWSER_ACTION = re.compile(
+    r"\b(?:click|press|tap|open|show|fill|type|enter|select|choose|scroll|"
+    r"read|compare|play|pause|resume|skip)\b",
+    flags=re.IGNORECASE,
+)
+_UNAMBIGUOUS_BROWSER_PAGE_ACTION = re.compile(
+    r"\b(?:click|press|tap|fill|type|enter|select|choose|scroll|read|compare)\b",
+    flags=re.IGNORECASE,
+)
+_EXPLICIT_NATIVE_APP_REFERENCE = re.compile(
+    r"\b(?:spotify|notepad|calculator|discord|slack|steam|settings|"
+    r"visual\s+studio\s+code|vs\s*code)\b",
+    flags=re.IGNORECASE,
+)
+
+# A referential delete ("delete the folder we just made", "delete that")
+# names no exact item -- it points at something Elaina herself just created
+# this session. Small closed-class grammar pattern, the same technique
+# already used for _DEICTIC_SURFACE_REFERENCE above, not a semantic
+# keyword list: it only ever unlocks resolving against real local session
+# state (see SessionItemMemory), never lets the model invent a target.
+_REFERENTIAL_ITEM_REFERENCE = re.compile(
+    r"\b(?:it|that|the\s+one)\b|"
+    r"\b(?:we|you|i)\s+(?:just\s+)?(?:made|created)\b|"
+    r"\bjust\s+(?:made|created)\b",
+    flags=re.IGNORECASE,
+)
+
+# Ability-boundary intents: real requests where the model chooses between
+# two meaningfully different things Elaina could do next (act on the real
+# computer vs. research and report back). Confidence only matters here --
+# other intents either have no such boundary or are already deterministically
+# corrected by policy above using real local state.
+_ABILITY_BOUNDARY_INTENTS = frozenset({"web_search", "computer_action"})
+
 # ``open_app`` has a deliberately narrow semantic contract: launching one
 # application is the whole requested outcome. These are grammar/function words
 # that can surround that outcome, not sentence triggers. Any other substantive
@@ -102,6 +153,7 @@ def _open_app_has_unresolved_goal(transcript: str, target: str) -> bool:
         if word not in target_words and word not in _OPEN_APP_GRAMMAR_WORDS
     ]
     return bool(remaining)
+
 
 TIME_SCOPES = {"timeless", "current", "historical", "future", "unknown"}
 REQUEST_EXPLICITNESS_VALUES = {"direct", "indirect", "statement", "unknown"}
@@ -151,6 +203,9 @@ class SemanticIntentRouter:
         model: str,
         keep_alive: int | str = -1,
         safety_mode: str = "enforce",
+        medium_confidence_threshold: float = 0.5,
+        clarification_enabled: bool = True,
+        print_confidence_log: bool = True,
     ) -> None:
         self.client = client
         self.model = model
@@ -160,6 +215,9 @@ class SemanticIntentRouter:
             if safety_mode in {"enforce", "shadow", "off"}
             else "enforce"
         )
+        self.medium_confidence_threshold = float(medium_confidence_threshold)
+        self.clarification_enabled = bool(clarification_enabled)
+        self.print_confidence_log = bool(print_confidence_log)
 
     def route(
         self,
@@ -331,6 +389,10 @@ class SemanticIntentRouter:
                     decision,
                     original_input=user_input,
                     computer_control_enabled=computer_control_enabled,
+                    active_desktop_surface=state.get("active_desktop_surface"),
+                    recently_created_items=tuple(
+                        state.get("recently_created_items", ()) or ()
+                    ),
                 )
                 safe_decision = self._apply_action_safety_policy(
                     decision,
@@ -423,6 +485,12 @@ class SemanticIntentRouter:
                         action_target="",
                     )
                 decision = self._apply_factual_source_policy(decision)
+                decision = self._apply_confidence_clarification_policy(
+                    decision,
+                    medium_confidence_threshold=self.medium_confidence_threshold,
+                    clarification_enabled=self.clarification_enabled,
+                    print_confidence_log=self.print_confidence_log,
+                )
                 return decision
         except Exception as error:
             print(
@@ -547,6 +615,8 @@ class SemanticIntentRouter:
         *,
         original_input: str,
         computer_control_enabled: bool = False,
+        active_desktop_surface: dict[str, Any] | None = None,
+        recently_created_items: tuple[dict[str, Any], ...] = (),
     ) -> IntentDecision:
         """Enforce grounded Phase 4A operations and UI mode authorization."""
         if decision.intent != "computer_action":
@@ -554,6 +624,48 @@ class SemanticIntentRouter:
 
         target = decision.action_target.strip()
         operation = decision.computer_operation
+        surface_kind = str(
+            (active_desktop_surface or {}).get("kind", "")
+        ).strip().casefold()
+        has_deictic_reference = bool(_DEICTIC_SURFACE_REFERENCE.search(original_input))
+        implicit_browser_action = bool(_IMPLICIT_BROWSER_ACTION.search(original_input))
+        unambiguous_browser_page_action = bool(
+            _UNAMBIGUOUS_BROWSER_PAGE_ACTION.search(original_input)
+        )
+        explicit_native_app = bool(_EXPLICIT_NATIVE_APP_REFERENCE.search(original_input))
+        if (
+            operation == "open_search"
+            and surface_kind == "browser"
+            and unambiguous_browser_page_action
+            and not explicit_native_app
+        ):
+            decision = replace(
+                decision,
+                normalized_request=original_input.strip(),
+                reason=(
+                    "The current browser page supplies the target for this "
+                    "unambiguous page action."
+                ),
+                action_target=original_input.strip(),
+                computer_operation="browser_action",
+            )
+            target = decision.action_target.strip()
+            operation = decision.computer_operation
+        if (
+            operation in {"ui_action", "browser_action"}
+            and (
+                has_deictic_reference
+                or (
+                    surface_kind == "browser"
+                    and implicit_browser_action
+                    and not explicit_native_app
+                )
+            )
+        ):
+            corrected = "browser_action" if surface_kind == "browser" else "ui_action"
+            if corrected != operation:
+                decision = replace(decision, computer_operation=corrected)
+                operation = corrected
         if (
             operation == "open_app"
             and target
@@ -586,10 +698,6 @@ class SemanticIntentRouter:
                 action_requested=False,
                 computer_operation="unsupported",
             )
-        location_is_grounded = (
-            not decision.computer_location
-            or transcript_names_location(original_input, decision.computer_location)
-        )
         # list_windows has no target to name ("what's open?"), and
         # describe_window may reasonably omit one too ("what's on my
         # screen?" defaults to the active window). Grounding a target that
@@ -604,6 +712,42 @@ class SemanticIntentRouter:
             (operation in OBSERVATION_OPERATIONS and not target)
             or operation in UI_ACTION_OPERATIONS
             or transcript_names_target(original_input, target)
+        )
+
+        # A referential delete ("delete the test folder we just made")
+        # never repeats the literal name grounded above -- the model must
+        # not invent one, but a real, locally-recorded item Elaina herself
+        # just created is trustworthy ground truth the same way
+        # active_desktop_surface already is for "this window". Only a
+        # single unambiguous recent match of the right kind resolves;
+        # zero or multiple candidates fall through to the existing refusal.
+        resolved_from_session = False
+        if (
+            not target_is_grounded
+            and operation in {"delete_file", "delete_folder"}
+            and _REFERENTIAL_ITEM_REFERENCE.search(original_input)
+        ):
+            wanted_kind = "folder" if operation == "delete_folder" else "file"
+            matches = [
+                item
+                for item in recently_created_items
+                if str(item.get("kind", "")) == wanted_kind
+            ]
+            if len(matches) == 1:
+                resolved = matches[0]
+                decision = replace(
+                    decision,
+                    action_target=str(resolved.get("name", "")).strip(),
+                    computer_location=str(resolved.get("location", "")).strip(),
+                )
+                target = decision.action_target
+                target_is_grounded = True
+                resolved_from_session = True
+
+        location_is_grounded = (
+            resolved_from_session
+            or not decision.computer_location
+            or transcript_names_location(original_input, decision.computer_location)
         )
         # Observation questions are naturally phrased, and correctly
         # classified, as information_request ("what windows are open?"),
@@ -800,6 +944,48 @@ class SemanticIntentRouter:
         )
 
     @staticmethod
+    def _apply_confidence_clarification_policy(
+        decision: IntentDecision,
+        *,
+        medium_confidence_threshold: float,
+        clarification_enabled: bool,
+        print_confidence_log: bool = True,
+    ) -> IntentDecision:
+        """Ask instead of guessing when an ability-boundary call is unsure.
+
+        Runs last, after every deterministic policy above. Those already
+        used real local state (active_desktop_surface, transcript
+        grounding, recently_created_items) to correct or refuse the
+        model's raw guess where possible -- this only catches what
+        survives that: a genuinely low-confidence choice between two real
+        abilities, never a request a policy already grounded or refused.
+        """
+        if not clarification_enabled:
+            return decision
+        if not decision.action_requested:
+            return decision
+        if decision.intent not in _ABILITY_BOUNDARY_INTENTS:
+            return decision
+        if decision.confidence >= medium_confidence_threshold:
+            return decision
+        if print_confidence_log:
+            print(
+                "[Router Confidence] "
+                f"{decision.intent} -> clarification "
+                f"({decision.confidence:.2f} < "
+                f"{medium_confidence_threshold:.2f}): {decision.reason}"
+            )
+        return replace(
+            decision,
+            intent="clarification",
+            action_requested=False,
+            reason=(
+                f"Low routing confidence ({decision.confidence:.2f}): "
+                f"{decision.reason}"
+            ),
+        )
+
+    @staticmethod
     def _value(item: Any, key: str, default: Any = None) -> Any:
         if isinstance(item, dict):
             return item.get(key, default)
@@ -893,9 +1079,9 @@ class SemanticIntentRouter:
             "target/location -- local policy blocks execution and Elaina "
             "recommends the Computer Control toggle. When true, a grounded "
             "request may execute. Pick one computer_operation: open_app, "
-            "close_app, force_quit_app, open_url, create_file, create_folder, "
-            "delete_file, delete_folder, list_windows, describe_window, "
-            "ui_action, or unsupported.\n"
+            "close_app, force_quit_app, open_url, open_search, create_file, "
+            "create_folder, delete_file, delete_folder, list_windows, "
+            "describe_window, ui_action, browser_action, or unsupported.\n"
             "  * open_app/close_app/force_quit_app: 'open', 'launch', "
             "'start', and 'run' all mean open_app -- action_target is only "
             "the bare application name ('Start the Calculator' -> open_app, "
@@ -921,21 +1107,56 @@ class SemanticIntentRouter:
             "action_target is the named window or empty for the active "
             "one. Whenever computer_operation is describe_window, intent "
             "must be computer_action, never screen_analysis.\n"
-            "  * ui_action: click/type/focus/select/scroll inside a window "
-            "('search for Laufey in Spotify', 'click Settings on this page', "
-            "'bring VS Code to the front') -- action_target is the complete "
-            "request verbatim; never name the exact control yourself. Keep "
-            "the requested outcome ('play Dynamite in Spotify' stays "
-            "ui_action, not open_app) even if the app must open first. "
-            "Resolve 'this page/window/here/in it' against conversation "
-            "state's active_desktop_surface. A control on the current page "
-            "(e.g. 'Settings' on a GitHub page) is not an application.\n"
+            "  * ui_action: click/type/focus/select/scroll inside a native, "
+            "installed desktop application's own window -- desktop Spotify, "
+            "Notepad, Settings, VS Code, and similar apps, never a "
+            "website ('search for Laufey in Spotify' stays ui_action "
+            "because desktop Spotify is an installed app, not a webpage). "
+            "If conversation state's active_desktop_surface is a Spotify Web "
+            "page, use browser_action instead. "
+            "action_target is the complete request verbatim; never name "
+            "the exact control yourself. Keep the requested outcome "
+            "('play Dynamite in Spotify' stays ui_action, not open_app) "
+            "even if the app must open first. Resolve 'this window/here/"
+            "in it' against conversation state's active_desktop_surface.\n"
+            "  * browser_action: click/fill/select/scroll/navigate/read "
+            "content on a specific webpage the user is already looking at "
+            "in the browser right now ('click Settings on this GitHub "
+            "page', 'fill the search box on this page', 'compare these "
+            "hotel listings', 'read me this article'). Requires an "
+            "existing, already-open page -- never a fresh open-ended "
+            "'search the web'/'find hotels in Seoul' request with no page "
+            "already in view (that is web_search), and never simply "
+            "opening a URL in a new tab (that is open_url). "
+            "A short imperative after a browser search ('click Images', "
+            "'open the first result', 'show pictures') is browser_action "
+            "when active_desktop_surface is a browser, even without saying "
+            "'this page'. action_target is the complete request verbatim, the same "
+            "rule as ui_action. Resolve 'this page/here/in it' against "
+            "conversation state's active_desktop_surface.\n"
             "  * open_url: action_target is only the exact site name/address, "
             "never the whole sentence ('Open youtube.com in a new browser "
             "tab' -> target 'youtube.com'), computer_url its https address; "
             "'new tab'/'go to'/'visit'/'navigate to' all qualify, never "
             "web_search merely for being online. Closing/switching/editing "
             "one existing tab is unsupported.\n"
+            "  * open_search: the user wants a real browser tab opened and "
+            "searched so they can look at and interact with results "
+            "themselves, not be told the answer. This is signaled either by "
+            "explicitly saying 'browser', or by naming a real website or "
+            "search engine as the thing to search (Google, Bing, YouTube, "
+            "Amazon, or similar) -- naming a site implies opening it, not "
+            "just researching the topic on Elaina's behalf ('search Google "
+            "for hotels in Guam', 'google hotels in Guam', 'search Spotify "
+            "for BTS in my browser' -> open_search, not open_url or "
+            "web_search; 'search on Spotify' alone with no browser named is "
+            "ui_action instead, since Spotify is an app). A bare topic with "
+            "no named site/engine/app ('what are good hotels in Guam', "
+            "'search for hotels in Guam') stays web_search -- Elaina "
+            "answers it herself rather than opening a tab. action_target is "
+            "the exact search words verbatim from the request, nothing "
+            "added or paraphrased; computer_url stays empty -- the search "
+            "engine's address is never the model's to choose.\n"
             "  * create_file/create_folder/delete_file/delete_folder: "
             "action_target is only the bare item name ('Delete the Hello "
             "folder' -> target 'Hello', not 'Hello folder'), computer_location "
@@ -956,8 +1177,15 @@ class SemanticIntentRouter:
             "- web_search: external evidence is needed for anything tied to "
             "real-world or current state (rates, prices, weather, news, "
             "sports, officeholders, employers, laws, versions, specs, "
-            "releases, or any other fact that can change or is dated). A "
-            "direct ask is already permission (action_requested true), never "
+            "releases, or any other fact that can change or is dated) -- "
+            "EXCEPT when the user named a specific search engine or website "
+            "as the thing to search ('search Google for hotels in Guam', "
+            "'google hotels in Guam', 'look that up on Bing'), or asked to "
+            "use a browser. Naming the site means they want it opened for "
+            "them to look at, which is computer_action/open_search instead, "
+            "even though the underlying topic is exactly the kind of "
+            "real-world fact that would otherwise need web_search. A direct "
+            "ask is already permission (action_requested true), never "
             "agent_offer. For 'latest/newest' periodic events, resolve "
             "against current_date/current_year rather than training "
             "knowledge -- never assume the nearest scheduled edition already "
@@ -1045,10 +1273,10 @@ class SemanticIntentRouter:
             "-- indirect interest in screen/project inspection is "
             "agent_offer, not execution.\n"
             "computer_operation: none, open_app, close_app, force_quit_app, "
-            "open_url, create_file, create_folder, delete_file, "
-            "delete_folder, list_windows, describe_window, ui_action, or "
-            "unsupported. computer_location/computer_url stay empty unless "
-            "the chosen operation needs them.\n"
+            "open_url, open_search, create_file, create_folder, delete_file, "
+            "delete_folder, list_windows, describe_window, ui_action, "
+            "browser_action, or unsupported. computer_location/computer_url "
+            "stay empty unless the chosen operation needs them.\n"
             "Do not answer the user's question.\n\n"
             f"Runtime state: {json.dumps(state)}\n"
             "Conversation state:\n"

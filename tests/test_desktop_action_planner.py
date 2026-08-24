@@ -4,10 +4,15 @@ from unittest.mock import patch
 from brain.desktop_action_planner import (
     DesktopActionPlanner,
     DesktopSurfaceContext,
+    _completion_contract,
 )
-from tools.computer_control import ComputerActionResult
-from tools.windows_ui_control import UIActionResult
-from tools.windows_ui_observer import ControlInfo, WindowInfo, WindowObservation
+from tools.computer_control.computer_control import ComputerActionResult
+from tools.computer_control.windows_ui_control import UIActionResult
+from tools.computer_control.windows_ui_observer import (
+    ControlInfo,
+    WindowInfo,
+    WindowObservation,
+)
 
 
 def _tool_call(name, **arguments):
@@ -195,9 +200,19 @@ class PlannerObserver:
 
 
 class PlannerControl:
-    def __init__(self, *, typed_verified=True, clicked_verified=True):
+    def __init__(
+        self,
+        *,
+        typed_verified=True,
+        clicked_verified=True,
+        resolved_name_for_id="",
+    ):
         self.typed_verified = typed_verified
         self.clicked_verified = clicked_verified
+        # Simulates what a real element_id lookup would resolve to (see
+        # WindowsUIObserver.resolve_control_by_id) when a test's tool call
+        # supplies only an id and no semantic `control` text.
+        self.resolved_name_for_id = resolved_name_for_id
         self.type_calls = []
         self.click_calls = []
 
@@ -206,18 +221,21 @@ class PlannerControl:
             "focused", "Focused the window.", verified=True,
         )
 
-    def click_control(self, target, control, *, confirmed=False):
-        self.click_calls.append((target, control, confirmed))
+    def click_control(self, target, control, *, confirmed=False, element_id=""):
+        self.click_calls.append((target, control, confirmed, element_id))
+        resolved_name = control or (
+            self.resolved_name_for_id if element_id else ""
+        )
         return UIActionResult(
             "clicked",
-            f"Clicked {control}.",
+            f"Clicked {resolved_name or control}.",
             window_title=(target.title if isinstance(target, WindowInfo) else str(target)),
-            control_name=control,
+            control_name=resolved_name,
             verified=self.clicked_verified,
         )
 
-    def type_text(self, target, control, text):
-        self.type_calls.append((target, control, text))
+    def type_text(self, target, control, text, *, element_id=""):
+        self.type_calls.append((target, control, text, element_id))
         return UIActionResult(
             "typed",
             f"Typed into {control}.",
@@ -226,12 +244,12 @@ class PlannerControl:
             verified=self.typed_verified,
         )
 
-    def select_option(self, target, control, option):
+    def select_option(self, target, control, option, *, element_id=""):
         return UIActionResult(
             "selected", f"Selected {option}.", verified=True,
         )
 
-    def scroll_control(self, target, control, direction):
+    def scroll_control(self, target, control, direction, *, element_id=""):
         return UIActionResult(
             "scrolled", f"Scrolled {direction}.", verified=True,
         )
@@ -434,6 +452,131 @@ class DesktopActionPlannerStabilizationTests(unittest.TestCase):
         self.assertEqual(result.status, "done")
         self.assertEqual(result.action_steps, 2)
         self.assertEqual(control.click_calls[0][1], "Dynamite")
+
+    def test_click_control_tool_call_forwards_element_id_to_control(self):
+        spotify = WindowInfo("Spotify", is_active=True, handle=94)
+        observer = PlannerObserver(active=spotify)
+        control = PlannerControl(clicked_verified=True)
+        planner = _surface_planner([
+            _message(tool_calls=[
+                _tool_call(
+                    "click_control", window="Spotify", element_id="scan1-e3",
+                ),
+            ]),
+            _message(content="Done."),
+        ], observer, control)
+
+        planner.act("Click that.")
+
+        self.assertEqual(control.click_calls[0][3], "scan1-e3")
+
+    def test_goal_completion_contract_is_satisfied_by_an_id_based_activation_click(
+        self,
+    ):
+        # Regression test for the _action_completion_terms/resolved_
+        # control_name fix: an element_id-only click supplies no semantic
+        # "control" text at all, so goal-completion matching must fall
+        # back to the real resolved name (what resolve_control_by_id
+        # would have returned), not the empty tool-call argument -- or a
+        # fully correct, verified click would be reported as incomplete.
+        spotify = WindowInfo("Spotify", is_active=True, handle=95)
+        observer = PlannerObserver(active=spotify)
+        control = PlannerControl(
+            typed_verified=True,
+            clicked_verified=True,
+            resolved_name_for_id="Dynamite",
+        )
+        planner = _surface_planner([
+            _message(tool_calls=[
+                _tool_call("describe_window", window="Spotify"),
+            ]),
+            _message(tool_calls=[
+                _tool_call(
+                    "type_text",
+                    window="Spotify",
+                    control="Search",
+                    text="Dynamite",
+                ),
+            ]),
+            _message(content="Dynamite is in Spotify search."),
+            _message(tool_calls=[
+                _tool_call(
+                    "click_control", window="Spotify", element_id="scan1-e4",
+                ),
+            ]),
+            _message(content="Dynamite is playing."),
+        ], observer, control)
+
+        result = planner.act("Play Dynamite in Spotify for me.")
+
+        self.assertEqual(result.status, "done")
+        self.assertEqual(control.click_calls[0][1], "")
+        self.assertEqual(control.click_calls[0][3], "scan1-e4")
+
+    def test_compound_spotify_search_and_play_keeps_the_title_and_artist(self):
+        goal = (
+            "Search for Bang Bang from IVE and open that music in Spotify "
+            "to play for me."
+        )
+        contract = _completion_contract(goal)
+        self.assertEqual(contract.operation, "activation")
+        self.assertEqual(contract.subject_terms, frozenset({"bang", "ive"}))
+        self.assertTrue(contract.subject_requires_full_match)
+
+        spotify = WindowInfo("Spotify", is_active=True, handle=93)
+        observer = PlannerObserver(active=spotify)
+        control = PlannerControl(typed_verified=True, clicked_verified=True)
+        planner = _surface_planner([
+            _message(tool_calls=[
+                _tool_call("describe_window", window="Spotify"),
+            ]),
+            _message(tool_calls=[
+                _tool_call(
+                    "type_text", window="Spotify", control="Search",
+                    text="Bang Bang IVE",
+                ),
+            ]),
+            _message(content="The matching result is visible."),
+            _message(tool_calls=[
+                _tool_call("click_control", window="Spotify", control="Play"),
+            ]),
+            _message(content="Bang Bang by IVE is playing."),
+        ], observer, control)
+
+        result = planner.act(goal)
+
+        self.assertEqual(result.status, "done")
+        self.assertEqual(control.type_calls[0][2], "Bang Bang IVE")
+        self.assertEqual(control.click_calls[0][1], "Play")
+
+    def test_compound_spotify_goal_rejects_a_partial_search_before_generic_play(self):
+        spotify = WindowInfo("Spotify", is_active=True, handle=94)
+        observer = PlannerObserver(active=spotify)
+        control = PlannerControl(typed_verified=True, clicked_verified=True)
+        planner = _surface_planner([
+            _message(tool_calls=[
+                _tool_call("describe_window", window="Spotify"),
+            ]),
+            _message(tool_calls=[
+                _tool_call(
+                    "type_text", window="Spotify", control="Search",
+                    text="Bang Bang",
+                ),
+            ]),
+            _message(content="A result is visible."),
+            _message(tool_calls=[
+                _tool_call("click_control", window="Spotify", control="Play"),
+            ]),
+            _message(content="A song is playing."),
+            _message(content="A song is playing."),
+        ], observer, control)
+
+        result = planner.act(
+            "Search for Bang Bang from IVE and open that music in Spotify to play for me."
+        )
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.failure_code, "goal_operation_incomplete")
 
     def test_wrong_verified_click_cannot_complete_playback(self):
         spotify = WindowInfo("Spotify", is_active=True, handle=95)
@@ -806,6 +949,22 @@ class DesktopActionPlannerStabilizationTests(unittest.TestCase):
         self.assertEqual(result.status, "done")
         self.assertEqual(result.failure_code, "")
         self.assertNotIn("couldn't", result.summary.casefold())
+
+
+class DesktopActionPlannerToolSchemaTests(unittest.TestCase):
+    def test_control_action_tools_expose_element_id_and_do_not_require_control(self):
+        from brain.desktop_action_planner import _TOOLS
+
+        by_name = {tool["function"]["name"]: tool["function"] for tool in _TOOLS}
+        for name in (
+            "click_control", "type_text", "click_then_type",
+            "select_option", "scroll_control",
+        ):
+            params = by_name[name]["parameters"]
+            self.assertIn("element_id", params["properties"], name)
+            self.assertIn("control", params["properties"], name)
+            self.assertNotIn("control", params["required"], name)
+            self.assertIn("window", params["required"], name)
 
 
 if __name__ == "__main__":

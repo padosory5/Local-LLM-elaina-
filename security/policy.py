@@ -62,11 +62,34 @@ class PolicyEngine:
                 "delete, ...) is confirmed separately before it runs."
             ),
         ),
+        "computer.browser_action": ActionPolicy(
+            "computer.browser_action",
+            "local_reversible_action",
+            False,
+            (
+                "Click, fill, select within, scroll to, or navigate a "
+                "verified element on an open webpage. Any step that "
+                "resolves to a committing element (submit, pay, confirm, "
+                "reserve, download, ...) is confirmed separately before it "
+                "runs. Payment and credential fields are refused outright."
+            ),
+        ),
         "browser.open_url": ActionPolicy(
             "browser.open_url",
             "local_reversible_action",
             False,
             "Open one grounded HTTP or HTTPS address in the default browser.",
+        ),
+        "browser.open_search": ActionPolicy(
+            "browser.open_search",
+            "local_reversible_action",
+            False,
+            (
+                "Open a new browser tab searching a configured search "
+                "engine for a spoken query. The search engine's domain is "
+                "fixed by local configuration; only the query text is "
+                "taken from the request."
+            ),
         ),
         "filesystem.create": ActionPolicy(
             "filesystem.create",

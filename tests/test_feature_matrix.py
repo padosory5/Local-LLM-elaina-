@@ -8,7 +8,7 @@ from brain.intent_router import (
     ALLOWED_INTENTS,
     INFORMATION_FRESHNESS_VALUES,
 )
-from tools.computer_control import COMPUTER_OPERATIONS
+from tools.computer_control.computer_control import COMPUTER_OPERATIONS
 
 
 MATRIX_PATH = Path(__file__).with_name("feature_matrix.json")

@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
-from tools.app_name_aliases import alias_candidates as _alias_candidates
+from tools.computer_control.app_name_aliases import alias_candidates as _alias_candidates
 
 try:
     from pywinauto import Desktop as _Desktop
@@ -44,15 +45,34 @@ _MAX_SCANNED_ELEMENTS = 1500
 # Spotify-sized Electron tree can contain hundreds of named Text/Pane nodes
 # before its search box.  Rank controls a person can actually operate first,
 # while still retaining named containers and labels as lower-priority context.
+#
+# "document" belongs here, not in _CONTAINER_ROLES: apps whose whole editable
+# surface is exposed as a single Document node (modern Windows 11 Notepad,
+# WordPad, and similar) have no separate Edit control at all -- windows_ui_
+# control.py's _TEXT_ROLES already accepts "Document" as a real type_text
+# target for exactly this reason. Ranking it as a low-priority container
+# buried it below every toolbar button, unrelated status Text nodes ranked
+# ahead of it, and the model picked one of those instead -- reproduced live
+# against Notepad's real Korean-labeled UI (round 4 typed into "line 1,
+# column 1", refused, rather than the "Document: text editor" control two
+# priority tiers below the buttons it was mixed in with).
 _INTERACTIVE_ROLES = frozenset({
-    "button", "checkbox", "combobox", "edit", "hyperlink", "listitem",
-    "menuitem", "radiobutton", "scrollbar", "slider", "spinner",
-    "splitbutton", "tabitem", "thumb", "treeitem",
+    "button", "checkbox", "combobox", "document", "edit", "hyperlink",
+    "listitem", "menuitem", "radiobutton", "scrollbar", "slider",
+    "spinner", "splitbutton", "tabitem", "thumb", "treeitem",
 })
 _CONTAINER_ROLES = frozenset({
-    "datagrid", "document", "group", "list", "menu", "pane", "tab",
+    "datagrid", "group", "list", "menu", "pane", "tab",
     "table", "toolbar", "tree", "window",
 })
+
+# The observer, its WindowsUIControl counterpart, and the desktop planner are
+# all constructed once and shared for the app's whole lifetime (see
+# brain/chat_engine.py) -- so the per-window scan-id cache is bounded rather
+# than a single "last scan", to keep memory flat over a long session while
+# still letting a multi-window goal (observe A, then B, then re-observe A)
+# keep every window's ids valid without them evicting each other.
+_MAX_CACHED_WINDOW_SCANS = 6
 
 
 def _normalize_accessible_text(value: str) -> str:
@@ -93,6 +113,11 @@ class ControlInfo:
     is_visible: bool | None = None
     is_enabled: bool | None = None
     is_actionable: bool = False
+    # Scan-scoped id (see WindowsUIObserver._scan_cache) a caller can pass
+    # back instead of retyping `name` -- meant to be copied verbatim rather
+    # than approximated, unlike name-based resolve_control(). Empty when a
+    # control wasn't produced by a fresh describe_window() scan.
+    element_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -114,6 +139,7 @@ class WindowObservation:
     controls: tuple[ControlInfo, ...] = ()
     truncated: bool = False
     message: str = ""
+    scan_id: str = ""
 
     def as_tree_text(self) -> str:
         if self.status != "observed":
@@ -122,14 +148,25 @@ class WindowObservation:
         for control in self.controls:
             value_suffix = f", value {control.value}" if control.value else ""
             state = " [disabled]" if control.is_enabled is False else ""
+            id_suffix = f" [id={control.element_id}]" if control.element_id else ""
             lines.append(
-                f"- {control.role}: {control.name}{value_suffix}{state}"
+                f"- {control.role}: {control.name}{value_suffix}{state}{id_suffix}"
             )
         if self.truncated:
             lines.append(
                 f"... more controls exist beyond the first {len(self.controls)}"
             )
         return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class _ScanRecord:
+    """One window's most recent describe_window() scan, kept only so a
+    later element_id can be resolved back to the live element it named."""
+
+    scan_id: str
+    window_identity: str
+    elements: dict[str, tuple[Any, str, str]]  # element_id -> (element, role, name)
 
 
 class WindowsUIObserver:
@@ -148,6 +185,7 @@ class WindowsUIObserver:
         self._foreground_window = foreground_window or (
             self._win32_foreground_title if _win32gui is not None else None
         )
+        self._scan_cache: dict[str, _ScanRecord] = {}
 
     @property
     def available(self) -> bool:
@@ -237,7 +275,7 @@ class WindowsUIObserver:
             )
 
         ranked_by_key: dict[
-            tuple[str, str, str], tuple[int, int, ControlInfo]
+            tuple[str, str, str], tuple[int, int, ControlInfo, Any]
         ] = {}
         scan_truncated = False
         for index, element in enumerate(descendants):
@@ -251,6 +289,8 @@ class WindowsUIObserver:
                 continue
             visible = self._safe_state(element, "is_visible", "visible")
             if visible is False:
+                continue
+            if not self._has_screen_area(element):
                 continue
             enabled = self._safe_state(element, "is_enabled", "enabled")
             role = role or "Control"
@@ -279,6 +319,7 @@ class WindowsUIObserver:
                     is_enabled=enabled,
                     is_actionable=actionable,
                 ),
+                element,
             )
             previous = ranked_by_key.get(key)
             if previous is None or candidate[0] > previous[0]:
@@ -287,9 +328,9 @@ class WindowsUIObserver:
         ranked_controls = list(ranked_by_key.values())
         ranked_controls.sort(key=lambda item: (-item[0], item[1]))
         truncated = scan_truncated or len(ranked_controls) > _MAX_ELEMENTS
-        controls = [item[2] for item in ranked_controls[:_MAX_ELEMENTS]]
+        selected = ranked_controls[:_MAX_ELEMENTS]
 
-        if not controls:
+        if not selected:
             return WindowObservation(
                 status="empty",
                 title=title,
@@ -300,12 +341,107 @@ class WindowsUIObserver:
                 ),
             )
 
+        # Ids are minted only for the controls actually shown to the model,
+        # after truncation, and stored against this exact window so a later
+        # element_id can be resolved back to the live element it named. A
+        # fresh scan of the same window replaces its entry wholesale --
+        # an id from a superseded scan simply stops resolving.
+        scan_id = uuid.uuid4().hex[:8]
+        controls: list[ControlInfo] = []
+        scanned_elements: dict[str, tuple[Any, str, str]] = {}
+        for position, (_, _, info, element) in enumerate(selected):
+            element_id = f"{scan_id}-e{position}"
+            controls.append(replace(info, element_id=element_id))
+            scanned_elements[element_id] = (element, info.role, info.name)
+        self._store_scan(self._identity_for(target), scan_id, scanned_elements)
+
         return WindowObservation(
             status="observed",
             title=title,
             controls=tuple(controls),
             truncated=truncated,
+            scan_id=scan_id,
         )
+
+
+    def resolve_control_by_id(self, window: Any, element_id: str) -> ControlLookup:
+        """Resolve an id from the most recent describe_window scan of this
+        exact window. Exact dict lookup only -- never fuzzy, unlike
+        resolve_control's name matching, since an id is meant to be copied
+        verbatim, not approximated."""
+        element_id = str(element_id or "").strip()
+        if not element_id or window is None:
+            return ControlLookup(
+                "invalid",
+                message="A non-empty element id and a real window are required.",
+            )
+        record = self._scan_cache.get(self._identity_for(window))
+        if record is None or element_id not in record.elements:
+            return ControlLookup(
+                "not_found",
+                message=(
+                    f"{element_id!r} is not from the most recent observation "
+                    "of this window. Call describe_window again and use one "
+                    "of its current ids."
+                ),
+            )
+        element, _scanned_role, scanned_name = record.elements[element_id]
+        role, name = self._safe_role_and_name(element)
+        if not role and not name:
+            return ControlLookup(
+                "stale",
+                message=(
+                    f"The control behind {element_id!r} no longer exists. "
+                    "Call describe_window again."
+                ),
+            )
+        visible = self._safe_state(element, "is_visible", "visible")
+        enabled = self._safe_state(element, "is_enabled", "enabled")
+        if visible is False or enabled is False:
+            return ControlLookup(
+                "stale",
+                message=(
+                    f"The control behind {element_id!r} is no longer visible "
+                    "or enabled. Call describe_window again."
+                ),
+            )
+        if _normalize_accessible_text(name) != _normalize_accessible_text(scanned_name):
+            return ControlLookup(
+                "stale",
+                message=(
+                    f"The control behind {element_id!r} changed since it was "
+                    "observed. Call describe_window again."
+                ),
+            )
+        return ControlLookup(
+            "matched", control=element, role=role, name=name,
+            message=f"Matched {role or 'Control'} {name!r}.",
+        )
+
+    def _identity_for(self, window: Any) -> str:
+        handle = self._safe_handle(window)
+        if handle is not None:
+            return f"hwnd:{handle}"
+        process_id = self._safe_process_id(window)
+        title = self._safe_text(window)
+        if process_id is not None:
+            return f"pid:{process_id}:{title}"
+        return f"title:{title}"
+
+    def _store_scan(
+        self,
+        window_identity: str,
+        scan_id: str,
+        elements: dict[str, tuple[Any, str, str]],
+    ) -> None:
+        # Re-inserting moves this window to the most-recently-scanned end,
+        # so eviction below always drops the window scanned longest ago.
+        self._scan_cache.pop(window_identity, None)
+        self._scan_cache[window_identity] = _ScanRecord(
+            scan_id=scan_id, window_identity=window_identity, elements=elements,
+        )
+        while len(self._scan_cache) > _MAX_CACHED_WINDOW_SCANS:
+            self._scan_cache.pop(next(iter(self._scan_cache)))
 
     def find_window(self, title_query: str | WindowInfo) -> Any:
         """Return the first live window whose title contains the query.
@@ -350,6 +486,12 @@ class WindowsUIObserver:
             return self._first_matching(windows, snapshot.title.casefold())
 
         candidates: list[Any] = []
+        # Windows whose handle/process_id already matched the snapshot --
+        # the strong identity signals -- kept separately from `candidates`
+        # even when class_name fails them below, since a live handle match
+        # is itself proof this is the same window (a handle is not reused
+        # while the window lives), unlike a title/class coincidence.
+        identity_matches: list[Any] = []
         for window in windows:
             if (
                 snapshot.handle is not None
@@ -361,6 +503,7 @@ class WindowsUIObserver:
                 and self._safe_process_id(window) != snapshot.process_id
             ):
                 continue
+            identity_matches.append(window)
             if (
                 snapshot.class_name
                 and self._safe_class_name(window) != snapshot.class_name
@@ -381,7 +524,23 @@ class WindowsUIObserver:
 
         # Handles should be unique, and PID/title/class can still collide.
         # Never pick whichever matching surface happened to enumerate first.
-        return candidates[0] if len(candidates) == 1 else None
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1:
+            return None
+        # No window matched the full identity including class_name. When the
+        # snapshot carries a real handle and exactly one live window still
+        # matches that handle (and process_id, if given), its class_name is
+        # what drifted -- some apps report an unstable UI Automation class
+        # between scans (observed on Windows 11's modern Notepad). A live
+        # handle match is itself proof this is the same window; accept it.
+        # A snapshot whose handle/process_id themselves match nothing live
+        # is a genuinely different or closed window and must still refuse --
+        # falling back to a title match here would risk acting on an
+        # unrelated window that merely shares a title.
+        if snapshot.handle is not None and len(identity_matches) == 1:
+            return identity_matches[0]
+        return None
 
     def _first_matching(self, windows: list[Any], query: str) -> Any:
         for window in windows:
@@ -451,6 +610,8 @@ class WindowsUIObserver:
             # Acting on a known hidden or disabled element is never useful,
             # and can accidentally hit an off-screen duplicate.
             if visible is False or enabled is False:
+                continue
+            if not self._has_screen_area(element):
                 continue
             normalized_name = _normalize_accessible_text(name)
             match_quality = self._name_match_quality(
@@ -618,6 +779,24 @@ class WindowsUIObserver:
             return bool(value)
         except Exception:
             return None
+
+    @staticmethod
+    def _has_screen_area(element: Any) -> bool:
+        """Reject elements with no real on-screen rectangle.
+
+        Chromium/CEF-based apps (Spotify, Battle.net, and similar) expose a
+        permanent zero-size "Edit" node named after their embedded browser
+        shell's own address bar -- a vestige of the underlying browser
+        chrome, never the app's real, visible search field. UIA reports it
+        as visible and enabled, so only a direct geometry check catches it;
+        acting on it silently targets screen coordinate (0, 0) instead of
+        the control the user meant.
+        """
+        try:
+            rectangle = element.rectangle()
+            return rectangle.width() > 0 and rectangle.height() > 0
+        except Exception:
+            return True
 
     @staticmethod
     def _is_actionable(

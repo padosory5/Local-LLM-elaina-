@@ -16,9 +16,9 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from tools.computer_control import ComputerControl
-from tools.windows_ui_control import UIActionResult, WindowsUIControl
-from tools.windows_ui_observer import WindowInfo, WindowsUIObserver
+from tools.computer_control.computer_control import ComputerControl
+from tools.computer_control.windows_ui_control import UIActionResult, WindowsUIControl
+from tools.computer_control.windows_ui_observer import WindowInfo, WindowsUIObserver
 
 
 @dataclass(frozen=True)
@@ -169,6 +169,12 @@ class _ToolExecution:
     pending: PendingConfirmation | None = None
     window_snapshot: WindowInfo | None = None
     fingerprint: str = ""
+    # The real resolved control name (UIActionResult.control_name), distinct
+    # from whatever the model passed as arguments["control"] -- populated
+    # even for an element_id-only call, which carries no name at all. Used
+    # by _action_completion_terms so goal-completion matching still works
+    # when the model addressed a control by id rather than by name.
+    resolved_control_name: str = ""
 
     @property
     def succeeded(self) -> bool:
@@ -213,6 +219,12 @@ class _GoalCompletionContract:
     completing_families: frozenset[str] = frozenset()
     subject_terms: frozenset[str] = frozenset()
     direct_control_terms: frozenset[str] = frozenset()
+    # Compound requests such as "search X and open that song to play" give
+    # both a search query and a generic playback control.  Matching only one
+    # word of X could select the wrong artist/title, so their typed or clicked
+    # result must retain the full extracted subject before a generic Play
+    # control can complete the request.
+    subject_requires_full_match: bool = False
 
     def is_satisfied_by(
         self,
@@ -228,11 +240,12 @@ class _GoalCompletionContract:
         if not self.subject_terms:
             return True
         if any(
-            (
-                self.subject_terms <= action.terms
-                if self.operation in {"search", "text_input"}
-                else bool(action.terms & self.subject_terms)
+            self.subject_terms <= action.terms
+            if (
+                self.operation in {"search", "text_input"}
+                or self.subject_requires_full_match
             )
+            else bool(action.terms & self.subject_terms)
             for action in candidates
         ):
             return True
@@ -246,7 +259,11 @@ class _GoalCompletionContract:
         ):
             return any(
                 action.family in {"text_input", "selection"}
-                and bool(action.terms & self.subject_terms)
+                and (
+                    self.subject_terms <= action.terms
+                    if self.subject_requires_full_match
+                    else bool(action.terms & self.subject_terms)
+                )
                 for action in completed_actions
             ) or self.subject_terms <= _GENERIC_MEDIA_SUBJECT_TERMS
         return False
@@ -289,7 +306,10 @@ _TOOLS = [
             "name": "describe_window",
             "description": (
                 "Read the real visible, enabled controls in one window. Call "
-                "this before acting; never invent a control name."
+                "this before acting; never invent a control name. Each line "
+                "ends with a short id such as [id=a1b2c3d4-e7]; pass that id "
+                "as element_id on your next action instead of retyping the "
+                "control's name."
             ),
             "parameters": {
                 "type": "object",
@@ -331,16 +351,30 @@ _TOOLS = [
         "function": {
             "name": "click_control",
             "description": (
-                "Invoke one real visible control by its exact accessible name. "
-                "Committing controls pause for separate confirmation."
+                "Invoke one real visible control. Committing controls pause "
+                "for separate confirmation."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "window": {"type": "string"},
-                    "control": {"type": "string"},
+                    "element_id": {
+                        "type": "string",
+                        "description": (
+                            "Preferred: the exact id from the most recent "
+                            "describe_window of this window, copied verbatim."
+                        ),
+                    },
+                    "control": {
+                        "type": "string",
+                        "description": (
+                            "Fallback only, when no id is shown: the "
+                            "control's exact accessible name, copied "
+                            "verbatim from describe_window."
+                        ),
+                    },
                 },
-                "required": ["window", "control"],
+                "required": ["window"],
             },
         },
     },
@@ -350,16 +384,70 @@ _TOOLS = [
             "name": "type_text",
             "description": (
                 "Type into a verified text field. Credential fields are "
-                "refused. Use the field's exact accessible name."
+                "refused."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "window": {"type": "string"},
-                    "control": {"type": "string"},
+                    "element_id": {
+                        "type": "string",
+                        "description": (
+                            "Preferred: the exact id from the most recent "
+                            "describe_window of this window, copied verbatim."
+                        ),
+                    },
+                    "control": {
+                        "type": "string",
+                        "description": (
+                            "Fallback only, when no id is shown: the "
+                            "field's exact accessible name, copied verbatim "
+                            "from describe_window."
+                        ),
+                    },
                     "text": {"type": "string"},
                 },
-                "required": ["window", "control", "text"],
+                "required": ["window", "text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "click_then_type",
+            "description": (
+                "For a field with no separately named text control -- only "
+                "a button that reveals it (a search icon, for example): "
+                "click that button, then type into whatever gains keyboard "
+                "focus as a result. Use this instead of type_text only "
+                "when describe_window shows no matching Edit/ComboBox for "
+                "the field itself. Cannot verify the keystrokes landed in "
+                "the right place, so use type_text whenever a real named "
+                "text field exists."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window": {"type": "string"},
+                    "element_id": {
+                        "type": "string",
+                        "description": (
+                            "Preferred: the exact id of the revealing "
+                            "button from the most recent describe_window, "
+                            "copied verbatim."
+                        ),
+                    },
+                    "control": {
+                        "type": "string",
+                        "description": (
+                            "Fallback only, when no id is shown: the "
+                            "revealing button's exact accessible name, "
+                            "copied verbatim from describe_window."
+                        ),
+                    },
+                    "text": {"type": "string"},
+                },
+                "required": ["window", "text"],
             },
         },
     },
@@ -372,10 +460,24 @@ _TOOLS = [
                 "type": "object",
                 "properties": {
                     "window": {"type": "string"},
-                    "control": {"type": "string"},
+                    "element_id": {
+                        "type": "string",
+                        "description": (
+                            "Preferred: the exact id from the most recent "
+                            "describe_window of this window, copied verbatim."
+                        ),
+                    },
+                    "control": {
+                        "type": "string",
+                        "description": (
+                            "Fallback only, when no id is shown: the "
+                            "control's exact accessible name, copied "
+                            "verbatim from describe_window."
+                        ),
+                    },
                     "option": {"type": "string"},
                 },
-                "required": ["window", "control", "option"],
+                "required": ["window", "option"],
             },
         },
     },
@@ -388,13 +490,27 @@ _TOOLS = [
                 "type": "object",
                 "properties": {
                     "window": {"type": "string"},
-                    "control": {"type": "string"},
+                    "element_id": {
+                        "type": "string",
+                        "description": (
+                            "Preferred: the exact id from the most recent "
+                            "describe_window of this window, copied verbatim."
+                        ),
+                    },
+                    "control": {
+                        "type": "string",
+                        "description": (
+                            "Fallback only, when no id is shown: the "
+                            "container's exact accessible name, copied "
+                            "verbatim from describe_window."
+                        ),
+                    },
                     "direction": {
                         "type": "string",
                         "enum": ["up", "down", "left", "right"],
                     },
                 },
-                "required": ["window", "control", "direction"],
+                "required": ["window", "direction"],
             },
         },
     },
@@ -406,13 +522,29 @@ _BASE_SYSTEM_PROMPT = (
     "time and wait for its structured result. Observe a window before acting "
     "inside it and copy exact accessible control names from that observation. "
     "Never guess a control name or treat a generic role such as Button as its "
-    "name. If a named application is not open, open it, then use the exact "
+    "name. Each control line ends with a short id such as [id=a1b2c3d4-e7]; "
+    "always prefer passing that exact id as element_id on your next action "
+    "instead of retyping the control's name -- copy it exactly, character "
+    "for character. Only use control (the exact accessible name, copied "
+    "exactly from the same observation) when no id is shown. Never invent "
+    "either one: an id or name from an older observation, a different "
+    "window, or one you made up will simply fail -- observe again to get a "
+    "current one. If a named application is not open, open it, then use the exact "
     "window returned by the tool. Do not reduce a goal such as playing a song "
-    "to merely opening or searching the application. If a tool reports "
-    "confirmation_required, refused, ambiguous, verification_failed, or a "
-    "scope violation, stop; never work around it. When the complete goal is "
-    "verified, answer with one short outcome sentence under 15 words. Do not "
-    "describe a next step as completed. Do not offer further help."
+    "to merely opening or searching the application. Some apps (Spotify, "
+    "Battle.net, Discord, and similar) never expose their real search or "
+    "text field as a named Edit/ComboBox at all -- only a button that "
+    "reveals it. When describe_window shows a button like that (a search "
+    "icon, for example) but no matching text field, use click_then_type on "
+    "that button instead of type_text; this is the correct tool for that "
+    "situation, not a workaround. For a compound media request such as "
+    "searching a title and artist then playing that result, enter the full "
+    "title-and-artist query, re-observe the results, and activate a matching "
+    "observed result; do not stop after searching. If a tool reports confirmation_required, "
+    "refused, ambiguous, verification_failed, or a scope violation, stop; "
+    "never work around it. When the complete goal is verified, answer with "
+    "one short outcome sentence under 15 words. Do not describe a next step "
+    "as completed. Do not offer further help."
 )
 
 _DEICTIC_SURFACE_PATTERN = re.compile(
@@ -437,13 +569,14 @@ _FAILURE_SUMMARY_PATTERN = re.compile(
 _OBSERVATION_TOOLS = frozenset({"list_windows", "describe_window"})
 _ACTION_TOOLS = frozenset({
     "open_app", "focus_window", "click_control", "type_text",
-    "select_option", "scroll_control",
+    "click_then_type", "select_option", "scroll_control",
 })
 _ACTION_FAMILY_BY_TOOL = {
     "open_app": "launch",
     "focus_window": "focus",
     "click_control": "activation",
     "type_text": "text_input",
+    "click_then_type": "text_input",
     "select_option": "selection",
     "scroll_control": "scroll",
 }
@@ -482,6 +615,14 @@ _ACTIVATION_PHRASE_PATTERN = re.compile(
     r"\b(?:put\s+on|listen\s+to)\b",
     flags=re.IGNORECASE,
 )
+_COMPOUND_SEARCH_TO_MEDIA_PATTERN = re.compile(
+    r"\b(?:search(?:\s+for)?|find|look\s+up|lookup)\s+"
+    r"(?P<subject>.+?)(?:\s*,?\s*(?:and|then)\s+)"
+    r"(?:open|play|put\s+on|start)\s+"
+    r"(?:(?:that|it|the)(?:\s+(?:song|track|music|result))?|"
+    r"(?:song|track|music|result))\b",
+    flags=re.IGNORECASE,
+)
 _GOAL_OPERATION_PRIORITY = (
     "activation", "click", "selection", "search", "text_input",
     "scroll", "focus", "launch",
@@ -507,6 +648,11 @@ _DIRECT_CONTROL_TERMS_BY_GOAL_WORD = {
     "resume": frozenset({"resume", "play"}),
     "skip": frozenset({"skip", "next"}),
 }
+_DIRECT_CONTROL_LABEL_TERMS = frozenset({
+    term
+    for values in _DIRECT_CONTROL_TERMS_BY_GOAL_WORD.values()
+    for term in values
+})
 _GENERIC_MEDIA_SUBJECT_TERMS = frozenset({
     "audio", "it", "media", "music", "song", "track", "this",
 })
@@ -515,11 +661,11 @@ _GENERIC_MEDIA_SUBJECT_TERMS = frozenset({
 # The remaining terms form a compact local alignment check between the user's
 # goal and the exact value passed to the UI tool.
 _CONTRACT_STOP_TERMS = frozenset({
-    "a", "an", "and", "app", "application", "at", "button", "can",
-    "control", "could", "current", "for", "forward", "front", "here",
+    "a", "an", "and", "app", "application", "at", "button", "by", "can",
+    "control", "could", "current", "for", "forward", "from", "front", "here",
     "in", "inside", "into", "it", "me", "my", "now", "of", "on",
-    "original", "page", "please", "request", "screen", "the", "this",
-    "that", "to", "up", "use", "user", "using", "window", "with",
+    "music", "original", "page", "please", "request", "result", "screen", "song", "spotify", "the", "this",
+    "that", "to", "track", "up", "use", "user", "using", "window", "with",
     "would", "you",
 }) | frozenset(_GOAL_OPERATION_BY_WORD)
 _TERMINAL_FAILURES = frozenset({
@@ -829,6 +975,7 @@ class DesktopActionPlanner:
                                     family=family,
                                     terms=_action_completion_terms(
                                         execution.tool_name, arguments,
+                                        resolved_name=execution.resolved_control_name,
                                     ),
                                 ))
                     elif execution.fingerprint:
@@ -1227,7 +1374,7 @@ class DesktopActionPlanner:
 
             if name in {
                 "focus_window", "click_control", "type_text",
-                "select_option", "scroll_control",
+                "click_then_type", "select_option", "scroll_control",
             }:
                 target = locked_window or str(arguments.get("window", ""))
                 snapshot = self._snapshot_for_target(target)
@@ -1248,6 +1395,7 @@ class DesktopActionPlanner:
                     evidence=result.evidence,
                     pending=pending,
                     window_snapshot=snapshot,
+                    resolved_control_name=result.control_name,
                 )
         except Exception as error:
             return _ToolExecution(
@@ -1271,28 +1419,40 @@ class DesktopActionPlanner:
         target: str | WindowInfo,
         arguments: dict[str, Any],
     ) -> UIActionResult:
+        element_id = str(arguments.get("element_id", "") or "").strip()
+        id_kwargs = {"element_id": element_id} if element_id else {}
         if name == "focus_window":
             return self.control.focus_window(target)
         if name == "click_control":
             return self.control.click_control(
-                target, str(arguments.get("control", "")),
+                target, str(arguments.get("control", "")), **id_kwargs,
             )
         if name == "type_text":
             return self.control.type_text(
                 target,
                 str(arguments.get("control", "")),
                 str(arguments.get("text", "")),
+                **id_kwargs,
+            )
+        if name == "click_then_type":
+            return self.control.click_then_type(
+                target,
+                str(arguments.get("control", "")),
+                str(arguments.get("text", "")),
+                **id_kwargs,
             )
         if name == "select_option":
             return self.control.select_option(
                 target,
                 str(arguments.get("control", "")),
                 str(arguments.get("option", "")),
+                **id_kwargs,
             )
         return self.control.scroll_control(
             target,
             str(arguments.get("control", "")),
             str(arguments.get("direction", "")),
+            **id_kwargs,
         )
 
     def _snapshot_for_target(
@@ -1526,7 +1686,19 @@ def _completion_contract(goal: str) -> _GoalCompletionContract:
         ),
         semantic_lines[0],
     )
-    subject = _goal_subject(primary_goal, operation)
+    compound_subject = (
+        next(
+            (
+                match.group("subject").strip()
+                for line in semantic_lines
+                if (match := _COMPOUND_SEARCH_TO_MEDIA_PATTERN.search(line))
+            ),
+            "",
+        )
+        if operation == "activation"
+        else ""
+    )
+    subject = compound_subject or _goal_subject(primary_goal, operation)
     subject_terms = _contract_terms(subject)
     if not subject_terms:
         subject_terms = _contract_terms(primary_goal)
@@ -1546,6 +1718,7 @@ def _completion_contract(goal: str) -> _GoalCompletionContract:
         ),
         subject_terms=subject_terms,
         direct_control_terms=frozenset(direct_control_terms),
+        subject_requires_full_match=bool(compound_subject),
     )
 
 
@@ -1561,6 +1734,10 @@ def _text_requests_operation(text: str, operation: str) -> bool:
 
 def _goal_subject(goal: str, operation: str) -> str:
     """Extract the object/value of one concise English desktop command."""
+    if operation == "activation":
+        compound_match = _COMPOUND_SEARCH_TO_MEDIA_PATTERN.search(str(goal))
+        if compound_match is not None:
+            return compound_match.group("subject").strip()
     patterns = {
         "activation": (
             r"\b(?:play|pause|resume|skip|put\s+on|listen\s+to)\s+"
@@ -1612,6 +1789,8 @@ def _contract_terms(value: str) -> frozenset[str]:
 def _action_completion_terms(
     tool_name: str,
     arguments: dict[str, Any],
+    *,
+    resolved_name: str = "",
 ) -> frozenset[str]:
     value_keys = {
         "open_app": ("app",),
@@ -1620,14 +1799,34 @@ def _action_completion_terms(
         # Search/text completion is aligned to what was entered, never merely
         # to the fact that the field happened to be named Search.
         "type_text": ("text",),
+        "click_then_type": ("text",),
         "select_option": ("option",),
         "scroll_control": ("direction", "control"),
     }
-    values = " ".join(
-        str(arguments.get(key, "") or "")
-        for key in value_keys.get(tool_name, ())
-    )
-    return _contract_terms(values)
+    parts = []
+    for key in value_keys.get(tool_name, ()):
+        if key == "control" and resolved_name:
+            # An element_id-only call supplies no "control" argument text at
+            # all -- and even when both are given, the id is what actually
+            # won (see WindowsUIControl._resolve's precedence), so a
+            # mismatched control argument would be a decoy, not evidence.
+            # The real, verified resolved name is always the trustworthy
+            # source for goal-completion matching.
+            parts.append(resolved_name)
+        else:
+            parts.append(str(arguments.get(key, "") or ""))
+    values = " ".join(parts)
+    terms = set(_contract_terms(values))
+    if tool_name == "click_control":
+        # Operation words are normally removed from subject matching, but a
+        # visible generic Play/Pause/Next control is exactly the direct
+        # control evidence required by an activation contract.
+        terms.update(
+            term
+            for term in re.findall(r"[^\W_]+", values.casefold())
+            if term in _DIRECT_CONTROL_LABEL_TERMS
+        )
+    return frozenset(terms)
 
 
 def _optional_int(value: object) -> int | None:

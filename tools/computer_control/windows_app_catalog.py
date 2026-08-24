@@ -15,7 +15,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Iterable
 
-from tools.app_name_aliases import alias_candidates
+from tools.computer_control.app_name_aliases import alias_candidates
 
 
 DEFAULT_BROWSER_START_URL = "https://www.google.com"

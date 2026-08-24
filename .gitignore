@@ -17,6 +17,7 @@ desktop/dist/
 # Generated runtime state
 runtime/debug/
 runtime/data/visual_search_usage.json
+runtime/data/browser-profile/
 runtime/agents/
 runtime/audit/
 runtime/secrets/

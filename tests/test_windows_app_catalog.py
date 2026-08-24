@@ -1,6 +1,6 @@
 import unittest
 
-from tools.windows_app_catalog import AppEntry, WindowsAppCatalog
+from tools.computer_control.windows_app_catalog import AppEntry, WindowsAppCatalog
 
 
 class BilingualAppResolutionTests(unittest.TestCase):

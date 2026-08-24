@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.windows_process_control import ProcessInfo, WindowsProcessControl
+from tools.computer_control.windows_process_control import ProcessInfo, WindowsProcessControl
 
 
 class WindowsProcessControlTests(unittest.TestCase):

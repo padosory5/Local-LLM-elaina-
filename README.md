@@ -165,13 +165,33 @@ require approval.
   details. When `language.response` is `en`, spoken results describe those
   controls in English and do not pass Korean UI labels directly to the English
   Piper voice.
-- Phase 4B.2 does not claim reliable webpage DOM control. It may operate only on
-  controls that the browser exposes through Windows UI Automation and otherwise
-  fails within the frozen browser surface. DOM-aware navigation, form filling,
-  and webpage element control remain planned for Phase 4C.
+
+### Browser-page control (Phase 4C)
+
+- Websites that Elaina opens are created in an isolated, localhost-only
+  CDP-enabled browser profile. This keeps a search, its result page, and a
+  follow-up such as `click Images` in one controllable session without reading
+  the user's normal browser profile, cookies, or unrelated tabs.
+- Elaina identifies the controlled tab by the live foreground browser title or
+  by the page she just opened. If neither identifies one tab, she stops rather
+  than guessing a background tab.
+- Page controls are freshly scanned from the live DOM before every action.
+  Elements carry a per-scan fingerprint; an element, URL, or link that changes
+  before a confirmed action is refused and re-observed rather than replayed.
+- Terse page follow-ups such as `click Images`, `open the first result`, and
+  `show pictures` inherit the captured browser page. Spotify Web follows the
+  same DOM path; the installed Spotify app remains native UI control.
+- Page text is untrusted data, never an instruction. Downloads, sends,
+  reservations, account-changing actions, and pasting into message/comment
+  fields require confirmation. Password and payment fields/actions are refused.
+- Local/private network navigation remains disabled. Browser-page navigation is
+  performed through observed links; raw model-generated page URLs are not used.
 
 Current limitations:
 
+- A page already open in a normal personal browser profile cannot be attached
+  for DOM control automatically. Ask Elaina to open or reopen its public URL
+  in her controlled browser session before requesting page actions.
 - Agent Builder installs reviewed blueprints; it does not generate and execute
   arbitrary Python tools.
 - Google Calendar currently supports creating events, but not updating,

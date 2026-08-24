@@ -25,9 +25,9 @@ from brain.desktop_action_planner import (  # noqa: E402
 )
 from config.loader import Config  # noqa: E402
 from scripts.console_style import status_label  # noqa: E402
-from tools.computer_control import ComputerActionResult  # noqa: E402
-from tools.windows_ui_control import UIActionResult  # noqa: E402
-from tools.windows_ui_observer import (  # noqa: E402
+from tools.computer_control.computer_control import ComputerActionResult  # noqa: E402
+from tools.computer_control.windows_ui_control import UIActionResult  # noqa: E402
+from tools.computer_control.windows_ui_observer import (  # noqa: E402
     ControlInfo,
     WindowInfo,
     WindowObservation,
@@ -41,6 +41,7 @@ class SimulatedState:
     playing: bool = False
     opened_apps: int = 0
     clicked_controls: list[str] = field(default_factory=list)
+    typed_text: str = ""
 
 
 class SimulatedObserver:
@@ -56,6 +57,19 @@ class SimulatedObserver:
                 handle=200,
                 process_id=201,
                 class_name="Chrome_WidgetWin_1",
+            )
+        if self.state.surface == "notepad":
+            # Class "Dialog" and a non-Latin control label are real,
+            # live-observed traits of Windows 11's modern Notepad -- not
+            # simplified for this simulation. See tools/windows_ui_observer
+            # .py's _INTERACTIVE_ROLES comment for how this was found.
+            return WindowInfo(
+                "Untitled - Notepad",
+                app_name="Notepad",
+                is_active=True,
+                handle=300,
+                process_id=301,
+                class_name="Dialog",
             )
         return WindowInfo(
             "Spotify Premium",
@@ -85,6 +99,8 @@ class SimulatedObserver:
             name in query for name in ("github", "chrome")
         ):
             return window
+        if self.state.surface == "notepad" and "notepad" in query:
+            return window
         return None
 
     def describe_window(self, target):
@@ -97,6 +113,22 @@ class SimulatedObserver:
                 ControlInfo("Hyperlink", "Code", is_actionable=True),
                 ControlInfo("Hyperlink", "Issues", is_actionable=True),
                 ControlInfo("Hyperlink", "Pull requests", is_actionable=True),
+            )
+        elif self.state.surface == "notepad":
+            # The real editable surface, plus a decoy status control the
+            # model was live-observed picking instead ("Line 1, Column 1")
+            # before the _INTERACTIVE_ROLES/element_id fixes. Both carry
+            # real scan-shaped ids so element_id targeting is exercised the
+            # same way a real describe_window() scan would produce it.
+            controls = (
+                ControlInfo(
+                    "Document", "텍스트 편집기", is_actionable=True,
+                    element_id="scan1-e0",
+                ),
+                ControlInfo(
+                    "Text", "줄 1, 열 1", is_actionable=False,
+                    element_id="scan1-e1",
+                ),
             )
         else:
             controls = [
@@ -139,7 +171,24 @@ class SimulatedControl:
             evidence="The simulated foreground window matches.",
         )
 
-    def type_text(self, target, control, text):
+    def type_text(self, target, control, text, *, element_id=""):
+        if self.state.surface == "notepad":
+            if element_id == "scan1-e0":
+                self.state.typed_text = str(text)
+                return UIActionResult(
+                    "typed", "Typed into the text editor.",
+                    window_title=self.observer.window().title,
+                    control_name="텍스트 편집기",
+                    verified=True,
+                    evidence=(
+                        "The simulated document contains the requested text."
+                    ),
+                )
+            return UIActionResult(
+                "refused",
+                "That control isn't a text field I can type into.",
+                verified=False,
+            )
         if self.state.surface != "spotify" or "search" not in control.casefold():
             return UIActionResult(
                 "not_found", "The requested text field was not found.",
@@ -154,7 +203,7 @@ class SimulatedControl:
             evidence="The simulated Search value contains the requested text.",
         )
 
-    def click_control(self, target, control, *, confirmed=False):
+    def click_control(self, target, control, *, confirmed=False, element_id=""):
         normalized_control = control.casefold().strip()
         normalized_query = self.state.query.casefold().strip()
         if (
@@ -178,12 +227,12 @@ class SimulatedControl:
             verified=False,
         )
 
-    def select_option(self, target, control, option):
+    def select_option(self, target, control, option, *, element_id=""):
         return UIActionResult(
             "not_found", "No matching selection control exists.", verified=False,
         )
 
-    def scroll_control(self, target, control, direction):
+    def scroll_control(self, target, control, direction, *, element_id=""):
         return UIActionResult(
             "scrolled", "Scrolled the simulated view.", verified=True,
         )
@@ -244,6 +293,17 @@ def main() -> int:
         "Spotify playback goal",
         play_result.status == "done" and play_state.playing,
         play_result,
+    ))
+
+    notepad_state = SimulatedState("notepad")
+    notepad_result = planner_for(client, model, keep_alive, notepad_state).act(
+        "Write hello world in Notepad."
+    )
+    checks.append((
+        "Notepad Document-role text entry",
+        notepad_result.status == "done"
+        and notepad_state.typed_text == "hello world",
+        notepad_result,
     ))
 
     github_state = SimulatedState("github")
