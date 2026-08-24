@@ -39,6 +39,14 @@ _NON_TAB_URL_PREFIXES = (
     "chrome-extension://", "whale-extension://", "extension://",
     "devtools://", "about:blank", "chrome://newtab", "whale://newtab",
 )
+# Narrower than _NON_TAB_URL_PREFIXES: a blank new-tab page has nothing to
+# describe or click, so describe_page/click_element correctly ignore it --
+# but navigating one *into* something useful is the ordinary first action
+# of a session, so resolve_navigable_page() must still be able to target
+# it. Only genuinely non-navigable technical surfaces stay excluded here.
+_NON_NAVIGABLE_URL_PREFIXES = (
+    "chrome-extension://", "whale-extension://", "extension://", "devtools://",
+)
 
 # Shared with tools/browser_control.py's single-element label lookup, so a
 # committing-action safety check always sees the exact same label the model
@@ -288,8 +296,10 @@ class BrowserObserver:
             return PageObservation(
                 "not_found",
                 message=(
-                    "I couldn't determine the active browser tab. Select the "
-                    "page you mean and try again, or name a tab first."
+                    "I couldn't determine the active browser tab. If none is "
+                    "open yet, use search or open_url to open one -- that "
+                    "works even with none open. Otherwise select the page "
+                    "you mean and try again, or name a tab first."
                 ),
             )
 
@@ -422,6 +432,52 @@ class BrowserObserver:
             for page in getattr(context, "pages", ())
             if not self._safe_url(page).startswith(_NON_TAB_URL_PREFIXES)
         ]
+
+    def resolve_navigable_page(self, tab_index: int | None) -> Any:
+        """Find a page to navigate, including a blank new-tab page.
+
+        Used by BrowserControl.navigate/search (never by an observation
+        call): a session's very first browser action ordinarily starts
+        from a blank tab, which _resolve_page deliberately excludes since
+        there is nothing there yet to describe or click.
+        """
+        result = self._ensure_connected()
+        if result.status != "connected":
+            return None
+        pages = [
+            page
+            for context in getattr(self._browser, "contexts", ())
+            for page in getattr(context, "pages", ())
+            if not self._safe_url(page).startswith(_NON_NAVIGABLE_URL_PREFIXES)
+        ]
+        if not pages:
+            if tab_index is not None:
+                # A specific tab was requested; there is nothing to
+                # substitute it with.
+                return None
+            # Playwright's CDP attach to an externally-launched browser
+            # (this project always launches its own, never Playwright's
+            # own chromium.launch()) does not reliably enumerate that
+            # browser's very first default tab -- BrowserConnection.open_url
+            # hits the identical gap on a cold launch and already falls
+            # back to creating a page outright; mirror that fix here so a
+            # session's first search/open_url doesn't spuriously fail.
+            return self._new_page()
+        if tab_index is None:
+            active_index = self._active_tab_index(pages)
+            return pages[active_index] if active_index is not None else None
+        if 0 <= tab_index < len(pages):
+            return pages[tab_index]
+        return None
+
+    def _new_page(self) -> Any:
+        try:
+            contexts = list(getattr(self._browser, "contexts", ()) or ())
+            if not contexts:
+                return None
+            return contexts[0].new_page()
+        except Exception:
+            return None
 
     def _resolve_page(self, tab_index: int | None) -> Any:
         page, _ = self._resolve_page_with_index(tab_index)

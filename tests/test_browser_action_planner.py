@@ -39,11 +39,18 @@ class FakeObserver:
 
 
 class FakeControl:
-    def __init__(self, *, click_result=None, fill_result=None):
+    def __init__(
+        self, *, click_result=None, fill_result=None,
+        search_result=None, navigate_result=None,
+    ):
         self.observer = FakeObserver()
         self.click_result = click_result
         self.fill_result = fill_result
+        self.search_result = search_result
+        self.navigate_result = navigate_result
         self.click_calls = []
+        self.search_calls = []
+        self.navigate_calls = []
 
     def click(self, tab_index, element_id, *, expected_label="", confirmed=False, **kwargs):
         self.click_calls.append((tab_index, element_id, confirmed))
@@ -51,6 +58,14 @@ class FakeControl:
 
     def fill(self, tab_index, element_id, text, *, expected_label="", **kwargs):
         return self.fill_result
+
+    def search(self, tab_index, query):
+        self.search_calls.append((tab_index, query))
+        return self.search_result
+
+    def navigate(self, tab_index, url):
+        self.navigate_calls.append((tab_index, url))
+        return self.navigate_result
 
 
 class BrowserActionPlannerBasicTests(unittest.TestCase):
@@ -157,6 +172,131 @@ class BrowserActionPlannerBasicTests(unittest.TestCase):
 
         self.assertEqual(result.status, "done")
         self.assertEqual(control.click_calls, [(0, "e0", True)])
+
+    def test_search_tool_from_a_blank_tab_reaches_done(self):
+        # This is the tool a task-planner sub_goal like "find hotels in
+        # Guam" resolves to when no relevant page is open yet -- the gap
+        # this test guards was real: search/open_url didn't exist, so any
+        # such goal could only ever exhaust the round budget. The goal is
+        # phrased to skip the zero-round direct-search shortcut (covered
+        # separately below) and actually exercise the model tool loop.
+        control = FakeControl(
+            search_result=BrowserActionResult(
+                "navigated", "Searched for 'hotels in Guam'.",
+                url="https://www.google.com/search?q=hotels+in+guam",
+                verified=True,
+            ),
+        )
+        client = FakeClient([
+            _message(tool_calls=[_tool_call("search", query="hotels in Guam")]),
+            _message(content="Opened search results for hotels in Guam."),
+        ])
+        planner = BrowserActionPlanner(
+            client=client, model="qwen3:8b", keep_alive=-1, control=control,
+        )
+
+        result = planner.act("Find hotels in Guam")
+
+        self.assertEqual(result.status, "done")
+        self.assertEqual(control.search_calls, [(None, "hotels in Guam")])
+        self.assertEqual(len(client.calls), 2)
+
+    def test_open_url_tool_to_a_goal_named_site_reaches_done(self):
+        control = FakeControl(
+            navigate_result=BrowserActionResult(
+                "navigated", "Opened https://youtube.com/.",
+                url="https://youtube.com/", verified=True,
+            ),
+        )
+        client = FakeClient([
+            _message(tool_calls=[_tool_call("open_url", url="https://youtube.com")]),
+            _message(content="Opened YouTube."),
+        ])
+        planner = BrowserActionPlanner(
+            client=client, model="qwen3:8b", keep_alive=-1, control=control,
+        )
+
+        result = planner.act("Go to the site named in this task")
+
+        self.assertEqual(result.status, "done")
+        self.assertEqual(control.navigate_calls, [(None, "https://youtube.com")])
+        self.assertEqual(len(client.calls), 2)
+
+    def test_open_url_refusal_is_a_terminal_failure_not_retried(self):
+        # SafeBrowserControl blocks local/private-network destinations --
+        # that refusal must stop the round loop immediately, the same way
+        # a payment refusal does, not spend the rest of the round budget
+        # retrying it.
+        control = FakeControl(
+            navigate_result=BrowserActionResult(
+                "refused", "Local and private network pages are disabled.",
+            ),
+        )
+        planner = BrowserActionPlanner(
+            client=FakeClient([
+                _message(tool_calls=[_tool_call("open_url", url="http://127.0.0.1:8080/admin")]),
+            ]),
+            model="qwen3:8b", keep_alive=-1, control=control,
+        )
+
+        result = planner.act("Go to the local admin page for this task")
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.failure_code, "refused")
+        self.assertEqual(len(control.navigate_calls), 1)
+
+    def test_direct_search_shortcut_skips_the_model_entirely(self):
+        # Mirrors _try_direct_click's own precedent: an unambiguous request
+        # shouldn't spend a model round to be recognized.
+        control = FakeControl(
+            search_result=BrowserActionResult(
+                "navigated", "Searched for 'hotels in Guam'.",
+                url="https://www.google.com/search?q=hotels+in+guam",
+                verified=True,
+            ),
+        )
+        client = FakeClient([])
+        planner = BrowserActionPlanner(
+            client=client, model="qwen3:8b", keep_alive=-1, control=control,
+        )
+
+        result = planner.act("Search for hotels in Guam")
+
+        self.assertEqual(result.status, "done")
+        self.assertEqual(control.search_calls, [(None, "hotels in Guam")])
+        self.assertEqual(client.calls, [])
+
+    def test_direct_open_url_shortcut_skips_the_model_entirely(self):
+        control = FakeControl(
+            navigate_result=BrowserActionResult(
+                "navigated", "Opened https://youtube.com/.",
+                url="https://youtube.com/", verified=True,
+            ),
+        )
+        client = FakeClient([])
+        planner = BrowserActionPlanner(
+            client=client, model="qwen3:8b", keep_alive=-1, control=control,
+        )
+
+        result = planner.act("Open youtube.com")
+
+        self.assertEqual(result.status, "done")
+        self.assertEqual(control.navigate_calls, [(None, "youtube.com")])
+        self.assertEqual(client.calls, [])
+
+    def test_direct_open_url_shortcut_does_not_fire_for_a_same_page_element(self):
+        # "Open Settings" must still reach _try_direct_click (a one-word
+        # control label has no dot, so _LOOKS_LIKE_URL correctly rejects
+        # it) rather than being misread as a navigation target.
+        control = FakeControl()
+        planner = BrowserActionPlanner(
+            client=FakeClient([]), model="qwen3:8b", keep_alive=-1, control=control,
+        )
+
+        result = planner._try_direct_navigate("Open Settings")
+
+        self.assertIsNone(result)
+        self.assertEqual(control.navigate_calls, [])
 
     def test_resume_confirmed_click_without_verification_is_not_claimed_done(self):
         control = FakeControl(
@@ -442,7 +582,7 @@ class BrowserActionPlannerBasicTests(unittest.TestCase):
             keep_alive=-1,
         )
 
-        result = planner.act("Search for hotels")
+        result = planner.act("Find hotel deals")
 
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.failure_code, "planner_stalled")

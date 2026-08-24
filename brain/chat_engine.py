@@ -34,6 +34,8 @@ from brain.desktop_action_planner import (
     DesktopSurfaceContext,
 )
 from brain.browser_action_planner import BrowserActionPlanner
+from brain.task_planner import TaskPlanner
+from brain.task_intent_gate import TaskIntentGate
 from tools.browser_control.browser_connection import BrowserConnection
 from tools.browser_control.browser_control import BrowserControl
 from tools.browser_control.browser_observer import BrowserObserver
@@ -58,6 +60,7 @@ from security.approval_manager import ApprovalManager
 from security.policy import PolicyEngine
 from security.computer_consent import ComputerConsentGate
 from security.computer_control_mode import ComputerControlMode
+from security.task_consent import PendingTaskAction, TaskConsentGate
 from tools.google_calendar import GoogleCalendarTool
 from tools.computer_control.computer_control import (
     ComputerActionRequest,
@@ -389,6 +392,32 @@ class ChatEngine:
         # Desktop Control is deliberately session-only and starts off after
         # every launch. The config flag remains the master kill switch.
         self.computer_control_mode = ComputerControlMode(enabled=False)
+        # Phase 4D-1: goal-level planner composing the desktop/browser
+        # planners above into multi-step tasks. Never touches their
+        # internals -- only calls their existing .act()/resume_confirmed_*
+        # entry points, the same way chat_engine itself already does for a
+        # single-ability turn.
+        self.task_planner = TaskPlanner(
+            client=self.client,
+            model=self.model,
+            keep_alive=self.keep_alive,
+            agent_registry=self.agent_registry,
+            desktop_action_planner=self.desktop_action_planner,
+            browser_action_planner=self.browser_action_planner,
+            computer_control_mode=self.computer_control_mode,
+            browser_control_enabled=self.browser_page_control_enabled,
+        )
+        self.task_intent_gate = TaskIntentGate(
+            client=self.client, model=self.model, keep_alive=self.keep_alive,
+        )
+        self.task_consent = TaskConsentGate(
+            expiry_seconds=int(self.config.get(
+                "routing",
+                "task_confirmation_expiry_seconds",
+                default=90,
+                required=False,
+            ))
+        )
         self.brief_responses = BriefResponseGenerator(
             self.client,
             self.model,
@@ -1270,6 +1299,49 @@ class ChatEngine:
             operation="browser_action",
         )
 
+    def _handle_task_action(
+        self,
+        route: IntentDecision,
+        *,
+        approved_task: PendingTaskAction | None,
+        original_request: str = "",
+    ) -> str:
+        """Phase 4D-1: multi-step goals composed from existing 4A-4C
+        abilities. The task planner only decides which capability and
+        sub-goal come next -- every actual step is a real call into the
+        proven desktop/browser planners, never a low-level tool itself.
+        """
+        if approved_task is not None:
+            task_result = self.task_planner.resume(
+                approved_task.task_state,
+                approved_action=approved_task.prepared,
+                step=approved_task.step,
+            )
+        else:
+            goal = str(route.normalized_request or original_request).strip()
+            task_result = self.task_planner.run(goal)
+
+        print(
+            "[Task Planner] status="
+            f"{task_result.status} "
+            f"steps={task_result.task_state.step_count} "
+            "capability="
+            f"{task_result.pending_capability or task_result.task_state.current_capability or '(none)'}"
+        )
+
+        if task_result.status == "needs_confirmation":
+            self.agent_consent.clear()
+            self.task_consent.offer(
+                task_state=task_result.task_state,
+                step=task_result.pending_step,
+                capability=task_result.pending_capability,
+                prepared=task_result.pending_prepared,
+                reason=task_result.summary,
+            )
+            return task_result.summary
+
+        return task_result.summary or "That task is done."
+
     def chat(
         self,
         user_input,
@@ -1313,8 +1385,10 @@ class ChatEngine:
         )
         pending_offer = self.agent_consent.peek()
         pending_computer = self.computer_consent.peek()
+        pending_task = self.task_consent.peek()
         locked_response = ""
         approved_computer_action: PreparedComputerAction | None = None
+        approved_task_action: PendingTaskAction | None = None
 
         def route_current(
             transcript: str,
@@ -1349,6 +1423,63 @@ class ChatEngine:
                 action_requested=True,
                 action_target="calendar event",
             )
+        elif pending_task is not None and not has_explicit_attachment:
+            consent = self.consent_classifier.classify(
+                user_input,
+                pending_task,
+                recent_turns=list(self._router_history),
+            )
+            if consent.decision == "accept":
+                self.task_consent.clear()
+                approved_task_action = pending_task
+                route = IntentDecision(
+                    intent="task_action",
+                    confidence=consent.confidence,
+                    normalized_request=pending_task.request,
+                    reason="The user accepted the pending task step.",
+                    is_follow_up=True,
+                    speech_act="action_request",
+                    action_requested=True,
+                    action_target=pending_task.request,
+                )
+            elif consent.decision == "modify":
+                # A modified multi-step task is treated as a fresh goal
+                # rather than grafting a changed instruction onto in-flight
+                # task state -- simpler and safer than partial-state surgery.
+                self.task_consent.clear()
+                revised_request = consent.modified_request.strip()
+                route = route_current(revised_request or user_input)
+            elif consent.decision == "reject":
+                self.task_consent.clear()
+                route = IntentDecision(
+                    intent="conversation",
+                    confidence=consent.confidence,
+                    normalized_request=user_input,
+                    reason="The user declined the pending task step.",
+                    is_follow_up=True,
+                )
+                gathered = "; ".join(
+                    pending_task.task_state.collected_information
+                )
+                locked_response = (
+                    f"Okay, I'll stop there. So far: {gathered}"
+                    if gathered
+                    else "Okay, I'll stop there."
+                )
+            elif consent.decision == "unrelated":
+                self.task_consent.clear()
+                route = route_current(user_input)
+            else:
+                route = IntentDecision(
+                    intent="conversation",
+                    confidence=consent.confidence,
+                    normalized_request=user_input,
+                    reason="The pending task confirmation reply was unclear.",
+                    is_follow_up=True,
+                )
+                locked_response = (
+                    pending_task.reason or "Should I continue with that step?"
+                )
         elif pending_computer is not None and not has_explicit_attachment:
             consent = self.consent_classifier.classify(
                 user_input,
@@ -1441,7 +1572,27 @@ class ChatEngine:
         else:
             if has_explicit_attachment and pending_computer is not None:
                 self.computer_consent.clear()
-            route = route_current(user_input)
+            task_decision = None
+            if not continuing_agent_flow and not has_explicit_attachment:
+                task_decision = self.task_intent_gate.check(
+                    user_input,
+                    conversation_state=self._build_conversation_state(),
+                )
+            if task_decision is not None and task_decision.is_multistep:
+                route = IntentDecision(
+                    intent="task_action",
+                    confidence=task_decision.confidence,
+                    normalized_request=user_input,
+                    reason=(
+                        task_decision.reason
+                        or "This goal needs more than one capability."
+                    ),
+                    speech_act="action_request",
+                    action_requested=True,
+                    action_target=user_input,
+                )
+            else:
+                route = route_current(user_input)
         route, agent_permission_context = apply_agent_permission(
             self.agent_consent,
             route,
@@ -1566,6 +1717,12 @@ class ChatEngine:
                     target=computer_result.target,
                     message=computer_result.message,
                 )
+        if route.intent == "task_action" and not locked_response:
+            locked_response = self._handle_task_action(
+                route,
+                approved_task=approved_task_action,
+                original_request=user_input,
+            )
         screen_target = route.screen_target or "configured"
         if screen_snapshot is not None:
             pass

@@ -41,4 +41,31 @@ def _screen_capture_enabled(
     return True, ""
 
 
+def _computer_control_mode_enabled(
+    *, computer_control_mode: Any = None, **_: Any
+) -> tuple[bool, str]:
+    if computer_control_mode is None or not getattr(
+        computer_control_mode, "enabled", False,
+    ):
+        return False, (
+            "Desktop Control Mode is off, so native app/window control "
+            "isn't available right now."
+        )
+    return True, ""
+
+
+def _browser_page_control_enabled(
+    *, browser_control_enabled: bool = True, **_: Any
+) -> tuple[bool, str]:
+    if not browser_control_enabled:
+        return False, "Browser-page control is disabled in configuration."
+    return True, ""
+
+
 register_precondition("screen_capture_enabled", _screen_capture_enabled)
+register_precondition(
+    "computer_control_mode_enabled", _computer_control_mode_enabled,
+)
+register_precondition(
+    "browser_page_control_enabled", _browser_page_control_enabled,
+)

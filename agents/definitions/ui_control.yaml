@@ -1,0 +1,17 @@
+id: ui_control
+name: Native UI Control
+description: Opens, focuses, and controls installed desktop applications and their windows.
+enabled: true
+intents: []
+tools:
+  - computer.ui_action
+use_when:
+  - A multi-step task needs to open, focus, or act inside an installed native application.
+avoid_when:
+  - The step is about a webpage in the browser instead (that is browser_control).
+instructions:
+  - Only act while Desktop Control Mode is on.
+  - Every window and control is verified against the live system before acting.
+preconditions:
+  - computer_control_mode_enabled
+settings: {}

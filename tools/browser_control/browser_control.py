@@ -395,33 +395,75 @@ class BrowserControl:
         )
 
     def navigate(self, tab_index: int | None, url: str) -> BrowserActionResult:
-        result = self.observer._ensure_connected()
-        if result.status != "connected":
-            return BrowserActionResult("unavailable", result.message)
-        page = self.observer._resolve_page(tab_index)
-        if page is None:
-            return BrowserActionResult("not_found", "I couldn't find that browser tab.")
-        # BrowserActionPlanner deliberately does not expose raw navigation;
-        # this defensive validation protects direct callers too.  It blocks
-        # file:, localhost, and private-network destinations before the page
-        # receives a goto command.
+        # This defensive validation (blocks file:, localhost, and
+        # private-network destinations) protects direct callers even though
+        # BrowserActionPlanner's own "search"/"open_url" tools already only
+        # ever pass a goal-grounded address here, never raw page content.
         resolution = SafeBrowserControl().resolve(str(url), str(url))
         if resolution.status != "resolved":
             return BrowserActionResult(
                 "refused", resolution.message or "That address is not allowed.",
             )
+        return self._goto(
+            tab_index, resolution.url,
+            success_message=f"Opened {{url}}.",
+            failure_message=f"I couldn't open {url!r}: {{error}}",
+            evidence="The page's real URL is the requested address after navigation.",
+        )
+
+    def search(self, tab_index: int | None, query: str) -> BrowserActionResult:
+        # The domain is fixed by local configuration (SafeBrowserControl's
+        # search_url_template) -- only the query text, always percent-
+        # encoded, comes from the model, so this can never be turned into
+        # navigation to an arbitrary model- or page-suggested destination.
+        resolution = SafeBrowserControl().resolve_search(str(query))
+        if resolution.status != "resolved":
+            return BrowserActionResult(
+                "refused", resolution.message or "That search could not be started.",
+            )
+        return self._goto(
+            tab_index, resolution.url,
+            success_message=f"Searched for {query!r}.",
+            failure_message=f"I couldn't search for {query!r}: {{error}}",
+            evidence="The page's real URL is the search results address.",
+        )
+
+    def _goto(
+        self,
+        tab_index: int | None,
+        url: str,
+        *,
+        success_message: str,
+        failure_message: str,
+        evidence: str,
+    ) -> BrowserActionResult:
+        result = self.observer._ensure_connected()
+        if result.status != "connected":
+            return BrowserActionResult("unavailable", result.message)
+        # Unlike click/fill/describe, navigation must be able to target a
+        # blank new-tab page -- that's the ordinary starting point of a
+        # session, not an edge case.
+        page = self.observer.resolve_navigable_page(tab_index)
+        if page is None:
+            return BrowserActionResult("not_found", "I couldn't find that browser tab.")
         try:
-            page.goto(resolution.url, timeout=15000, wait_until="domcontentloaded")
+            page.goto(url, timeout=15000, wait_until="domcontentloaded")
         except Exception as error:
             return BrowserActionResult(
-                "failed", f"I couldn't open {url!r}: {error}", url=page.url,
+                "failed", failure_message.format(error=error), url=page.url,
             )
         if hasattr(self.observer, "prefer_page"):
             self.observer.prefer_page(str(page.url))
+        try:
+            page.bring_to_front()
+        except Exception:
+            # Cosmetic only -- surfacing the window so a step doesn't happen
+            # silently behind whatever the user is doing must never turn a
+            # real, completed navigation into a reported failure.
+            pass
         return BrowserActionResult(
-            "navigated", f"Opened {page.url}.", url=page.url,
-            verified=True,
-            evidence="The page's real URL is the requested address after navigation.",
+            "navigated", success_message.format(url=page.url), url=page.url,
+            verified=True, evidence=evidence,
         )
 
     def _resolve_element(

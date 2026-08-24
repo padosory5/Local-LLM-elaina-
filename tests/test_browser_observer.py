@@ -58,6 +58,13 @@ class _LegacyPlaywrightPage:
 class _FakeContext:
     def __init__(self, pages):
         self.pages = pages
+        self.new_page_calls = 0
+
+    def new_page(self):
+        self.new_page_calls += 1
+        page = _FakePage(url="about:blank", title="")
+        self.pages.append(page)
+        return page
 
 
 class _FakeBrowser:
@@ -204,6 +211,79 @@ class ListTabsTests(unittest.TestCase):
             BrowserObserver._safe_title(_LegacyPlaywrightPage()),
             "Recovered title",
         )
+
+
+class ResolveNavigablePageTests(unittest.TestCase):
+    """A session's very first browser action ordinarily starts from a
+    blank tab -- unlike list_tabs/describe_page, resolve_navigable_page
+    must still be able to target it, since navigating it into something
+    useful is the point, not an edge case."""
+
+    def test_finds_a_blank_new_tab_page_when_it_is_the_only_tab(self):
+        blank = _FakePage(url="chrome://newtab/", title="")
+        browser = _FakeBrowser([_FakeContext([blank])])
+        observer = BrowserObserver(connection=_FakeConnection(_connected(browser)))
+
+        page = observer.resolve_navigable_page(None)
+
+        self.assertIs(page, blank)
+
+    def test_still_excludes_extension_and_devtools_pages(self):
+        extension = _FakePage(url="chrome-extension://abc/index.html", title="")
+        blank = _FakePage(url="about:blank", title="")
+        browser = _FakeBrowser([_FakeContext([extension, blank])])
+        observer = BrowserObserver(connection=_FakeConnection(_connected(browser)))
+
+        page = observer.resolve_navigable_page(None)
+
+        self.assertIs(page, blank)
+
+    def test_returns_none_when_not_connected(self):
+        failure = BrowserConnectionResult("not_debug_enabled", "Reopen with the shortcut.")
+        observer = BrowserObserver(connection=_FakeConnection(failure))
+
+        self.assertIsNone(observer.resolve_navigable_page(None))
+
+    def test_resolves_by_explicit_tab_index_among_navigable_pages(self):
+        pages = [
+            _FakePage(url="https://a.com", title="A"),
+            _FakePage(url="https://b.com", title="B"),
+        ]
+        browser = _FakeBrowser([_FakeContext(pages)])
+        observer = BrowserObserver(connection=_FakeConnection(_connected(browser)))
+
+        page = observer.resolve_navigable_page(1)
+
+        self.assertIs(page, pages[1])
+
+    def test_creates_a_page_when_the_browser_reports_none_at_all(self):
+        # The real-world gap this guards: Playwright's CDP attach to an
+        # externally-launched browser (this project never uses Playwright's
+        # own chromium.launch()) does not reliably enumerate that browser's
+        # very first default tab, so contexts[0].pages can legitimately be
+        # empty on a session's first search/open_url even though a real
+        # window is open. BrowserConnection.open_url hits the identical gap
+        # on a cold launch and already falls back to creating a page.
+        context = _FakeContext([])
+        browser = _FakeBrowser([context])
+        observer = BrowserObserver(connection=_FakeConnection(_connected(browser)))
+
+        page = observer.resolve_navigable_page(None)
+
+        self.assertIsNotNone(page)
+        self.assertEqual(context.new_page_calls, 1)
+
+    def test_does_not_create_a_page_for_an_explicit_tab_index_when_none_exist(self):
+        # A specific tab was requested; there's nothing to substitute it
+        # with, unlike the tab_index=None "any tab will do" case above.
+        context = _FakeContext([])
+        browser = _FakeBrowser([context])
+        observer = BrowserObserver(connection=_FakeConnection(_connected(browser)))
+
+        page = observer.resolve_navigable_page(0)
+
+        self.assertIsNone(page)
+        self.assertEqual(context.new_page_calls, 0)
 
 
 class DescribePageTests(unittest.TestCase):

@@ -26,6 +26,10 @@ runtime/secrets/
 runtime/database/*.db
 runtime/database/*.index
 
+# Stray runtime dir some tools/ modules briefly wrote to before their
+# path resolution was fixed to use core.paths (see browser_connection.py)
+tools/runtime/
+
 # OS and editor files
 .DS_Store
 Thumbs.db

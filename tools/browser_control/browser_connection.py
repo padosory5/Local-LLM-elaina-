@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from core.paths import DATA_DIRECTORY
 from tools.computer_control.windows_app_catalog import WindowsAppCatalog
 from tools.computer_control.windows_process_control import WindowsProcessControl
 
@@ -291,9 +292,11 @@ class BrowserConnection:
         if value is not None and str(value).strip():
             return Path(value).expanduser().resolve()
         # Keep generated automation state alongside the application's other
-        # private runtime state.  This also makes the location predictable for
-        # a portable install without touching Windows' default browser data.
-        return Path(__file__).resolve().parents[1] / "runtime" / "data" / "browser-profile"
+        # private runtime state (core.paths.DATA_DIRECTORY), not a path
+        # computed relative to this file -- that broke silently once this
+        # module moved a directory deeper during the tools/ reorg, spilling
+        # a second untracked browser profile under tools/runtime/.
+        return DATA_DIRECTORY / "browser-profile"
 
     def _wait_for_port(self) -> bool:
         for _ in range(_LAUNCH_WAIT_ATTEMPTS):

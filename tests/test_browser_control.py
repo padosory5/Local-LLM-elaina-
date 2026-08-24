@@ -90,6 +90,7 @@ class _FakePage:
         self.url = url
         self._locators = locators or {}
         self.goto_calls = []
+        self.brought_to_front = False
 
     def locator(self, selector):
         element_id = selector.split('"')[1]
@@ -98,6 +99,9 @@ class _FakePage:
     def goto(self, url, timeout=None, wait_until=None):
         self.goto_calls.append(url)
         self.url = url
+
+    def bring_to_front(self):
+        self.brought_to_front = True
 
 
 class _FakeObserver:
@@ -111,6 +115,9 @@ class _FakeObserver:
         return BrowserConnectionResult("unavailable", "Browser control isn't installed.")
 
     def _resolve_page(self, tab_index):
+        return self._page
+
+    def resolve_navigable_page(self, tab_index):
         return self._page
 
 
@@ -399,6 +406,9 @@ class SelectScrollNavigateTests(unittest.TestCase):
 
         self.assertEqual(result.status, "navigated")
         self.assertEqual(page.goto_calls, ["https://hotels.example/search"])
+        # A step happening silently behind whatever the user is doing is
+        # exactly the confusion this surfaces the window against.
+        self.assertTrue(page.brought_to_front)
 
     def test_navigate_reports_failure(self):
         page = _FakePage()
@@ -418,6 +428,57 @@ class SelectScrollNavigateTests(unittest.TestCase):
         control = BrowserControl(observer=_FakeObserver(page))
 
         result = control.navigate(0, "http://127.0.0.1:8080/admin")
+
+        self.assertEqual(result.status, "refused")
+        self.assertEqual(page.goto_calls, [])
+
+    def test_search_success(self):
+        page = _FakePage(url="https://example.com")
+        control = BrowserControl(observer=_FakeObserver(page))
+
+        result = control.search(0, "hotels in Guam")
+
+        self.assertEqual(result.status, "navigated")
+        self.assertEqual(
+            page.goto_calls,
+            ["https://www.google.com/search?q=hotels+in+Guam"],
+        )
+        self.assertTrue(page.brought_to_front)
+
+    def test_navigate_success_even_if_bring_to_front_is_unsupported(self):
+        # Some pages/embedders may not expose bring_to_front -- that must
+        # stay cosmetic-only and never turn a real, completed navigation
+        # into a reported failure.
+        page = _FakePage(url="https://example.com")
+
+        def raising_bring_to_front():
+            raise RuntimeError("not supported")
+
+        page.bring_to_front = raising_bring_to_front
+        control = BrowserControl(observer=_FakeObserver(page))
+
+        result = control.navigate(0, "https://hotels.example/search")
+
+        self.assertEqual(result.status, "navigated")
+
+    def test_search_reports_failure(self):
+        page = _FakePage()
+
+        def raising_goto(url, timeout=None, wait_until=None):
+            raise RuntimeError("timed out")
+
+        page.goto = raising_goto
+        control = BrowserControl(observer=_FakeObserver(page))
+
+        result = control.search(0, "hotels in Guam")
+
+        self.assertEqual(result.status, "failed")
+
+    def test_search_refuses_an_empty_query(self):
+        page = _FakePage()
+        control = BrowserControl(observer=_FakeObserver(page))
+
+        result = control.search(0, "   ")
 
         self.assertEqual(result.status, "refused")
         self.assertEqual(page.goto_calls, [])
