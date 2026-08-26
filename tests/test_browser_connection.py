@@ -51,6 +51,14 @@ class _FakePage:
         self.brought_to_front = True
 
 
+class _BlankAfterNavigationPage(_FakePage):
+    """A browser startup tab that never actually reaches its target."""
+
+    def goto(self, url, *, timeout, wait_until):
+        self.goto_calls.append((url, timeout, wait_until))
+        # Deliberately remains about:blank.
+
+
 class _FakeContext:
     def __init__(self, pages=()):
         self.pages = list(pages)
@@ -91,8 +99,11 @@ class BrowserConnectionAlreadyReachableTests(unittest.TestCase):
 
         self.assertEqual(result.status, "connected")
         self.assertIs(result.browser, fake_browser)
+        # 127.0.0.1, never "localhost": the debug port is bound to IPv4
+        # only, and this machine resolves "localhost" to the IPv6 loopback
+        # first -- the same tax config.yaml documents for Ollama.
         fake_playwright_instance.chromium.connect_over_cdp.assert_called_once_with(
-            "http://localhost:9222"
+            "http://127.0.0.1:9222", timeout=10_000,
         )
 
     def test_connection_failure_still_stops_the_driver(self):
@@ -156,17 +167,40 @@ class BrowserConnectionRunningWithoutDebugTests(unittest.TestCase):
             ),
             port_checker=lambda port: False,
             launcher=launcher,
+            # The launch wait is a wall-clock deadline, so patching
+            # time.sleep would busy-spin for the full real timeout instead
+            # of skipping it. Injecting the deadline exercises the real
+            # loop and gives up after one probe.
+            launch_timeout_seconds=0,
         )
 
-        with patch("tools.browser_control.browser_connection.time.sleep"):
-            result = connection.connect(allow_isolated_launch=True)
+        result = connection.connect(allow_isolated_launch=True)
 
         self.assertEqual(result.status, "unavailable")
-        launcher.assert_called_once()
+        # A failed primary isolated launch may make one safe recovery attempt
+        # on a separate Elaina profile/port. It must not touch the normal
+        # running browser, but it is allowed to start a second isolated one.
+        self.assertGreaterEqual(launcher.call_count, 1)
 
 
 class BrowserConnectionNotRunningTests(unittest.TestCase):
-    def test_launches_with_the_debug_flag_when_nothing_is_running(self):
+    def test_read_only_connect_does_not_launch_when_nothing_is_running(self):
+        launcher = MagicMock()
+        connection = BrowserConnection(
+            browser_name="Whale",
+            catalog=FakeCatalog(AppResolution("resolved", "Whale", entry=_WHALE_ENTRY)),
+            process_control=FakeProcessControl(ProcessResolution("not_running")),
+            port_checker=lambda port: False,
+            launcher=launcher,
+        )
+
+        result = connection.connect()
+
+        self.assertEqual(result.status, "not_control_ready")
+        self.assertIn("No Elaina-controlled browser", result.message)
+        launcher.assert_not_called()
+
+    def test_navigation_launches_with_the_debug_flag_when_nothing_is_running(self):
         launcher = MagicMock()
         fake_browser = object()
         fake_playwright_instance = MagicMock()
@@ -197,7 +231,7 @@ class BrowserConnectionNotRunningTests(unittest.TestCase):
                 "playwright.sync_api.sync_playwright",
                 return_value=fake_playwright_factory,
             ):
-                result = connection.connect()
+                result = connection.connect(allow_isolated_launch=True)
 
             self.assertEqual(result.status, "connected")
             command = launcher.call_args.args[0]
@@ -206,6 +240,91 @@ class BrowserConnectionNotRunningTests(unittest.TestCase):
             self.assertIn("--remote-debugging-port=9222", command)
             self.assertIn(f"--user-data-dir={profile.resolve()}", command)
             self.assertEqual(launcher.call_args.kwargs, {"shell": False})
+
+    def test_navigation_recovers_to_a_fresh_isolated_profile_on_next_port(self):
+        fake_browser = object()
+        fake_playwright_instance = MagicMock()
+        fake_playwright_instance.chromium.connect_over_cdp.return_value = fake_browser
+        fake_playwright_factory = MagicMock()
+        fake_playwright_factory.start.return_value = fake_playwright_instance
+        port_open = {9222: False, 9223: False}
+        commands = []
+
+        def port_checker(port):
+            return port_open.get(port, False)
+
+        def launch(command, *, shell=False):
+            commands.append(command)
+            if "--remote-debugging-port=9223" in command:
+                port_open[9223] = True
+
+        with TemporaryDirectory() as directory:
+            profile = Path(directory) / "profile"
+            connection = BrowserConnection(
+                browser_name="Whale",
+                user_data_dir=profile,
+                catalog=FakeCatalog(AppResolution("resolved", "Whale", entry=_WHALE_ENTRY)),
+                process_control=FakeProcessControl(ProcessResolution("not_running")),
+                port_checker=port_checker,
+                launcher=launch,
+                launch_timeout_seconds=0,
+            )
+
+            with patch(
+                "playwright.sync_api.sync_playwright",
+                return_value=fake_playwright_factory,
+            ):
+                result = connection.connect(
+                    allow_isolated_launch=True,
+                    initial_url="https://example.com/search",
+                )
+
+            self.assertEqual(result.status, "connected")
+            self.assertTrue(result.launched)
+            self.assertIs(result.browser, fake_browser)
+            self.assertEqual(connection.debugging_port, 9223)
+            self.assertEqual(
+                connection.user_data_dir,
+                profile.resolve().with_name("profile-recovery-9223"),
+            )
+            self.assertEqual(len(commands), 2)
+            self.assertIn("--remote-debugging-port=9222", commands[0])
+            self.assertIn(f"--user-data-dir={profile.resolve()}", commands[0])
+            self.assertIn("--remote-debugging-port=9223", commands[1])
+            self.assertIn(
+                f"--user-data-dir={profile.resolve().with_name('profile-recovery-9223')}",
+                commands[1],
+            )
+            self.assertEqual(commands[1][-2:], [
+                "--new-window", "https://example.com/search",
+            ])
+            fake_playwright_instance.chromium.connect_over_cdp.assert_called_once_with(
+                "http://127.0.0.1:9223", timeout=10_000,
+            )
+
+    def test_recovery_never_attaches_to_an_already_listening_fallback_port(self):
+        commands = []
+        with TemporaryDirectory() as directory:
+            profile = Path(directory) / "profile"
+            connection = BrowserConnection(
+                browser_name="Whale",
+                user_data_dir=profile,
+                catalog=FakeCatalog(AppResolution("resolved", "Whale", entry=_WHALE_ENTRY)),
+                process_control=FakeProcessControl(ProcessResolution("not_running")),
+                # 9223 could belong to an unrelated local DevTools session.
+                # A recovery must leave it alone rather than attaching to it.
+                port_checker=lambda port: port == 9223,
+                launcher=lambda command, *, shell=False: commands.append(command),
+                launch_timeout_seconds=0,
+            )
+
+            result = connection.connect(allow_isolated_launch=True)
+
+            self.assertEqual(result.status, "unavailable")
+            self.assertEqual(len(commands), 1)
+            self.assertIn("--remote-debugging-port=9222", commands[0])
+            self.assertEqual(connection.debugging_port, 9222)
+            self.assertEqual(connection.user_data_dir, profile.resolve())
 
     def test_initial_navigation_url_is_passed_to_the_browser_launch_command(self):
         launcher = MagicMock()
@@ -280,6 +399,33 @@ class BrowserConnectionNotRunningTests(unittest.TestCase):
         )
         self.assertTrue(context.next_page.brought_to_front)
 
+    def test_open_url_refuses_to_claim_success_from_a_blank_startup_tab(self):
+        requested_url = "https://example.com/"
+        blank_page = _BlankAfterNavigationPage()
+        context = _FakeContext([blank_page])
+        playwright = MagicMock()
+        connection = BrowserConnection(
+            catalog=FakeCatalog(AppResolution("not_found", "Whale")),
+            process_control=FakeProcessControl(ProcessResolution("not_running")),
+            port_checker=lambda port: True,
+        )
+        connection.connect = MagicMock(return_value=BrowserConnectionResult(
+            "connected",
+            browser=_FakeBrowser([context]),
+            playwright=playwright,
+            launched=True,
+        ))
+
+        with self.assertRaisesRegex(Exception, "never reached"):
+            connection.open_url(requested_url)
+
+        self.assertEqual(
+            blank_page.goto_calls,
+            [(requested_url, 15000, "domcontentloaded")],
+        )
+        self.assertEqual(connection.last_opened_url, "")
+        playwright.stop.assert_called_once()
+
     def test_reports_not_found_when_the_browser_is_not_installed(self):
         connection = BrowserConnection(
             browser_name="Whale",
@@ -288,7 +434,7 @@ class BrowserConnectionNotRunningTests(unittest.TestCase):
             port_checker=lambda port: False,
         )
 
-        result = connection.connect()
+        result = connection.connect(allow_isolated_launch=True)
 
         self.assertEqual(result.status, "not_found")
 
@@ -301,10 +447,10 @@ class BrowserConnectionNotRunningTests(unittest.TestCase):
                 process_control=FakeProcessControl(ProcessResolution("not_running")),
                 port_checker=lambda port: False,
                 launcher=MagicMock(),
+                launch_timeout_seconds=0,
             )
 
-            with patch("tools.browser_control.browser_connection.time.sleep"):
-                result = connection.connect()
+            result = connection.connect(allow_isolated_launch=True)
 
             self.assertEqual(result.status, "unavailable")
             self.assertIn("never opened", result.message)

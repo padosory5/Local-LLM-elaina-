@@ -385,7 +385,7 @@ class WindowsUIObserver:
                     "of its current ids."
                 ),
             )
-        element, _scanned_role, scanned_name = record.elements[element_id]
+        element, scanned_role, scanned_name = record.elements[element_id]
         role, name = self._safe_role_and_name(element)
         if not role and not name:
             return ControlLookup(
@@ -411,6 +411,19 @@ class WindowsUIObserver:
                 message=(
                     f"The control behind {element_id!r} changed since it was "
                     "observed. Call describe_window again."
+                ),
+            )
+        # A scan id names an exact observed control, not merely an accessible
+        # label. Controls can retain the same name while changing role (for
+        # example, a harmless-looking Button becoming an Edit or ComboBox),
+        # which changes both the available action and its safety semantics.
+        # Treat that as stale so callers must obtain a fresh observation.
+        if _role_key(role) != _role_key(scanned_role):
+            return ControlLookup(
+                "stale",
+                message=(
+                    f"The control behind {element_id!r} changed role since it "
+                    "was observed. Call describe_window again."
                 ),
             )
         return ControlLookup(

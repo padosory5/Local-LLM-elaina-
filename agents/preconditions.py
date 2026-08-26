@@ -55,10 +55,32 @@ def _computer_control_mode_enabled(
 
 
 def _browser_page_control_enabled(
-    *, browser_control_enabled: bool = True, **_: Any
+    *,
+    browser_control_enabled: bool = True,
+    computer_control_mode: Any = None,
+    **_: Any,
 ) -> tuple[bool, str]:
     if not browser_control_enabled:
         return False, "Browser-page control is disabled in configuration."
+    # Production passes the session-owned toggle.  ``None`` is retained for
+    # legacy standalone planners/tests that intentionally have no desktop
+    # mode concept; when the toggle exists, browser automation must obey the
+    # same visible Control On/Off boundary as native UI automation.
+    if computer_control_mode is not None and not getattr(
+        computer_control_mode, "enabled", False,
+    ):
+        return False, (
+            "Desktop Control Mode is off, so browser-page control isn't "
+            "available right now."
+        )
+    return True, ""
+
+
+def _web_search_enabled(
+    *, web_search_enabled: bool = True, **_: Any
+) -> tuple[bool, str]:
+    if not web_search_enabled:
+        return False, "Web search is disabled in configuration."
     return True, ""
 
 
@@ -69,3 +91,4 @@ register_precondition(
 register_precondition(
     "browser_page_control_enabled", _browser_page_control_enabled,
 )
+register_precondition("web_search_enabled", _web_search_enabled)

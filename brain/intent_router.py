@@ -93,14 +93,20 @@ _DEICTIC_SURFACE_REFERENCE = re.compile(
 # page" ("click Images", "show pictures", "open the first result").  The
 # foreground browser is stronger evidence than a small model's ambiguous
 # ui_action/browser_action label.  Explicit native-app names retain their
-# desktop route.
+# desktop route. Commit verbs (book/reserve/buy/...) are included here too:
+# "book the best one" is exactly this same page-action shape, and it must
+# reach browser_action to hit is_committing_element's already-correct
+# pause-for-confirmation at all -- found live, this request otherwise had
+# no way to reach that existing checkpoint.
 _IMPLICIT_BROWSER_ACTION = re.compile(
     r"\b(?:click|press|tap|open|show|fill|type|enter|select|choose|scroll|"
-    r"read|compare|play|pause|resume|skip)\b",
+    r"read|compare|play|pause|resume|skip|book|reserve|buy|purchase|order)\b|"
+    r"예약|구매|주문",
     flags=re.IGNORECASE,
 )
 _UNAMBIGUOUS_BROWSER_PAGE_ACTION = re.compile(
-    r"\b(?:click|press|tap|fill|type|enter|select|choose|scroll|read|compare)\b",
+    r"\b(?:click|press|tap|fill|type|enter|select|choose|scroll|read|"
+    r"compare|book|reserve|buy|purchase|order)\b|예약|구매|주문",
     flags=re.IGNORECASE,
 )
 _EXPLICIT_NATIVE_APP_REFERENCE = re.compile(
@@ -1123,7 +1129,12 @@ class SemanticIntentRouter:
             "content on a specific webpage the user is already looking at "
             "in the browser right now ('click Settings on this GitHub "
             "page', 'fill the search box on this page', 'compare these "
-            "hotel listings', 'read me this article'). Requires an "
+            "hotel listings', 'read me this article', 'book the best "
+            "one' referring back to a page of results just discussed -- "
+            "committing verbs like book/reserve/buy/purchase are still "
+            "browser_action here, never answered as if already done; the "
+            "browser page's own commit-element check is what actually "
+            "pauses for confirmation before anything happens). Requires an "
             "existing, already-open page -- never a fresh open-ended "
             "'search the web'/'find hotels in Seoul' request with no page "
             "already in view (that is web_search), and never simply "
@@ -1181,10 +1192,17 @@ class SemanticIntentRouter:
             "EXCEPT when the user named a specific search engine or website "
             "as the thing to search ('search Google for hotels in Guam', "
             "'google hotels in Guam', 'look that up on Bing'), or asked to "
-            "use a browser. Naming the site means they want it opened for "
-            "them to look at, which is computer_action/open_search instead, "
-            "even though the underlying topic is exactly the kind of "
-            "real-world fact that would otherwise need web_search. A direct "
+            "use a browser -- naming the site means they want it opened for "
+            "them to look at, which is computer_action/open_search instead "
+            "-- OR when the user is committing to/acting on a specific "
+            "result from a page already in view ('book the best one', "
+            "'reserve it', 'buy that one' referring back to results just "
+            "shown) -- that is computer_action/browser_action instead, "
+            "since the user wants Elaina to act on the specific page "
+            "already open, not gather more evidence about it. Both "
+            "exceptions apply even though the underlying topic (a price, "
+            "availability, or other real-world fact) is exactly the kind "
+            "that would otherwise need web_search. A direct "
             "ask is already permission (action_requested true), never "
             "agent_offer. For 'latest/newest' periodic events, resolve "
             "against current_date/current_year rather than training "
@@ -1301,7 +1319,21 @@ class SemanticIntentRouter:
 
         intent = str(payload.get("intent", "")).strip()
         if intent not in ALLOWED_INTENTS:
-            return None
+            # Found live: the model can correctly work out a specific
+            # computer_operation (e.g. "book the best one" -> browser_action)
+            # and then, exactly because that sub-field is so salient, write
+            # its value into the top-level "intent" key instead of
+            # "computer_action" -- every other field in the same response is
+            # right. Recovering this deterministically here is strictly
+            # better than the generic JSON-repair fallback below, which has
+            # no domain guidance at all and can land on an unrelated intent.
+            if intent in COMPUTER_OPERATIONS and intent not in {"none", "unsupported"}:
+                payload = dict(payload)
+                payload.setdefault("computer_operation", intent)
+                intent = "computer_action"
+                payload["intent"] = intent
+            else:
+                return None
 
         try:
             confidence = float(payload.get("confidence", 0))

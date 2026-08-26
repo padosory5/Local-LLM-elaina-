@@ -27,10 +27,16 @@ tool-calling loop itself.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
+from urllib.parse import urlsplit
 
-from tools.browser_control.browser_observer import _LABEL_LOGIC_JS, BrowserObserver
+from tools.browser_control.browser_observer import (
+    _LABEL_LOGIC_JS,
+    BrowserObserver,
+    spoken_label,
+)
 from tools.browser_control.safe_browser import SafeBrowserControl
 
 _MAX_FILL_LENGTH = 500
@@ -57,6 +63,71 @@ _ELEMENT_DOWNLOAD_INFO_SCRIPT = """
   href: el.href || el.getAttribute('href') || '',
   hasDownloadAttribute: el.hasAttribute('download'),
 })
+"""
+
+# Cookie/privacy dismissal is intentionally a separate action from a normal
+# click. BrowserObserver only marks a candidate; this live check repeats the
+# narrow label + container test on the exact just-observed DOM node before a
+# normal Playwright click is allowed. It never accepts consent, closes a
+# login/promo surface, or uses JavaScript's click() escape hatch.
+_PRIVACY_DISMISSAL_CHECK_SCRIPT = r"""
+(el) => {
+  const normalise = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const label = normalise(
+    el.getAttribute('aria-label') || el.innerText || el.value || el.title || ''
+  );
+  const rejectOnly = /^(?:reject(?:\s+all)?|decline(?:\s+all)?|refuse(?:\s+all)?|only\s+(?:essential|necessary)(?:\s+cookies)?|(?:essential|necessary)\s+only|continue\s+without|모두\s*거부|거부|필수만|필수\s*쿠키만|동의하지\s*않(?:기|음)?)$/i;
+  const never = /accept|agree|allow|consent|enable|subscribe|sign|login|log\s*in|register|buy|pay|order|submit|동의|허용|구독|가입|결제/i;
+  const hint = /cookie|consent|gdpr|privacy|cmp|onetrust|didomi|quantcast|trustarc|sp_message/i;
+  const visible = (node) => {
+    const rect = node.getBoundingClientRect();
+    const style = window.getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' &&
+      style.display !== 'none' && style.opacity !== '0';
+  };
+  let container = null;
+  let node = el;
+  while (node && node !== document.body) {
+    const style = window.getComputedStyle(node);
+    const dialog = node.matches && node.matches(
+      '[role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog[open]'
+    );
+    const clues = [node.id || '', String(node.className || ''),
+      node.getAttribute && (node.getAttribute('aria-label') || ''),
+      (node.innerText || '').slice(0, 800)].join(' ');
+    if ((dialog || style.position === 'fixed' || style.position === 'sticky') &&
+        visible(node) && hint.test(clues)) {
+      container = node;
+      break;
+    }
+    node = node.parentElement;
+  }
+  return { label, safe: !!container && rejectOnly.test(label) && !never.test(label) };
+}
+"""
+
+_PRIVACY_DIALOG_PRESENT_SCRIPT = r"""
+() => {
+  const hint = /cookie|consent|gdpr|privacy|cmp|onetrust|didomi|quantcast|trustarc|sp_message/i;
+  const visible = (node) => {
+    const rect = node.getBoundingClientRect();
+    const style = window.getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' &&
+      style.display !== 'none' && style.opacity !== '0';
+  };
+  return Array.from(document.querySelectorAll(
+    '[role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog[open], [id], [class]'
+  )).some((node) => {
+    const style = window.getComputedStyle(node);
+    const dialog = node.matches && node.matches(
+      '[role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog[open]'
+    );
+    const fixed = style.position === 'fixed' || style.position === 'sticky';
+    const clues = [node.id || '', String(node.className || ''),
+      node.getAttribute('aria-label') || '', (node.innerText || '').slice(0, 800)].join(' ');
+    return (dialog || fixed) && visible(node) && hint.test(clues);
+  });
+}
 """
 
 _DOWNLOADABLE_FILE_EXTENSIONS = (
@@ -87,11 +158,26 @@ _COMMITTING_KEYWORDS = (
 # an actual charge, and stays confirmable via _COMMITTING_KEYWORDS's more
 # specific "checkout now"/"place order" phrases below covering the real
 # commit action.
-_PAYMENT_KEYWORDS = (
-    "pay", "buy", "purchase", "checkout now", "place order",
-    "complete order", "complete purchase", "confirm payment",
-    "confirm purchase", "submit payment", "process payment",
-    "결제", "구매", "결제하기", "구매하기", "결제 완료", "주문 완료", "구매 확정",
+# Word-boundary matching, because substring matching refused ordinary
+# research links: "buyingguides" and "Buyer reviews" both contain "buy".
+# The bare verbs are listed as whole words; brand and phrase forms that a
+# whole-word verb would miss are spelled out alongside them. Korean has no
+# word boundaries, so those stay substrings.
+_PAYMENT_PATTERN = re.compile(
+    # Whole words only. "payment"/"paypal" are named because the old
+    # substring "pay" matched them and that coverage is deliberately kept;
+    # bare "checkout" is deliberately absent, because reaching a checkout
+    # page is navigation, not a charge.
+    r"\b(?:buy|pay|payments?|purchase|purchases|paypal|payco)\b"
+    r"|\bcheckout\s+now\b"
+    # Real buttons put words in the middle -- "Place your order" was missed
+    # entirely by the old exact-phrase entries.
+    r"|\bplace\b[^.!?]{0,16}\border\b"
+    r"|\bcomplete\b[^.!?]{0,16}\b(?:order|purchase)\b"
+    r"|\bconfirm\b[^.!?]{0,16}\b(?:purchase|payment)\b"
+    r"|\b(?:submit|process)\b[^.!?]{0,16}\bpayment\b"
+    r"|결제|구매|주문\s*완료|구매\s*확정",
+    re.IGNORECASE,
 )
 
 _CREDENTIAL_KEYWORDS = (
@@ -112,6 +198,19 @@ _OUTBOUND_TEXT_KEYWORDS = (
 
 _SCROLLABLE_ROLES = frozenset({"a", "button", "div", "section", "li", "img"})
 
+_PRIVACY_REJECT_ONLY = re.compile(
+    r"^(?:reject(?:\s+all)?|decline(?:\s+all)?|refuse(?:\s+all)?|"
+    r"only\s+(?:essential|necessary)(?:\s+cookies)?|"
+    r"(?:essential|necessary)\s+only|continue\s+without|"
+    r"모두\s*거부|거부|필수만|필수\s*쿠키만|동의하지\s*않(?:기|음)?)$",
+    re.IGNORECASE,
+)
+_PRIVACY_NEVER = re.compile(
+    r"accept|agree|allow|consent|enable|subscribe|sign|login|log\s*in|"
+    r"register|buy|pay|order|submit|동의|허용|구독|가입|결제",
+    re.IGNORECASE,
+)
+
 
 def is_committing_element(label: str) -> bool:
     """True if activating this element is a consequential, not-undoable step."""
@@ -124,8 +223,7 @@ def is_payment_element(label: str) -> bool:
 
     Refused outright, never confirmable -- payments stay user-only.
     """
-    lowered = label.casefold()
-    return any(keyword in lowered for keyword in _PAYMENT_KEYWORDS)
+    return bool(_PAYMENT_PATTERN.search(str(label or "")))
 
 
 def is_download_link(label: str, href: str, has_download_attribute: bool) -> bool:
@@ -165,6 +263,55 @@ def is_outbound_text_field(label: str, element_type: str) -> bool:
     return any(keyword in lowered for keyword in _OUTBOUND_TEXT_KEYWORDS)
 
 
+def is_safe_privacy_rejection(label: str) -> bool:
+    """Whether a *label alone* can be the reject-only half of CMP safety.
+
+    The caller must additionally prove the element lives inside a visible
+    privacy container. Keeping this pure helper public makes the two halves
+    explicit in tests and prevents a future generic-click path from treating
+    a bare ``Reject`` label as automatic authority.
+    """
+    normalised = " ".join(str(label or "").split()).strip()
+    return bool(
+        normalised
+        and _PRIVACY_REJECT_ONLY.fullmatch(normalised)
+        and not _PRIVACY_NEVER.search(normalised)
+    )
+
+
+# Post-click evidence is opportunistic: a probe that cannot answer quickly
+# has nothing useful to say, and "no readable postcondition" is already a
+# supported result. Anything longer is pure waiting on a detached element.
+_PROBE_TIMEOUT_MS = 1000
+
+
+def _bounded(probe: Callable[..., Any], *args: Any) -> Any:
+    """Run a Playwright probe with a short timeout.
+
+    Falls back to the bare call for injected doubles whose signatures do
+    not accept ``timeout``.
+    """
+    try:
+        return probe(*args, timeout=_PROBE_TIMEOUT_MS)
+    except TypeError:
+        return probe(*args)
+
+
+def _short_error(error: Exception) -> str:
+    """One line of a Playwright error, never its whole call log."""
+    return str(error).splitlines()[0].strip()[:160]
+
+
+def _is_actionability_timeout(error: Exception) -> bool:
+    """Whether Playwright gave up waiting for an element to be clickable."""
+    text = str(error).casefold()
+    return "timeout" in text and (
+        "locator.click" in text
+        or "locator.fill" in text
+        or "waiting for" in text
+    )
+
+
 @dataclass(frozen=True)
 class BrowserActionResult:
     status: str
@@ -182,6 +329,7 @@ class BrowserActionResult:
     def succeeded(self) -> bool:
         return self.status in {
             "clicked", "filled", "selected", "scrolled", "navigated",
+            "dismissed_privacy_overlay",
         }
 
 
@@ -226,13 +374,15 @@ class BrowserControl:
             if is_download_link(label, href, has_download_attribute):
                 return BrowserActionResult(
                     "confirmation_required",
-                    f"Downloading {label!r} needs confirmation first.",
+                    "Downloading "
+                    f"{spoken_label(label)!r} needs confirmation first.",
                     element_id=element_id, element_label=label, url=before_url,
                 )
             if is_committing_element(label):
                 return BrowserActionResult(
                     "confirmation_required",
-                    f"Clicking {label!r} needs confirmation first.",
+                    "Clicking "
+                    f"{spoken_label(label)!r} needs confirmation first.",
                     element_id=element_id, element_label=label, url=before_url,
                 )
 
@@ -241,8 +391,25 @@ class BrowserControl:
         try:
             locator.click(timeout=5000)
         except Exception as error:
+            # Playwright waits for actionability and then reports a
+            # multi-line call log. That trace is addressed to a developer,
+            # not to the user, and "it's on the page but can't be clicked"
+            # is a recoverable miss the planner should re-scan from -- not
+            # a hard stop. Found live clicking a skip link, which every
+            # accessible site parks off-screen as its first focusable
+            # element.
+            if _is_actionability_timeout(error):
+                return BrowserActionResult(
+                    "not_found",
+                    f"{spoken_label(label)!r} is on the page but isn't "
+                    "clickable right now (it may be hidden, covered, or "
+                    "off-screen). Re-scan and choose a different element.",
+                    element_id=element_id, element_label=label,
+                )
             return BrowserActionResult(
-                "failed", f"I couldn't click {label!r}: {error}",
+                "failed",
+                f"I couldn't click {spoken_label(label)!r}: "
+                f"{_short_error(error)}",
                 element_id=element_id, element_label=label,
             )
         verified, evidence = self._verify_click(
@@ -251,9 +418,113 @@ class BrowserControl:
         if str(page.url) != str(before_url) and hasattr(self.observer, "prefer_page"):
             self.observer.prefer_page(str(page.url))
         return BrowserActionResult(
-            "clicked", f"Clicked {label}.",
+            "clicked", f"Clicked {spoken_label(label)}.",
             element_id=element_id, element_label=label, url=page.url,
             verified=verified, evidence=evidence,
+        )
+
+    def dismiss_privacy_overlay(
+        self,
+        tab_index: int | None,
+        element_id: str,
+        *,
+        expected_label: str = "",
+        expected_url: str = "",
+        expected_scan_id: str = "",
+        expected_href: str = "",
+    ) -> BrowserActionResult:
+        """Reject optional privacy consent through the ordinary click path.
+
+        This method deliberately accepts only exact reject/essential-only
+        controls inside a currently-visible privacy container. It never
+        clicks a generic close button, accepts terms, or works around a
+        blocked action with JavaScript. A successful click is reported only
+        after the privacy surface is no longer observable.
+        """
+        page, locator, label, _element_type, error = self._resolve_element(
+            tab_index, element_id, expected_label, expected_url,
+            expected_scan_id, expected_href,
+        )
+        if error is not None:
+            return error
+        if not is_safe_privacy_rejection(label):
+            return BrowserActionResult(
+                "refused",
+                f"{spoken_label(label)!r} is not a safe privacy-rejection control.",
+                element_id=element_id,
+                element_label=label,
+                url=str(getattr(page, "url", "") or ""),
+            )
+        try:
+            safety = locator.evaluate(_PRIVACY_DISMISSAL_CHECK_SCRIPT)
+        except Exception as exc:
+            return BrowserActionResult(
+                "refused",
+                "I couldn't verify that this control belongs to a privacy dialog, so I left it alone.",
+                element_id=element_id,
+                element_label=label,
+                url=str(getattr(page, "url", "") or ""),
+                evidence=_short_error(exc),
+            )
+        if not isinstance(safety, dict) or not bool(safety.get("safe")):
+            return BrowserActionResult(
+                "refused",
+                "That reject control is not inside a verified privacy dialog, so I left it alone.",
+                element_id=element_id,
+                element_label=label,
+                url=str(getattr(page, "url", "") or ""),
+            )
+        try:
+            # This is intentionally a normal Playwright locator click:
+            # actionability checks protect against a covered, moving, or
+            # disabled target and no force/coordinate fallback is permitted.
+            locator.click(timeout=5000)
+        except Exception as exc:
+            if _is_actionability_timeout(exc):
+                return BrowserActionResult(
+                    "not_found",
+                    f"{spoken_label(label)!r} is no longer clickable; I stopped before guessing.",
+                    element_id=element_id,
+                    element_label=label,
+                    url=str(getattr(page, "url", "") or ""),
+                )
+            return BrowserActionResult(
+                "failed",
+                f"I couldn't dismiss {spoken_label(label)!r}: {_short_error(exc)}",
+                element_id=element_id,
+                element_label=label,
+                url=str(getattr(page, "url", "") or ""),
+            )
+        try:
+            still_present = bool(page.evaluate(_PRIVACY_DIALOG_PRESENT_SCRIPT))
+        except Exception as exc:
+            return BrowserActionResult(
+                "verification_failed",
+                f"I clicked {spoken_label(label)!r}, but couldn't verify that the privacy dialog closed.",
+                element_id=element_id,
+                element_label=label,
+                url=str(getattr(page, "url", "") or ""),
+                verified=False,
+                evidence=_short_error(exc),
+            )
+        if still_present:
+            return BrowserActionResult(
+                "verification_failed",
+                f"I clicked {spoken_label(label)!r}, but the privacy dialog is still visible.",
+                element_id=element_id,
+                element_label=label,
+                url=str(getattr(page, "url", "") or ""),
+                verified=False,
+                evidence="A visible cookie/privacy dialog remained after the click.",
+            )
+        return BrowserActionResult(
+            "dismissed_privacy_overlay",
+            f"Rejected optional privacy choices with {spoken_label(label)}.",
+            element_id=element_id,
+            element_label=label,
+            url=str(getattr(page, "url", "") or ""),
+            verified=True,
+            evidence="The verified privacy dialog was no longer visible after the click.",
         )
 
     def fill(
@@ -394,7 +665,9 @@ class BrowserControl:
             verified=verified, evidence=evidence,
         )
 
-    def navigate(self, tab_index: int | None, url: str) -> BrowserActionResult:
+    def navigate(
+        self, tab_index: int | None, url: str, *, allow_isolated_launch: bool = False,
+    ) -> BrowserActionResult:
         # This defensive validation (blocks file:, localhost, and
         # private-network destinations) protects direct callers even though
         # BrowserActionPlanner's own "search"/"open_url" tools already only
@@ -409,9 +682,12 @@ class BrowserControl:
             success_message=f"Opened {{url}}.",
             failure_message=f"I couldn't open {url!r}: {{error}}",
             evidence="The page's real URL is the requested address after navigation.",
+            allow_isolated_launch=allow_isolated_launch,
         )
 
-    def search(self, tab_index: int | None, query: str) -> BrowserActionResult:
+    def search(
+        self, tab_index: int | None, query: str, *, allow_isolated_launch: bool = False,
+    ) -> BrowserActionResult:
         # The domain is fixed by local configuration (SafeBrowserControl's
         # search_url_template) -- only the query text, always percent-
         # encoded, comes from the model, so this can never be turned into
@@ -426,6 +702,7 @@ class BrowserControl:
             success_message=f"Searched for {query!r}.",
             failure_message=f"I couldn't search for {query!r}: {{error}}",
             evidence="The page's real URL is the search results address.",
+            allow_isolated_launch=allow_isolated_launch,
         )
 
     def _goto(
@@ -436,8 +713,11 @@ class BrowserControl:
         success_message: str,
         failure_message: str,
         evidence: str,
+        allow_isolated_launch: bool = False,
     ) -> BrowserActionResult:
-        result = self.observer._ensure_connected()
+        result = self.observer._ensure_connected(
+            allow_isolated_launch=allow_isolated_launch,
+        )
         if result.status != "connected":
             return BrowserActionResult("unavailable", result.message)
         # Unlike click/fill/describe, navigation must be able to target a
@@ -446,12 +726,41 @@ class BrowserControl:
         page = self.observer.resolve_navigable_page(tab_index)
         if page is None:
             return BrowserActionResult("not_found", "I couldn't find that browser tab.")
+        still_loading = False
         try:
             page.goto(url, timeout=15000, wait_until="domcontentloaded")
         except Exception as error:
-            return BrowserActionResult(
-                "failed", failure_message.format(error=error), url=page.url,
-            )
+            # A timeout does not mean the navigation failed -- heavy pages
+            # routinely commit (URL changed, DOM building) while some
+            # long-poll request keeps the load state pending. Found live as
+            # "the browser opened but Elaina said she couldn't": treat a
+            # commit to the right destination as success and read whatever
+            # the page has, rather than reporting a page the user can SEE
+            # as unreachable.
+            if self._navigation_committed(page, url):
+                still_loading = True
+            else:
+                # A hard failure (DNS, refused, interstitial) gets one retry
+                # -- transient resolution hiccups on a fresh profile are
+                # common right after a cold browser launch. Re-check the
+                # real URL after that retry too: navigation can commit during
+                # its final wait, and must not be reported as a failure.
+                try:
+                    # Shorter than the first attempt: this exists for a
+                    # transient miss (a fresh profile's first DNS lookup),
+                    # not to wait out a site that is refusing us. A full
+                    # second 15s made a blocked site cost 30 seconds of
+                    # silence before the user heard anything.
+                    page.goto(url, timeout=8000, wait_until="domcontentloaded")
+                except Exception:
+                    if self._navigation_committed(page, url):
+                        still_loading = True
+                    else:
+                        return BrowserActionResult(
+                            "failed",
+                            failure_message.format(error=error),
+                            url=page.url,
+                        )
         if hasattr(self.observer, "prefer_page"):
             self.observer.prefer_page(str(page.url))
         try:
@@ -462,8 +771,38 @@ class BrowserControl:
             # real, completed navigation into a reported failure.
             pass
         return BrowserActionResult(
-            "navigated", success_message.format(url=page.url), url=page.url,
-            verified=True, evidence=evidence,
+            "navigated",
+            success_message.format(url=page.url)
+            + (" The page is still loading parts of itself." if still_loading else ""),
+            url=page.url,
+            verified=True,
+            evidence=evidence,
+        )
+
+    @staticmethod
+    def _navigation_committed(page: Any, requested_url: str) -> bool:
+        """Whether the page actually reached the requested destination.
+
+        Compares hosts only: redirects (http->https, m.-prefixes, consent
+        interstitials on the same site) are still the navigation the caller
+        asked for. A page still sitting on about:blank or the previous
+        site's host is a real failure.
+        """
+        try:
+            actual = urlsplit(str(getattr(page, "url", "") or ""))
+            requested = urlsplit(str(requested_url))
+        except ValueError:
+            return False
+        actual_host = (actual.hostname or "").casefold().removeprefix("www.")
+        requested_host = (
+            (requested.hostname or "").casefold().removeprefix("www.")
+        )
+        if not actual_host or not requested_host:
+            return False
+        return (
+            actual_host == requested_host
+            or actual_host.endswith("." + requested_host)
+            or requested_host.endswith("." + actual_host)
         )
 
     def _resolve_element(
@@ -570,7 +909,10 @@ class BrowserControl:
         except Exception:
             pass
         try:
-            checked = locator.is_checked()
+            # Bounded: after a click that navigated, this element is
+            # detached and an unbounded probe waits the full default
+            # actionability timeout before raising.
+            checked = _bounded(locator.is_checked)
             return True, f"The control reports checked={checked}."
         except Exception:
             pass
@@ -591,7 +933,9 @@ class BrowserControl:
         values = []
         for attribute in ("aria-pressed", "aria-selected", "aria-expanded", "value"):
             try:
-                value = locator.get_attribute(attribute)
+                # Four unbounded probes against a detached element were
+                # two minutes of the 150s a navigating click used to cost.
+                value = _bounded(locator.get_attribute, attribute)
             except Exception:
                 value = None
             values.append("" if value is None else str(value))

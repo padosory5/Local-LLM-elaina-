@@ -109,7 +109,7 @@ class _FakeObserver:
         self._page = page
         self._connected = connected
 
-    def _ensure_connected(self):
+    def _ensure_connected(self, *, allow_isolated_launch=False):
         if self._connected:
             return BrowserConnectionResult("connected", browser=object(), playwright=object())
         return BrowserConnectionResult("unavailable", "Browser control isn't installed.")
@@ -119,6 +119,26 @@ class _FakeObserver:
 
     def resolve_navigable_page(self, tab_index):
         return self._page
+
+
+class _RememberingObserver(_FakeObserver):
+    def __init__(self, page, *, connected=True):
+        super().__init__(page, connected=connected)
+        self.preferred_pages = []
+
+    def prefer_page(self, url):
+        self.preferred_pages.append(url)
+
+
+class _CommitOnRetryTimeoutPage(_FakePage):
+    """The second bounded navigation reaches the host, then times out."""
+
+    def goto(self, url, timeout=None, wait_until=None):
+        self.goto_calls.append(url)
+        if len(self.goto_calls) == 1:
+            raise RuntimeError("navigation timeout before commit")
+        self.url = url
+        raise RuntimeError("navigation timeout after commit")
 
 
 class ClassifierTests(unittest.TestCase):
@@ -147,6 +167,36 @@ class ClassifierTests(unittest.TestCase):
 
     def test_payment_keywords_are_detected(self):
         for label in ("Pay", "Buy now", "Place order", "Confirm payment", "결제하기", "구매"):
+            self.assertTrue(is_payment_element(label), label)
+
+    def test_research_links_are_not_mistaken_for_payment_controls(self):
+        # Found live while researching keyboards: a buying-guide article
+        # was refused because its URL contained "buyingguides" -- the
+        # substring "buy". Refusing to open an article is not safety, it
+        # is a broken assistant.
+        for label in (
+            "Buyer reviews",
+            "Best buying guides",
+            "electronics.alibaba.com > buyingguides > korean-keyboards",
+            "Buying guide: mechanical keyboards",
+            "In order to compare",
+            "Order by price",
+        ):
+            self.assertFalse(is_payment_element(label), label)
+
+    def test_payment_phrases_tolerate_words_in_the_middle(self):
+        # The old exact-phrase entries missed how real buttons are worded.
+        for label in (
+            "Place your order",
+            "Complete my purchase",
+            "Confirm this payment",
+        ):
+            self.assertTrue(is_payment_element(label), label)
+
+    def test_payment_brand_and_word_forms_stay_refused(self):
+        # The old substring "pay" caught these; whole-word matching must
+        # not quietly narrow a hard safety rule.
+        for label in ("PayPal", "Payment details", "Payments"):
             self.assertTrue(is_payment_element(label), label)
 
     def test_ordinary_checkout_navigation_is_not_a_payment_element(self):
@@ -422,6 +472,25 @@ class SelectScrollNavigateTests(unittest.TestCase):
         result = control.navigate(0, "https://nonexistent.invalid")
 
         self.assertEqual(result.status, "failed")
+
+    def test_retry_timeout_after_a_real_commit_is_loading_success(self):
+        page = _CommitOnRetryTimeoutPage(url="about:blank")
+        observer = _RememberingObserver(page)
+        control = BrowserControl(observer=observer)
+
+        result = control.navigate(0, "https://hotels.example/search")
+
+        self.assertEqual(result.status, "navigated")
+        self.assertIn("still loading", result.message.casefold())
+        self.assertEqual(page.goto_calls, [
+            "https://hotels.example/search",
+            "https://hotels.example/search",
+        ])
+        # A partially loaded navigation is still the controlled page for
+        # follow-up observation; it must be surfaced and remembered just
+        # like an immediate success.
+        self.assertTrue(page.brought_to_front)
+        self.assertEqual(observer.preferred_pages, [page.url])
 
     def test_navigate_refuses_a_private_network_url(self):
         page = _FakePage()

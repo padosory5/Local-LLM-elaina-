@@ -141,6 +141,11 @@ class PendingConfirmation:
     window_title: str
     control_name: str
     window_snapshot: WindowInfo | None = None
+    # A confirmation must resume the same scan-scoped UIA element that
+    # requested it.  The visible name is retained for the user, but is not a
+    # sufficient replay identity because a window can contain several
+    # same-named controls or change while Elaina is waiting for an answer.
+    element_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -540,8 +545,12 @@ _BASE_SYSTEM_PROMPT = (
     "situation, not a workaround. For a compound media request such as "
     "searching a title and artist then playing that result, enter the full "
     "title-and-artist query, re-observe the results, and activate a matching "
-    "observed result; do not stop after searching. If a tool reports confirmation_required, "
-    "refused, ambiguous, verification_failed, or a scope violation, stop; "
+    "observed result; do not stop after searching. A consequential click "
+    "can only be offered for confirmation when its call used an exact "
+    "current element_id; if the tool asks for re-observation, describe the "
+    "window again instead of asking the user yet. If a tool reports "
+    "confirmation_required, refused, ambiguous, verification_failed, or a "
+    "scope violation, stop; "
     "never work around it. When the complete goal is verified, answer with "
     "one short outcome sentence under 15 words. Do not describe a next step "
     "as completed. Do not offer further help."
@@ -1381,10 +1390,37 @@ class DesktopActionPlanner:
                 result = self._run_control_action(name, target, arguments)
                 pending = None
                 if result.status == "confirmation_required":
+                    element_id = str(
+                        arguments.get("element_id", "") or ""
+                    ).strip()
+                    if not element_id:
+                        # Name matching is a useful recovery route while
+                        # planning, but it is not a stable identity to carry
+                        # across a consent turn.  Do not create a pending
+                        # action that a later "yes" would replay by name;
+                        # make the model obtain a fresh live scan instead.
+                        return _ToolExecution(
+                            name,
+                            "needs_reobservation",
+                            (
+                                f"{result.message} I need to inspect the "
+                                "window again and use its exact control id "
+                                "before I can ask for confirmation."
+                            ),
+                            is_action=True,
+                            verified=False,
+                            evidence=(
+                                "A native confirmation requires a current "
+                                "scan-scoped element id."
+                            ),
+                            window_snapshot=snapshot,
+                            resolved_control_name=result.control_name,
+                        )
                     pending = PendingConfirmation(
                         window_title=result.window_title,
                         control_name=result.control_name,
                         window_snapshot=snapshot,
+                        element_id=element_id,
                     )
                 return _ToolExecution(
                     name,
@@ -1505,18 +1541,32 @@ class DesktopActionPlanner:
         window_title: str,
         control_name: str,
         window_snapshot: WindowInfo | None = None,
+        element_id: str = "",
     ) -> ActionPlanResult:
         """Perform only the exact confirmed click on the frozen surface."""
-        target: str | WindowInfo = window_snapshot or window_title
-        result = self.control.click_control(
-            target, control_name, confirmed=True,
-        )
+        element_id = str(element_id or "").strip()
         surface = DesktopSurfaceContext.from_window_info(
             window_snapshot,
             lock_to_surface=True,
         ) if window_snapshot is not None else DesktopSurfaceContext(
             window_title=window_title,
             lock_to_surface=True,
+        )
+        if not element_id:
+            return ActionPlanResult(
+                "failed",
+                (
+                    "I lost the exact control reference, so I won't replay "
+                    "that click by name. Please ask me to inspect the window "
+                    "again."
+                ),
+                surface_context=surface,
+                model_rounds=0,
+                failure_code="missing_element_id",
+            )
+        target: str | WindowInfo = window_snapshot or window_title
+        result = self.control.click_control(
+            target, control_name, confirmed=True, element_id=element_id,
         )
         # A confirmed click is intentionally a one-shot continuation. Without
         # a pre-click observation fingerprint, verified=None cannot prove a

@@ -26,8 +26,24 @@ from tools.computer_control.windows_app_catalog import WindowsAppCatalog
 from tools.computer_control.windows_process_control import WindowsProcessControl
 
 _PORT_CHECK_TIMEOUT_SECONDS = 0.5
-_LAUNCH_WAIT_ATTEMPTS = 10
+# A cold browser launch on a busy machine routinely needs more than the 5
+# seconds the old 10x0.5s wait allowed -- and giving up while the window is
+# already visibly open is exactly the "blank browser sitting there forever"
+# failure seen live. Expressed as a wall-clock deadline rather than an
+# attempt count so the interval can change without silently changing how
+# long a user waits, and injectable so tests exercising the give-up path
+# do not actually sit here.
+_LAUNCH_TIMEOUT_SECONDS = 15.0
 _LAUNCH_WAIT_INTERVAL_SECONDS = 0.5
+_CDP_CONNECT_ATTEMPTS = 3
+_CDP_CONNECT_RETRY_SECONDS = 0.6
+_CDP_VERSION_TIMEOUT_SECONDS = 2.0
+_CDP_CONNECT_TIMEOUT_MS = 10_000
+# If the configured CDP port/profile launches but never starts serving,
+# recover once on a neighbouring port with a separate Elaina-only profile.
+# This is intentionally a single bounded fallback: it fixes a stale/default
+# port without turning one navigation into a series of visible browser windows.
+_ISOLATED_RECOVERY_PORT_OFFSETS = (1,)
 
 
 class BrowserConnectionError(OSError):
@@ -36,7 +52,7 @@ class BrowserConnectionError(OSError):
 
 @dataclass(frozen=True)
 class BrowserConnectionResult:
-    status: str  # "connected", "not_debug_enabled", "not_found", "unavailable"
+    status: str  # "connected", "not_control_ready", "not_debug_enabled", "not_found", "unavailable"
     message: str = ""
     browser: Any = None  # a connected playwright.sync_api.Browser
     playwright: Any = None  # the Playwright driver; caller must .stop() it
@@ -59,6 +75,7 @@ class BrowserConnection:
         process_control: WindowsProcessControl | None = None,
         port_checker=None,
         launcher=None,
+        launch_timeout_seconds: float = _LAUNCH_TIMEOUT_SECONDS,
     ) -> None:
         self.browser_name = str(browser_name).strip() or "Whale"
         self.debugging_port = int(debugging_port)
@@ -74,11 +91,35 @@ class BrowserConnection:
         self.process_control = process_control or WindowsProcessControl()
         self._port_checker = port_checker or self._default_port_checker
         self._launcher = launcher or subprocess.Popen
+        self.launch_timeout_seconds = max(0.0, float(launch_timeout_seconds))
         # The URL after redirects is the identity that BrowserObserver should
         # prefer on the next turn.  A search engine often adds harmless query
         # parameters, so the requested URL alone is not reliable enough to
         # find the tab that was just opened.
         self.last_opened_url = ""
+
+    def cdp_endpoint_ready(self) -> str:
+        """The live CDP WebSocket address, or "" while it isn't serving.
+
+        A TCP port accepting connections is not the same as DevTools being
+        ready to speak: Chromium opens the socket before the HTTP endpoint
+        answers, and Playwright's own HTTP-URL connect path is documented
+        as flaky in exactly that window. Asking /json/version for the real
+        webSocketDebuggerUrl is both the readiness probe and the reliable
+        thing to hand to connect_over_cdp afterwards.
+        """
+        import json as _json
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{self.debugging_port}/json/version",
+                timeout=_CDP_VERSION_TIMEOUT_SECONDS,
+            ) as response:
+                payload = _json.loads(response.read().decode("utf-8"))
+            return str(payload.get("webSocketDebuggerUrl", "") or "")
+        except Exception:
+            return ""
 
     def connect(
         self,
@@ -105,15 +146,28 @@ class BrowserConnection:
         if self._port_checker(self.debugging_port):
             return self._connect_over_cdp(sync_playwright)
 
-        if self._browser_is_running() and not allow_isolated_launch:
+        if not allow_isolated_launch:
+            # Observation must remain observation. In particular,
+            # BrowserObserver.describe_page() is allowed to discover that no
+            # controlled page exists, but it must never visibly create an
+            # isolated about:blank browser window as a side effect.
+            if self._browser_is_running():
+                return BrowserConnectionResult(
+                    "not_debug_enabled",
+                    (
+                        f"{self.browser_name} is open, but not ready for browser "
+                        "control. Pages opened by Elaina use a separate, "
+                        "Elaina-controlled browser window; ask me to reopen this "
+                        "page there, or start your browser with remote debugging "
+                        "and a separate user-data directory."
+                    ),
+                )
             return BrowserConnectionResult(
-                "not_debug_enabled",
+                "not_control_ready",
                 (
-                    f"{self.browser_name} is open, but not ready for browser "
-                    "control. Pages opened by Elaina use a separate, "
-                    "Elaina-controlled browser window; ask me to reopen this "
-                    "page there, or start your browser with remote debugging "
-                    "and a separate user-data directory."
+                    "No Elaina-controlled browser page is open right now. "
+                    "Ask me to search or open a public page and I can start "
+                    "one in a separate controlled browser window."
                 ),
             )
 
@@ -124,6 +178,8 @@ class BrowserConnection:
                 f"I couldn't find {self.browser_name} installed on this device.",
             )
         if not self._wait_for_port():
+            if self._recover_isolated_browser(initial_url=initial_url):
+                return self._connect_over_cdp(sync_playwright, launched=True)
             return BrowserConnectionResult(
                 "unavailable",
                 (
@@ -132,6 +188,41 @@ class BrowserConnection:
                 ),
             )
         return self._connect_over_cdp(sync_playwright, launched=True)
+
+    def _recover_isolated_browser(self, *, initial_url: str) -> bool:
+        """Try one fresh isolated port/profile after a failed safe launch.
+
+        This is reachable only from ``connect(...allow_isolated_launch=True)``
+        after the primary Elaina profile failed to expose CDP. It never
+        closes, attaches to, or reuses the user's normal browser profile.
+        If the candidate port is already listening, leave it alone rather
+        than risking attachment to somebody else's DevTools session.
+        """
+        original_port = self.debugging_port
+        original_profile = self.user_data_dir
+        for offset in _ISOLATED_RECOVERY_PORT_OFFSETS:
+            candidate_port = original_port + offset
+            if candidate_port > 65535 or self._port_checker(candidate_port):
+                continue
+            self.debugging_port = candidate_port
+            self.user_data_dir = self._recovery_profile_path(
+                original_profile, candidate_port,
+            )
+            if not self._launch_with_debugging(initial_url=initial_url):
+                continue
+            if self._wait_for_port():
+                return True
+        # A failed recovery must not leave later observations pointing at a
+        # never-ready port/profile. The next user-requested navigation gets a
+        # clean attempt at the configured controlled session instead.
+        self.debugging_port = original_port
+        self.user_data_dir = original_profile
+        return False
+
+    @staticmethod
+    def _recovery_profile_path(profile: Path, port: int) -> Path:
+        """A persistent profile that cannot contend with the failed launch."""
+        return profile.with_name(f"{profile.name}-recovery-{port}")
 
     def open_url(self, url: str) -> bool:
         """Open ``url`` in the same CDP session later used for DOM control.
@@ -170,10 +261,22 @@ class BrowserConnection:
                 if result.launched
                 else None
             )
+            already_navigated = False
+            if page is None and result.launched:
+                # The command-line handoff did not land. The startup tab is
+                # still sitting on about:blank and is the window the user is
+                # actually looking at -- navigate that, rather than opening a
+                # second tab beside it and leaving the blank one visible.
+                # That stray blank tab is exactly what "she just opens an
+                # about:blank page and loads forever" looked like.
+                page = self._startup_tab(contexts[0])
+                if page is not None:
+                    self._navigate_or_confirm_committed(page, requested_url)
+                    already_navigated = True
             if page is None:
                 page = contexts[0].new_page()
-                page.goto(requested_url, timeout=15000, wait_until="domcontentloaded")
-            else:
+                self._navigate_or_confirm_committed(page, requested_url)
+            elif not already_navigated:
                 # The browser already received the URL.  Waiting is useful
                 # for immediate DOM follow-up, but a slow third-party page
                 # must not cause us to open the same URL a second time or
@@ -182,6 +285,19 @@ class BrowserConnection:
                     page.wait_for_load_state("domcontentloaded", timeout=15000)
                 except Exception:
                     pass
+                # A command-line URL is normally already committed by the
+                # time CDP is ready.  Do not report success merely because a
+                # window exists, though: a failed cold launch used to leave
+                # us with a visible about:blank tab and a false "opened"
+                # result.  One ordinary Playwright navigation is a safe
+                # recovery when the command-line handoff did not land.
+                if not self._navigation_committed(page, requested_url):
+                    self._navigate_or_confirm_committed(page, requested_url)
+            if not self._navigation_committed(page, requested_url):
+                raise BrowserConnectionError(
+                    "The controlled browser never reached the requested page; "
+                    "it is still on its startup tab."
+                )
             self.last_opened_url = str(getattr(page, "url", "") or requested_url)
             try:
                 page.bring_to_front()
@@ -207,6 +323,42 @@ class BrowserConnection:
                 except Exception:
                     pass
 
+    @staticmethod
+    def _navigation_committed(page: Any, requested_url: str) -> bool:
+        """Whether a visible page has left startup and reached the site.
+
+        Redirects within a site's normal host family are allowed.  A blank
+        tab, an old unrelated page, or a failed navigation is never an
+        acceptable result for a generic ``open_url`` request.
+        """
+        try:
+            actual = urlsplit(str(getattr(page, "url", "") or ""))
+            requested = urlsplit(str(requested_url))
+        except ValueError:
+            return False
+        actual_host = (actual.hostname or "").casefold().removeprefix("www.")
+        requested_host = (
+            (requested.hostname or "").casefold().removeprefix("www.")
+        )
+        if not actual_host or not requested_host:
+            return False
+        return (
+            actual_host == requested_host
+            or actual_host.endswith("." + requested_host)
+            or requested_host.endswith("." + actual_host)
+        )
+
+    def _navigate_or_confirm_committed(self, page: Any, requested_url: str) -> None:
+        """Navigate once and accept a timeout only after a real commit."""
+        try:
+            page.goto(requested_url, timeout=15000, wait_until="domcontentloaded")
+        except Exception as error:
+            if self._navigation_committed(page, requested_url):
+                return
+            raise BrowserConnectionError(
+                f"I couldn't reach the requested page in the controlled browser: {error}"
+            ) from error
+
     def _connect_over_cdp(
         self,
         sync_playwright,
@@ -214,17 +366,38 @@ class BrowserConnection:
         launched: bool = False,
     ) -> BrowserConnectionResult:
         playwright = sync_playwright().start()
-        try:
-            browser = playwright.chromium.connect_over_cdp(
-                f"http://localhost:{self.debugging_port}"
-            )
-        except Exception as error:
-            playwright.stop()
-            return BrowserConnectionResult(
-                "unavailable", f"I couldn't connect to the browser: {error}",
-            )
+        last_error: Exception | None = None
+        for attempt in range(_CDP_CONNECT_ATTEMPTS):
+            if attempt:
+                time.sleep(_CDP_CONNECT_RETRY_SECONDS)
+            # Prefer the WebSocket address /json/version reports -- it only
+            # exists once DevTools is genuinely serving, and skips the
+            # flaky HTTP-URL negotiation path entirely. 127.0.0.1, never
+            # "localhost": Chromium binds the debug port to IPv4 only, and
+            # on this machine "localhost" resolves to the IPv6 loopback
+            # first (the same tax config.yaml documents for Ollama).
+            endpoint = (
+                self.cdp_endpoint_ready() if self._uses_real_probes else ""
+            ) or f"http://127.0.0.1:{self.debugging_port}"
+            try:
+                # Bounded: connect_over_cdp is documented as capable of
+                # hanging against a browser whose DevTools port accepts
+                # connections but has stopped answering. Unbounded, that
+                # becomes a turn that never finishes.
+                browser = playwright.chromium.connect_over_cdp(
+                    endpoint, timeout=_CDP_CONNECT_TIMEOUT_MS,
+                )
+                return BrowserConnectionResult(
+                    "connected",
+                    browser=browser,
+                    playwright=playwright,
+                    launched=launched,
+                )
+            except Exception as error:
+                last_error = error
+        playwright.stop()
         return BrowserConnectionResult(
-            "connected", browser=browser, playwright=playwright, launched=launched,
+            "unavailable", f"I couldn't connect to the browser: {last_error}",
         )
 
     def _browser_is_running(self) -> bool:
@@ -266,6 +439,16 @@ class BrowserConnection:
         return True
 
     @staticmethod
+    def _startup_tab(context: Any) -> Any | None:
+        """The blank tab a cold Chromium launch leaves behind, if present."""
+        blank_prefixes = ("about:blank", "chrome://newtab", "whale://newtab")
+        for page in list(getattr(context, "pages", ()) or ()):
+            url = str(getattr(page, "url", "") or "").casefold()
+            if not url or url.startswith(blank_prefixes):
+                return page
+        return None
+
+    @staticmethod
     def _launched_navigation_page(context: Any, requested_url: str) -> Any | None:
         """Return the exact page Chromium began from ``requested_url``.
 
@@ -299,17 +482,33 @@ class BrowserConnection:
         return DATA_DIRECTORY / "browser-profile"
 
     def _wait_for_port(self) -> bool:
-        for _ in range(_LAUNCH_WAIT_ATTEMPTS):
-            if self._port_checker(self.debugging_port):
+        deadline = time.monotonic() + self.launch_timeout_seconds
+        while True:
+            # The socket check keeps injected test checkers working; the
+            # /json/version probe is what actually proves DevTools is up
+            # (Chromium accepts TCP connections before it will answer).
+            if self._port_checker(self.debugging_port) and (
+                not self._uses_real_probes or self.cdp_endpoint_ready()
+            ):
                 return True
+            if time.monotonic() >= deadline:
+                return False
             time.sleep(_LAUNCH_WAIT_INTERVAL_SECONDS)
-        return False
+
+    @property
+    def _uses_real_probes(self) -> bool:
+        """Whether this connection talks to a real browser, not a double."""
+        return self._port_checker is BrowserConnection._default_port_checker
 
     @staticmethod
     def _default_port_checker(port: int) -> bool:
         try:
             with socket.create_connection(
-                ("localhost", port), timeout=_PORT_CHECK_TIMEOUT_SECONDS,
+                # 127.0.0.1, not "localhost" -- the debug port is bound to
+                # IPv4 only, and this machine resolves "localhost" to ::1
+                # first, spending the whole timeout on an address nothing
+                # listens on.
+                ("127.0.0.1", port), timeout=_PORT_CHECK_TIMEOUT_SECONDS,
             ):
                 return True
         except OSError:

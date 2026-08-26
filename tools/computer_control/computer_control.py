@@ -116,6 +116,12 @@ class PreparedComputerAction:
     # click can be re-resolved and re-verified rather than replayed blind.
     window_title: str = ""
     window_snapshot: WindowInfo | None = None
+    # The scan-scoped UI Automation id captured when a committing native
+    # control first asked for confirmation.  A confirmation is only valid
+    # for this exact observed control; resuming by the accessible name alone
+    # would allow a same-named sibling or a changed control to receive the
+    # click after the user has answered.
+    ui_element_id: str = ""
     # Phase 4C.2: which browser tab a browser_action element lives in, the
     # same "resolve the exact frozen target, never replay blind" pattern.
     tab_index: int | None = None
@@ -127,6 +133,11 @@ class PreparedComputerAction:
     browser_text: str = ""
     browser_scan_id: str = ""
     browser_href: str = ""
+    # The goal the confirmed click was a step toward ("check the price"),
+    # kept so the planner can carry on after the click instead of stopping
+    # at "Clicked X." -- clicking into a listing and then never reporting
+    # what it said is not an answer to the question that was asked.
+    browser_goal: str = ""
 
     @property
     def request(self) -> str:

@@ -36,6 +36,13 @@ class _LoadingPage(_FakePage):
         return self._elements
 
 
+class _StillLoadingPage(_FakePage):
+    def evaluate(self, script):
+        if script == "document.readyState":
+            return "loading"
+        return super().evaluate(script)
+
+
 class _LegacyTitleLocator:
     def text_content(self, *, timeout=None):
         if timeout != 750:
@@ -77,7 +84,7 @@ class _FakeConnection:
         self.result = result
         self.connect_calls = 0
 
-    def connect(self):
+    def connect(self, *, allow_isolated_launch=False):
         self.connect_calls += 1
         return self.result
 
@@ -273,16 +280,37 @@ class ResolveNavigablePageTests(unittest.TestCase):
         self.assertIsNotNone(page)
         self.assertEqual(context.new_page_calls, 1)
 
-    def test_does_not_create_a_page_for_an_explicit_tab_index_when_none_exist(self):
-        # A specific tab was requested; there's nothing to substitute it
-        # with, unlike the tab_index=None "any tab will do" case above.
+    def test_creates_the_first_page_even_when_a_tab_index_was_guessed(self):
+        # With zero tabs open, no index means anything -- every one is
+        # equally invalid. Found live: the planner guessed `tab: 0` on a
+        # cold start, got a hard "I couldn't find that browser tab", and
+        # burned every round retrying instead of opening the session's
+        # first page.
         context = _FakeContext([])
         browser = _FakeBrowser([context])
         observer = BrowserObserver(connection=_FakeConnection(_connected(browser)))
 
         page = observer.resolve_navigable_page(0)
 
-        self.assertIsNone(page)
+        self.assertIsNotNone(page)
+        self.assertEqual(context.new_page_calls, 1)
+
+    def test_an_out_of_range_index_navigates_an_existing_tab_not_a_new_one(self):
+        # Navigation only: pointing a tab at a new URL in Elaina's own
+        # isolated browser is safe wherever it lands, so a stale index
+        # falls back to a real tab. Found live -- the planner kept guessing
+        # an index and every search came back "I couldn't find that browser
+        # tab", burning its whole round budget without navigating once.
+        # describe_page/click_element still resolve strictly, because
+        # acting on the wrong page is the dangerous case.
+        existing = _FakePage(url="https://example.com", title="Example")
+        context = _FakeContext([existing])
+        browser = _FakeBrowser([context])
+        observer = BrowserObserver(connection=_FakeConnection(_connected(browser)))
+
+        page = observer.resolve_navigable_page(5)
+
+        self.assertIs(page, existing)
         self.assertEqual(context.new_page_calls, 0)
 
 
@@ -321,6 +349,31 @@ class DescribePageTests(unittest.TestCase):
 
         self.assertEqual(observation.status, "not_found")
         self.assertIn("couldn't determine", observation.message)
+
+    def test_reports_a_blank_startup_tab_as_loading_not_missing(self):
+        page = _FakePage(url="about:blank", title="")
+        observer = BrowserObserver(
+            connection=_FakeConnection(_connected(_FakeBrowser([_FakeContext([page])]))),
+        )
+
+        observation = observer.describe_page()
+
+        self.assertEqual(observation.status, "loading")
+        self.assertEqual(observation.url, "about:blank")
+        self.assertIn("blank startup", observation.message)
+
+    def test_reports_an_empty_loading_page_as_loading_not_empty(self):
+        page = _StillLoadingPage(
+            url="https://hotels.example/search", title="Hotels", elements=[],
+        )
+        observer = BrowserObserver(
+            connection=_FakeConnection(_connected(_FakeBrowser([_FakeContext([page])]))),
+        )
+
+        observation = observer.describe_page()
+
+        self.assertEqual(observation.status, "loading")
+        self.assertIn("still loading", observation.message)
 
     def test_describes_a_specific_tab_by_index(self):
         pages = [
@@ -367,13 +420,41 @@ class DescribePageTests(unittest.TestCase):
         self.assertEqual(observation.elements[0].href, "https://ads.example/hotel")
         self.assertTrue(observation.elements[0].is_ad)
 
-    def test_reports_not_found_for_an_out_of_range_tab_index(self):
-        browser = _FakeBrowser([_FakeContext([_FakePage(url="https://a.com", title="A")])])
+    def test_a_stale_tab_index_resolves_like_no_index_rather_than_failing(self):
+        # A non-existent index is a model slip, not a different request.
+        # Found live: the planner guessed a stale index, got a hard "I
+        # couldn't determine the active browser tab", guessed again, and
+        # burned its whole round budget in that loop without ever reading
+        # the page it had just opened. With one tab open there is no
+        # ambiguity about which page is meant.
+        page = _FakePage(
+            url="https://a.com", title="A",
+            elements=[{
+                "id": "e0", "tag": "a", "role": "", "type": "",
+                "label": "Only link", "disabled": False,
+            }],
+        )
+        browser = _FakeBrowser([_FakeContext([page])])
         observer = BrowserObserver(connection=_FakeConnection(_connected(browser)))
 
         observation = observer.describe_page(5)
 
-        self.assertEqual(observation.status, "not_found")
+        self.assertEqual(observation.status, "observed")
+        self.assertEqual(observation.tab_index, 0)
+
+    def test_an_undecidable_page_still_fails_closed(self):
+        # The safety property is unchanged: with several unidentified tabs
+        # and nothing Elaina opened herself, reading one would be a guess.
+        pages = [
+            _FakePage(url="https://a.com", title="A"),
+            _FakePage(url="https://b.com", title="B"),
+        ]
+        browser = _FakeBrowser([_FakeContext(pages)])
+        observer = BrowserObserver(connection=_FakeConnection(_connected(browser)))
+
+        self.assertEqual(observer.describe_page(5).status, "not_found")
+        self.assertEqual(observer.describe_page().status, "not_found")
+
 
     def test_truncates_a_very_large_element_list(self):
         elements = [

@@ -30,10 +30,12 @@ class FakeBrowserActionPlanner:
         self.act_result = act_result
         self.resume_result = resume_result
         self.act_calls = []
+        self.act_contexts = []
         self.resume_calls = []
 
-    def act(self, goal):
+    def act(self, goal, *, context="", **_kwargs):
         self.act_calls.append(goal)
+        self.act_contexts.append(context)
         return self.act_result
 
     def resume_confirmed_click(self, *, tab_index, element_id, element_label=""):
@@ -119,6 +121,43 @@ class BrowserActionFlowTests(unittest.TestCase):
         self.assertEqual(response, "I couldn't find that element.")
         self.assertEqual(returned.status, "ui_action_failed")
         self.assertFalse(returned.succeeded)
+
+    def test_an_internal_planner_instruction_is_never_spoken_aloud(self):
+        # Found live: a failed browser step read its own note-to-self out
+        # loud -- "That element was not in the latest live page scan. Call
+        # describe page before acting." That sentence is addressed to the
+        # model, and means nothing to the user.
+        planner = FakeBrowserActionPlanner(
+            act_result=ActionPlanResult(
+                "failed",
+                "That element was not in the latest live page scan. "
+                "Call describe_page before acting.",
+                failure_code="unobserved",
+            )
+        )
+        engine = self.engine_with(planner)
+
+        response, returned = engine._handle_computer_action(self.route())
+
+        self.assertNotIn("describe_page", response)
+        self.assertIn("lost track of that element", response)
+        self.assertEqual(returned.status, "ui_action_failed")
+
+    def test_an_honest_failure_sentence_is_kept_word_for_word(self):
+        # The other half: "there's no book button on this page" is a real
+        # answer and must not be replaced with a generic apology.
+        planner = FakeBrowserActionPlanner(
+            act_result=ActionPlanResult(
+                "failed",
+                "There's no book button on this listing page.",
+                failure_code="no_commit_control",
+            )
+        )
+        engine = self.engine_with(planner)
+
+        response, _returned = engine._handle_computer_action(self.route())
+
+        self.assertEqual(response, "There's no book button on this listing page.")
 
     def test_committing_element_offers_a_confirmation_instead_of_clicking(self):
         pending = PendingConfirmation(

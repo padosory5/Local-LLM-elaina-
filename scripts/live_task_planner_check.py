@@ -1,11 +1,15 @@
 """Exercise the real task-planning model against simulated capabilities.
 
-No real browser or application is opened -- this proves 4D-1 and 4D-2's
-actual exit bars (one multi-step task, executed by the general planner, no
-application-specific hardcoded workflow; a recoverable failure keeps the
-task going, a dead end stops it cleanly) the same way
-live_desktop_planner_check.py proves single-step goal completion: the real
-Ollama model drives the loop, but the tier-2 "capabilities" it calls into
+No real browser or application is opened -- this proves the 4D foundation
+plus 4D-1/4D-2/4D-3's actual exit bars (states her plan and the
+capabilities it needs before the first step, one multi-step task executed
+generically, a recoverable failure keeps the task going, a dead end stops
+it cleanly, a goal naming a capability she doesn't have is recognized
+before any step runs, a goal naming a real comparison or constraint is
+answered from structured, verbatim-extracted attributes, never invented)
+the same way live_desktop_planner_check.py proves single-step goal
+completion: the real Ollama model drives the loop -- and the real preview
+and extraction calls too -- but the tier-2 "capabilities" it calls into
 are simulated stand-ins, not the real DesktopActionPlanner/
 BrowserActionPlanner.
 """
@@ -25,6 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.registry import AgentRegistry  # noqa: E402
 from brain.browser_action_planner import ActionPlanResult  # noqa: E402
+from brain.task_extractor import TaskExtractor  # noqa: E402
 from brain.task_planner import (  # noqa: E402
     TaskPlanner,
     _MAX_CONSECUTIVE_FAILURES,
@@ -120,7 +125,10 @@ class FakeControlMode:
     enabled = True
 
 
-def _build_planner(browser: Any, model: str, keep_alive: Any, client: Any) -> TaskPlanner:
+def _build_planner(
+    browser: Any, model: str, keep_alive: Any, client: Any,
+    *, task_extractor: Any = None,
+) -> TaskPlanner:
     return TaskPlanner(
         client=client,
         model=model,
@@ -130,11 +138,14 @@ def _build_planner(browser: Any, model: str, keep_alive: Any, client: Any) -> Ta
         browser_action_planner=browser,
         computer_control_mode=FakeControlMode(),
         browser_control_enabled=True,
+        task_extractor=task_extractor,
     )
 
 
 def _print_run(goal: str, result) -> None:
     print(f"Goal: {goal}")
+    if result.task_state.plan_preview:
+        print(f"Plan preview: {result.task_state.plan_preview}")
     print(f"Status: {result.status}  Steps: {result.task_state.step_count}")
     for step_result in result.task_state.completed_steps:
         print(
@@ -172,6 +183,14 @@ def main() -> int:
         ("[4D-1] At least one step ran", result.task_state.step_count >= 1),
         ("[4D-1] Every step used browser_control only", only_browser_control),
         ("[4D-1] Final summary references real gathered hotels", mentions_a_hotel),
+        (
+            "[4D foundation] Stated intent before executing (plan_preview set)",
+            bool(result.task_state.plan_preview),
+        ),
+        (
+            "[4D foundation] Correctly identified browser_control as needed",
+            "browser_control" in result.task_state.required_capabilities,
+        ),
     ]
 
     # Scenario 2 (4D-2): one recoverable failure -- the task should still
@@ -206,6 +225,86 @@ def main() -> int:
         (
             "[4D-2] Never spins to the full step budget",
             result.task_state.step_count < _MAX_STEPS_DEFAULT,
+        ),
+    ]
+
+    # Scenario 4 (4D-3): a goal that names a real filter/comparison
+    # ("cheapest") must be answered from the structured attributes the
+    # real model extracted, not by re-reading prose and guessing.
+    browser = SimulatedBrowserCapability()
+    extractor = TaskExtractor(client=client, model=model, keep_alive=keep_alive)
+    planner = _build_planner(browser, model, keep_alive, client, task_extractor=extractor)
+    goal = "Find a hotel in Guam and tell me which one is cheapest."
+    result = planner.run(goal)
+    _print_run(goal, result)
+    print(
+        "Extracted items: "
+        + "; ".join(
+            f"{item.name} {item.attributes}"
+            for item in result.task_state.collected_items
+        )
+        + "\n"
+    )
+    extracted_names = {item.name for item in result.task_state.collected_items}
+    cheapest_extracted_correctly = any(
+        "Paradise" in item.name and "95" in str(item.attributes)
+        for item in result.task_state.collected_items
+    )
+    all_checks += [
+        ("[4D-3] Reached done", result.status == "done"),
+        (
+            "[4D-3] All three hotels were extracted as structured items",
+            len(extracted_names) >= 3,
+        ),
+        (
+            "[4D-3] Paradise Inn's real price ($95) was captured, not invented",
+            cheapest_extracted_correctly,
+        ),
+        (
+            "[4D-3] Final summary names the actually-cheapest hotel",
+            "Paradise" in result.summary,
+        ),
+    ]
+
+    # Scenario 5 (4D foundation): a goal needing a capability Elaina
+    # genuinely doesn't have must be recognized as such *before* any step
+    # executes, not attempted and only discovered to fail partway through.
+    browser = NeverCalledCapability("browser_control")
+    planner = _build_planner(browser, model, keep_alive, client)
+    goal = "Recall what I told you about my sister last week and summarize it."
+    result = planner.run(goal)
+    _print_run(goal, result)
+    all_checks += [
+        (
+            "[4D foundation] Recognizes a capability she doesn't have",
+            result.status == "capability_unavailable",
+        ),
+        (
+            "[4D foundation] Stops before dispatching any step",
+            result.task_state.step_count == 0,
+        ),
+    ]
+
+    # Scenario 6 (4D-3): a goal that states a real constraint must have
+    # that constraint actually extracted into preferences and honored in
+    # the final answer, not silently dropped.
+    browser = SimulatedBrowserCapability()
+    extractor = TaskExtractor(client=client, model=model, keep_alive=keep_alive)
+    planner = _build_planner(browser, model, keep_alive, client, task_extractor=extractor)
+    goal = "Find a hotel in Guam under $150 a night."
+    result = planner.run(goal)
+    _print_run(goal, result)
+    print(f"Preferences extracted: {result.task_state.preferences}\n")
+    all_checks += [
+        ("[4D-3] Reached done", result.status == "done"),
+        (
+            "[4D-3] A price constraint was extracted into preferences",
+            bool(result.task_state.preferences),
+        ),
+        (
+            "[4D-3] Final summary respects the stated budget "
+            "(does not recommend the $180 hotel)",
+            "Ocean View" not in result.summary,
         ),
     ]
 

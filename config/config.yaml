@@ -126,6 +126,45 @@ llm:
     temperature: 0.8
 
 ############################################################
+# User
+#
+# Where the user actually lives. This decides which shops,
+# services, and websites Elaina recommends, and which market
+# she assumes when a request names no place at all.
+#
+# Without this, every recommendation quietly defaults to
+# United States sites regardless of who is asking.
+############################################################
+
+user:
+  # ISO country code (KR, US, JP, GB, ...), or "auto" to read
+  # it from the Windows regional settings on startup.
+  country: "auto"
+
+  # Optional. Used for "near me"-style requests and spoken as
+  # part of Elaina's own sense of where you are.
+  city: ""
+
+  # Leave blank to use the country's normal currency.
+  currency: ""
+
+  # Language Elaina searches in when local sources are in it.
+  # Blank follows the country. She still answers in your
+  # language regardless of what she reads.
+  search_language: ""
+
+  # Optional overrides for the built-in per-country site table
+  # in brain/user_locale.py. Anything set here wins.
+  # Known categories: hotel, restaurant, secondhand, shopping,
+  # gpu, car, flight, job, realestate.
+  preferred_sites: {}
+  # preferred_sites:
+  #   secondhand:
+  #     - "당근마켓"
+  #     - "번개장터"
+
+
+############################################################
 # Language
 ############################################################
 
@@ -177,6 +216,17 @@ routing:
   # confirm a committing step before it's dropped, same pattern as
   # agent_offer_expiry_seconds/computer_control.consent_expiry_seconds above.
   task_confirmation_expiry_seconds: 90
+
+  # How long a pre-first-step strategy offer ("I could check a specialized
+  # website directly -- want me to?") waits for the user's answer before
+  # it's dropped, same pattern as task_confirmation_expiry_seconds above.
+  task_strategy_offer_expiry_seconds: 90
+
+  # How long a plain conversational ability offer ("I can check that in
+  # the browser -- want me to?") stays answerable. Longer than the two
+  # above because it interrupts nothing: the user is free to think about
+  # it, and a stale "sure" much later must still not start an action.
+  capability_offer_expiry_seconds: 120
 
 
 ############################################################

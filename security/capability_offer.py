@@ -1,0 +1,84 @@
+"""Pending consent for an ability Elaina offered in ordinary conversation.
+
+Every other pending-offer gate in this project parks an offer made by a
+*planner* (a risky click, a strategy choice, an agent hand-off). None of
+them covered the most ordinary case of all: Elaina, mid-conversation, says
+"I can check that in the browser -- want me to?" and the user says "ok".
+
+Without a parked offer, that "ok" routes as a fresh, contextless turn --
+observed live producing the exact same sentence a second time, with nothing
+ever opening. This gate closes that loop using the same shape as
+security/task_strategy_consent.py, so agents.consent.SemanticConsentClassifier
+reads it with no special-casing: plain ``intent``/``request`` fields, a
+one-shot ``peek``/``clear``, and a short expiry so a much later "sure" can
+never start a forgotten action.
+
+``request`` is a plain, unambiguous action description ("Check prices in the
+browser for: ...") and never the spoken offer sentence -- that mistake was
+already made once with PendingStrategyOffer and confused the classifier into
+reading declines as acceptance.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class PendingCapabilityOffer:
+    intent: str
+    request: str
+    capability_id: str
+    goal: str
+    offer_text: str
+    created_at: float
+    expires_at: float
+
+    def public_context(self) -> dict[str, str | int]:
+        return {
+            "intent": self.intent,
+            "request": self.request,
+            "capability": self.capability_id,
+            "expires_in_seconds": max(0, int(self.expires_at - time.monotonic())),
+        }
+
+
+class CapabilityOfferGate:
+    """Hold one conversational "want me to?" until the user answers it."""
+
+    def __init__(self, expiry_seconds: int = 120) -> None:
+        self.expiry_seconds = max(15, int(expiry_seconds))
+        self._pending: PendingCapabilityOffer | None = None
+
+    def offer(
+        self,
+        *,
+        capability_id: str,
+        goal: str,
+        offer_text: str,
+        intent: str = "computer_action",
+    ) -> PendingCapabilityOffer:
+        now = time.monotonic()
+        goal = " ".join(str(goal).split()).strip()
+        self._pending = PendingCapabilityOffer(
+            intent=intent,
+            request=f"Use {capability_id} to handle: {goal}",
+            capability_id=str(capability_id),
+            goal=goal,
+            offer_text=" ".join(str(offer_text).split()).strip(),
+            created_at=now,
+            expires_at=now + self.expiry_seconds,
+        )
+        return self._pending
+
+    def peek(self) -> PendingCapabilityOffer | None:
+        if self._pending is None:
+            return None
+        if time.monotonic() >= self._pending.expires_at:
+            self._pending = None
+            return None
+        return self._pending
+
+    def clear(self) -> None:
+        self._pending = None

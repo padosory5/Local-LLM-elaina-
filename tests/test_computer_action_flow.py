@@ -73,16 +73,20 @@ class FakeDesktopActionPlanner:
         self.act_calls = []
         self.resume_calls = []
         self.resume_snapshots = []
+        self.resume_element_ids = []
 
     def act(self, goal, *, surface_context=None):
         self.act_calls.append(goal)
         return self.act_result
 
     def resume_confirmed_click(
-        self, *, window_title, control_name, window_snapshot=None,
+        self, *, window_title, control_name, window_snapshot=None, element_id="",
     ):
+        # element_id freezes the exact scanned control across the
+        # confirmation turn, so a re-scan cannot resolve a different one.
         self.resume_calls.append((window_title, control_name))
         self.resume_snapshots.append(window_snapshot)
+        self.resume_element_ids.append(element_id)
         return self.resume_result
 
 

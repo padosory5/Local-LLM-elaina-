@@ -69,5 +69,65 @@ class ResearchAgentTests(unittest.TestCase):
         self.assertIn("Official release evidence", result.evidence)
 
 
+class ResearchStructuredTests(unittest.TestCase):
+    def test_returns_raw_per_result_data(self):
+        def search(query, max_results):
+            return "unused"
+
+        def search_structured(query, max_results):
+            return [
+                {"title": "Ocean View Resort", "url": "https://a.example", "summary": "$180/night"},
+            ]
+
+        agent = ResearchAgent(search, search_structured=search_structured)
+
+        result = agent.research_structured(search_query="hotels in Guam")
+
+        self.assertEqual(
+            result,
+            ({"title": "Ocean View Resort", "url": "https://a.example", "summary": "$180/night"},),
+        )
+
+    def test_raises_when_no_structured_search_was_provided(self):
+        agent = ResearchAgent(lambda query, max_results: "unused")
+
+        with self.assertRaises(RuntimeError):
+            agent.research_structured(search_query="hotels in Guam")
+
+    def test_raises_on_empty_query(self):
+        agent = ResearchAgent(
+            lambda query, max_results: "unused",
+            search_structured=lambda query, max_results: [],
+        )
+
+        with self.assertRaises(RuntimeError):
+            agent.research_structured(search_query="   ")
+
+    def test_raises_when_no_results_found(self):
+        agent = ResearchAgent(
+            lambda query, max_results: "unused",
+            search_structured=lambda query, max_results: [],
+        )
+
+        with self.assertRaises(RuntimeError):
+            agent.research_structured(search_query="hotels in Guam")
+
+    def test_does_not_double_the_query_unlike_research(self):
+        calls = []
+
+        def search_structured(query, max_results):
+            calls.append(query)
+            return [{"title": "A", "url": "https://a.example", "summary": "..."}]
+
+        agent = ResearchAgent(
+            lambda query, max_results: "unused",
+            search_structured=search_structured,
+        )
+
+        agent.research_structured(search_query="hotels in Guam")
+
+        self.assertEqual(calls, ["hotels in Guam"])
+
+
 if __name__ == "__main__":
     unittest.main()

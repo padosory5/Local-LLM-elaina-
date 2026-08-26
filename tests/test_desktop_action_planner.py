@@ -907,11 +907,13 @@ class DesktopActionPlannerStabilizationTests(unittest.TestCase):
             window_title=github.title,
             control_name="Submit",
             window_snapshot=github,
+            element_id="scan1-e0",
         )
 
         self.assertEqual(result.status, "done")
         self.assertIs(control.click_calls[0][0], github)
         self.assertTrue(control.click_calls[0][2])
+        self.assertEqual(control.click_calls[0][3], "scan1-e0")
 
     def test_confirmed_click_with_unknown_verification_is_not_done(self):
         github = WindowInfo(
@@ -928,11 +930,103 @@ class DesktopActionPlannerStabilizationTests(unittest.TestCase):
             window_title=github.title,
             control_name="Submit",
             window_snapshot=github,
+            element_id="scan1-e0",
         )
 
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.failure_code, "unverified_outcome")
         self.assertNotIn("complete", result.summary.casefold())
+
+    def test_confirmed_click_without_a_frozen_element_id_never_replays_by_name(self):
+        checkout = WindowInfo(
+            "Checkout", is_active=True, handle=79, process_id=90,
+        )
+        control = PlannerControl(clicked_verified=True)
+        planner = _surface_planner([], PlannerObserver(active=checkout), control)
+
+        result = planner.resume_confirmed_click(
+            window_title=checkout.title,
+            control_name="Submit Order",
+            window_snapshot=checkout,
+        )
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.failure_code, "missing_element_id")
+        self.assertEqual(control.click_calls, [])
+
+    def test_name_only_committing_click_is_reobserved_before_confirmation(self):
+        class CommittingControl(PlannerControl):
+            def click_control(self, target, control, *, confirmed=False, element_id=""):
+                self.click_calls.append((target, control, confirmed, element_id))
+                return UIActionResult(
+                    "confirmation_required",
+                    "Clicking 'Submit Order' needs confirmation first.",
+                    window_title=(
+                        target.title if isinstance(target, WindowInfo) else str(target)
+                    ),
+                    control_name="Submit Order",
+                )
+
+        checkout = WindowInfo(
+            "Checkout", is_active=True, handle=80, process_id=91,
+        )
+        planner = _surface_planner(
+            [], PlannerObserver(active=checkout), CommittingControl(),
+        )
+
+        execution = planner._run_tool_call(
+            "click_control",
+            {"window": "Checkout", "control": "Submit Order"},
+            surface=DesktopSurfaceContext.from_window_info(checkout),
+        )
+
+        self.assertEqual(execution.status, "needs_reobservation")
+        self.assertIsNone(execution.pending)
+        self.assertIn("exact control id", execution.message)
+
+    def test_confirmation_preserves_the_exact_element_id_for_resume(self):
+        class CommittingControl(PlannerControl):
+            def click_control(self, target, control, *, confirmed=False, element_id=""):
+                self.click_calls.append((target, control, confirmed, element_id))
+                if not confirmed:
+                    return UIActionResult(
+                        "confirmation_required",
+                        "Clicking 'Submit Order' needs confirmation first.",
+                        window_title=(
+                            target.title if isinstance(target, WindowInfo) else str(target)
+                        ),
+                        control_name="Submit Order",
+                    )
+                return UIActionResult(
+                    "clicked", "Clicked Submit Order.",
+                    window_title=(
+                        target.title if isinstance(target, WindowInfo) else str(target)
+                    ),
+                    control_name="Submit Order", verified=True,
+                )
+
+        checkout = WindowInfo(
+            "Checkout", is_active=True, handle=81, process_id=92,
+        )
+        control = CommittingControl()
+        planner = _surface_planner([], PlannerObserver(active=checkout), control)
+        first = planner._run_tool_call(
+            "click_control",
+            {"window": "Checkout", "element_id": "scan9-e3"},
+            surface=DesktopSurfaceContext.from_window_info(checkout),
+        )
+
+        self.assertIsNotNone(first.pending)
+        self.assertEqual(first.pending.element_id, "scan9-e3")
+        resumed = planner.resume_confirmed_click(
+            window_title=first.pending.window_title,
+            control_name=first.pending.control_name,
+            window_snapshot=first.pending.window_snapshot,
+            element_id=first.pending.element_id,
+        )
+
+        self.assertEqual(resumed.status, "done")
+        self.assertEqual(control.click_calls[-1][3], "scan9-e3")
 
     def test_final_model_failure_cannot_overturn_verified_local_success(self):
         spotify = WindowInfo("Spotify", is_active=True, handle=31)

@@ -20,10 +20,27 @@ class ResearchAgent:
         self,
         search: Callable[[str, int], str],
         *,
+        search_structured: Callable[[str, int], list[dict[str, str]]] | None = None,
         now: Callable[[], datetime] = datetime.now,
+        locale: object | None = None,
     ) -> None:
         self._search = search
+        self._search_structured = search_structured
         self._now = now
+        # Optional (None keeps every existing caller and test unchanged).
+        # When present, a query that names no place at all is searched in
+        # the user's own market -- "second-hand phone marketplaces" should
+        # not silently return US results for a user in Korea. A query that
+        # already names a destination is never touched.
+        self._locale = locale
+
+    def _localized(self, query: str) -> str:
+        if self._locale is None:
+            return query
+        try:
+            return self._locale.localize_query(query)
+        except Exception:
+            return query
 
     def research(
         self,
@@ -40,7 +57,7 @@ class ResearchAgent:
         answer model. This prevents stale model knowledge from deciding which
         edition, release, office holder, or other changing fact is current.
         """
-        query = " ".join((search_query or request).split())
+        query = self._localized(" ".join((search_query or request).split()))
         if not query:
             raise RuntimeError("The research query was empty.")
 
@@ -73,6 +90,30 @@ class ResearchAgent:
             evidence="\n\n".join(evidence_sections),
             queries=tuple(successful_queries),
         )
+
+    def research_structured(
+        self,
+        *,
+        search_query: str,
+        max_results: int = 5,
+    ) -> tuple[dict[str, str], ...]:
+        """One search, returning raw per-result data (title/url/summary)
+        rather than concatenated prose -- for a caller that needs real
+        source attribution per item (a URL, not just an evidence blob),
+        such as WebSearchActionPlanner populating ExtractedItem provenance.
+        Deliberately simpler than research(): no verification-query
+        doubling -- whether to escalate beyond a search at all is the task
+        planner's own verification_level decision, not this method's job.
+        """
+        if self._search_structured is None:
+            raise RuntimeError("Structured search is not available.")
+        query = self._localized(" ".join(str(search_query).split()))
+        if not query:
+            raise RuntimeError("The research query was empty.")
+        results = self._search_structured(query, max_results)
+        if not results:
+            raise RuntimeError("No useful evidence was returned.")
+        return tuple(results)
 
     def _verification_query(self, request: str, query: str) -> str:
         as_of = self._now().strftime("%Y-%m-%d")

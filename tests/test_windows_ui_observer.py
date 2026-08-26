@@ -493,6 +493,23 @@ class WindowsUIObserverTests(unittest.TestCase):
 
         self.assertEqual(lookup.status, "stale")
 
+    def test_resolve_control_by_id_detects_a_role_changed_element_as_stale(self):
+        element = _FakeElement("Button", "Continue")
+        window = _FakeWindow("Checkout", handle=101, descendants=[element])
+        observer = WindowsUIObserver(
+            desktop=_FakeDesktop([window]), foreground_window=lambda: "",
+        )
+        observation = observer.describe_window("Checkout")
+        element_id = observation.controls[0].element_id
+        # The accessible name alone is not a stable identity: an application
+        # may repurpose a node from a click target to an editable field.
+        element.element_info = _FakeElementInfo("Edit", "Continue")
+
+        lookup = observer.resolve_control_by_id(window, element_id)
+
+        self.assertEqual(lookup.status, "stale")
+        self.assertIn("role", lookup.message.casefold())
+
     def test_resolve_control_by_id_rejects_an_empty_id(self):
         window = _FakeWindow("Notepad", handle=101)
         observer = WindowsUIObserver(

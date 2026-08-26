@@ -2221,6 +2221,152 @@ class SemanticIntentRouterTests(unittest.TestCase):
         self.assertFalse(result.action_requested)
         self.assertEqual(result.computer_operation, "unsupported")
 
+    def test_commit_verb_corrects_a_mislabeled_ui_action_to_browser_action(self):
+        # "Book the best one" is a page-commit action referring back to a
+        # browser page of results just discussed, not a native-app action --
+        # this is the fix that lets it ever reach is_committing_element's
+        # pause-for-confirmation checkpoint at all.
+        client = self.RecordingClient({
+            "intent": "computer_action",
+            "confidence": 0.9,
+            "normalized_request": "Book the best one.",
+            "reason": "A commit action on the active page.",
+            "speech_act": "action_request",
+            "action_requested": True,
+            "action_target": "Book the best one.",
+            "computer_operation": "ui_action",
+        })
+        router = SemanticIntentRouter(client, "qwen3:8b")
+
+        result = router.route(
+            "Book the best one.",
+            computer_control_enabled=True,
+            conversation_state={
+                "active_desktop_surface": {
+                    "kind": "browser",
+                    "title": "best hotels in Seoul - Google Search",
+                    "url": "https://www.google.com/search?q=best+hotels+in+seoul",
+                },
+            },
+        )
+
+        self.assertEqual(result.computer_operation, "browser_action")
+        self.assertTrue(result.action_requested)
+
+    def test_commit_verb_corrects_a_mislabeled_open_search_to_browser_action(self):
+        client = self.RecordingClient({
+            "intent": "computer_action",
+            "confidence": 0.9,
+            "normalized_request": "Reserve it",
+            "reason": "The model mistook a commit request for a new search.",
+            "speech_act": "action_request",
+            "action_requested": True,
+            "action_target": "Reserve it",
+            "computer_operation": "open_search",
+        })
+        router = SemanticIntentRouter(client, "qwen3:8b")
+
+        result = router.route(
+            "Reserve it",
+            computer_control_enabled=True,
+            conversation_state={
+                "active_desktop_surface": {
+                    "kind": "browser",
+                    "url": "https://www.google.com/search?q=best+hotels+in+seoul",
+                },
+            },
+        )
+
+        self.assertEqual(result.computer_operation, "browser_action")
+        self.assertEqual(result.action_target, "Reserve it")
+
+    def test_commit_verb_correction_does_not_apply_to_a_named_native_app(self):
+        # No deictic wording and an explicitly named native app -- the
+        # commit-verb correction must not steal this away from ui_action.
+        client = self.RecordingClient({
+            "intent": "computer_action",
+            "confidence": 0.9,
+            "normalized_request": "Buy this track in the Spotify app.",
+            "reason": "Spotify is a native app.",
+            "speech_act": "action_request",
+            "action_requested": True,
+            "action_target": "Buy this track in the Spotify app.",
+            "computer_operation": "ui_action",
+        })
+        router = SemanticIntentRouter(client, "qwen3:8b")
+
+        result = router.route(
+            "Buy this track in the Spotify app.",
+            computer_control_enabled=True,
+            conversation_state={
+                "active_desktop_surface": {
+                    "title": "GitHub",
+                    "application": "Chrome",
+                    "kind": "browser",
+                },
+            },
+        )
+
+        self.assertEqual(result.computer_operation, "ui_action")
+
+    def test_a_computer_operation_value_written_into_intent_self_heals(self):
+        # Found live: the model can correctly work out a specific
+        # computer_operation (here browser_action, for "book the best
+        # one") and then, because that sub-field is so salient, write its
+        # value into the top-level "intent" key instead of
+        # "computer_action" -- every other field in the same response is
+        # right. This must recover deterministically (one .chat() call),
+        # not fall through to the generic JSON-repair prompt, which has no
+        # domain guidance and can land on an unrelated intent.
+        client = self.RecordingClient({
+            "intent": "browser_action",
+            "confidence": 1.0,
+            "normalized_request": "Book the best one.",
+            "reason": "The user is referring to the best hotel from the "
+            "search results page.",
+            "speech_act": "action_request",
+            "action_requested": True,
+            "action_target": "Book the best one.",
+            "computer_operation": "browser_action",
+        })
+        router = SemanticIntentRouter(client, "qwen3:8b")
+
+        result = router.route(
+            "Book the best one.",
+            computer_control_enabled=True,
+            conversation_state={
+                "active_desktop_surface": {
+                    "kind": "browser",
+                    "title": "best hotels in Seoul - Google Search",
+                },
+            },
+        )
+
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(result.intent, "computer_action")
+        self.assertEqual(result.computer_operation, "browser_action")
+        self.assertTrue(result.action_requested)
+
+    def test_none_or_unsupported_written_into_intent_is_not_self_healed(self):
+        # "none"/"unsupported" are valid computer_operation values but
+        # never a meaningful intent to recover to -- must still fall
+        # through to the ordinary invalid-output handling.
+        client = self.RecordingClient({
+            "intent": "unsupported",
+            "confidence": 0.5,
+            "normalized_request": "Do a thing.",
+            "reason": "Unclear.",
+            "speech_act": "action_request",
+            "action_requested": False,
+            "action_target": "",
+            "computer_operation": "unsupported",
+        })
+        router = SemanticIntentRouter(client, "qwen3:8b")
+
+        result = router.route("Do a thing.", computer_control_enabled=True)
+
+        self.assertNotEqual(result.intent, "computer_action")
+
 
 if __name__ == "__main__":
     unittest.main()
