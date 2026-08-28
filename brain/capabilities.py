@@ -263,6 +263,27 @@ _MATCH_PATTERNS: tuple[tuple[str, re.Pattern[str], float, str], ...] = (
 
 # "Can you...?" / "are you able to...?" -- a question *about* her abilities,
 # which deserves an honest inventory answer rather than an attempt.
+# A question that names a target and an action is an instruction: the
+# person is being polite, not curious about the feature list.
+_NAMES_SOMETHING_TO_ACT_ON = re.compile(
+    r"\b(?:open|close|quit|kill|start|launch|play|pause|stop|resume|"
+    r"skip|type|write|enter|click|press|scroll|select|search|find|"
+    r"look\s+up|book|reserve|delete|move|copy|rename|create|make|send|"
+    r"check)\s+"
+    # A vague object is not a target: "click things" asks what she can do,
+    # "click Next" asks her to do it.
+    r"(?!it\b|that\b|this\b|them\b|something\b|anything\b|stuff\b|things?\b)\S+",
+    re.IGNORECASE,
+)
+
+_ABILITY_INVENTORY = re.compile(
+    r"\bwhat\s+(?:can|could|are)\s+you\b"
+    r"|\byour\s+(?:abilities|capabilities|features)\b"
+    r"|\bwhat\s+are\s+you\s+capable\s+of\b"
+    r"|뭐\s*(?:를)?\s*할\s*수\s*있|무엇을\s*할\s*수\s*있|기능이\s*뭐",
+    re.IGNORECASE,
+)
+
 _ABILITY_QUESTION = re.compile(
     r"\b(?:can|could)\s+you\b|\bare\s+you\s+able\b|\bdo\s+you\s+(?:know\s+how|have)\b"
     r"|\bwhat\s+(?:can|could)\s+you\s+do\b|\byour\s+(?:abilities|capabilities)\b"
@@ -339,7 +360,24 @@ class CapabilityRegistry:
 
     @staticmethod
     def is_ability_question(text: str) -> bool:
-        return bool(_ABILITY_QUESTION.search(str(text or "")))
+        """Whether this asks what she *can* do, rather than asking her to.
+
+        "Can you close Spotify" is a request wearing a question mark. A
+        person hearing it closes Spotify; answering "yes, I can close
+        Windows apps -- want me to use it now?" is the pedantic reading,
+        and it was the reply to every politely-phrased instruction until
+        this distinction existed. The rule: a question that names what to
+        act on is a request, and doing the thing is the honest answer to
+        it.
+        """
+        text = str(text or "")
+        if not _ABILITY_QUESTION.search(text):
+            return False
+        if _ABILITY_INVENTORY.search(text):
+            # "What can you do" asks about the inventory itself, however
+            # many nouns happen to follow it.
+            return True
+        return not _NAMES_SOMETHING_TO_ACT_ON.search(text)
 
     @classmethod
     def context_text(cls, state: Mapping[str, object]) -> str:

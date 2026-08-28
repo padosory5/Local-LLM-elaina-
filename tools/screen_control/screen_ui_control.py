@@ -38,6 +38,10 @@ from tools.computer_control.windows_ui_control import (
     is_committing_control,
     is_credential_field,
 )
+from tools.computer_control.action_contract import (
+    blind_typing_effect,
+    field_is_empty,
+)
 from tools.computer_control.windows_ui_observer import (
     ControlLookup,
     WindowInfo,
@@ -522,7 +526,9 @@ class ScreenUIControl:
             # Read the field before typing: the settling verifier uses it to
             # tell "the tree has not caught up yet" from "the value really
             # did not change", which Electron/CEF apps genuinely differ on.
+            # It is also the precondition -- whether anything is in the way.
             before_value = self._read_text_value(control)
+            ready = field_is_empty(before_value[0] if before_value else None)
 
             # Clicking the field is what gives it keyboard focus; typing
             # goes wherever focus is, so this ordering is load-bearing.
@@ -555,9 +561,11 @@ class ScreenUIControl:
             fresh = self._reresolve(
                 title_query, real_name, element_id, _TEXT_ROLES,
             )
-            verified, evidence = self._verify_typed_text(
+            effect = _WindowsUIControl._settled_replacement(
                 fresh if fresh is not None else control, bounded, before_value,
             )
+            verified = effect.holds
+            evidence = _WindowsUIControl._contract_evidence(ready, effect)
             if verified is not False:
                 break
 
@@ -605,6 +613,10 @@ class ScreenUIControl:
         if clicked.status != "clicked":
             return clicked
         self._sleep(_ACTION_SETTLE_SECONDS)
+        # Whatever this opened may already hold text -- a previous search,
+        # most often. Typing without selecting it first appends, producing
+        # a query that is two requests glued together and matches nothing.
+        self.cursor.select_all()
         typed = self.cursor.type_text(str(text)[:_MAX_TYPE_LENGTH])
         if not typed.succeeded:
             return UIActionResult(
@@ -612,16 +624,16 @@ class ScreenUIControl:
                 window_title=clicked.window_title,
                 control_name=clicked.control_name,
             )
+        effect = blind_typing_effect(repr(clicked.control_name))
         return UIActionResult(
             "typed",
             f"Clicked {clicked.control_name} and typed into whatever field "
             "it opened.",
             window_title=clicked.window_title,
             control_name=clicked.control_name,
-            verified=None,
+            verified=effect.holds,
             evidence=(
-                "No named, verifiable field was targeted directly; typed into "
-                "whatever held keyboard focus after the click."
+                f"Any existing contents were selected first. {effect.evidence}"
             ),
         )
 

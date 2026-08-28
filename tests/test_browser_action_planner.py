@@ -66,6 +66,7 @@ class FakeControl:
         self.observer = FakeObserver()
         self.click_result = click_result
         self.fill_result = fill_result
+        self.fill_calls = []
         self.search_result = search_result
         self.navigate_result = navigate_result
         self.click_calls = []
@@ -79,6 +80,7 @@ class FakeControl:
         return self.click_result
 
     def fill(self, tab_index, element_id, text, *, expected_label="", **kwargs):
+        self.fill_calls.append((tab_index, element_id, text))
         return self.fill_result
 
     def search(self, tab_index, query, *, allow_isolated_launch=False, **kwargs):
@@ -1329,6 +1331,49 @@ class BrowserActionPlannerBasicTests(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.failure_code, "planner_stalled")
         self.assertNotIn("structured approach", result.summary)
+
+    def test_the_request_itself_is_never_entered_into_a_page_field(self):
+        # The same boundary as the desktop planner: a page field takes a
+        # value the request named, never the request restated.
+        control = FakeControl(
+            fill_result=BrowserActionResult(
+                "filled", "Filled Destination.", element_id="e0",
+                element_label="Destination", verified=True,
+            ),
+        )
+        observation = PageObservation(
+            "observed", url="https://hotels.example", title="Hotels",
+            elements=(
+                PageElement(id="e0", tag="input", role="", label="Destination"),
+            ),
+            tab_index=0, scan_id="scan-fill",
+        )
+        planner = BrowserActionPlanner(
+            client=FakeClient([
+                _message(tool_calls=[_tool_call("describe_page")]),
+                _message(tool_calls=[_tool_call(
+                    "fill_field", element_id="e0",
+                    text="Book me a hotel in Guam",
+                )]),
+                _message(tool_calls=[_tool_call(
+                    "fill_field", element_id="e0", text="Guam",
+                )]),
+                _message(content="Guam is in the destination box."),
+            ]),
+            model="qwen3:8b",
+            keep_alive=-1,
+            observer=FakeObserver(page_observation=observation),
+            control=control,
+        )
+
+        # Dates included: a booking without them is asked about before any
+        # page is opened, which is a different test (see the gate's own).
+        result = planner.act("Book me a hotel in Guam on 2026-09-01 to 2026-09-04")
+
+        self.assertEqual([call[2] for call in control.fill_calls], ["Guam"])
+        self.assertTrue(
+            any("is the request itself" in step for step in result.steps_taken)
+        )
 
     def test_credential_refusal_is_a_terminal_failure_not_retried(self):
         control = FakeControl(

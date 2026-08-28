@@ -12,6 +12,8 @@ from memory.extractor import MemoryExtractor
 from memory.consolidator import MemoryConsolidator
 from memory.context_builder import ContextBuilder
 from brain.prompt_builder import PromptBuilder
+from brain.deliberation import ClarificationGate, Goal
+from brain.deliberation.profile import UserProfile
 from brain.conversation_manager import ConversationManager
 from brain.memory_ranker import MemoryRanker
 from voice.audio_manager import AudioManager
@@ -494,6 +496,14 @@ class ChatEngine:
         # from Elaina's injected input. Explicit desktop requests start
         # immediately; this watcher is retained solely as an emergency stop
         # when the user physically reclaims the mouse or keyboard mid-run.
+        # One unanswered question at a time. Unlike the consent gates, this
+        # is not asking permission -- it is asking for a value the request
+        # never named, so answering it continues that request rather than
+        # approving anything.
+        self.clarification = ClarificationGate()
+        # What she has learned about this person from what they asked for
+        # and what actually happened. Local to this machine.
+        self.user_profile = UserProfile()
         self.input_watcher = InputWatcher()
         watching = self.input_watcher.start()
         self.cursor_driver = CursorDriver(input_watcher=self.input_watcher)
@@ -521,6 +531,7 @@ class ChatEngine:
             computer_control=self.computer_control,
             response_language=self.response_language,
             session_actions=self._session_actions,
+            profile=self.user_profile,
         )
         # Shares computer_control's own live UI observer (Phase 4B) so
         # active-tab detection can cross-check the real OS window title --
@@ -1531,6 +1542,7 @@ class ChatEngine:
         *,
         approved_action: PreparedComputerAction | None = None,
         original_request: str = "",
+        clarified_goal: Goal | None = None,
     ) -> tuple[str, ComputerActionResult | None]:
         """Return one outcome-locked line and one trusted action result."""
         if route.computer_operation in {"none", "unsupported"}:
@@ -1562,6 +1574,7 @@ class ChatEngine:
                 route,
                 approved_action=approved_action,
                 original_request=original_request,
+                clarified_goal=clarified_goal,
             )
         if route.computer_operation == "browser_action" or (
             approved_action is not None
@@ -1571,6 +1584,7 @@ class ChatEngine:
                 route,
                 approved_action=approved_action,
                 original_request=original_request,
+                clarified_goal=clarified_goal,
             )
 
         if approved_action is not None and not (
@@ -1691,6 +1705,7 @@ class ChatEngine:
         *,
         approved_action: PreparedComputerAction | None,
         original_request: str = "",
+        clarified_goal: Goal | None = None,
     ) -> tuple[str, ComputerActionResult | None]:
         """Phase 4B.2: goal-driven UI actions (click/type/focus/select/scroll).
 
@@ -1747,7 +1762,10 @@ class ChatEngine:
             plan_result = None
             try:
                 plan_result = self.desktop_action_planner.act(
-                    planner_goal,
+                    # An answered question arrives already read into slots,
+                    # so the run continues the original request rather than
+                    # re-reading a sentence the person never said in full.
+                    clarified_goal if clarified_goal is not None else planner_goal,
                     surface_context=DesktopSurfaceContext.from_public_snapshot(
                         self._desktop_surface_for_turn()
                     ),
@@ -1808,6 +1826,21 @@ class ChatEngine:
                 prepared=prepared,
             )
 
+        if plan_result.status == "needs_clarification":
+            # She understood the request; it just does not name what to act
+            # on. A question is the right outcome, not a failed action --
+            # nothing was done, so nothing is recorded as having been done.
+            # Holding it means the answer continues this request.
+            decision = plan_result.clarification
+            if decision is not None:
+                self.clarification.offer(
+                    goal=decision.goal,
+                    slot=decision.missing,
+                    question=decision.question,
+                    template=decision.template,
+                )
+            return plan_result.summary, None
+
         succeeded = plan_result.status == "done"
         message = plan_result.summary.strip() or (
             "That's done." if succeeded else "I couldn't complete that."
@@ -1826,6 +1859,7 @@ class ChatEngine:
         *,
         approved_action: PreparedComputerAction | None,
         original_request: str = "",
+        clarified_goal: Goal | None = None,
     ) -> tuple[str, ComputerActionResult | None]:
         """Phase 4C.2: goal-driven webpage actions (click/fill/select/scroll/navigate).
 
@@ -1878,7 +1912,7 @@ class ChatEngine:
                 # goal; surface identity comes from the bound live session.
                 planner_goal = original_goal or normalized_goal
                 plan_result = self.browser_action_planner.act(
-                    planner_goal,
+                    clarified_goal if clarified_goal is not None else planner_goal,
                     context=self._followup_subject(planner_goal),
                 )
         finally:
@@ -1895,6 +1929,20 @@ class ChatEngine:
             f"rounds={plan_result.model_rounds} "
             f"failure={plan_result.failure_code or '(none)'}"
         )
+
+        if plan_result.status == "needs_clarification":
+            # A booking cannot be researched, let alone made, without the
+            # inputs it turns on. Nothing was opened, so nothing is recorded
+            # as done -- and the answer continues this request.
+            decision = getattr(plan_result, "clarification", None)
+            if decision is not None:
+                self.clarification.offer(
+                    goal=decision.goal,
+                    slot=decision.missing,
+                    question=decision.question,
+                    template=decision.template,
+                )
+            return plan_result.summary, None
 
         if plan_result.status == "needs_confirmation":
             pending = plan_result.pending
@@ -2157,6 +2205,12 @@ class ChatEngine:
         pending_task = self.task_consent.peek()
         pending_strategy = self.task_strategy_consent.peek()
         pending_capability = self.capability_offer.peek()
+        pending_clarification = (
+            self.clarification.peek()
+            if hasattr(self, "clarification")
+            else None
+        )
+        clarified_goal: Goal | None = None
         locked_response = ""
         approved_computer_action: PreparedComputerAction | None = None
         approved_task_action: PendingTaskAction | None = None
@@ -2210,7 +2264,38 @@ class ChatEngine:
                 action_target=transcript,
             )
 
-        if self.agent_builder.active:
+        if (
+            pending_clarification is not None
+            and not has_explicit_attachment
+            and not continuing_agent_flow
+            and pending_clarification.reads_as_answer(user_input)
+            and (completed := pending_clarification.completed(user_input))
+            is not None
+        ):
+            # The person answered the question. The answer is folded back
+            # into the request that prompted it, so what runs now is the
+            # whole request -- through every guard on that path -- rather
+            # than a bare fragment routed on its own.
+            self.clarification.clear()
+            clarified_goal = completed
+            route = IntentDecision(
+                intent="computer_action",
+                # An answered question continues the request it belongs to,
+                # which decides which planner sees it.
+                computer_operation=(
+                    "browser_action"
+                    if completed.kind in {"research", "booking"}
+                    else "ui_action"
+                ),
+                confidence=1.0,
+                normalized_request=completed.utterance,
+                reason="The user answered the outstanding question.",
+                is_follow_up=True,
+                speech_act="action_request",
+                action_requested=True,
+                action_target=completed.utterance,
+            )
+        elif self.agent_builder.active:
             route = IntentDecision(
                 intent="agent_create",
                 confidence=1.0,
@@ -2672,6 +2757,7 @@ class ChatEngine:
                 route,
                 approved_action=approved_computer_action,
                 original_request=user_input,
+                clarified_goal=clarified_goal,
             )
 
             if computer_result is not None:

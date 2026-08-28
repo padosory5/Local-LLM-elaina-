@@ -78,6 +78,7 @@ class _Cursor:
         self.available = True
         self.clicks = []
         self.double_clicks = []
+        self.ops = []
         self.typed = []
         self.presses = []
         self.scrolls = []
@@ -85,6 +86,12 @@ class _Cursor:
 
     def click(self, point):
         self.clicks.append(point)
+        self.ops.append("click")
+        return self._result
+
+    def select_all(self):
+        self.ops.append("select_all")
+        self.presses.append(("ctrl", "a"))
         return self._result
 
     def double_click(self, point):
@@ -93,6 +100,7 @@ class _Cursor:
 
     def type_text(self, text):
         self.typed.append(text)
+        self.ops.append("type")
         if self.field is not None and self._result.succeeded:
             self.field.value = text
         return self._result
@@ -135,6 +143,83 @@ def _matched(name="Search", role="Edit", rect=(100, 100, 300, 140), value=""):
     return ControlLookup(
         "matched", control=_Control(rect, value), role=role, name=name,
     )
+
+
+class TypingContractTests(unittest.TestCase):
+    """The same contract as the Invoke driver, on the pointer driver."""
+
+    def test_a_field_that_already_holds_text_is_cleared_first(self):
+        field = _Control(value="bang bang IVE")
+        observer = _Observer(
+            ControlLookup("matched", control=field, role="Edit", name="Search"),
+        )
+        cursor = _Cursor(field=field)
+
+        result = _control(observer, cursor).type_text(
+            "Spotify", "Search", "After LIKE IVE",
+        )
+
+        self.assertEqual(result.status, "typed")
+        self.assertTrue(result.verified)
+        self.assertIn(("clear",), cursor.presses)
+        self.assertIn("bang bang IVE", result.evidence)
+
+    def test_an_append_is_reported_as_a_failure_not_a_success(self):
+        # Same shape as the Invoke driver's test: a field that ignores the
+        # clear and keeps its old contents has not done what was asked,
+        # however much of the requested text ends up in it.
+        field = _Control(value="bang bang IVE")
+
+        class _AppendingCursor(_Cursor):
+            def clear_field(self):
+                self.presses.append(("clear",))
+                return self._result
+
+            def type_text(self, text):
+                self.typed.append(text)
+                self.field.value += text
+                return self._result
+
+        cursor = _AppendingCursor(field=field)
+        observer = _Observer(
+            ControlLookup("matched", control=field, role="Edit", name="Search"),
+        )
+
+        result = _control(observer, cursor).type_text(
+            "Spotify", "Search", "After LIKE IVE",
+        )
+
+        self.assertEqual(result.status, "verification_failed")
+        self.assertFalse(result.verified)
+        self.assertIn("added onto it", result.evidence)
+
+
+class BlindTypingTests(unittest.TestCase):
+    """Typing into whatever a click revealed must replace, not append."""
+
+    def test_existing_contents_are_selected_before_typing(self):
+        # Measured live: a second search typed straight after a first one
+        # produced "bang bang IVEPlay any songs from my liked list".
+        observer = _Observer(_matched("검색하기", role="Button"))
+        cursor = _Cursor()
+
+        result = _control(observer, cursor).click_then_type(
+            "Spotify", "검색하기", "Bang Bang IVE",
+        )
+
+        self.assertEqual(result.status, "typed")
+        self.assertEqual(cursor.ops, ["click", "select_all", "type"])
+        self.assertEqual(cursor.typed, ["Bang Bang IVE"])
+
+    def test_nothing_is_deleted_on_a_field_that_was_never_verified(self):
+        # Focus is not proven to be a text field here. Ctrl+A in a list
+        # selects items, so a Delete would destroy them; typing does not.
+        observer = _Observer(_matched("검색하기", role="Button"))
+        cursor = _Cursor()
+
+        _control(observer, cursor).click_then_type("Spotify", "검색하기", "x")
+
+        self.assertNotIn(("delete",), cursor.presses)
 
 
 class DoubleClickTests(unittest.TestCase):

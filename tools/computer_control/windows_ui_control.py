@@ -23,6 +23,12 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
+from tools.computer_control.action_contract import (
+    Check,
+    blind_typing_effect,
+    field_is_empty,
+    replacement_effect,
+)
 from tools.computer_control.windows_ui_observer import ControlLookup, WindowInfo, WindowsUIObserver
 
 try:
@@ -307,6 +313,11 @@ class WindowsUIControl:
         time.sleep(_VERIFY_SETTLE_INTERVAL_SECONDS)
         bounded_text = str(text)[:_MAX_TYPE_LENGTH]
         try:
+            # Select whatever is already there so these keystrokes replace
+            # it instead of being appended to a previous query. Select
+            # only -- no Delete: focus is not proven to be a text field
+            # here, and Ctrl+A in a list selects items, not characters.
+            _send_keys("^a", pause=0.03)
             _send_keys(
                 bounded_text, with_spaces=True, with_tabs=False, pause=0.03,
             )
@@ -320,6 +331,7 @@ class WindowsUIControl:
                 window_title=click_result.window_title,
                 control_name=click_result.control_name,
             )
+        effect = blind_typing_effect(repr(click_result.control_name))
         return UIActionResult(
             "typed",
             (
@@ -328,11 +340,8 @@ class WindowsUIControl:
             ),
             window_title=click_result.window_title,
             control_name=click_result.control_name,
-            verified=None,
-            evidence=(
-                "No named, verifiable field exists for this control; typed "
-                "into whatever held keyboard focus after the click."
-            ),
+            verified=effect.holds,
+            evidence=effect.evidence,
         )
 
     def type_text(
@@ -381,8 +390,18 @@ class WindowsUIControl:
 
         text = str(text)[:_MAX_TYPE_LENGTH]
         before_value = self._read_text_value(control)
+        # The precondition this driver never stated. Without it, typing was
+        # appended to whatever the field already held -- and the effect
+        # check, asking only whether its own text had arrived, passed.
+        ready = field_is_empty(before_value[0] if before_value else None)
         try:
             control.set_focus()
+            if ready.failed:
+                # Select rather than delete: a text field replaces its
+                # selection as soon as the next character arrives, and this
+                # needs no key that would destroy anything if the resolved
+                # role were ever wrong.
+                control.type_keys("^a", pause=0.03)
             # Measured directly against this system's Notepad: without a
             # pause, simulated keystrokes arrive faster than the app's
             # input handling can keep up, and characters are silently
@@ -399,9 +418,8 @@ class WindowsUIControl:
                 window_title=window_title,
                 control_name=real_name,
             )
-        verified, evidence = self._verify_typed_text_with_settle(
-            control, text, before_value,
-        )
+        effect = self._settled_replacement(control, text, before_value)
+        verified, evidence = effect.holds, self._contract_evidence(ready, effect)
         if verified is False:
             return UIActionResult(
                 "verification_failed",
@@ -669,6 +687,43 @@ class WindowsUIControl:
         return None, (
             f"{source} did not provide a conclusive text postcondition."
         )
+
+    @staticmethod
+    def _contract_evidence(precondition: Check, effect: Check) -> str:
+        """One sentence covering what was assumed and what was proved."""
+        if precondition.failed:
+            return f"{precondition.evidence} It was cleared first. {effect.evidence}"
+        return effect.evidence
+
+    @classmethod
+    def _settled_replacement(
+        cls,
+        control: Any,
+        expected: str,
+        before: tuple[str, str, bool] | None,
+    ) -> Check:
+        """Poll briefly, then judge replacement rather than mere presence.
+
+        A True result returns at once; anything else is only accepted after
+        every attempt still disagrees, because an Electron/CEF app updates
+        its accessibility tree a beat behind the DOM and a first read can
+        see a stale value.
+        """
+        result = Check("field_holds_requested_text", None, "")
+        for attempt in range(_VERIFY_SETTLE_ATTEMPTS):
+            after = cls._read_text_value(control)
+            result = replacement_effect(
+                expected,
+                before[0] if before else None,
+                after[0] if after else None,
+                source=after[1] if after else "The field",
+                high_confidence=bool(after[2]) if after else True,
+            )
+            if result.holds is True:
+                return result
+            if attempt < _VERIFY_SETTLE_ATTEMPTS - 1:
+                time.sleep(_VERIFY_SETTLE_INTERVAL_SECONDS)
+        return result
 
     @classmethod
     def _verify_typed_text_with_settle(

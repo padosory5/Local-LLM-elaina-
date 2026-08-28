@@ -469,7 +469,19 @@ class CursorDriver:
 
     def clear_field(self) -> InputResult:
         """Select-all then delete, for replacing a field's contents."""
-        selected = self.press("ctrl", "a")
+        selected = self.select_all()
         if not selected.succeeded:
             return selected
         return self.press("delete")
+
+    def select_all(self) -> InputResult:
+        """Select a field's contents so the next keystrokes replace them.
+
+        Deliberately does not press Delete. This is what the blind typing
+        path uses -- the one that types into whatever holds focus after a
+        click -- and there, focus is not proven to be a text field. Ctrl+A
+        in a list selects every item, and Delete would then destroy them,
+        whereas typing merely replaces a text selection and is harmless
+        type-to-select anywhere else.
+        """
+        return self.press("ctrl", "a")

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from tools.computer_control.windows_ui_control import (
     WindowsUIControl,
@@ -45,6 +46,7 @@ class _FakeControl:
         self._invoke_raises = invoke_raises
         self._value = value
         self._value_after_typing = value_after_typing
+        self._selected_all = False
         self._selection_after_select = selection_after_select
 
     def is_visible(self):
@@ -69,12 +71,20 @@ class _FakeControl:
         self.double_clicked = True
 
     def type_keys(self, text, with_spaces=True, with_tabs=False, pause=None):
+        if text == "^a":
+            # A real text field enters nothing for select-all; it replaces
+            # the selection with whatever is typed next.
+            self._selected_all = True
+            return
         self.typed_text = text
         self.type_pause = pause
-        if self._value_after_typing is _UNCHANGED:
-            self._value += text
-        else:
+        if self._value_after_typing is not _UNCHANGED:
             self._value = self._value_after_typing
+        elif self._selected_all:
+            self._value = text
+            self._selected_all = False
+        else:
+            self._value += text
 
     def get_value(self):
         return self._value
@@ -217,6 +227,72 @@ class ControlClassifierTests(unittest.TestCase):
     def test_korean_credential_fields_are_detected(self):
         for name in ("비밀번호", "신용카드"):
             self.assertTrue(is_credential_field(name), name)
+
+
+class TypingContractTests(unittest.TestCase):
+    """Typing must replace what is in the field, and prove that it did."""
+
+    def _control(self, window):
+        desktop = _FakeDesktop([window])
+        observer = WindowsUIObserver(desktop=desktop, foreground_window=lambda: "")
+        return WindowsUIControl(observer=observer)
+
+    def test_a_field_that_already_holds_text_is_cleared_first(self):
+        field = _FakeControl("Edit", "Search", value="bang bang IVE")
+        window = _FakeWindow("Spotify", descendants=[field])
+
+        result = self._control(window).type_text(
+            "Spotify", "Search", "After LIKE IVE",
+        )
+
+        self.assertEqual(result.status, "typed")
+        self.assertTrue(result.verified)
+        self.assertIn("bang bang IVE", result.evidence)
+        self.assertIn("cleared", result.evidence)
+
+    def test_an_appended_value_is_not_reported_as_success(self):
+        # The bug this contract exists for: the old query is still there,
+        # the requested text is also there, and "does it contain what I
+        # typed?" answers yes. It is still the wrong field contents.
+        class _AppendingField(_FakeControl):
+            def type_keys(self, text, **kwargs):
+                if text == "^a":
+                    return
+                self.typed_text = text
+                self._value += text
+
+        field = _AppendingField("Edit", "Search", value="bang bang IVE")
+        window = _FakeWindow("Spotify", descendants=[field])
+
+        result = self._control(window).type_text(
+            "Spotify", "Search", "After LIKE IVE",
+        )
+
+        self.assertEqual(result.status, "verification_failed")
+        self.assertFalse(result.verified)
+        self.assertIn("added onto it", result.evidence)
+
+
+class BlindTypingTests(unittest.TestCase):
+    """The Invoke driver types blind too, and must also replace."""
+
+    def test_existing_contents_are_selected_before_typing(self):
+        field = _FakeControl("Button", "Search")
+        window = _FakeWindow("Spotify Premium", [field])
+        desktop = _FakeDesktop([window])
+        observer = WindowsUIObserver(desktop=desktop, foreground_window=lambda: "")
+        control = WindowsUIControl(observer=observer)
+        sent = []
+
+        with patch(
+            "tools.computer_control.windows_ui_control._send_keys",
+            lambda keys, **kwargs: sent.append(keys),
+        ):
+            result = control.click_then_type("Spotify", "Search", "Bang Bang IVE")
+
+        self.assertEqual(result.status, "typed")
+        self.assertEqual(sent, ["^a", "Bang Bang IVE"])
+        self.assertNotIn("{DEL}", sent)
 
 
 class DoubleClickTests(unittest.TestCase):
@@ -411,7 +487,9 @@ class WindowsUIControlTests(unittest.TestCase):
         self.assertEqual(field.typed_text, "Laufey")
         self.assertTrue(field.focused)
         self.assertTrue(result.verified)
-        self.assertIn("requested characters", result.evidence)
+        # The contract proves replacement, which is a stronger claim than
+        # "the requested characters are in there somewhere".
+        self.assertIn("exactly the requested text", result.evidence)
 
     def test_type_text_prefers_edit_over_same_named_button(self):
         button = _FakeControl("Button", "Search")

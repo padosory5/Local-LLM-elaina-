@@ -1,6 +1,7 @@
 import unittest
 
 from brain.chat_engine import ChatEngine
+from brain.deliberation import ClarificationGate, decide, interpret
 from brain.desktop_action_planner import (
     ActionPlanResult,
     DesktopActionPlanner,
@@ -159,6 +160,7 @@ class UIActionFlowTests(unittest.TestCase):
         engine.computer_control_mode = ComputerControlMode(enabled=mode_enabled)
         engine.agent_consent = FakeAgentConsent()
         engine.cursor_driver = _IdleCursor()
+        engine.clarification = ClarificationGate()
         return engine
 
     @staticmethod
@@ -172,6 +174,56 @@ class UIActionFlowTests(unittest.TestCase):
             action_target=target,
             computer_operation="ui_action",
         )
+
+    def test_a_question_is_spoken_and_held_for_the_answer(self):
+        # Nothing was done, so nothing is reported as done -- and the
+        # question is kept, so the answer continues this request instead
+        # of arriving as an unrelated fragment.
+        decision = decide(interpret("Play some music in Spotify."))
+        planner = FakeDesktopActionPlanner(
+            act_result=ActionPlanResult(
+                "needs_clarification",
+                decision.question,
+                failure_code="needs_clarification",
+                clarification=decision,
+            )
+        )
+        engine = self.engine_with(planner)
+
+        response, returned = engine._handle_computer_action(
+            self.route("Play some music in Spotify.")
+        )
+
+        self.assertIn("Which song", response)
+        self.assertIsNone(returned)
+        held = engine.clarification.peek()
+        self.assertIsNotNone(held)
+        self.assertEqual(held.slot, "title")
+        self.assertTrue(held.bindable)
+
+    def test_an_answered_question_runs_the_completed_request(self):
+        planner = FakeDesktopActionPlanner(
+            act_result=ActionPlanResult("done", "Playing Bang Bang by IVE.")
+        )
+        engine = self.engine_with(planner)
+        decision = decide(interpret("Play some music in Spotify."))
+        pending = engine.clarification.offer(
+            goal=decision.goal,
+            slot=decision.missing,
+            question=decision.question,
+            template=decision.template,
+        )
+        completed = pending.completed("Bang Bang by IVE")
+
+        response, returned = engine._handle_computer_action(
+            self.route(completed.utterance), clarified_goal=completed,
+        )
+
+        self.assertEqual(response, "Playing Bang Bang by IVE.")
+        self.assertEqual(returned.status, "ui_action_done")
+        # The planner received the request already read into slots, not a
+        # sentence reconstructed and re-read downstream.
+        self.assertEqual(planner.act_calls, [completed])
 
     def test_control_mode_off_never_calls_the_planner(self):
         planner = FakeDesktopActionPlanner()

@@ -27,6 +27,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from brain.deliberation import Decision, Goal, decide, interpret
 from tools.browser_control.browser_connection import BrowserConnectionResult
 from tools.browser_control.browser_control import (
     BrowserActionResult,
@@ -65,6 +66,9 @@ class ActionPlanResult:
     steps_taken: tuple[str, ...] = ()
     model_rounds: int = 0
     failure_code: str = ""
+    # Set only when status == "needs_clarification": what was asked, and
+    # what answering it would complete.
+    clarification: Decision | None = None
 
 
 _TOOLS = [
@@ -565,7 +569,7 @@ class BrowserActionPlanner:
 
     def act(
         self,
-        goal: str,
+        goal: str | Goal,
         *,
         allow_direct_navigation: bool = True,
         context: str = "",
@@ -587,7 +591,27 @@ class BrowserActionPlanner:
         without knowing which website or product you're referring to."
         The information existed one turn earlier; it just never travelled.
         """
-        goal = str(goal).strip()
+        # Same boundary as the desktop planner: the request is read into
+        # slots once, and only a value it actually named may be entered
+        # into a page. See brain/deliberation/goal.py.
+        if isinstance(goal, Goal):
+            request = goal
+            goal = request.utterance
+        else:
+            goal = str(goal).strip()
+            request = interpret(goal)
+        # The same gate the desktop planner uses. A request to compare live
+        # options is asked about *before* a page is opened, because a
+        # shortlist gathered without its inputs is worse than no shortlist:
+        # it looks like an answer.
+        decision = decide(request)
+        if decision.asks:
+            return ActionPlanResult(
+                "needs_clarification",
+                decision.question,
+                failure_code="needs_clarification",
+                clarification=decision,
+            )
         allowed_hosts = tuple(
             host for host in (_host_key(item) for item in allowed_hosts) if host
         )
@@ -704,7 +728,9 @@ class BrowserActionPlanner:
                     continue
 
                 tool_name, arguments = self._call_parts(tool_calls[0])
-                step_text, status, pending = self._run_tool_call(
+                step_text, status, pending = self._unrequested_value_step(
+                    request, tool_name, arguments,
+                ) or self._run_tool_call(
                     tool_name,
                     arguments,
                     observation_state,
@@ -1333,6 +1359,34 @@ class BrowserActionPlanner:
             )
             return None
         return self._value(response, "message", None)
+
+    @staticmethod
+    def _unrequested_value_step(
+        request: Goal,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> tuple[str, str, None] | None:
+        """Refuse to enter anything into a page that the request never named.
+
+        A page field is the same kind of boundary as a desktop one: the
+        value belongs to the request, and the request restating itself is
+        not a value. Non-terminal on purpose -- the model is told what the
+        request actually named and can enter that instead.
+        """
+        key = {"fill_field": "text", "search": "query"}.get(name)
+        if key is None:
+            return None
+        value = str(arguments.get(key, "") or "").strip()
+        if not value or request.permits_typing(value):
+            return None
+        return (
+            (
+                f"{value!r} is the request itself, not a value from it. "
+                f"{request.refusal_hint()}"
+            ),
+            "unrequested_value",
+            None,
+        )
 
     def _run_tool_call(
         self,

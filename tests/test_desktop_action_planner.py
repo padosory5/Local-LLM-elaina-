@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+from brain.deliberation import interpret
 from brain.desktop_action_planner import (
     DesktopActionPlanner,
     DesktopSurfaceContext,
@@ -643,6 +644,61 @@ class DesktopActionPlannerStabilizationTests(unittest.TestCase):
 
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.failure_code, "goal_operation_incomplete")
+
+    def test_the_request_itself_is_never_typed_into_a_field(self):
+        # Phase 1's acceptance test. The model is handed a sentence and a
+        # keyboard; before the Goal boundary existed, it typed the sentence.
+        notepad = WindowInfo("메모장", is_active=True, handle=130)
+        observer = PlannerObserver(active=notepad)
+        control = PlannerControl(typed_verified=True)
+        planner = _surface_planner([
+            _message(tool_calls=[
+                _tool_call("describe_window", window="메모장"),
+            ]),
+            _message(tool_calls=[
+                _tool_call(
+                    "type_text", window="메모장", control="텍스트 편집기",
+                    text="Type 'see you at six' in 메모장",
+                ),
+            ]),
+            _message(tool_calls=[
+                _tool_call(
+                    "type_text", window="메모장", control="텍스트 편집기",
+                    text="see you at six",
+                ),
+            ]),
+            _message(content="Typed it."),
+        ], observer, control)
+
+        result = planner.act("Type 'see you at six' in 메모장")
+
+        self.assertEqual(result.status, "done")
+        # The refused attempt never reached the driver at all.
+        self.assertEqual(
+            [call[2] for call in control.type_calls], ["see you at six"],
+        )
+
+    def test_a_planner_accepts_a_request_already_read_into_slots(self):
+        notepad = WindowInfo("메모장", is_active=True, handle=131)
+        observer = PlannerObserver(active=notepad)
+        control = PlannerControl(typed_verified=True)
+        planner = _surface_planner([
+            _message(tool_calls=[
+                _tool_call("describe_window", window="메모장"),
+            ]),
+            _message(tool_calls=[
+                _tool_call(
+                    "type_text", window="메모장", control="텍스트 편집기",
+                    text="see you at six",
+                ),
+            ]),
+            _message(content="Typed it."),
+        ], observer, control)
+
+        result = planner.act(interpret("Type 'see you at six' in 메모장"))
+
+        self.assertEqual(result.status, "done")
+        self.assertEqual(control.type_calls[0][2], "see you at six")
 
     def test_wrong_verified_click_cannot_complete_playback(self):
         spotify = WindowInfo("Spotify", is_active=True, handle=95)

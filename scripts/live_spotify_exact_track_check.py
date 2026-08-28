@@ -35,10 +35,16 @@ _DECOYS = ("radio", "mix", "station", "playlist", "by ive")
 
 
 def _activation_step(steps: list[str]) -> str:
-    """The step that actually started something, if there is exactly one."""
+    """The step that actually started playback, if there was one.
+
+    Two shapes are legitimate, and which one appears depends on what the
+    app offered: a click on the row's own play control ("BANG BANG
+    재생하기"), or a double-click on the exact title. Both name the track,
+    which is what this check is really about; a search step does not.
+    """
     activations = [
         step for step in steps
-        if "double-clicked" in step.casefold() or "clicked play" in step.casefold()
+        if _TITLE in step.casefold() and "typed" not in step.casefold()
     ]
     return activations[-1] if activations else ""
 
@@ -66,9 +72,7 @@ def main() -> int:
         playback_started = result.status == "done"
         steps = [str(step) for step in result.steps_taken]
         activation = _activation_step(steps).casefold()
-        exact_activation = bool(activation) and (
-            _TITLE in activation or "clicked play" in activation
-        )
+        exact_activation = bool(activation)
         no_decoy = not any(decoy in activation for decoy in _DECOYS)
 
         if not playback_started:

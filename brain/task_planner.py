@@ -889,6 +889,16 @@ class TaskPlanner:
                     pending_step=step, pending_capability=capability,
                     pending_prepared=prepared,
                 )
+            if step_result.status == "needs_clarification":
+                # The step cannot proceed until the person says which thing
+                # they meant. Stop the task cleanly and put the question to
+                # them, rather than looping on a goal that names nothing.
+                task_state.status = "stopped"
+                return TaskRunResult(
+                    "stopped",
+                    self._truncated(step_result.summary, _MAX_SUMMARY_LENGTH),
+                    task_state,
+                )
             if step_result.status == "failed":
                 if step_result.failure_code == "user_took_over":
                     task_state.status = "stopped"
