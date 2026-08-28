@@ -239,6 +239,31 @@ computer_control:
   # from local discovery, never from model-generated commands or paths.
   enabled: true
 
+  ##########################################################
+  # How Elaina operates applications (Phase 4F)
+  #
+  #   screen -- She moves the real mouse pointer and types
+  #             real keystrokes, the same way you would.
+  #             This is the only way to operate apps that
+  #             draw their own interface -- Spotify,
+  #             Discord, Battle.net and similar expose no
+  #             typable field to Windows at all, so the
+  #             "uia" driver below can only click near one
+  #             and type blind.
+  #
+  #             An explicit user task starts immediately;
+  #             there is no separate pointer-takeover prompt.
+  #             Physical mouse or keyboard input during a
+  #             run remains an immediate emergency stop.
+  #
+  #   uia    -- The Phase 4B driver: invoke controls through
+  #             the accessibility layer without moving the
+  #             pointer. Never competes with you for the
+  #             mouse, but cannot type into many modern apps
+  #             and cannot operate anything unnamed.
+  ##########################################################
+  driver: "screen"
+
   # Computer Control Mode starts OFF on every launch and is enabled only by
   # the visible Electron toggle. This timeout applies to the separate pending
   # confirmation required for force-quit and Recycle Bin deletion.
@@ -274,13 +299,48 @@ computer_control:
 ############################################################
 
 browser_control:
-  # Elaina opens pages she needs to operate in this Chromium-based browser,
-  # using a private browser profile and the Chrome DevTools Protocol. This
-  # keeps follow-up requests such as "click Images" in the same controllable
-  # session and never exposes the user's normal browser profile or cookies.
-  # Must match the browser's discovered Windows display name (the same
-  # discovery Phase 4A/4B use for computer_control).
   enabled: true
+
+  ##########################################################
+  # Which driver operates the browser (Phase 4E)
+  #
+  #   screen -- Elaina operates the browser window you
+  #             already have open, or launches the registered
+  #             default browser when no window exists. She
+  #             reads the live page through Windows UI
+  #             Automation and moves the real mouse and
+  #             keyboard; your visible session and profile
+  #             remain the ones in use. A full page
+  #             observation takes about 0.1 seconds.
+  #             Measured against the cdp driver below, which
+  #             budgets up to 15 seconds just to start its
+  #             own browser first.
+  #
+  #   cdp    -- The Phase 4C driver: launch a separate,
+  #             isolated, logged-out browser profile and
+  #             control it over the Chrome DevTools
+  #             Protocol. Slower and it cannot use your
+  #             sessions, but it can read link targets and
+  #             operate pages whose accessibility tree never
+  #             becomes available.
+  #
+  # The safety rules are identical either way: credential
+  # and payment controls are refused, committing controls
+  # need confirmation, and page content is never treated as
+  # an instruction.
+  ##########################################################
+  driver: "screen"
+
+  # screen driver only. Adds --force-renderer-accessibility to browsers
+  # Elaina starts herself, so their page tree is exposed immediately
+  # instead of only after something queries it. It has no effect on a
+  # browser that was already running.
+  force_accessibility: true
+
+  # cdp driver only. Elaina opens pages she needs to operate in this
+  # Chromium-based browser, using a private browser profile and the Chrome
+  # DevTools Protocol. Must match the browser's discovered Windows display
+  # name (the same discovery Phase 4A/4B use for computer_control).
   browser_name: "Whale"
 
   # The remote port binds only to localhost. A dedicated profile is required

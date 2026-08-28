@@ -166,7 +166,106 @@ require approval.
   controls in English and do not pass Korean UI labels directly to the English
   Piper voice.
 
-### Browser-page control (Phase 4C)
+### Desktop control (Phase 4F, screen-native)
+
+Elaina operates your applications the way you do: she reads a window's live
+accessibility tree and moves the **real mouse and keyboard**. "Play
+Bang Bang by IVE on Spotify" opens Spotify, searches using both title and
+artist, and **double-clicks the exact track title Bang Bang** -- a single
+click only opens a track, which is how you end up on an album page instead of
+hearing the song. The artist is context, not part of the clickable name;
+generic Play, radio/mix/station, and combined `Bang Bang by IVE` labels are
+rejected before the pointer moves.
+
+A request that names a track like that is resolved from live state without
+asking the model to aim at anything: focus the app, search, find the row whose
+name is exactly the title with the artist beside it, double-click, then
+confirm playback from what the app itself reports (Spotify renames its window
+to the track it is playing). If any of that cannot be proved, she says so
+rather than reporting a song she did not start -- measured end to end at
+about ten seconds, with no model round trips at all.
+
+This is what makes modern apps operable at all. Spotify, Discord and
+Battle.net draw their own interfaces and expose no typable field to Windows,
+so the older driver could only click near one and type blind, never able to
+confirm the text landed. A real pointer clicks the field itself.
+
+**Sharing the mouse with you.** An explicit desktop request starts
+immediately; Elaina does not ask a “can I take over?” question. If you
+physically move the mouse or type while she is acting, that remains an
+immediate emergency stop. Windows flags synthetic input, so her own clicks do
+not trigger that stop.
+
+**Remembering what she did.** Verified actions are recorded, so "stop it"
+stops the track she actually started — resolved from that record, not from
+the model's recollection. That follow-up is answered deterministically,
+without asking the model to find the button.
+
+Switch drivers with `computer_control.driver` in `config/config.yaml`:
+`screen` (default) or `uia` (the Phase 4B driver, which never touches your
+pointer but cannot type into many apps).
+
+Verify it live:
+
+```
+python scripts/live_desktop_control_check.py
+```
+
+Limits: apps that expose nothing to UI Automation (some games, custom-drawn
+UIs) are not operable and she refuses rather than clicking blind; the window
+must be visible and frontmost, so you can always see what she is doing; and
+if security software blocks the input hooks she falls back to watching the
+pointer only, which cannot see typing, and says so.
+
+### Browser control (Phase 4E, screen-native)
+
+By default Elaina operates **the browser window you already have open**. If no
+browser window exists, she launches the registered default browser and binds
+that exact window for the workflow. She reads the live page through Windows
+UI Automation and moves the real mouse and keyboard, so the visible session,
+logins, and profile remain the ones in use.
+
+- One complete page observation costs about **0.1 seconds**, measured against
+  a real, already-open browser. The older CDP driver budgets up to 15 seconds
+  just to start its own browser before it can look at anything.
+- Elements are numbered from a fresh scan before every action. An element
+  whose label changed since it was scanned is refused, not clicked.
+- A cold new tab or `about:blank` does not need a readable Document node before
+  navigation: Elaina focuses the address bar, verifies the landed URL, and
+  makes one bounded retry if the page remains blank or unreadable.
+- The selected browser window stays bound across multi-step work even when
+  another application takes focus. A closed window releases the binding.
+- Visible text, headings, controls, dialogs, listing cards, image counts and
+  accessible image labels are included in page state. Privacy overlays may be
+  dismissed only with a verified Reject/Essential-only choice; sponsored
+  results are excluded from ordinal result clicks.
+- Combobox/listbox choices use type-to-select and are reported as applied only
+  after the accessible value reads back correctly.
+- Before any click the browser is brought to the front and the page re-scanned
+  (focusing can move the window), and the window owning the target pixel is
+  checked -- if something is covering the element, the click is refused.
+- If you move the mouse or type mid-run, Elaina stops immediately and leaves
+  the pointer where you reclaimed it. Normal runs restore its starting place.
+- An action is only reported as done when the page observably changed. A click
+  that did nothing is reported as unverified, never as success.
+
+Switch drivers with `browser_control.driver` in `config/config.yaml`:
+`screen` (default) or `cdp` (the Phase 4C isolated-profile driver below).
+
+Verify it live:
+
+```
+python scripts/live_screen_browser_check.py       # mechanism
+python scripts/live_screen_browser_task_check.py  # full planner, real goals
+```
+
+Limits of the screen driver: a page whose accessibility tree never becomes
+available is not operable (use `driver: "cdp"` for those); canvas-drawn and
+closed-shadow-DOM widgets expose nothing to aim at; only the visible page of
+a window is readable, so background tabs are not listed; and a custom popup
+whose selected value cannot be read back is reported as unverified.
+
+### Browser-page control (Phase 4C, `driver: "cdp"`)
 
 - Websites that Elaina opens are created in an isolated, localhost-only
   CDP-enabled browser profile. This keeps a search, its result page, and a
@@ -189,9 +288,11 @@ require approval.
 
 Current limitations:
 
-- A page already open in a normal personal browser profile cannot be attached
-  for DOM control automatically. Ask Elaina to open or reopen its public URL
-  in her controlled browser session before requesting page actions.
+- Under `driver: "cdp"`, a page already open in a normal personal browser
+  profile cannot be attached for DOM control automatically; ask Elaina to open
+  or reopen its public URL in her controlled browser session first. The
+  default `screen` driver does not have this limitation -- it operates the
+  window you already have open.
 - Agent Builder installs reviewed blueprints; it does not generate and execute
   arbitrary Python tools.
 - Google Calendar currently supports creating events, but not updating,

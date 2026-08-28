@@ -47,6 +47,16 @@ class DiscoveryCategoryTests(unittest.TestCase):
             "Search hotels in Seoul right away.", browser_ready=True,
         ))
 
+    def test_used_gpu_is_routed_to_secondhand_marketplaces_not_new_retailers(self):
+        category = TaskDiscoveryPolicy.category_for(
+            "Find the cheapest second-hand RTX 5080 in Korea."
+        )
+        self.assertEqual(category[0], "secondhand")
+
+    def test_used_car_keeps_the_vehicle_marketplace_category(self):
+        category = TaskDiscoveryPolicy.category_for("Find used vehicles near Seoul.")
+        self.assertEqual(category[0], "car")
+
 
 class DiscoveryOfferTests(unittest.TestCase):
     def test_live_offer_says_why_it_is_useful_without_naming_an_untrusted_url(self):
@@ -75,6 +85,18 @@ class DiscoveryOfferTests(unittest.TestCase):
             browser_ready=True,
             has_prior_candidates=True,
         ))
+
+    def test_live_hotel_research_requires_dates_before_claiming_prices(self):
+        self.assertEqual(
+            TaskDiscoveryPolicy.missing_required_preferences("hotel", {}),
+            ("dates",),
+        )
+        self.assertEqual(
+            TaskDiscoveryPolicy.missing_required_preferences(
+                "hotel", {"dates": "2026-09-10 to 2026-09-13"},
+            ),
+            (),
+        )
 
 
 class StrategyReplyTests(unittest.TestCase):

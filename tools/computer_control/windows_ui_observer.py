@@ -668,7 +668,9 @@ class WindowsUIObserver:
                 candidates=labels,
                 message=(
                     f"More than one equally suitable control matches "
-                    f"{control_name!r}: {', '.join(labels)}."
+                    f"{control_name!r}: {', '.join(labels)}. Inspect the "
+                    "window again and act on the exact element id of the "
+                    "one you mean, rather than on its name."
                 ),
             )
 

@@ -212,6 +212,15 @@ _PRIVACY_NEVER = re.compile(
 )
 
 
+# Hosts whose whole purpose is serving paid placements. Matched as a
+# suffix so subdomains count.
+_AD_NETWORK_HOSTS = (
+    "googleadservices.com", "googlesyndication.com", "doubleclick.net",
+    "adservice.google.com", "amazon-adsystem.com", "adnxs.com",
+    "taboola.com", "outbrain.com", "criteo.com",
+)
+
+
 def is_committing_element(label: str) -> bool:
     """True if activating this element is a consequential, not-undoable step."""
     lowered = label.casefold()
@@ -238,6 +247,34 @@ def is_download_link(label: str, href: str, has_download_attribute: bool) -> boo
         return True
     lowered_href = str(href).casefold().split("?")[0].split("#")[0]
     return lowered_href.endswith(_DOWNLOADABLE_FILE_EXTENSIONS)
+
+
+def is_ad_link(href: str) -> bool:
+    """True if a link's target identifies it as a paid placement.
+
+    The CDP observer decides this from the DOM containers around a link
+    (``[data-text-ad]`` and friends), which the screen-native driver cannot
+    see -- it only ever has the target.  A real sponsored result measured on
+    a live results page pointed at ``googleadservices.com/pagead/aclk?...``,
+    so the host and the redirector path are what identify it there.
+
+    Only used to decide which link an ordinal like "the first result" means.
+    It never authorizes or blocks a click on its own.
+    """
+    target = str(href or "").casefold()
+    if not target:
+        return False
+    try:
+        parsed = urlsplit(target)
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").casefold()
+    if host.endswith(_AD_NETWORK_HOSTS):
+        return True
+    path = (parsed.path or "").casefold()
+    if path.startswith(("/aclk", "/pagead/", "/pcs/click", "/url")) and host:
+        return path.startswith(("/aclk", "/pagead/", "/pcs/click"))
+    return "adurl=" in (parsed.query or "").casefold()
 
 
 def is_credential_field(label: str, element_type: str) -> bool:

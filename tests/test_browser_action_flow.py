@@ -25,6 +25,18 @@ class FakeAgentConsent:
         self.cleared = True
 
 
+class FakeCursor:
+    def __init__(self):
+        self.begin_calls = 0
+        self.restore_values = []
+
+    def begin_run(self):
+        self.begin_calls += 1
+
+    def end_run(self, *, restore=True):
+        self.restore_values.append(restore)
+
+
 class FakeBrowserActionPlanner:
     def __init__(self, act_result=None, resume_result=None):
         self.act_result = act_result
@@ -121,6 +133,26 @@ class BrowserActionFlowTests(unittest.TestCase):
         self.assertEqual(response, "I couldn't find that element.")
         self.assertEqual(returned.status, "ui_action_failed")
         self.assertFalse(returned.succeeded)
+
+    def test_screen_browser_starts_immediately_and_does_not_restore_after_takeover(self):
+        planner = FakeBrowserActionPlanner(
+            act_result=ActionPlanResult(
+                "failed", "You moved the mouse.",
+                failure_code="user_took_over",
+            )
+        )
+        engine = self.engine_with(planner)
+        engine.browser_driver = "screen"
+        engine.cursor_driver = FakeCursor()
+
+        response, returned = engine._handle_computer_action(
+            self.route("open Booking.com and find hotels in Guam")
+        )
+
+        self.assertEqual(response, "You took control, so I stopped.")
+        self.assertEqual(engine.cursor_driver.begin_calls, 1)
+        self.assertEqual(engine.cursor_driver.restore_values, [False])
+        self.assertEqual(returned.status, "ui_action_failed")
 
     def test_an_internal_planner_instruction_is_never_spoken_aloud(self):
         # Found live: a failed browser step read its own note-to-self out

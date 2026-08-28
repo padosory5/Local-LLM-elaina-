@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock
 
-from brain.browser_action_planner import BrowserActionPlanner
+from brain.browser_action_planner import BrowserActionPlanner, _url_in_source_scope
 from tools.browser_control.browser_control import BrowserActionResult
 from tools.browser_control.browser_observer import PageElement, PageObservation, TabInfo
 
@@ -12,6 +12,26 @@ def _tool_call(name, **arguments):
 
 def _message(*, content="", tool_calls=None):
     return {"message": {"content": content, "tool_calls": tool_calls}}
+
+
+class SourceScopeTests(unittest.TestCase):
+    def test_selected_marketplace_host_and_subdomains_are_allowed(self):
+        allowed = ("daangn.com", "bunjang.co.kr")
+        self.assertTrue(_url_in_source_scope("https://www.daangn.com/kr/buy-sell", allowed))
+        self.assertTrue(_url_in_source_scope("https://m.bunjang.co.kr/products/1", allowed))
+
+    def test_unrelated_retailer_is_outside_a_secondhand_scope(self):
+        self.assertFalse(_url_in_source_scope(
+            "https://www.coupang.com/np/search?q=rtx+5080",
+            ("daangn.com", "bunjang.co.kr", "joongna.com"),
+        ))
+
+    def test_search_redirect_to_an_allowed_source_is_recognised(self):
+        redirect = (
+            "https://www.google.com/url?q="
+            "https%3A%2F%2Fwww.booking.com%2Fhotel%2Fguam"
+        )
+        self.assertTrue(_url_in_source_scope(redirect, ("booking.com",)))
 
 
 class FakeClient:
@@ -73,6 +93,35 @@ class FakeControl:
 
 
 class BrowserActionPlannerBasicTests(unittest.TestCase):
+    def test_physical_takeover_is_terminal_and_never_retried(self):
+        observation = PageObservation(
+            "observed", url="https://example.com", title="Example",
+            elements=(PageElement(id="e0", tag="button", role="", label="Go"),),
+            tab_index=0, scan_id="scan-stop",
+        )
+        control = FakeControl(
+            click_result=BrowserActionResult(
+                "user_took_over", "You moved the mouse.",
+            ),
+        )
+        client = FakeClient([
+            _message(tool_calls=[_tool_call("describe_page")]),
+            _message(tool_calls=[_tool_call("click_element", element_id="e0")]),
+        ])
+        planner = BrowserActionPlanner(
+            client=client, model="qwen3:8b", keep_alive=-1,
+            observer=FakeObserver(page_observation=observation), control=control,
+        )
+
+        result = planner.act("Click Go")
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.failure_code, "user_took_over")
+        # The exact-label fast path needs no model round; either way the
+        # takeover result returns directly instead of scheduling a retry.
+        self.assertEqual(control.click_calls, [(0, "e0", False)])
+        self.assertEqual(len(client.calls), 0)
+
     def test_click_success_completes_with_a_verified_summary(self):
         observation = PageObservation(
             "observed", url="https://hotels.example", title="Hotels",
@@ -538,6 +587,44 @@ class BrowserActionPlannerBasicTests(unittest.TestCase):
         self.assertEqual(result.summary, "Opened the first hotel result.")
         self.assertEqual(control.click_calls, [(3, "e-hotel", False)])
         self.assertEqual(client.calls, [])
+
+    def test_ordinal_result_skips_unlabeled_and_non_main_transient_links(self):
+        observation = PageObservation(
+            "observed",
+            url="https://www.google.com/search?q=eiffel+tower",
+            title="Eiffel Tower - Google Search",
+            elements=(
+                PageElement(
+                    id="e-empty", tag="a", role="link", label="(unlabeled)",
+                    href="https://wrong.example/transient",
+                ),
+                PageElement(
+                    id="e-skip", tag="a", role="link", label="Skip to main content",
+                    href="https://wrong.example/skip", in_main=False,
+                ),
+                PageElement(
+                    id="e-wikipedia", tag="a", role="link",
+                    label="Eiffel Tower - Wikipedia",
+                    href="https://en.wikipedia.org/wiki/Eiffel_Tower",
+                ),
+            ),
+            tab_index=0,
+            scan_id="scan-ready",
+        )
+        control = FakeControl(
+            click_result=BrowserActionResult(
+                "clicked", "Clicked Eiffel Tower - Wikipedia.", verified=True,
+            ),
+        )
+        planner = BrowserActionPlanner(
+            client=FakeClient([]), model="qwen3:8b", keep_alive=-1,
+            observer=FakeObserver(page_observation=observation), control=control,
+        )
+
+        result = planner.act("Open the first search result.")
+
+        self.assertEqual(result.status, "done")
+        self.assertEqual(control.click_calls, [(0, "e-wikipedia", False)])
 
     def test_ordinal_result_summary_does_not_read_card_details_aloud(self):
         observation = PageObservation(

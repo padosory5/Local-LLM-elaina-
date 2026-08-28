@@ -13,6 +13,15 @@ from dotenv import load_dotenv
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+# Screen-native browser control reads element rectangles from UI Automation
+# in physical pixels and drives the pointer with them. Windows only lets a
+# process declare its DPI awareness before its first UI call, so this has to
+# happen here, ahead of Electron, pygame, and every window Elaina touches --
+# left unset on a scaled display, every synthetic click lands off target.
+from tools.screen_control.dpi import ensure_per_monitor_dpi_aware
+
+ensure_per_monitor_dpi_aware()
+
 # Load local API keys and credential paths before creating ChatEngine.
 load_dotenv()
 

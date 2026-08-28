@@ -43,6 +43,17 @@ class _StillLoadingPage(_FakePage):
         return super().evaluate(script)
 
 
+class _SemanticPage(_FakePage):
+    def __init__(self, *, summary, **kwargs):
+        super().__init__(**kwargs)
+        self._summary = summary
+
+    def evaluate(self, script):
+        if "__ELAINA_CONTENT_SUMMARY__" in script:
+            return dict(self._summary)
+        return super().evaluate(script)
+
+
 class _LegacyTitleLocator:
     def text_content(self, *, timeout=None):
         if timeout != 750:
@@ -315,6 +326,59 @@ class ResolveNavigablePageTests(unittest.TestCase):
 
 
 class DescribePageTests(unittest.TestCase):
+    def test_describe_page_includes_bounded_text_headings_and_image_labels(self):
+        page = _SemanticPage(
+            url="https://shop.example/rtx-5080",
+            title="RTX 5080 listings",
+            elements=[{
+                "id": "e0", "tag": "button", "role": "", "type": "button",
+                "label": "Lowest price", "disabled": False,
+            }],
+            summary={
+                "marker": "__ELAINA_CONTENT_SUMMARY__",
+                "headings": ["Used RTX 5080", "Search results"],
+                "text": "Used RTX 5080 listings from verified sellers",
+                "textLength": 2000,
+                "images": ["RTX 5080 product photo"],
+                "imageCount": 3,
+            },
+        )
+        observer = BrowserObserver(
+            connection=_FakeConnection(_connected(_FakeBrowser([_FakeContext([page])]))),
+        )
+
+        observation = observer.describe_page()
+
+        self.assertEqual(observation.headings, ("Used RTX 5080", "Search results"))
+        self.assertIn("verified sellers", observation.text_excerpt)
+        self.assertTrue(observation.text_truncated)
+        self.assertEqual(observation.images[0].label, "RTX 5080 product photo")
+        self.assertEqual(observation.image_count, 3)
+
+    def test_static_semantic_page_is_observed_even_without_buttons(self):
+        page = _SemanticPage(
+            url="https://example.com/article",
+            title="Article",
+            elements=[],
+            summary={
+                "marker": "__ELAINA_CONTENT_SUMMARY__",
+                "headings": ["A useful article"],
+                "text": "Readable content",
+                "textLength": 16,
+                "images": [],
+                "imageCount": 0,
+            },
+        )
+        observer = BrowserObserver(
+            connection=_FakeConnection(_connected(_FakeBrowser([_FakeContext([page])]))),
+        )
+
+        observation = observer.describe_page()
+
+        self.assertEqual(observation.status, "observed")
+        self.assertEqual(observation.elements, ())
+        self.assertEqual(observation.text_excerpt, "Readable content")
+
     def test_describes_the_active_tab_by_default(self):
         elements = [
             {"id": "e0", "tag": "button", "role": "", "type": "", "label": "Search", "disabled": False},

@@ -128,6 +128,29 @@ _REGIONAL_SITES: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
+# Host suffixes for default configured sources. These are execution policy,
+# not recommendations: once the user chooses specialised research, an
+# observed search result may be followed only onto the selected source class.
+# Custom preferred-site overrides intentionally get no guessed host mapping.
+_REGIONAL_SITE_HOSTS: dict[str, dict[str, tuple[str, ...]]] = {
+    "KR": {
+        "hotel": ("yanolja.com", "goodchoice.kr", "naver.com"),
+        "restaurant": ("naver.com", "diningcode.com", "catchtable.co.kr"),
+        "secondhand": ("daangn.com", "bunjang.co.kr", "joongna.com"),
+        "shopping": ("naver.com", "coupang.com", "danawa.com"),
+        "gpu": ("danawa.com", "compuzone.co.kr", "enuri.com"),
+        "car": ("encar.com", "kbchachacha.com", "bobaedream.co.kr"),
+    },
+    "US": {
+        "hotel": ("booking.com", "expedia.com", "hotels.com"),
+        "restaurant": ("yelp.com", "google.com", "opentable.com"),
+        "secondhand": ("facebook.com", "craigslist.org", "offerup.com"),
+        "shopping": ("amazon.com", "walmart.com", "bestbuy.com"),
+        "gpu": ("newegg.com", "bestbuy.com", "pcpartpicker.com"),
+        "car": ("autotrader.com", "cars.com", "cargurus.com"),
+    },
+}
+
 # When a request is about somewhere other than home, the destination's own
 # market is what matters ("hotels in Hong Kong" is a Hong Kong search), but
 # the *language and currency* the user reads in stay theirs. This split is
@@ -151,6 +174,7 @@ _PLACE_COUNTRIES: dict[str, str] = {
     "america": "US", "usa": "US", "united states": "US",
     "new york": "US", "los angeles": "US", "san francisco": "US",
     "chicago": "US", "seattle": "US", "boston": "US", "miami": "US",
+    "guam": "US",
     "britain": "GB", "england": "GB", "united kingdom": "GB",
     "london": "GB", "manchester": "GB", "edinburgh": "GB",
     "hong kong": "HK", "singapore": "SG", "taiwan": "TW", "taipei": "TW",
@@ -354,6 +378,16 @@ class UserLocale:
         if not sites:
             return (), ""
         return sites, _COUNTRY_NAMES.get(market, market)
+
+    def source_hosts_for_goal(self, category: str, goal: str) -> tuple[str, ...]:
+        """Allowed host suffixes for this goal's default specialised sites."""
+        market = self.market_for(goal)
+        category = str(category).strip().lower()
+        configured = self.sites_for_market(category, market)
+        defaults = tuple(_REGIONAL_SITES.get(market, {}).get(category, ()))
+        if not configured or configured != defaults:
+            return ()
+        return tuple(_REGIONAL_SITE_HOSTS.get(market, {}).get(category, ()))
 
     def localize_query(self, query: str, *, category: str = "") -> str:
         """Add the market to a search query when it names no place at all.

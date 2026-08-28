@@ -46,6 +46,11 @@ class LocalisedDiscoveryOfferTests(unittest.TestCase):
 
         self.assertIn("네이버 지도", offer)
 
+    def test_guam_hotel_research_uses_global_us_booking_sources(self):
+        offer = self._offer("book me a hotel in Guam", self.korea)
+        self.assertIn("Booking.com", offer)
+        self.assertIn("What dates", offer)
+
     def test_an_unknown_market_falls_back_without_naming_wrong_sites(self):
         offer = self._offer(
             "find a good hotel near the city in Hong Kong", self.korea,

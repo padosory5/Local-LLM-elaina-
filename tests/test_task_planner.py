@@ -19,6 +19,7 @@ from brain.task_planner import (
     _MAX_CONSECUTIVE_FAILURES,
 )
 from brain.task_discovery_policy import TaskDiscoveryPolicy
+from brain.user_locale import UserLocale
 
 
 class FakeClient:
@@ -295,6 +296,25 @@ class TaskPlannerTests(unittest.TestCase):
         ])
         self.assertIn("browser_control", result.task_state.errors[0])
         self.assertEqual(result.task_state.consecutive_failures, 0)
+
+    def test_physical_takeover_stops_the_whole_task_without_replanning(self):
+        planner, _, browser = _planner(
+            responses=[
+                {"capability": "browser_control", "sub_goal": "Open Booking.com."},
+            ],
+            browser_results=[
+                BrowserActionPlanResult(
+                    "failed", "You moved the mouse.",
+                    failure_code="user_took_over",
+                ),
+            ],
+        )
+
+        result = planner.run("Find a hotel in Guam.")
+
+        self.assertEqual(result.status, "stopped")
+        self.assertEqual(result.summary, "You took control, so I stopped.")
+        self.assertEqual(browser.act_calls, ["Open Booking.com."])
 
     def test_consecutive_failures_past_the_budget_stop_the_task(self):
         planner, _, browser = _planner(
@@ -1224,7 +1244,9 @@ class DeterministicDiscoveryPolicyTests(unittest.TestCase):
         result = planner.continue_with_strategy(
             offered.task_state,
             accepted=True,
-            preference_update="Under ₩200,000 near Hongdae.",
+            preference_update=(
+                "Under ₩200,000 near Hongdae, 2026-09-10 to 2026-09-13."
+            ),
         )
 
         self.assertEqual(result.status, "done")
@@ -1232,11 +1254,67 @@ class DeterministicDiscoveryPolicyTests(unittest.TestCase):
         self.assertEqual(result.task_state.verification_level, "verify")
         self.assertEqual(result.task_state.preferences["budget"], "₩200,000")
         self.assertEqual(result.task_state.preferences["area"], "Hongdae")
+        self.assertEqual(
+            result.task_state.preferences["dates"],
+            "2026-09-10 to 2026-09-13",
+        )
         self.assertIn("Under ₩200,000 near Hongdae", result.task_state.preferences["additional_preferences"])
         self.assertEqual(len(browser.act_calls), 1)
         # A planner-generated sub-goal cannot turn its own source wording
         # into a direct third-party navigation authority.
         self.assertEqual(browser.act_kwargs, [{"allow_direct_navigation": False}])
+
+    def test_accepting_live_hotel_research_without_dates_asks_for_dates(self):
+        planner, _, browser = _planner(
+            responses=[],
+            computer_control_mode=FakeComputerControlMode(True),
+            discovery_policy=TaskDiscoveryPolicy(),
+        )
+        offered = planner.run("Book me a hotel in Guam.")
+
+        result = planner.continue_with_strategy(
+            offered.task_state, accepted=True,
+        )
+
+        self.assertEqual(result.status, "needs_strategy_choice")
+        self.assertIn("check-in", result.summary)
+        self.assertEqual(browser.act_calls, [])
+
+    def test_used_gpu_research_passes_a_secondhand_host_scope_to_browser(self):
+        planner, _, browser = _planner(
+            responses=[
+                {
+                    "capabilities_needed": ["browser_control"],
+                    "preferences": {},
+                    "plan_preview": "I'll check Korean second-hand listings.",
+                    "verification_level": "verify",
+                    "specialized_source_offer": "",
+                },
+                {
+                    "capability": "browser_control",
+                    "sub_goal": "Find the requested RTX 5080 listings.",
+                },
+                {"done": True, "summary": "Found used RTX 5080 listings."},
+            ],
+            browser_results=[
+                BrowserActionPlanResult("done", "Observed used RTX 5080 listings."),
+            ],
+            computer_control_mode=FakeComputerControlMode(True),
+            preview_enabled=True,
+            discovery_policy=TaskDiscoveryPolicy(),
+            user_locale=UserLocale(country="KR", city="Seoul"),
+        )
+
+        offered = planner.run("Find the cheapest second-hand RTX 5080 in Korea.")
+        result = planner.continue_with_strategy(offered.task_state, accepted=True)
+
+        self.assertEqual(result.status, "done")
+        self.assertEqual(offered.task_state.discovery_category, "secondhand")
+        self.assertEqual(
+            browser.act_kwargs[0]["allowed_hosts"],
+            ("daangn.com", "bunjang.co.kr", "joongna.com"),
+        )
+        self.assertNotIn("danawa.com", browser.act_kwargs[0]["allowed_hosts"])
 
     def test_control_off_offers_a_truthful_overview_and_never_runs_browser(self):
         web_search = FakeWebSearchExecutor(

@@ -76,6 +76,7 @@ class BrowserConnection:
         port_checker=None,
         launcher=None,
         launch_timeout_seconds: float = _LAUNCH_TIMEOUT_SECONDS,
+        force_accessibility: bool = False,
     ) -> None:
         self.browser_name = str(browser_name).strip() or "Whale"
         self.debugging_port = int(debugging_port)
@@ -92,6 +93,10 @@ class BrowserConnection:
         self._port_checker = port_checker or self._default_port_checker
         self._launcher = launcher or subprocess.Popen
         self.launch_timeout_seconds = max(0.0, float(launch_timeout_seconds))
+        # Whether a browser launched here should expose its page tree to UI
+        # Automation immediately. Only meaningful for windows Elaina starts;
+        # an already-running browser cannot be given this flag.
+        self.force_accessibility = bool(force_accessibility)
         # The URL after redirects is the identity that BrowserObserver should
         # prefer on the next turn.  A search engine often adds harmless query
         # parameters, so the requested URL alone is not reliable enough to
@@ -257,7 +262,10 @@ class BrowserConnection:
             # ready.  This avoids a second blank tab and lets the visible
             # navigation start while the debugging port is coming up.
             page = (
-                self._launched_navigation_page(contexts[0], requested_url)
+                (
+                    self._launched_navigation_page(contexts[0], requested_url)
+                    or self._startup_tab(contexts[0])
+                )
                 if result.launched
                 else None
             )
@@ -426,6 +434,15 @@ class BrowserConnection:
                 "--no-first-run",
                 "--no-default-browser-check",
             ]
+            if self.force_accessibility:
+                # Chromium builds its renderer accessibility tree lazily, so
+                # a freshly launched window exposes only its frame -- about a
+                # dozen UI Automation nodes and no page at all -- until some
+                # client asks for it. Measured during Phase 4E: sending
+                # WM_GETOBJECT does *not* wake it, and the screen-native
+                # driver has no other way in. Asking for it at launch is the
+                # only reliable option for a browser Elaina starts herself.
+                command.append("--force-renderer-accessibility")
             # ``open_url`` receives an already validated HTTP(S) address via
             # SafeBrowserControl.  Keep this defensive check nevertheless,
             # because this low-level launcher is also useful in tests and

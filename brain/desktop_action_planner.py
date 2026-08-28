@@ -16,9 +16,14 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from brain.media_target import MediaTarget, parse_spotify_media_target
 from tools.computer_control.computer_control import ComputerControl
 from tools.computer_control.windows_ui_control import UIActionResult, WindowsUIControl
-from tools.computer_control.windows_ui_observer import WindowInfo, WindowsUIObserver
+from tools.computer_control.windows_ui_observer import (
+    ControlInfo,
+    WindowInfo,
+    WindowsUIObserver,
+)
 
 
 @dataclass(frozen=True)
@@ -149,10 +154,43 @@ class PendingConfirmation:
 
 
 @dataclass(frozen=True)
+class PausedDesktopRun:
+    """Work already done when a run was interrupted by the user.
+
+    Carried through the takeover question so a "yes" continues from here
+    instead of restarting. The completed families/terms matter as much as
+    the prose steps: they are what ``_GoalCompletionContract`` reasons over,
+    so seeding them is what keeps "typed the song into Search" from being
+    accepted as "the song is playing" after a resume.
+    """
+
+    goal: str
+    steps_taken: tuple[str, ...] = ()
+    completed: tuple[tuple[str, frozenset[str]], ...] = ()
+    surface_snapshot: dict[str, object] | None = None
+
+    @property
+    def progress_note(self) -> str:
+        """What to tell the model it has already verifiably done."""
+        if not self.steps_taken:
+            return ""
+        lines = "\n".join(f"- {step}" for step in self.steps_taken)
+        return (
+            "You already completed these verified steps before you were "
+            "interrupted:\n"
+            f"{lines}\n"
+            "Continue from there. Do not repeat a step that is listed above."
+        )
+
+
+@dataclass(frozen=True)
 class ActionPlanResult:
-    status: str  # "done", "needs_confirmation", "failed"
+    status: str  # "done", "needs_confirmation", "interrupted", "failed"
     summary: str = ""
     pending: PendingConfirmation | None = None
+    # Set only when status == "interrupted": the user took the mouse or
+    # keyboard back mid-run and this is where to pick up.
+    paused: PausedDesktopRun | None = None
     steps_taken: tuple[str, ...] = ()
     surface_context: DesktopSurfaceContext = field(
         default_factory=DesktopSurfaceContext
@@ -180,6 +218,7 @@ class _ToolExecution:
     # by _action_completion_terms so goal-completion matching still works
     # when the model addressed a control by id rather than by name.
     resolved_control_name: str = ""
+    observed_controls: tuple[ControlInfo, ...] = ()
 
     @property
     def succeeded(self) -> bool:
@@ -230,6 +269,11 @@ class _GoalCompletionContract:
     # result must retain the full extracted subject before a generic Play
     # control can complete the request.
     subject_requires_full_match: bool = False
+    # For a concrete media request, the title is the only valid activation
+    # target. Artist terms are context that must have been used to narrow the
+    # search; they are never concatenated into the clickable title.
+    activation_target_terms: frozenset[str] = frozenset()
+    activation_context_terms: frozenset[str] = frozenset()
 
     def is_satisfied_by(
         self,
@@ -242,6 +286,20 @@ class _GoalCompletionContract:
         ]
         if not candidates:
             return False
+        if self.operation == "activation" and self.activation_target_terms:
+            title_activated = any(
+                self.activation_target_terms <= action.terms
+                for action in candidates
+            )
+            if not title_activated:
+                return False
+            if not self.activation_context_terms:
+                return True
+            return any(
+                action.family in {"text_input", "selection"}
+                and self.activation_context_terms <= action.terms
+                for action in completed_actions
+            )
         if not self.subject_terms:
             return True
         if any(
@@ -386,6 +444,43 @@ _TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "play_media_item",
+            "description": (
+                "Start playing one exact item in a media app. This is the "
+                "only correct way to play a track -- never click_control. "
+                "Pass the element_id of the control whose accessible name is "
+                "exactly the track title, with nothing appended: not the "
+                "artist, not Radio, Mix, Station, or a playlist. It "
+                "double-clicks that row the way a person does and then "
+                "checks the app really is playing it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window": {"type": "string"},
+                    "element_id": {
+                        "type": "string",
+                        "description": (
+                            "Preferred: the exact id from the most recent "
+                            "describe_window of this window, copied verbatim."
+                        ),
+                    },
+                    "control": {
+                        "type": "string",
+                        "description": (
+                            "Fallback only, when no id is shown: the exact "
+                            "track title, copied verbatim from "
+                            "describe_window."
+                        ),
+                    },
+                },
+                "required": ["window"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "type_text",
             "description": (
                 "Type into a verified text field. Credential fields are "
@@ -489,6 +584,37 @@ _TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "press_key",
+            "description": (
+                "Send a key or chord to a focused window -- Enter to submit "
+                "a search, Escape to close a menu. Use this only right after "
+                "typing into a field that has no visible submit button. It "
+                "is never a substitute for clicking a control: to press "
+                "Play, Pause, or any other on-screen button, inspect the "
+                "window and use click_control."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window": {"type": "string"},
+                    "keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "One key, or a chord such as [\"ctrl\", \"a\"]. "
+                            "Supported: enter, tab, escape, backspace, "
+                            "delete, space, home, end, pageup, pagedown, "
+                            "up, down, left, right, ctrl, shift, alt."
+                        ),
+                    },
+                },
+                "required": ["window", "keys"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "scroll_control",
             "description": "Scroll a verified container.",
             "parameters": {
@@ -544,8 +670,12 @@ _BASE_SYSTEM_PROMPT = (
     "that button instead of type_text; this is the correct tool for that "
     "situation, not a workaround. For a compound media request such as "
     "searching a title and artist then playing that result, enter the full "
-    "title-and-artist query, re-observe the results, and activate a matching "
-    "observed result; do not stop after searching. A consequential click "
+    "title-and-artist query and re-observe the results. Then call "
+    "play_media_item on the control whose name is exactly the track title -- "
+    "clicking a track only opens it, so click_control can never play one. "
+    "The artist is nearby context, not part of the label you activate. "
+    "Never substitute a generic Play button, radio, mix, station, "
+    "or playlist; do not stop after searching. A consequential click "
     "can only be offered for confirmation when its call used an exact "
     "current element_id; if the tool asks for re-observation, describe the "
     "window again instead of asking the user yet. If a tool reports "
@@ -578,12 +708,14 @@ _FAILURE_SUMMARY_PATTERN = re.compile(
 _OBSERVATION_TOOLS = frozenset({"list_windows", "describe_window"})
 _ACTION_TOOLS = frozenset({
     "open_app", "focus_window", "click_control", "type_text",
-    "click_then_type", "select_option", "scroll_control",
+    "click_then_type", "select_option", "scroll_control", "press_key",
+    "play_media_item",
 })
 _ACTION_FAMILY_BY_TOOL = {
     "open_app": "launch",
     "focus_window": "focus",
     "click_control": "activation",
+    "play_media_item": "activation",
     "type_text": "text_input",
     "click_then_type": "text_input",
     "select_option": "selection",
@@ -598,6 +730,7 @@ _ACTION_FAMILY_BY_TOOL = {
 _GOAL_OPERATION_BY_WORD = {
     "play": "activation",
     "pause": "activation",
+    "stop": "activation",
     "resume": "activation",
     "skip": "activation",
     "click": "click",
@@ -654,8 +787,64 @@ _COMPLETING_FAMILIES_BY_OPERATION = {
 _DIRECT_CONTROL_TERMS_BY_GOAL_WORD = {
     "play": frozenset({"play"}),
     "pause": frozenset({"pause"}),
+    "stop": frozenset({"pause", "stop"}),
     "resume": frozenset({"resume", "play"}),
     "skip": frozenset({"skip", "next"}),
+}
+
+# Real applications are not in English. Spotify's Korean UI labels its
+# transport controls "재생하기" and "일시 정지하기", and Korean is
+# agglutinative, so the token equality used for English terms above can
+# never match them -- "정지하기" is not "정지". These stems are therefore
+# matched as substrings and mapped onto the English vocabulary the
+# completion contract already reasons in, the same approach
+# windows_ui_control.py already takes for its Korean committing keywords.
+# Without this, Elaina really does pause the track and then reports that
+# she could not.
+_LOCALISED_CONTROL_STEMS = (
+    ("재생", "play"),
+    ("일시 정지", "pause"),
+    ("일시정지", "pause"),
+    ("정지", "pause"),
+    ("중지", "pause"),
+    ("다음", "next"),
+    ("건너뛰기", "next"),
+)
+
+
+# Substrings that contain a transport stem but are not transport controls.
+# "재생 목록" is "playlist": a library full of them would otherwise look like
+# a wall of play buttons.
+_LOCALISED_CONTROL_DECOYS = ("재생 목록", "재생목록", "재생 중", "재생중")
+
+
+def _localised_control_terms(label: str) -> set[str]:
+    """English equivalents for transport controls named in another language."""
+    text = str(label or "").casefold()
+    for decoy in _LOCALISED_CONTROL_DECOYS:
+        text = text.replace(decoy, " ")
+    return {
+        english for stem, english in _LOCALISED_CONTROL_STEMS if stem in text
+    }
+
+
+# Reach: the observer's window digest is capped at the most useful ~80
+# controls, and a media transport bar sits well below that cut on a busy
+# app -- measured on Spotify, whose tree holds 734 named elements. The
+# direct path therefore asks the observer to resolve specific labels
+# against the *live* tree instead of searching the capped digest.
+# Kept deliberately short: each entry costs one full live tree scan, and a
+# busy app is expensive to walk -- Spotify measured ~3s per scan over its
+# 734 named elements. Two candidates per term (the user's language and
+# English) covers the realistic cases without turning a "stop it" into a
+# twenty-second search.
+_TRANSPORT_LABELS_BY_TERM = {
+    "pause": ("일시 정지하기", "Pause"),
+    "stop": ("일시 정지하기", "Pause"),
+    "play": ("재생하기", "Play"),
+    "resume": ("재생하기", "Play"),
+    "next": ("다음 트랙", "Next"),
+    "skip": ("다음 트랙", "Next"),
 }
 _DIRECT_CONTROL_LABEL_TERMS = frozenset({
     term
@@ -677,8 +866,14 @@ _CONTRACT_STOP_TERMS = frozenset({
     "that", "to", "track", "up", "use", "user", "using", "window", "with",
     "would", "you",
 }) | frozenset(_GOAL_OPERATION_BY_WORD)
+# "ambiguous" is deliberately NOT here. It means several live controls
+# matched the name the model used -- which is a recoverable mistake, not a
+# dead end: the fix is to re-inspect the window and address one of them by
+# its exact scan id. Measured live on Spotify, where a playing track offers
+# several pause-like controls at once; treating that as terminal ended the
+# run instead of letting the model name the one it meant. The round and
+# repeated-step budgets still bound the retry.
 _TERMINAL_FAILURES = frozenset({
-    "ambiguous",
     "invalid",
     "refused",
     "surface_unavailable",
@@ -694,6 +889,25 @@ _MAX_OBSERVATIONS = 9
 _MAX_NUDGES = 2
 _WINDOW_APPEAR_ATTEMPTS = 6
 _WINDOW_APPEAR_INTERVAL_SECONDS = 0.6
+# Playback starts a beat after the double-click lands, and the app
+# renames its own window only once audio is actually running. Each
+# attempt is one cheap window-title read, not a tree scan.
+_PLAYBACK_VERIFY_ATTEMPTS = 8
+_PLAYBACK_VERIFY_INTERVAL_SECONDS = 0.4
+
+# A media app's search affordance is the one control the deterministic play
+# path has to find by meaning rather than by id. Stems, not equality:
+# Spotify labels it "Search", Korean Spotify "검색", and both appear with
+# extra words around them ("Search Spotify", "검색하기").
+_MEDIA_SEARCH_STEMS = ("search", "검색", "찾기", "찾아보기")
+_MEDIA_SEARCH_FIELD_ROLES = frozenset({"edit", "combobox"})
+# Results arrive asynchronously after the query is typed, and a CEF tree
+# rebuilds a beat behind what is already drawn.
+_MEDIA_RESULT_ATTEMPTS = 3
+_MEDIA_RESULT_SETTLE_SECONDS = 1.2
+# One retry: a first double-click that lands while the result list is still
+# reflowing hits the row that was there a moment ago.
+_MEDIA_ACTIVATION_ATTEMPTS = 2
 
 
 class DesktopActionPlanner:
@@ -709,13 +923,21 @@ class DesktopActionPlanner:
         control: WindowsUIControl | None = None,
         computer_control: ComputerControl | None = None,
         response_language: str = "en",
+        session_actions: Any = None,
+        sleeper=None,
     ) -> None:
         self.client = client
         self.model = model
         self.keep_alive = keep_alive
+        # Waiting for a result list to arrive and for playback to start is
+        # real elapsed time on a real app; tests supply their own clock.
+        self._sleep = sleeper or time.sleep
         self.observer = observer or WindowsUIObserver()
         self.control = control or WindowsUIControl(observer=self.observer)
         self.response_language = str(response_language or "en").strip().lower()
+        # Records verified actions so a later "stop it" resolves against what
+        # Elaina actually did rather than against model recall.
+        self.session_actions = session_actions
         if computer_control is not None:
             self.computer_control = computer_control
         else:
@@ -730,9 +952,11 @@ class DesktopActionPlanner:
         goal: str,
         *,
         surface_context: DesktopSurfaceContext | None = None,
+        prior_progress: PausedDesktopRun | None = None,
     ) -> ActionPlanResult:
         goal = str(goal).strip()
         completion_contract = _completion_contract(goal)
+        media_target = parse_spotify_media_target(goal)
         effective_surface = self._effective_surface(goal, surface_context)
         if effective_surface.lock_to_surface and not effective_surface.available:
             return ActionPlanResult(
@@ -742,14 +966,50 @@ class DesktopActionPlanner:
                 failure_code="surface_unavailable",
             )
 
+        user_content = goal
+        recent_note = self._recent_actions_note()
+        if recent_note:
+            user_content = f"{user_content}\n\n{recent_note}"
+        if prior_progress is not None and prior_progress.progress_note:
+            # Resuming after an interruption. The already-verified steps are
+            # stated as fact so the model continues rather than redoing them.
+            user_content = f"{goal}\n\n{prior_progress.progress_note}"
+        # A bare "stop it" is the one request the model reliably gets wrong:
+        # the target is not named in the goal at all, and on a real app the
+        # right control sits among dozens of similarly-named ones in the
+        # user's own language. Elaina already recorded what she played, so
+        # this is resolvable from state without asking the model to guess.
+        direct = self._try_direct_media_control(goal, effective_surface)
+        if direct is not None:
+            return direct
+        # A concrete "play <title> by <artist>" is resolvable from live state
+        # alone, and that is the request the model half of this loop gets
+        # wrong most expensively -- it types the query, then clicks the
+        # radio station named after the song. Try it deterministically
+        # first; anything this cannot resolve falls through to the model.
+        # A surface-locked request ("play it here") named a window, and this
+        # path would go looking for the media app instead. That belongs to
+        # the ordinary loop, which honours the lock.
+        if prior_progress is None and not effective_surface.lock_to_surface:
+            played = self._try_direct_media_play(
+                goal, media_target, effective_surface,
+            )
+            if played is not None:
+                return played
+
+        system_prompt = self._system_prompt(effective_surface)
+        if media_target is not None:
+            system_prompt += "\n" + media_target.planner_constraint()
         messages: list[Any] = [
             {
                 "role": "system",
-                "content": self._system_prompt(effective_surface),
+                "content": system_prompt,
             },
-            {"role": "user", "content": goal},
+            {"role": "user", "content": user_content},
         ]
-        steps: list[str] = []
+        steps: list[str] = list(
+            prior_progress.steps_taken if prior_progress is not None else ()
+        )
         # Each call remembers its action generation, scoped window-tree state,
         # and whether it already invoked successfully. Only a failed attempt
         # may be retried after the observed UI changes; repeating a successful
@@ -767,12 +1027,28 @@ class DesktopActionPlanner:
         observation_before_last_action = ""
         last_action_verified: bool | None = None
         post_action_state_changed = False
-        completed_actions: list[_CompletedAction] = []
+        completed_actions: list[_CompletedAction] = [
+            _CompletedAction(family=family, terms=terms)
+            for family, terms in (
+                prior_progress.completed if prior_progress is not None else ()
+            )
+        ]
         completion_nudge_used = False
         verification_nudge_used = False
         observations_after_last_action = 0
         completion_ready = False
         last_successful_action_message = ""
+        latest_observed_controls: tuple[ControlInfo, ...] = ()
+
+        def paused_run() -> PausedDesktopRun:
+            return PausedDesktopRun(
+                goal=goal,
+                steps_taken=tuple(steps),
+                completed=tuple(
+                    (action.family, action.terms) for action in completed_actions
+                ),
+                surface_snapshot=effective_surface.to_public_snapshot(),
+            )
 
         def finish(
             status: str,
@@ -780,12 +1056,14 @@ class DesktopActionPlanner:
             *,
             rounds: int,
             pending: PendingConfirmation | None = None,
+            paused: PausedDesktopRun | None = None,
             failure_code: str = "",
         ) -> ActionPlanResult:
             return ActionPlanResult(
                 status,
                 summary,
                 pending=pending,
+                paused=paused,
                 steps_taken=tuple(steps),
                 surface_context=effective_surface,
                 model_rounds=rounds,
@@ -808,6 +1086,15 @@ class DesktopActionPlanner:
                             last_successful_action_message
                         ),
                         rounds=round_index,
+                    )
+                if last_execution is not None and (
+                    last_execution.status == "wrong_media_target"
+                ):
+                    return finish(
+                        "failed",
+                        last_execution.message,
+                        rounds=round_index,
+                        failure_code="wrong_media_target",
                     )
                 return finish(
                     "failed",
@@ -913,10 +1200,17 @@ class DesktopActionPlanner:
                             )
                         observation_steps += 1
 
-                    execution = self._run_tool_call(
+                    media_refusal = self._media_activation_refusal(
+                        media_target,
+                        tool_name,
+                        arguments,
+                        latest_observed_controls,
+                    )
+                    execution = media_refusal or self._run_tool_call(
                         tool_name,
                         arguments,
                         surface=effective_surface,
+                        media_target=media_target,
                     )
                     last_execution = execution
                     steps.append(execution.message)
@@ -932,6 +1226,8 @@ class DesktopActionPlanner:
                         call_window_state,
                         execution.succeeded,
                     )
+                    if execution.observed_controls:
+                        latest_observed_controls = execution.observed_controls
 
                     if execution.window_snapshot is not None:
                         same_surface = self._same_surface(
@@ -971,6 +1267,18 @@ class DesktopActionPlanner:
                             pending=execution.pending,
                         )
 
+                    if execution.status == "user_took_over":
+                        # The person reclaimed the mouse or keyboard. Stop at
+                        # once and keep what is already verified, so a "yes"
+                        # continues rather than starting the job again.
+                        return finish(
+                            "interrupted",
+                            execution.message,
+                            rounds=round_index,
+                            paused=paused_run(),
+                            failure_code="user_took_over",
+                        )
+
                     if execution.is_action:
                         last_action_verified = execution.verified
                         if execution.succeeded:
@@ -987,6 +1295,9 @@ class DesktopActionPlanner:
                                         resolved_name=execution.resolved_control_name,
                                     ),
                                 ))
+                                self._remember_action(
+                                    execution, arguments, family,
+                                )
                     elif execution.fingerprint:
                         is_window_observation = (
                             execution.tool_name == "describe_window"
@@ -1273,12 +1584,854 @@ class DesktopActionPlanner:
             return None
         return self._value(response, "message", None)
 
+    def _remember_action(
+        self,
+        execution: "_ToolExecution",
+        arguments: dict[str, Any],
+        family: str,
+    ) -> None:
+        """Record one verified action so "stop it" has a real target.
+
+        Only verified actions are kept. An unconfirmed click is not evidence
+        that anything started playing, and remembering it would let a later
+        "stop it" act on a track that never began.
+        """
+        memory = self.session_actions
+        if memory is None:
+            return
+        snapshot = execution.window_snapshot
+        window_title = str(getattr(snapshot, "title", "") or "")
+        # WindowInfo.app_name carries the UIA class ("Dialog" for Spotify),
+        # which is meaningless to a person and useless as a follow-up
+        # target. The window title is the identity a user would name.
+        app = window_title or str(getattr(snapshot, "app_name", "") or "")
+        subject = str(
+            arguments.get("text")
+            or arguments.get("option")
+            or arguments.get("app")
+            or ""
+        ).strip()
+        if not subject and family in {"activation", "selection"}:
+            # A clicked item usually names itself: Spotify's play button is
+            # called "Weightless by Marconi Union <play>". A bare transport
+            # control (Play/Pause/Next) names only the operation, and must
+            # not be recorded as though it were the thing being played.
+            resolved = execution.resolved_control_name.strip()
+            if resolved and not self._is_generic_control(resolved):
+                subject = resolved
+        try:
+            memory.record(
+                app=app,
+                family=family,
+                subject=subject,
+                window_title=window_title,
+                control_name=execution.resolved_control_name,
+                window_handle=getattr(snapshot, "handle", None),
+            )
+        except Exception:
+            # Memory is an aid to later turns, never a reason to fail this one.
+            pass
+
+    def _try_direct_media_play(
+        self,
+        goal: str,
+        media_target: MediaTarget | None,
+        surface: DesktopSurfaceContext,
+    ) -> ActionPlanResult | None:
+        """Play one exactly-named track without asking the model to aim.
+
+        Every step is re-derived from live state: the app comes from the
+        request, the search field and the result row come from a fresh scan
+        of that app, and the activation is the double-click that actually
+        starts playback rather than the single click that opens an album.
+        Whatever this cannot resolve returns None, and the ordinary planning
+        loop takes over with the same guards it always had.
+
+        This exists because the model half of the loop is where the wrong
+        thing gets clicked. Asked for "Bang Bang by IVE" it reliably types
+        the query and then activates "Bang Bang Radio", a Daily Mix, or the
+        nearest Play button -- each of which plays something, which is
+        exactly why prompt wording alone never fixed it.
+        """
+        if media_target is None:
+            return None
+        # The whole point of this path is the double-click. A driver that
+        # cannot make one (or that is not really present) has nothing to
+        # gain here, so it goes the ordinary route.
+        activator = getattr(self.control, "double_click_control", None)
+        if activator is None or not getattr(self.control, "available", True):
+            return None
+
+        window = self._media_window(media_target.application)
+        if window is None:
+            return None
+
+        steps: list[str] = []
+
+        def took_over(result: UIActionResult) -> ActionPlanResult:
+            return ActionPlanResult(
+                "interrupted",
+                result.message,
+                paused=PausedDesktopRun(
+                    goal=goal,
+                    steps_taken=tuple(steps),
+                    surface_snapshot=surface.to_public_snapshot(),
+                ),
+                steps_taken=tuple(steps),
+                surface_context=surface,
+                action_steps=len(steps),
+                failure_code="user_took_over",
+            )
+
+        focus = self.control.focus_window(window)
+        if focus.status == "user_took_over":
+            return took_over(focus)
+        if focus.status != "focused":
+            return None
+        steps.append(focus.message)
+
+        typed = self._search_in_media_app(window, media_target)
+        if typed is None:
+            return None
+        if typed.status == "user_took_over":
+            return took_over(typed)
+        if typed.status != "typed":
+            return None
+        steps.append(typed.message)
+
+        activated_name = ""
+        # What the window was called before anything was activated: a title
+        # that already named the track cannot be evidence that this run
+        # started it.
+        baseline = self._live_titles_by_handle().get(
+            getattr(window, "handle", None), ""
+        )
+        for attempt in range(_MEDIA_ACTIVATION_ATTEMPTS):
+            if attempt == 0:
+                row = self._exact_media_row(window, media_target)
+                if row is None:
+                    # No provable row means no click. Duplicate titles, a
+                    # result list that has not arrived, or an artist nowhere
+                    # near the match all land here, and every one of them is
+                    # a reason to hand back rather than to guess.
+                    return None
+                activated_name = row.name
+                result = activator(window, row.name, element_id=row.element_id)
+            else:
+                # The double-click did not start anything, which on this app
+                # means the title was a link and we are now standing on the
+                # item's own page. A transport Play control there can only
+                # mean this item -- and _play_opened_item refuses unless the
+                # page proves that, so a results list full of decoys never
+                # reaches it.
+                opened = self._play_opened_item(window, media_target)
+                if opened is None:
+                    break
+                result = opened
+            if result.status == "user_took_over":
+                return took_over(result)
+            if result.status != "clicked":
+                return None
+            steps.append(result.message)
+            playing, evidence = self._playback_evidence(
+                window, media_target, baseline=baseline,
+            )
+            if playing:
+                self._remember_action(
+                    _ToolExecution(
+                        "play_media_item",
+                        "clicked",
+                        result.message,
+                        is_action=True,
+                        verified=True,
+                        evidence=evidence,
+                        window_snapshot=window,
+                        resolved_control_name=media_target.title,
+                    ),
+                    {"control": activated_name or media_target.title},
+                    "activation",
+                )
+                return ActionPlanResult(
+                    "done",
+                    self._playing_summary(media_target),
+                    steps_taken=tuple(steps),
+                    surface_context=surface,
+                    action_steps=len(steps),
+                )
+
+        return ActionPlanResult(
+            "failed",
+            (
+                f"I opened {media_target.title} in {media_target.application}, "
+                "but I couldn't confirm it started playing."
+            ),
+            steps_taken=tuple(steps),
+            surface_context=surface,
+            action_steps=len(steps),
+            failure_code="playback_unverified",
+        )
+
+    def _media_window(self, app: str) -> WindowInfo | None:
+        """The app's live window, even once it has renamed itself.
+
+        Spotify's window title becomes the track it is playing, so a title
+        search for "Spotify" finds nothing precisely when music is already
+        on. A handle recorded earlier this session still names it.
+        """
+        found = self.observer.find_window(app)
+        if found is not None:
+            return (
+                found if isinstance(found, WindowInfo)
+                else self._window_info(found)
+            )
+        memory = self.session_actions
+        if memory is not None:
+            app_key = _normalized_label(app)
+            try:
+                recent = memory.recent_context()
+            except Exception:
+                recent = ()
+            live = self._live_titles_by_handle()
+            for item in reversed(list(recent or ())):
+                handle = item.get("handle")
+                if handle in live and app_key in _normalized_label(
+                    str(item.get("app", ""))
+                ):
+                    # Addressed by handle, and confirmed still live: the
+                    # title in hand is the one the app is wearing right now.
+                    snapshot = WindowInfo(title=live[handle], handle=handle)
+                    if self.observer.find_window(snapshot) is not None:
+                        return snapshot
+        opened = self.computer_control.open_app(app)
+        if not opened.succeeded:
+            return None
+        return self._wait_for_window(opened.display_name or app)
+
+    def _search_in_media_app(
+        self,
+        window: WindowInfo,
+        media_target: MediaTarget,
+    ) -> UIActionResult | None:
+        """Type the full title-and-artist query into the app's own search.
+
+        The query carries the artist because that is what narrows the result
+        list; only the click that follows has to be the bare title.
+        """
+        observation = self.observer.describe_window(window)
+        if getattr(observation, "status", "") != "observed":
+            return None
+        field = next(
+            (
+                control
+                for control in observation.controls
+                if _role_key(control.role) in _MEDIA_SEARCH_FIELD_ROLES
+                and _has_search_stem(control.name)
+            ),
+            None,
+        )
+        if field is not None:
+            return self.control.type_text(
+                window,
+                field.name,
+                media_target.search_query,
+                element_id=field.element_id,
+            )
+        # Chromium/CEF apps often expose only the button that reveals the
+        # field, never the field itself -- click_then_type exists for this.
+        button = next(
+            (
+                control
+                for control in observation.controls
+                if control.is_actionable and _has_search_stem(control.name)
+            ),
+            None,
+        )
+        if button is None:
+            return None
+        return self.control.click_then_type(
+            window,
+            button.name,
+            media_target.search_query,
+            element_id=button.element_id,
+        )
+
+    def _exact_media_row(
+        self,
+        window: WindowInfo,
+        media_target: MediaTarget,
+    ) -> ControlInfo | None:
+        """The one live control whose name is exactly the requested title.
+
+        Exactness is the whole guard: "Bang Bang Radio", "Bang Bang Mix",
+        and "Bang Bang by IVE" all contain the title and none of them are
+        it. When an artist was named, it must be visible beside the match,
+        which is what separates two same-titled songs.
+        """
+        title_key = _normalized_label(media_target.title)
+        artist_key = _normalized_label(media_target.artist)
+        for attempt in range(_MEDIA_RESULT_ATTEMPTS):
+            self._sleep(_MEDIA_RESULT_SETTLE_SECONDS)
+            observation = self.observer.describe_window(window)
+            if getattr(observation, "status", "") != "observed":
+                continue
+            controls = tuple(observation.controls)
+            matches = [
+                (index, control)
+                for index, control in enumerate(controls)
+                if _normalized_label(control.name) == title_key
+            ]
+            for index, control in matches:
+                if not artist_key:
+                    return control
+                nearby = controls[max(0, index - 6):index + 7]
+                if any(
+                    artist_key in _normalized_label(
+                        " ".join((other.name, other.value))
+                    )
+                    for other in nearby
+                ):
+                    return control
+        return None
+
+    def _play_opened_item(
+        self,
+        window: WindowInfo,
+        media_target: MediaTarget,
+    ) -> UIActionResult | None:
+        """Press Play on the page the requested item just opened, or nothing.
+
+        A generic Play control is normally the exact thing this layer
+        refuses: on a results list it starts whatever the app feels like.
+        On the item's own page it can only start that item, and two live
+        conditions separate those cases -- the exact title is present, and
+        none of the near-miss rows ("<title> Radio", "<title> Mix") that
+        only exist in a results list are.
+        """
+        observation = self.observer.describe_window(window)
+        if getattr(observation, "status", "") != "observed":
+            return None
+        controls = tuple(observation.controls)
+        title_key = _normalized_label(media_target.title)
+        title_terms = _contract_terms(media_target.title)
+        titled = False
+        for control in controls:
+            label = _normalized_label(control.name)
+            if label == title_key:
+                titled = True
+                continue
+            if title_terms and title_terms <= _contract_terms(label):
+                # Still looking at a list of things named after the track.
+                return None
+        if not titled:
+            return None
+        play = next(
+            (
+                control
+                for control in controls
+                if control.is_actionable and _names_play(control.name)
+            ),
+            None,
+        )
+        if play is None:
+            return None
+        return self.control.click_control(
+            window, play.name, element_id=play.element_id,
+        )
+
+    @staticmethod
+    def _playing_summary(media_target: MediaTarget) -> str:
+        if media_target.artist:
+            return (
+                f"Playing {media_target.title} by {media_target.artist} "
+                f"in {media_target.application}."
+            )
+        return f"Playing {media_target.title} in {media_target.application}."
+
+    def _try_direct_media_control(
+        self, goal: str, surface: DesktopSurfaceContext,
+    ) -> ActionPlanResult | None:
+        """Resolve "stop it" / "pause that" from what Elaina actually did.
+
+        Returns None whenever this is not clearly such a request, so the
+        ordinary planning loop still handles everything else. Nothing here
+        is model-chosen: the app comes from recorded state, and the control
+        comes from a live scan of that app.
+        """
+        memory = self.session_actions
+        if memory is None:
+            return None
+        words = re.findall(r"[^\W_]+", str(goal).casefold())
+        # Deictic and short. "Pause the song I played in Spotify yesterday"
+        # is a real request, but not this one.
+        if not words or len(words) > 5:
+            return None
+        wanted_word = next(
+            (word for word in words if word in _DIRECT_CONTROL_TERMS_BY_GOAL_WORD),
+            None,
+        )
+        if wanted_word is None:
+            return None
+        # Everything else in the goal must be filler or a generic stand-in
+        # ("it", "the music"). A named target belongs to the normal path.
+        remainder = (
+            set(words) - {wanted_word} - _CONTRACT_STOP_TERMS
+            - _GENERIC_MEDIA_SUBJECT_TERMS
+        )
+        if remainder:
+            return None
+        try:
+            last = memory.last_subject() or memory.last_action()
+        except Exception:
+            return None
+        if last is None:
+            return None
+        wanted_terms = _DIRECT_CONTROL_TERMS_BY_GOAL_WORD[wanted_word]
+
+        target = self._live_titles_by_handle().get(
+            last.window_handle, last.window_title or last.app,
+        )
+        if not target:
+            return None
+        focus = self.control.focus_window(target)
+        if focus.status != "focused":
+            return None
+        result = None
+        tried: set[str] = set()
+        candidates = [
+            label
+            for term in sorted(wanted_terms)
+            for label in _TRANSPORT_LABELS_BY_TERM.get(term, ())
+        ]
+        for label in candidates:
+            if label in tried:
+                continue
+            tried.add(label)
+            attempt = self._click_transport_label(target, label)
+            if attempt.status == "clicked":
+                result = attempt
+                break
+            if attempt.status == "confirmation_required":
+                # A transport control should never be committing, but if one
+                # is, the ordinary path owns that conversation.
+                return None
+        if result is None:
+            return None
+        self._remember_direct_action(result, last)
+        subject = last.subject or "it"
+        return ActionPlanResult(
+            "done",
+            f"Stopped {subject}." if wanted_word in {"stop", "pause"}
+            else f"{wanted_word.capitalize()}d {subject}.",
+            steps_taken=(focus.message, result.message),
+            surface_context=surface,
+            action_steps=2,
+        )
+
+    def _click_transport_label(self, target: Any, label: str) -> UIActionResult:
+        """Click one transport control, tolerating duplicate names.
+
+        Measured live: a playing Spotify exposes three buttons all named
+        "일시 정지하기" -- the main bar, the mini player, and the now-playing
+        view -- so name matching refuses the whole request as ambiguous and
+        "stop it" dies there. They are three renderings of the same control,
+        so any visible one is the right one; it is still addressed by a real
+        scan id rather than by the name that could not distinguish them.
+        """
+        attempt = self.control.click_control(target, label)
+        if attempt.status != "ambiguous":
+            return attempt
+        observation = self.observer.describe_window(target)
+        if getattr(observation, "status", "") != "observed":
+            return attempt
+        key = _normalized_label(label)
+        matches = [
+            control for control in observation.controls
+            if _normalized_label(control.name) == key
+        ]
+        chosen = next(
+            (control for control in matches if control.is_actionable),
+            matches[0] if matches else None,
+        )
+        if chosen is None or not chosen.element_id:
+            return attempt
+        return self.control.click_control(
+            target, chosen.name, element_id=chosen.element_id,
+        )
+
+    @staticmethod
+    def _control_matches_terms(name: str, wanted: frozenset[str]) -> bool:
+        """Whether a control's label names one of the wanted operations."""
+        text = str(name or "").casefold()
+        if not text:
+            return False
+        tokens = set(re.findall(r"[^\W_]+", text))
+        return bool(
+            (tokens & wanted) or (_localised_control_terms(text) & wanted)
+        )
+
+    def _remember_direct_action(self, result: Any, previous: Any) -> None:
+        memory = self.session_actions
+        if memory is None:
+            return
+        try:
+            memory.record(
+                app=result.window_title or previous.app,
+                family="activation",
+                subject=previous.subject,
+                window_title=result.window_title,
+                control_name=result.control_name,
+                window_handle=previous.window_handle,
+            )
+        except Exception:
+            pass
+
+    def _recent_actions_note(self) -> str:
+        """What Elaina has already done, for deictic follow-ups.
+
+        "Stop it" carries no target of its own. Without this the planner has
+        only the model's recollection of the conversation to go on, which
+        for a small local model means a confident, plausible, wrong guess.
+        This is recorded state: only verified actions reach it.
+        """
+        memory = self.session_actions
+        if memory is None:
+            return ""
+        try:
+            recent = memory.recent_context()
+        except Exception:
+            return ""
+        if not recent:
+            return ""
+        live_titles = self._live_titles_by_handle()
+        lines = []
+        for item in recent[-4:]:
+            subject = item.get("subject") or ""
+            action = item.get("action") or ""
+            # Name the window as it is *now*. Spotify renames its window to
+            # the track it is playing, so the title recorded when a song was
+            # started names nothing by the time "stop it" arrives -- and the
+            # planner then wastes rounds looking for a window that no longer
+            # exists under that name.
+            handle = item.get("handle")
+            app = live_titles.get(handle) or item.get("app") or ""
+            lines.append(
+                f"- {action} {subject!r} in {app}" if subject
+                else f"- {action} in {app}"
+            )
+        return (
+            "Things you have already done on this machine, most recent last. "
+            "Use these to resolve a request that refers to something without "
+            "naming it (\"stop it\", \"pause that\"):\n" + "\n".join(lines)
+        )
+
+    def _live_titles_by_handle(self) -> dict[int, str]:
+        """Current title of every open window, keyed by handle."""
+        try:
+            windows = self.observer.list_windows()
+        except Exception:
+            return {}
+        titles: dict[int, str] = {}
+        for window in windows:
+            handle = getattr(window, "handle", None)
+            title = str(getattr(window, "title", "") or "")
+            if handle is not None and title:
+                titles[handle] = title
+        return titles
+
+    @staticmethod
+    def _is_generic_control(name: str) -> bool:
+        """True when a control name is only an operation, not an item."""
+        terms = {
+            term for term in re.findall(r"[^\W_]+", str(name).casefold())
+        }
+        if not terms:
+            return True
+        return terms <= (_DIRECT_CONTROL_LABEL_TERMS | _GENERIC_MEDIA_SUBJECT_TERMS)
+
+    @staticmethod
+    def _media_activation_refusal(
+        media_target: MediaTarget | None,
+        tool_name: str,
+        arguments: dict[str, Any],
+        observed_controls: tuple[ControlInfo, ...],
+    ) -> _ToolExecution | None:
+        """Keep a media request on the one item the person actually asked for.
+
+        This runs before the pointer moves, and it draws two different lines.
+
+        Getting to the results is ordinary work: opening Search, typing the
+        query, switching to the Songs filter, going back. None of that is
+        touched -- an earlier version refused every click while a media goal
+        was active, which blocked Spotify's own Search navigation and left
+        the run no way to reach the track at all.
+
+        Activating is where the damage happens. "Bang Bang Radio" sits
+        directly beside "Bang Bang" in Spotify's results, and a generic Play
+        button plays whatever the app has queued: both satisfy a naive "did
+        something start playing" check while playing the wrong thing. So an
+        activation must be play_media_item on the exact title, with the
+        artist visible as nearby context rather than glued onto the label.
+        """
+        if media_target is None or tool_name not in {
+            "click_control", "play_media_item",
+        }:
+            return None
+
+        title_key = _normalized_label(media_target.title)
+        title_terms = _contract_terms(media_target.title)
+        supplied_id = str(arguments.get("element_id", "") or "").strip()
+        supplied_name = str(arguments.get("control", "") or "").strip()
+        candidates = [
+            (index, control)
+            for index, control in enumerate(observed_controls)
+            if _normalized_label(control.name) == title_key
+        ]
+        selected: tuple[int, ControlInfo] | None = None
+        if supplied_id:
+            selected = next(
+                (
+                    (index, control)
+                    for index, control in enumerate(observed_controls)
+                    if control.element_id == supplied_id
+                ),
+                None,
+            )
+        elif supplied_name and _normalized_label(supplied_name) == title_key:
+            if len(candidates) == 1:
+                selected = candidates[0]
+
+        if tool_name == "click_control":
+            label = _normalized_label(
+                selected[1].name if selected is not None else supplied_name
+            )
+            if not label:
+                # Nothing resolvable to judge. A named preparation step is
+                # still allowed; an id that is not in the latest observation
+                # is a stale address the model should refresh.
+                if not supplied_id:
+                    return None
+                return _ToolExecution(
+                    tool_name,
+                    "wrong_media_target",
+                    (
+                        f"{supplied_id!r} is not in the latest observation of "
+                        "this window. Observe it again before clicking."
+                    ),
+                    is_action=True,
+                    verified=False,
+                )
+            if label == title_key:
+                return _ToolExecution(
+                    tool_name,
+                    "wrong_media_target",
+                    (
+                        f"A single click on {media_target.title!r} opens it "
+                        "rather than playing it. Call play_media_item with "
+                        "that same element id instead."
+                    ),
+                    is_action=True,
+                    verified=False,
+                )
+            label_terms = _contract_terms(label)
+            if title_terms and (title_terms & label_terms):
+                return _ToolExecution(
+                    tool_name,
+                    "wrong_media_target",
+                    (
+                        f"{label!r} is not the requested track. Radio, Mix, "
+                        "Station, playlist, and title-plus-artist rows share "
+                        f"the words in {media_target.title!r} and play "
+                        "something else. Use play_media_item on the row whose "
+                        f"name is exactly {media_target.title!r}."
+                    ),
+                    is_action=True,
+                    verified=False,
+                )
+            # Raw tokens, not _contract_terms: that helper strips exactly
+            # the operation words ("play", "pause") this check is looking for.
+            label_tokens = set(
+                re.findall(r"[^\W_]+", label)
+            ) | _localised_control_terms(label)
+            if DesktopActionPlanner._is_generic_control(label) and (
+                label_tokens & _DIRECT_CONTROL_LABEL_TERMS
+            ):
+                return _ToolExecution(
+                    tool_name,
+                    "wrong_media_target",
+                    (
+                        f"{label!r} is a generic transport control, so it "
+                        "plays whatever the app has queued. Use "
+                        "play_media_item on the exact title "
+                        f"{media_target.title!r}."
+                    ),
+                    is_action=True,
+                    verified=False,
+                )
+            # Everything else is preparation: search, navigation, filters.
+            return None
+
+        if selected is None or _normalized_label(selected[1].name) != title_key:
+            return _ToolExecution(
+                tool_name,
+                "wrong_media_target",
+                (
+                    f"Do not play {supplied_name or supplied_id or 'that control'!r}. "
+                    "Re-observe Spotify and play only the exact track title "
+                    f"{media_target.title!r} by its current element id. Generic "
+                    "Play, Radio, Mix, Station, playlist, and title-plus-artist "
+                    "labels are not the requested track."
+                ),
+                is_action=True,
+                verified=False,
+            )
+
+        if media_target.artist:
+            artist_key = _normalized_label(media_target.artist)
+            selected_index = selected[0]
+            nearby = observed_controls[
+                max(0, selected_index - 6):selected_index + 7
+            ]
+            artist_visible = any(
+                artist_key in _normalized_label(
+                    " ".join((control.name, control.value))
+                )
+                for control in nearby
+            )
+            if not artist_visible:
+                return _ToolExecution(
+                    tool_name,
+                    "wrong_media_target",
+                    (
+                        f"The exact title {media_target.title!r} is visible, but "
+                        f"artist {media_target.artist!r} is not visible near that "
+                        "result. Narrow the search and re-observe instead of "
+                        "risking a same-title track."
+                    ),
+                    is_action=True,
+                    verified=False,
+                )
+        return None
+
+    def _verified_playback(
+        self,
+        name: str,
+        result: UIActionResult,
+        snapshot: WindowInfo | None,
+        media_target: MediaTarget | None,
+        *,
+        baseline: str = "",
+    ) -> _ToolExecution:
+        """Report a play attempt only as well as it can actually be proved."""
+        playing, evidence = self._playback_evidence(
+            snapshot, media_target, baseline=baseline,
+        )
+        if playing:
+            return _ToolExecution(
+                name,
+                "clicked",
+                f"{result.message} It is playing now.",
+                is_action=True,
+                verified=True,
+                evidence=evidence,
+                window_snapshot=snapshot,
+                resolved_control_name=result.control_name,
+            )
+        return _ToolExecution(
+            name,
+            "playback_unverified",
+            (
+                f"{result.message} Nothing shows it actually playing yet. "
+                "Observe the window again and, if the track is still not "
+                "playing, activate it from its own row rather than from a "
+                "generic control."
+            ),
+            is_action=True,
+            verified=False,
+            evidence=evidence,
+            window_snapshot=snapshot,
+            resolved_control_name=result.control_name,
+        )
+
+    def _playback_evidence(
+        self,
+        snapshot: WindowInfo | None,
+        media_target: MediaTarget | None,
+        *,
+        baseline: str = "",
+    ) -> tuple[bool, str]:
+        """Whether the requested track is audibly playing, from live state.
+
+        Spotify renames its own top-level window to the track it is playing
+        and back to the plain product name when it stops, so the strongest
+        proof available costs one window-title read rather than another walk
+        of a 700-node tree. The window is followed by handle, not by name,
+        precisely because that name is what changes.
+        """
+        if media_target is None:
+            return False, "No media target was bound to this activation."
+        title_key = _normalized_label(media_target.title)
+        if not title_key:
+            return False, "The request named no exact title to verify."
+        handle = getattr(snapshot, "handle", None)
+        for attempt in range(_PLAYBACK_VERIFY_ATTEMPTS):
+            if attempt:
+                self._sleep(_PLAYBACK_VERIFY_INTERVAL_SECONDS)
+            titles = self._live_titles_by_handle()
+            live = str(titles.get(handle, "") if handle is not None else "")
+            if not live:
+                live = next(
+                    (
+                        title
+                        for title in titles.values()
+                        if title_key in _normalized_label(title)
+                    ),
+                    "",
+                )
+            if title_key not in _normalized_label(live):
+                continue
+            if _normalized_label(live) != _normalized_label(baseline):
+                return True, f"The app's own window is now titled {live!r}."
+            # The window already named this track before we touched it, so
+            # the title proves the track is loaded, not that it is playing.
+            # A control offering to *pause* does prove that.
+            return self._transport_evidence(snapshot, live)
+        return False, (
+            f"No open window names {media_target.title!r} as playing."
+        )
+
+    def _transport_evidence(
+        self,
+        snapshot: WindowInfo | None,
+        live_title: str,
+    ) -> tuple[bool, str]:
+        """Whether the app is offering to pause -- which only playback does."""
+        target = snapshot if snapshot is not None else live_title
+        try:
+            observation = self.observer.describe_window(target)
+        except Exception:
+            return False, "The app's controls could not be inspected."
+        if getattr(observation, "status", "") != "observed":
+            return False, "The app's controls could not be inspected."
+        for control in observation.controls:
+            if "pause" in (
+                set(re.findall(r"[^\W_]+", _normalized_label(control.name)))
+                | _localised_control_terms(control.name)
+            ):
+                return True, (
+                    f"{control.name!r} is offering to pause, so it is playing."
+                )
+        return False, (
+            f"{live_title!r} was already showing before this, and nothing "
+            "is offering to pause."
+        )
+
     def _run_tool_call(
         self,
         name: str,
         arguments: dict[str, Any],
         *,
         surface: DesktopSurfaceContext,
+        media_target: MediaTarget | None = None,
     ) -> _ToolExecution:
         if surface.lock_to_surface and name == "open_app":
             return _ToolExecution(
@@ -1328,6 +2481,7 @@ class DesktopActionPlanner:
                         if observation.status == "observed"
                         else ""
                     ),
+                    observed_controls=tuple(observation.controls),
                 )
 
             if name == "open_app":
@@ -1384,10 +2538,23 @@ class DesktopActionPlanner:
             if name in {
                 "focus_window", "click_control", "type_text",
                 "click_then_type", "select_option", "scroll_control",
+                "press_key", "play_media_item",
             }:
                 target = locked_window or str(arguments.get("window", ""))
                 snapshot = self._snapshot_for_target(target)
+                baseline_title = (
+                    self._live_titles_by_handle().get(
+                        getattr(snapshot, "handle", None), ""
+                    )
+                    if name == "play_media_item"
+                    else ""
+                )
                 result = self._run_control_action(name, target, arguments)
+                if name == "play_media_item" and result.status == "clicked":
+                    return self._verified_playback(
+                        name, result, snapshot, media_target,
+                        baseline=baseline_title,
+                    )
                 pending = None
                 if result.status == "confirmation_required":
                     element_id = str(
@@ -1459,6 +2626,21 @@ class DesktopActionPlanner:
         id_kwargs = {"element_id": element_id} if element_id else {}
         if name == "focus_window":
             return self.control.focus_window(target)
+        if name == "play_media_item":
+            # A list row reads one click and two clicks as different
+            # instructions: on Spotify a single click on a track title opens
+            # its album page, and only a double-click plays the track. A
+            # driver without a real pointer cannot express that at all, so it
+            # falls back to the invoke it does have rather than silently
+            # doing nothing.
+            activator = getattr(self.control, "double_click_control", None)
+            if activator is None:
+                return self.control.click_control(
+                    target, str(arguments.get("control", "")), **id_kwargs,
+                )
+            return activator(
+                target, str(arguments.get("control", "")), **id_kwargs,
+            )
         if name == "click_control":
             return self.control.click_control(
                 target, str(arguments.get("control", "")), **id_kwargs,
@@ -1484,6 +2666,25 @@ class DesktopActionPlanner:
                 str(arguments.get("option", "")),
                 **id_kwargs,
             )
+        if name == "press_key":
+            keys = arguments.get("keys") or []
+            if isinstance(keys, str):
+                keys = [keys]
+            keys = [str(key).strip() for key in keys if str(key).strip()]
+            if not keys:
+                return UIActionResult(
+                    "refused", "Tell me which key to press.",
+                )
+            presser = getattr(self.control, "press_key", None)
+            if presser is None:
+                # The Invoke driver has no keyboard of its own. Say so rather
+                # than silently doing nothing the model will treat as done.
+                return UIActionResult(
+                    "unavailable",
+                    "Sending raw keystrokes needs the screen driver; this "
+                    "one can only operate named controls.",
+                )
+            return presser(target, *keys)
         return self.control.scroll_control(
             target,
             str(arguments.get("control", "")),
@@ -1760,6 +2961,7 @@ def _completion_contract(goal: str) -> _GoalCompletionContract:
         )
     if _ACTIVATION_PHRASE_PATTERN.search(semantic_text):
         direct_control_terms.add("play")
+    media_target = parse_spotify_media_target(semantic_text)
     return _GoalCompletionContract(
         operation=operation,
         completing_families=_COMPLETING_FAMILIES_BY_OPERATION.get(
@@ -1769,6 +2971,16 @@ def _completion_contract(goal: str) -> _GoalCompletionContract:
         subject_terms=subject_terms,
         direct_control_terms=frozenset(direct_control_terms),
         subject_requires_full_match=bool(compound_subject),
+        activation_target_terms=(
+            _contract_terms(media_target.title)
+            if media_target is not None and operation == "activation"
+            else frozenset()
+        ),
+        activation_context_terms=(
+            _contract_terms(media_target.artist)
+            if media_target is not None and operation == "activation"
+            else frozenset()
+        ),
     )
 
 
@@ -1836,6 +3048,31 @@ def _contract_terms(value: str) -> frozenset[str]:
     return frozenset(terms)
 
 
+def _names_play(label: str) -> bool:
+    """Whether a control label is a play/resume transport control."""
+    text = _normalized_label(label)
+    tokens = set(re.findall(r"[^\W_]+", text)) | _localised_control_terms(text)
+    return "play" in tokens
+
+
+def _has_search_stem(label: str) -> bool:
+    """Whether a control label names the app's own search affordance."""
+    text = _normalized_label(label)
+    return any(stem in text for stem in _MEDIA_SEARCH_STEMS)
+
+
+def _role_key(role: str) -> str:
+    return re.sub(r"[^a-z]", "", str(role or "").casefold())
+
+
+def _normalized_label(value: str) -> str:
+    """Unicode-safe exact-label key used before any media click."""
+    import unicodedata
+
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return " ".join(normalized.split()).strip()
+
+
 def _action_completion_terms(
     tool_name: str,
     arguments: dict[str, Any],
@@ -1846,12 +3083,14 @@ def _action_completion_terms(
         "open_app": ("app",),
         "focus_window": ("window",),
         "click_control": ("control",),
+        "play_media_item": ("control",),
         # Search/text completion is aligned to what was entered, never merely
         # to the fact that the field happened to be named Search.
         "type_text": ("text",),
         "click_then_type": ("text",),
         "select_option": ("option",),
         "scroll_control": ("direction", "control"),
+        "press_key": (),
     }
     parts = []
     for key in value_keys.get(tool_name, ()):
@@ -1867,7 +3106,7 @@ def _action_completion_terms(
             parts.append(str(arguments.get(key, "") or ""))
     values = " ".join(parts)
     terms = set(_contract_terms(values))
-    if tool_name == "click_control":
+    if tool_name in {"click_control", "play_media_item"}:
         # Operation words are normally removed from subject matching, but a
         # visible generic Play/Pause/Next control is exactly the direct
         # control evidence required by an activation contract.
@@ -1876,6 +3115,7 @@ def _action_completion_terms(
             for term in re.findall(r"[^\W_]+", values.casefold())
             if term in _DIRECT_CONTROL_LABEL_TERMS
         )
+        terms.update(_localised_control_terms(values))
     return frozenset(terms)
 
 

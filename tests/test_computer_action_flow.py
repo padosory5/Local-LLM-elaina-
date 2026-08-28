@@ -74,9 +74,11 @@ class FakeDesktopActionPlanner:
         self.resume_calls = []
         self.resume_snapshots = []
         self.resume_element_ids = []
+        self.prior_progress = []
 
-    def act(self, goal, *, surface_context=None):
+    def act(self, goal, *, surface_context=None, prior_progress=None):
         self.act_calls.append(goal)
+        self.prior_progress.append(prior_progress)
         return self.act_result
 
     def resume_confirmed_click(
@@ -122,6 +124,32 @@ class NeverOpenSettings:
         )
 
 
+class _IdleCursor:
+    """A cursor driver for a machine nobody is currently using."""
+
+    def __init__(self):
+        self.runs = 0
+
+    def user_is_active(self, within_seconds):
+        return False
+
+    def acknowledge_user(self):
+        pass
+
+    def begin_run(self):
+        self.runs += 1
+
+    def end_run(self, *, restore=True):
+        pass
+
+
+class _RecentlyActiveCursor(_IdleCursor):
+    """Proves recent input no longer creates a pre-task consent gate."""
+
+    def user_is_active(self, within_seconds):
+        return True
+
+
 class UIActionFlowTests(unittest.TestCase):
     def engine_with(self, planner, *, mode_enabled=True):
         engine = ChatEngine.__new__(ChatEngine)
@@ -130,6 +158,7 @@ class UIActionFlowTests(unittest.TestCase):
         engine.computer_consent = ComputerConsentGate()
         engine.computer_control_mode = ComputerControlMode(enabled=mode_enabled)
         engine.agent_consent = FakeAgentConsent()
+        engine.cursor_driver = _IdleCursor()
         return engine
 
     @staticmethod
@@ -170,6 +199,42 @@ class UIActionFlowTests(unittest.TestCase):
         self.assertEqual(engine.brief_responses.calls, [])
         self.assertEqual(returned.status, "ui_action_done")
         self.assertTrue(returned.succeeded)
+
+    def test_recent_user_input_does_not_create_a_takeover_question(self):
+        planner = FakeDesktopActionPlanner(
+            act_result=ActionPlanResult("done", "Played Bang Bang.")
+        )
+        engine = self.engine_with(planner)
+        engine.cursor_driver = _RecentlyActiveCursor()
+        route = self.route("Play Bang Bang by IVE in Spotify")
+
+        response, returned = engine._handle_computer_action(route)
+
+        self.assertEqual(response, "Played Bang Bang.")
+        self.assertEqual(planner.act_calls, [route.normalized_request])
+        self.assertEqual(engine.cursor_driver.runs, 1)
+        self.assertEqual(returned.status, "ui_action_done")
+
+    def test_physical_input_mid_run_stops_without_a_followup_consent_question(self):
+        planner = FakeDesktopActionPlanner(
+            act_result=ActionPlanResult(
+                "interrupted",
+                "You moved the mouse.",
+                steps_taken=("Opened Spotify.",),
+            )
+        )
+        engine = self.engine_with(planner)
+
+        response, returned = engine._handle_computer_action(
+            self.route("Play Bang Bang by IVE in Spotify")
+        )
+
+        self.assertEqual(
+            response,
+            "You took control, so I stopped. Completed: Opened Spotify.",
+        )
+        self.assertIsNone(returned)
+        self.assertEqual(engine.brief_responses.calls, [])
 
     def test_failed_step_speaks_the_planners_own_summary(self):
         planner = FakeDesktopActionPlanner(

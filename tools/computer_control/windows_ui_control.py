@@ -68,6 +68,11 @@ _CLICK_ROLES = frozenset({
     "ListItem", "MenuItem", "RadioButton", "Slider", "SplitButton",
     "TabItem", "TreeItem",
 })
+# Activating a list row (a search result, a track) is not the same as
+# pressing a button: the label a person aims at is frequently a plain
+# Text or DataItem node inside the row, with no invoke pattern of its
+# own. Those are accepted here and nowhere else.
+_ACTIVATE_ROLES = _CLICK_ROLES | frozenset({"DataItem", "Group", "Text"})
 _TEXT_ROLES = frozenset({"Edit", "ComboBox", "Document"})
 _SELECT_ROLES = frozenset({
     "ComboBox", "List", "ListItem", "Tree", "TreeItem",
@@ -195,6 +200,69 @@ class WindowsUIControl:
             control_name=real_name,
             verified=verified,
             evidence=evidence,
+        )
+
+    def double_click_control(
+        self,
+        title_query: str | WindowInfo,
+        control_name: str,
+        *,
+        confirmed: bool = False,
+        element_id: str = "",
+    ) -> UIActionResult:
+        """Double-click one real visible control.
+
+        In list-shaped UI a double-click is a different instruction, not a
+        louder click: on a Spotify search result a single click opens what
+        the row points at, and only a double-click plays it. The Invoke
+        pattern cannot express that at all, so this always goes through a
+        real pointer double-click -- the same lookup, committing-control,
+        and role discipline as click_control otherwise.
+        """
+        window = self._require_window(title_query)
+        if isinstance(window, UIActionResult):
+            return window
+        window_title = (
+            self.observer._safe_text(window) or self._target_title(title_query)
+        )
+
+        lookup = self._resolve(
+            window, control_name, element_id, expected_roles=_ACTIVATE_ROLES,
+        )
+        if lookup.status != "matched":
+            return self._lookup_failure(
+                lookup, window_title, element_id or control_name,
+            )
+        control = lookup.control
+        real_name = lookup.name or control_name
+
+        if is_committing_control(real_name) and not confirmed:
+            return UIActionResult(
+                "confirmation_required",
+                f"Double-clicking {real_name!r} needs confirmation first.",
+                window_title=window_title,
+                control_name=real_name,
+            )
+
+        try:
+            self._double_click(control)
+        except Exception as error:
+            return UIActionResult(
+                "failed",
+                f"I couldn't double-click {real_name!r}: {error}",
+                window_title=window_title,
+                control_name=real_name,
+            )
+        return UIActionResult(
+            "clicked",
+            f"Double-clicked {real_name}.",
+            window_title=window_title,
+            control_name=real_name,
+            verified=None,
+            evidence=(
+                "A double-click has no readable postcondition of its own; "
+                "the caller verifies what it was meant to start."
+            ),
         )
 
     def click_then_type(
@@ -733,6 +801,16 @@ class WindowsUIControl:
         except Exception:
             pass
         control.click_input()
+
+    @staticmethod
+    def _double_click(control: Any) -> None:
+        """Real pointer double-click; never the Invoke pattern."""
+        try:
+            control.double_click_input()
+            return
+        except TypeError:
+            pass
+        control.click_input(double=True)
 
 
 def _normalized(value: str) -> str:

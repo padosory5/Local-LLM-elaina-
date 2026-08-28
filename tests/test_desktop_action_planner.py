@@ -188,6 +188,15 @@ class PlannerObserver:
             return self.active
         return None
 
+    def set_now_playing(self, title):
+        """Rename the window the way a media app does when it starts a track."""
+        self.active = WindowInfo(
+            title=title,
+            app_name=self.active.app_name if self.active else "",
+            is_active=True,
+            handle=self.active.handle if self.active else None,
+        )
+
     def describe_window(self, target):
         self.describe_calls.append(target)
         if self.observations:
@@ -206,9 +215,13 @@ class PlannerControl:
         typed_verified=True,
         clicked_verified=True,
         resolved_name_for_id="",
+        on_activate=None,
     ):
         self.typed_verified = typed_verified
         self.clicked_verified = clicked_verified
+        # Called with the activated control's name, so a test can simulate
+        # the app renaming its window once the track really starts.
+        self.on_activate = on_activate
         # Simulates what a real element_id lookup would resolve to (see
         # WindowsUIObserver.resolve_control_by_id) when a test's tool call
         # supplies only an id and no semantic `control` text.
@@ -226,6 +239,8 @@ class PlannerControl:
         resolved_name = control or (
             self.resolved_name_for_id if element_id else ""
         )
+        if self.on_activate is not None:
+            self.on_activate(resolved_name)
         return UIActionResult(
             "clicked",
             f"Clicked {resolved_name or control}.",
@@ -272,6 +287,7 @@ def _surface_planner(responses, observer, control, computer_control=None):
         observer=observer,
         control=control,
         computer_control=computer_control or NeverOpenComputerControl(),
+        sleeper=lambda _seconds: None,
     )
 
 
@@ -422,8 +438,21 @@ class DesktopActionPlannerStabilizationTests(unittest.TestCase):
 
     def test_playback_goal_can_continue_from_search_to_activation(self):
         spotify = WindowInfo("Spotify", is_active=True, handle=92)
-        observer = PlannerObserver(active=spotify)
-        control = PlannerControl(typed_verified=True, clicked_verified=True)
+        observer = PlannerObserver(active=spotify, observations=[
+            WindowObservation(
+                "observed", title="Spotify",
+                controls=(ControlInfo("Edit", "Search", element_id="s1-e0"),),
+            ),
+            WindowObservation(
+                "observed", title="Spotify",
+                controls=(ControlInfo("Hyperlink", "Dynamite", element_id="s2-e0"),),
+            ),
+        ])
+        control = PlannerControl(
+            typed_verified=True,
+            clicked_verified=True,
+            on_activate=lambda name: observer.set_now_playing(f"{name} - BTS"),
+        )
         planner = _surface_planner([
             _message(tool_calls=[
                 _tool_call("describe_window", window="Spotify"),
@@ -438,8 +467,11 @@ class DesktopActionPlannerStabilizationTests(unittest.TestCase):
             ]),
             _message(content="Dynamite is in Spotify search."),
             _message(tool_calls=[
+                _tool_call("describe_window", window="Spotify"),
+            ]),
+            _message(tool_calls=[
                 _tool_call(
-                    "click_control",
+                    "play_media_item",
                     window="Spotify",
                     control="Dynamite",
                 ),
@@ -480,11 +512,21 @@ class DesktopActionPlannerStabilizationTests(unittest.TestCase):
         # would have returned), not the empty tool-call argument -- or a
         # fully correct, verified click would be reported as incomplete.
         spotify = WindowInfo("Spotify", is_active=True, handle=95)
-        observer = PlannerObserver(active=spotify)
+        observer = PlannerObserver(active=spotify, observations=[
+            WindowObservation(
+                "observed", title="Spotify",
+                controls=(ControlInfo("Edit", "Search", element_id="s1-e0"),),
+            ),
+            WindowObservation(
+                "observed", title="Spotify",
+                controls=(ControlInfo("Hyperlink", "Dynamite", element_id="scan1-e4"),),
+            ),
+        ])
         control = PlannerControl(
             typed_verified=True,
             clicked_verified=True,
             resolved_name_for_id="Dynamite",
+            on_activate=lambda name: observer.set_now_playing(f"{name} - BTS"),
         )
         planner = _surface_planner([
             _message(tool_calls=[
@@ -500,8 +542,11 @@ class DesktopActionPlannerStabilizationTests(unittest.TestCase):
             ]),
             _message(content="Dynamite is in Spotify search."),
             _message(tool_calls=[
+                _tool_call("describe_window", window="Spotify"),
+            ]),
+            _message(tool_calls=[
                 _tool_call(
-                    "click_control", window="Spotify", element_id="scan1-e4",
+                    "play_media_item", window="Spotify", element_id="scan1-e4",
                 ),
             ]),
             _message(content="Dynamite is playing."),
@@ -524,8 +569,24 @@ class DesktopActionPlannerStabilizationTests(unittest.TestCase):
         self.assertTrue(contract.subject_requires_full_match)
 
         spotify = WindowInfo("Spotify", is_active=True, handle=93)
-        observer = PlannerObserver(active=spotify)
-        control = PlannerControl(typed_verified=True, clicked_verified=True)
+        observer = PlannerObserver(active=spotify, observations=[
+            WindowObservation(
+                "observed", title="Spotify",
+                controls=(ControlInfo("Edit", "Search", element_id="s1-e0"),),
+            ),
+            WindowObservation(
+                "observed", title="Spotify",
+                controls=(
+                    ControlInfo("Hyperlink", "Bang Bang", element_id="s2-e0"),
+                    ControlInfo("Hyperlink", "IVE", element_id="s2-e1"),
+                ),
+            ),
+        ])
+        control = PlannerControl(
+            typed_verified=True,
+            clicked_verified=True,
+            on_activate=lambda name: observer.set_now_playing(f"{name} - IVE"),
+        )
         planner = _surface_planner([
             _message(tool_calls=[
                 _tool_call("describe_window", window="Spotify"),
@@ -538,7 +599,12 @@ class DesktopActionPlannerStabilizationTests(unittest.TestCase):
             ]),
             _message(content="The matching result is visible."),
             _message(tool_calls=[
-                _tool_call("click_control", window="Spotify", control="Play"),
+                _tool_call("describe_window", window="Spotify"),
+            ]),
+            _message(tool_calls=[
+                _tool_call(
+                    "play_media_item", window="Spotify", control="Bang Bang",
+                ),
             ]),
             _message(content="Bang Bang by IVE is playing."),
         ], observer, control)
@@ -547,7 +613,7 @@ class DesktopActionPlannerStabilizationTests(unittest.TestCase):
 
         self.assertEqual(result.status, "done")
         self.assertEqual(control.type_calls[0][2], "Bang Bang IVE")
-        self.assertEqual(control.click_calls[0][1], "Play")
+        self.assertEqual(control.click_calls[0][1], "Bang Bang")
 
     def test_compound_spotify_goal_rejects_a_partial_search_before_generic_play(self):
         spotify = WindowInfo("Spotify", is_active=True, handle=94)
@@ -595,9 +661,12 @@ class DesktopActionPlannerStabilizationTests(unittest.TestCase):
 
         result = planner.act("Play Dynamite in Spotify.")
 
+        # Clicking Home is preparation, not an activation: it is allowed to
+        # happen (refusing every click is what once blocked Spotify's own
+        # Search), but it can never satisfy a playback goal.
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.failure_code, "goal_operation_incomplete")
-        self.assertEqual(control.click_calls[0][1], "Home")
+        self.assertEqual([call[1] for call in control.click_calls], ["Home"])
 
     def test_put_on_paraphrase_still_requires_activation(self):
         spotify = WindowInfo("Spotify", is_active=True, handle=96)
@@ -789,20 +858,21 @@ class DesktopActionPlannerStabilizationTests(unittest.TestCase):
         observer = PlannerObserver(active=window, observations=[before, after])
 
         class RetryControl(PlannerControl):
-            def click_control(self, target, control, *, confirmed=False):
+            def click_control(self, target, control, *, confirmed=False, element_id=""):
                 self.click_calls.append((target, control, confirmed))
                 if len(self.click_calls) == 1:
                     return UIActionResult(
                         "not_found", "The result was still loading.",
                         verified=False,
                     )
+                observer.set_now_playing("Dynamite - BTS")
                 return UIActionResult(
                     "clicked", "Clicked Dynamite.", verified=True,
                 )
 
         control = RetryControl()
         click = _message(tool_calls=[
-            _tool_call("click_control", window="Spotify", control="Dynamite"),
+            _tool_call("play_media_item", window="Spotify", control="Dynamite"),
         ])
         planner = _surface_planner([
             _message(tool_calls=[

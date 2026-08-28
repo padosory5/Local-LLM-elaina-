@@ -8,6 +8,7 @@ from tools.browser_control.browser_control import (
     is_download_link,
     is_outbound_text_field,
     is_payment_element,
+    is_safe_privacy_rejection,
 )
 
 
@@ -23,6 +24,7 @@ class _FakeLocator:
         bounding_box=(0, 0, 10, 10),
         href="",
         has_download_attribute=False,
+        privacy_safe=False,
     ):
         self.label = label
         self.element_type = element_type
@@ -32,6 +34,7 @@ class _FakeLocator:
         self._bounding_box = bounding_box
         self.href = href
         self.has_download_attribute = has_download_attribute
+        self.privacy_safe = privacy_safe
         self.clicked = False
         self.filled_text = None
         self.selected = None
@@ -50,6 +53,8 @@ class _FakeLocator:
                 "href": self.href,
                 "hasDownloadAttribute": self.has_download_attribute,
             }
+        if "rejectOnly" in script:
+            return {"label": self.label, "safe": self.privacy_safe}
         return self.label
 
     def get_attribute(self, name):
@@ -86,11 +91,15 @@ class _FakeLocator:
 
 
 class _FakePage:
-    def __init__(self, *, url="https://example.com", locators=None):
+    def __init__(
+        self, *, url="https://example.com", locators=None,
+        privacy_dialog_present=False,
+    ):
         self.url = url
         self._locators = locators or {}
         self.goto_calls = []
         self.brought_to_front = False
+        self.privacy_dialog_present = privacy_dialog_present
 
     def locator(self, selector):
         element_id = selector.split('"')[1]
@@ -102,6 +111,9 @@ class _FakePage:
 
     def bring_to_front(self):
         self.brought_to_front = True
+
+    def evaluate(self, script):
+        return self.privacy_dialog_present
 
 
 class _FakeObserver:
@@ -142,6 +154,17 @@ class _CommitOnRetryTimeoutPage(_FakePage):
 
 
 class ClassifierTests(unittest.TestCase):
+    def test_only_exact_reject_or_essential_labels_are_privacy_safe(self):
+        for label in (
+            "Reject", "Reject all", "Decline all", "Only essential",
+            "Necessary only", "모두 거부", "필수만",
+        ):
+            self.assertTrue(is_safe_privacy_rejection(label), label)
+        for label in (
+            "Accept all", "Close", "Reject application", "Agree",
+            "Continue", "동의",
+        ):
+            self.assertFalse(is_safe_privacy_rejection(label), label)
     def test_committing_keywords_are_detected(self):
         for label in ("Submit", "Confirm reservation", "Send message", "Download report"):
             self.assertTrue(is_committing_element(label), label)
@@ -256,6 +279,56 @@ class ClickTests(unittest.TestCase):
         self.assertEqual(result.status, "confirmation_required")
         self.assertFalse(locator.clicked)
 
+
+class PrivacyDismissalTests(unittest.TestCase):
+    def test_reject_outside_a_verified_privacy_dialog_is_refused(self):
+        locator = _FakeLocator(label="Reject all", privacy_safe=False)
+        page = _FakePage(locators={"e0": locator})
+        control = BrowserControl(observer=_FakeObserver(page))
+
+        result = control.dismiss_privacy_overlay(0, "e0")
+
+        self.assertEqual(result.status, "refused")
+        self.assertFalse(locator.clicked)
+
+    def test_accept_control_is_never_a_privacy_dismissal(self):
+        locator = _FakeLocator(label="Accept all", privacy_safe=True)
+        page = _FakePage(locators={"e0": locator})
+        control = BrowserControl(observer=_FakeObserver(page))
+
+        result = control.dismiss_privacy_overlay(0, "e0")
+
+        self.assertEqual(result.status, "refused")
+        self.assertFalse(locator.clicked)
+
+    def test_verified_reject_click_must_make_the_dialog_disappear(self):
+        locator = _FakeLocator(label="Reject all", privacy_safe=True)
+        page = _FakePage(
+            locators={"e0": locator}, privacy_dialog_present=False,
+        )
+        control = BrowserControl(observer=_FakeObserver(page))
+
+        result = control.dismiss_privacy_overlay(0, "e0")
+
+        self.assertEqual(result.status, "dismissed_privacy_overlay")
+        self.assertTrue(result.verified)
+        self.assertTrue(locator.clicked)
+
+    def test_dialog_remaining_after_click_is_not_reported_as_success(self):
+        locator = _FakeLocator(label="Reject all", privacy_safe=True)
+        page = _FakePage(
+            locators={"e0": locator}, privacy_dialog_present=True,
+        )
+        control = BrowserControl(observer=_FakeObserver(page))
+
+        result = control.dismiss_privacy_overlay(0, "e0")
+
+        self.assertEqual(result.status, "verification_failed")
+        self.assertFalse(result.verified)
+        self.assertTrue(locator.clicked)
+
+
+class ClickContinuationTests(unittest.TestCase):
     def test_click_committing_element_executes_once_confirmed(self):
         locator = _FakeLocator(label="Submit Order")
         page = _FakePage(locators={"e0": locator})

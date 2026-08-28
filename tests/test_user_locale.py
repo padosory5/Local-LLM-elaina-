@@ -31,6 +31,22 @@ class UserLocaleBasicsTests(unittest.TestCase):
         # Categories the override doesn't mention are untouched.
         self.assertIn("야놀자", locale.sites_for("hotel"))
 
+    def test_default_sources_have_execution_host_scope(self):
+        locale = UserLocale(country="KR", city="Seoul")
+        self.assertEqual(
+            locale.source_hosts_for_goal("secondhand", "find a used RTX 5080"),
+            ("daangn.com", "bunjang.co.kr", "joongna.com"),
+        )
+
+    def test_custom_source_names_do_not_get_guessed_hostnames(self):
+        locale = UserLocale(
+            country="KR", preferred_sites={"secondhand": ["My Local Market"]},
+        )
+        self.assertEqual(
+            locale.source_hosts_for_goal("secondhand", "find a used phone"),
+            (),
+        )
+
 
 class MarketResolutionTests(unittest.TestCase):
     """Which country's market a request is about -- the thing that decides
@@ -48,6 +64,13 @@ class MarketResolutionTests(unittest.TestCase):
         # The user's own country is irrelevant when they ask about Tokyo.
         self.assertEqual(self.korea.market_for("hotels in Tokyo"), "JP")
         self.assertEqual(self.states.market_for("restaurants in Seoul"), "KR")
+
+    def test_guam_uses_us_hotel_sources(self):
+        self.assertEqual(self.korea.market_for("book a hotel in Guam"), "US")
+        self.assertEqual(
+            self.korea.source_hosts_for_goal("hotel", "book a hotel in Guam")[0],
+            "booking.com",
+        )
 
     def test_a_place_name_hidden_inside_a_word_is_not_a_destination(self):
         # Found live: a bare substring scan read "us" out of "used" and

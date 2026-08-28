@@ -25,7 +25,7 @@ import json
 import re
 from dataclasses import dataclass, replace
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from tools.browser_control.browser_connection import BrowserConnectionResult
 from tools.browser_control.browser_control import (
@@ -370,6 +370,7 @@ _ACTION_TOOLS = frozenset({
 _NAVIGATION_TOOLS = frozenset({"search", "open_url"})
 _TERMINAL_FAILURES = frozenset({
     "ambiguous", "refused", "unavailable", "verification_failed", "stale",
+    "user_took_over",
 })
 
 # The committing-goal nudge below asks the model, in as many words, to
@@ -568,6 +569,8 @@ class BrowserActionPlanner:
         *,
         allow_direct_navigation: bool = True,
         context: str = "",
+        allowed_hosts: tuple[str, ...] = (),
+        source_names: tuple[str, ...] = (),
     ) -> ActionPlanResult:
         """Carry out one browser-page goal.
 
@@ -585,25 +588,46 @@ class BrowserActionPlanner:
         The information existed one turn earlier; it just never travelled.
         """
         goal = str(goal).strip()
+        allowed_hosts = tuple(
+            host for host in (_host_key(item) for item in allowed_hosts) if host
+        )
+        source_names = tuple(
+            str(item).strip() for item in source_names if str(item).strip()
+        )
         # Checked first: "open youtube.com" must resolve as navigation, not
         # fall into _try_direct_click below, which would otherwise treat
         # "youtube.com" as a same-page element label to search for (it has
         # no spaces, just like a one-word control label would).
         navigate_result = self._try_direct_navigate(
             goal, allow_direct_navigation=allow_direct_navigation,
+            allowed_hosts=allowed_hosts,
         )
         if navigate_result is not None:
             return navigate_result
-        ordinal_result = self._try_direct_ordinal_result(goal)
+        ordinal_result = self._try_direct_ordinal_result(
+            goal, allowed_hosts=allowed_hosts,
+        )
         if ordinal_result is not None:
             return ordinal_result
-        direct_result = self._try_direct_click(goal)
+        direct_result = self._try_direct_click(
+            goal, allowed_hosts=allowed_hosts,
+        )
         if direct_result is not None:
             return direct_result
 
         context = " ".join(str(context or "").split()).strip()
+        system_prompt = _SYSTEM_PROMPT
+        if allowed_hosts:
+            named = ", ".join(source_names) or ", ".join(allowed_hosts)
+            system_prompt += (
+                "\nSOURCE SCOPE: The user selected specialised research on "
+                f"{named}. Search is allowed, but after results appear only "
+                "follow links within the locally allowed source hosts. The "
+                "runtime enforces this; do not try unrelated retailers or "
+                "marketplaces."
+            )
         messages: list[Any] = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": (
@@ -685,6 +709,7 @@ class BrowserActionPlanner:
                     arguments,
                     observation_state,
                     allow_direct_navigation=allow_direct_navigation,
+                    allowed_hosts=allowed_hosts,
                 )
                 steps.append(step_text)
                 last_status, last_message = status, step_text
@@ -1052,6 +1077,19 @@ class BrowserActionPlanner:
                 "listed first; nothing behind it is clickable until it is "
                 "dealt with."
             )
+        if observation.headings:
+            lines.append("Headings: " + " | ".join(observation.headings))
+        if observation.text_excerpt:
+            suffix = " [excerpt truncated]" if observation.text_truncated else ""
+            lines.append(f"Visible page text: {observation.text_excerpt}{suffix}")
+        if observation.images:
+            labels = "; ".join(image.label for image in observation.images)
+            lines.append(f"Images with accessible labels: {labels}")
+        if observation.image_count > len(observation.images):
+            lines.append(
+                f"{observation.image_count - len(observation.images)} additional "
+                "visible image(s) have no usable accessible label."
+            )
         shown = observation.elements[:limit] if limit else observation.elements
         for element in shown:
             lines.append(
@@ -1060,6 +1098,7 @@ class BrowserActionPlanner:
                 f"{element.label!r}"
                 f"{' [disabled]' if element.disabled else ''}"
                 f"{' [in dialog]' if element.in_dialog else ''}"
+                f"{' [safe privacy reject]' if element.is_privacy_dismissal else ''}"
             )
         if limit and len(observation.elements) > limit:
             lines.append(
@@ -1084,7 +1123,7 @@ class BrowserActionPlanner:
         The strongest pattern in production browser agents is observing on
         every step automatically rather than hoping the model asks: the
         model's next decision then starts from the real page -- title,
-        overlays already dismissed, and valid element ids -- instead of
+        semantic content, dialog state, and valid element ids -- instead of
         from a bare "Searched for X." That both saves a whole model round
         on every navigation and removes the click-on-stale-ids failure at
         its source.
@@ -1107,12 +1146,75 @@ class BrowserActionPlanner:
         resolved_tab = self._record_observation(
             observation_state, observation, None,
         )
+        observation, privacy_note = self._dismiss_safe_privacy_overlay(
+            observation_state, observation, resolved_tab,
+        )
         digest = self._render_observation(
             observation, resolved_tab, limit=_AUTO_SCAN_ELEMENT_LIMIT,
         )
         return (
             f"\n{self._AUTO_SCAN_MARKER} (already scanned -- these ids are "
-            f"valid to act on now):\n{digest}"
+            f"valid to act on now):\n{digest}{privacy_note}"
+        )
+
+    def _dismiss_safe_privacy_overlay(
+        self,
+        observation_state: _ObservationState,
+        observation: PageObservation,
+        resolved_tab: int | None,
+    ) -> tuple[PageObservation, str]:
+        """Reject one unambiguous, verified cookie/privacy dialog.
+
+        BrowserObserver remains read-only. This planner-level helper uses
+        BrowserControl's normal live revalidation and post-click visibility
+        check. Promo/login dialogs, generic close buttons, ambiguity, and any
+        failed verification remain visible and are reported, never guessed
+        through.
+        """
+        candidates = [
+            element for element in observation.elements
+            if element.is_privacy_dismissal and element.in_privacy_dialog
+        ]
+        if (
+            resolved_tab is None
+            or not observation.blocking_dialog
+            or len(candidates) != 1
+            or not hasattr(self.control, "dismiss_privacy_overlay")
+        ):
+            return observation, ""
+        candidate = candidates[0]
+        try:
+            result = self.control.dismiss_privacy_overlay(
+                resolved_tab,
+                candidate.id,
+                **self._element_metadata(observation, candidate),
+            )
+        except Exception:
+            return observation, (
+                "\n(Privacy dialog remains visible; I did not guess through it.)"
+            )
+        if result.status != "dismissed_privacy_overlay" or result.verified is not True:
+            return observation, (
+                "\n(Privacy dialog remains visible; its reject option could "
+                "not be verified, so I left it alone.)"
+            )
+        try:
+            refreshed = self._describe_page(resolved_tab)
+        except Exception:
+            refreshed = None
+        if refreshed is None or refreshed.status != "observed":
+            return observation, (
+                "\n(Rejected optional privacy choices, but the page could "
+                "not be re-scanned yet.)"
+            )
+        refreshed = replace(
+            refreshed,
+            dismissed_overlays=observation.dismissed_overlays + (candidate.label,),
+        )
+        self._record_observation(observation_state, refreshed, resolved_tab)
+        return refreshed, (
+            f"\n(Rejected optional privacy choices with {candidate.label!r}, "
+            "then re-scanned the page.)"
         )
 
     def resume_confirmed_action(
@@ -1239,6 +1341,7 @@ class BrowserActionPlanner:
         observation_state: _ObservationState,
         *,
         allow_direct_navigation: bool = True,
+        allowed_hosts: tuple[str, ...] = (),
     ) -> tuple[str, str, PendingConfirmation | None]:
         tab = arguments.get("tab")
         tab_index = int(tab) if isinstance(tab, (int, float)) else None
@@ -1275,8 +1378,12 @@ class BrowserActionPlanner:
                 resolved_tab = self._record_observation(
                     observation_state, observation, tab_index,
                 )
+                observation, privacy_note = self._dismiss_safe_privacy_overlay(
+                    observation_state, observation, resolved_tab,
+                )
                 return (
-                    self._render_observation(observation, resolved_tab),
+                    self._render_observation(observation, resolved_tab)
+                    + privacy_note,
                     "observed",
                     None,
                 )
@@ -1347,8 +1454,18 @@ class BrowserActionPlanner:
                             observation_state,
                         )
                     return message, result.status, None
+                requested_url = str(arguments.get("url", ""))
+                if allowed_hosts and not _url_in_source_scope(
+                    requested_url, allowed_hosts,
+                ):
+                    return (
+                        "That address is outside the specialised source scope, "
+                        "so I did not open it.",
+                        "source_scope_violation",
+                        None,
+                    )
                 result = self.control.navigate(
-                    tab_index, str(arguments.get("url", "")),
+                    tab_index, requested_url,
                     allow_isolated_launch=True,
                 )
                 message = result.message
@@ -1376,6 +1493,16 @@ class BrowserActionPlanner:
                 )
             metadata = self._element_metadata(observation, element)
             if name == "click_element":
+                if allowed_hosts and element.href and not _url_in_source_scope(
+                    element.href, allowed_hosts,
+                ):
+                    return (
+                        f"{spoken_label(element.label)!r} points outside the "
+                        "specialised sources selected for this task, so I "
+                        "did not click it.",
+                        "source_scope_violation",
+                        None,
+                    )
                 result = self.control.click(
                     resolved_tab, element_id, **metadata,
                 )
@@ -1434,6 +1561,7 @@ class BrowserActionPlanner:
         goal: str,
         *,
         allow_direct_navigation: bool = True,
+        allowed_hosts: tuple[str, ...] = (),
     ) -> ActionPlanResult | None:
         """Zero-round shortcut for an unambiguous "search X" or "open
         <site>" goal -- the same efficiency precedent as
@@ -1459,6 +1587,14 @@ class BrowserActionPlanner:
         if open_match and allow_direct_navigation:
             candidate = open_match.group("url").strip(" .!?")
             if _LOOKS_LIKE_URL.match(candidate):
+                if allowed_hosts and not _url_in_source_scope(
+                    candidate, allowed_hosts,
+                ):
+                    return ActionPlanResult(
+                        "failed",
+                        "That address is outside the specialised source scope.",
+                        failure_code="source_scope_violation",
+                    )
                 return self._direct_navigate_result(
                     self.control.navigate(
                         None, candidate, allow_isolated_launch=True,
@@ -1482,7 +1618,9 @@ class BrowserActionPlanner:
             failure_code=failure_code,
         )
 
-    def _try_direct_click(self, goal: str) -> ActionPlanResult | None:
+    def _try_direct_click(
+        self, goal: str, *, allowed_hosts: tuple[str, ...] = (),
+    ) -> ActionPlanResult | None:
         """Handle a clear single-control request without model tool variance.
 
         Small local models are particularly unreliable at emitting a tool call
@@ -1525,9 +1663,13 @@ class BrowserActionPlanner:
                 failure_code="direct_target_ambiguous",
             )
         element = matches[0]
-        return self._click_direct_element(observation, element)
+        return self._click_direct_element(
+            observation, element, allowed_hosts=allowed_hosts,
+        )
 
-    def _try_direct_ordinal_result(self, goal: str) -> ActionPlanResult | None:
+    def _try_direct_ordinal_result(
+        self, goal: str, *, allowed_hosts: tuple[str, ...] = (),
+    ) -> ActionPlanResult | None:
         """Resolve an ordinal Google/Bing-style search result deterministically.
 
         A language model cannot safely infer that a Back button, an ad, or an
@@ -1580,6 +1722,7 @@ class BrowserActionPlanner:
             observation,
             candidates[ordinal_index],
             success_summary=f"Opened the {ordinal_word}{qualifier_text} result.",
+            allowed_hosts=allowed_hosts,
         )
 
     def _click_direct_element(
@@ -1588,7 +1731,17 @@ class BrowserActionPlanner:
         element: PageElement,
         *,
         success_summary: str = "",
+        allowed_hosts: tuple[str, ...] = (),
     ) -> ActionPlanResult:
+        if allowed_hosts and element.href and not _url_in_source_scope(
+            element.href, allowed_hosts,
+        ):
+            return ActionPlanResult(
+                "failed",
+                f"{spoken_label(element.label)!r} is outside the specialised "
+                "sources selected for this task, so I did not click it.",
+                failure_code="source_scope_violation",
+            )
         result = self.control.click(
             observation.tab_index,
             element.id,
@@ -1708,13 +1861,40 @@ class BrowserActionPlanner:
             if resolved_tab is not None
             else state.fallback_observation
         )
-        if observation is None:
-            return resolved_tab, None, None
-        element = next(
-            (item for item in observation.elements if item.id == element_id),
-            None,
-        )
-        return resolved_tab, observation, element
+        element = None
+        if observation is not None:
+            element = next(
+                (item for item in observation.elements if item.id == element_id),
+                None,
+            )
+        if element is not None:
+            return resolved_tab, observation, element
+
+        # The model routinely names a tab that does not exist -- observed
+        # live, qwen3:8b asked for "tab 1" on a machine with a single
+        # browser window and burned two whole rounds being told to re-scan
+        # a page it had already been shown. The tab number is redundant
+        # anyway: an element id carries the scan id that produced it, so it
+        # identifies one specific scan of one specific page on its own.
+        # Trusting the id over the tab number costs nothing in safety --
+        # the control layer still revalidates against the live page before
+        # it acts -- and removes a whole class of wasted rounds.
+        for candidate_tab, candidate in state.observations.items():
+            element = next(
+                (item for item in candidate.elements if item.id == element_id),
+                None,
+            )
+            if element is not None:
+                return candidate_tab, candidate, element
+        fallback = state.fallback_observation
+        if fallback is not None:
+            element = next(
+                (item for item in fallback.elements if item.id == element_id),
+                None,
+            )
+            if element is not None:
+                return fallback.tab_index, fallback, element
+        return resolved_tab, observation, None
 
     @staticmethod
     def _element_metadata(
@@ -1805,9 +1985,11 @@ class BrowserActionPlanner:
         for element in observation.elements:
             if element.tag.casefold() != "a" or not element.href or element.is_ad:
                 continue
+            label = cls._normalise_label(element.label)
+            if not label or label == "unlabeled" or not element.in_main:
+                continue
             if cls._is_search_navigation_link(element.href, observation.url):
                 continue
-            label = cls._normalise_label(element.label)
             if qualifier_terms and not all(term in label for term in qualifier_terms):
                 continue
             candidates.append(element)
@@ -1905,3 +2087,40 @@ class BrowserActionPlanner:
         if isinstance(item, dict):
             return item.get(key, default)
         return getattr(item, key, default)
+
+
+def _host_key(value: str) -> str:
+    text = str(value or "").strip().casefold().strip(".")
+    if "://" in text:
+        try:
+            text = (urlsplit(text).hostname or "").casefold()
+        except ValueError:
+            return ""
+    return text.removeprefix("www.")
+
+
+def _url_in_source_scope(
+    value: str, allowed_hosts: tuple[str, ...], *, _nested: bool = False,
+) -> bool:
+    """Match a URL to a configured source host, including search redirects."""
+    try:
+        parsed = urlsplit(str(value or ""))
+    except ValueError:
+        return False
+    host = _host_key(parsed.hostname or "")
+    allowed = tuple(_host_key(item) for item in allowed_hosts)
+    if host and any(host == item or host.endswith("." + item) for item in allowed if item):
+        return True
+    if _nested:
+        return False
+    # Search engines sometimes expose /url?q=https://destination rather than
+    # the direct result href. Inspect only URL-shaped query values and apply
+    # the same one-level host check; arbitrary page labels never enter here.
+    for values in parse_qs(parsed.query).values():
+        for candidate in values:
+            candidate = unquote(candidate)
+            if candidate.startswith(("http://", "https://")) and _url_in_source_scope(
+                candidate, allowed_hosts, _nested=True,
+            ):
+                return True
+    return False

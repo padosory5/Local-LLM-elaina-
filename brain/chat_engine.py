@@ -1,3 +1,4 @@
+from typing import Any
 import json
 import re
 import threading
@@ -50,6 +51,10 @@ from brain.decision_log import log_information_need
 from tools.browser_control.browser_connection import BrowserConnection
 from tools.browser_control.browser_observer import spoken_label
 from tools.browser_control.browser_service import BrowserService
+from tools.screen_browser.screen_browser_service import ScreenBrowserService
+from tools.screen_control.cursor_driver import CursorDriver
+from tools.screen_control.input_watcher import InputWatcher
+from tools.screen_control.screen_ui_control import ScreenUIControl
 from brain.context_policy import should_include_grounded_context
 from brain.brief_response import BriefResponseGenerator
 from datetime import datetime
@@ -81,6 +86,8 @@ from tools.computer_control.computer_control import (
     ComputerControl,
     PreparedComputerAction,
 )
+from tools.computer_control.session_action_memory import SessionActionMemory
+from tools.computer_control.windows_ui_control import WindowsUIControl
 from tools.computer_control.session_item_memory import SessionItemMemory
 from agents.preconditions import check_precondition
 
@@ -377,6 +384,40 @@ class ChatEngine:
             default=True,
             required=False,
         ))
+        # Phase 4E driver selection. "screen" operates the browser already
+        # open through UI Automation and the real cursor; "cdp" is the
+        # Phase 4C isolated-profile DevTools driver. Anything unrecognised
+        # falls back to the older, more conservative driver rather than
+        # silently taking control of the user's own browser window.
+        configured_driver = str(self.config.get(
+            "browser_control", "driver", default="screen", required=False,
+        )).strip().lower()
+        self.browser_driver = configured_driver if configured_driver in {
+            "screen", "cdp",
+        } else "cdp"
+        # Phase 4F: the same choice for everything that is not a browser.
+        # "screen" moves the real pointer and types real keystrokes; "uia"
+        # is the Phase 4B driver that calls Invoke() on a control and cannot
+        # type into apps that expose no named field. An unrecognised value
+        # falls back to the older, less capable driver rather than silently
+        # taking the mouse.
+        configured_desktop_driver = str(self.config.get(
+            "computer_control", "driver", default="screen", required=False,
+        )).strip().lower()
+        self.desktop_driver = configured_desktop_driver if (
+            configured_desktop_driver in {"screen", "uia"}
+        ) else "uia"
+        # URL policy is shared by both drivers: the destination rules must
+        # not depend on which one is steering.
+        self.allow_local_browser_urls = bool(self.config.get(
+            "computer_control", "allow_local_urls",
+            default=False, required=False,
+        ))
+        self.default_search_url = str(self.config.get(
+            "computer_control", "default_search_url",
+            default="https://www.google.com/search?q={query}",
+            required=False,
+        ))
         browser_profile_directory = str(self.config.get(
             "browser_control",
             "user_data_dir",
@@ -399,6 +440,10 @@ class ChatEngine:
             )),
             user_data_dir=browser_profile_directory or None,
             catalog=browser_catalog,
+            force_accessibility=bool(self.config.get(
+                "browser_control", "force_accessibility",
+                default=True, required=False,
+            )),
         )
         self.computer_control = ComputerControl(
             self.policy,
@@ -419,18 +464,8 @@ class ChatEngine:
                     if self.browser_page_control_enabled
                     else None
                 ),
-                allow_local_urls=bool(self.config.get(
-                    "computer_control",
-                    "allow_local_urls",
-                    default=False,
-                    required=False,
-                )),
-                search_url_template=str(self.config.get(
-                    "computer_control",
-                    "default_search_url",
-                    default="https://www.google.com/search?q={query}",
-                    required=False,
-                )),
+                allow_local_urls=self.allow_local_browser_urls,
+                search_url_template=self.default_search_url,
             ),
             filesystem=SafeFilesystemControl(self.config.get(
                 "computer_control",
@@ -451,6 +486,30 @@ class ChatEngine:
         # lets a referential delete ("delete the folder we just made")
         # resolve without the model ever inventing a target.
         self._session_items = SessionItemMemory()
+        # Local, session-only record of verified desktop actions, so a later
+        # "stop it" resolves against what Elaina actually did rather than
+        # against the model's recollection of the conversation.
+        self._session_actions = SessionActionMemory()
+        # One watcher for the whole process separates the user's real input
+        # from Elaina's injected input. Explicit desktop requests start
+        # immediately; this watcher is retained solely as an emergency stop
+        # when the user physically reclaims the mouse or keyboard mid-run.
+        self.input_watcher = InputWatcher()
+        watching = self.input_watcher.start()
+        self.cursor_driver = CursorDriver(input_watcher=self.input_watcher)
+        print(
+            f"[Desktop] driver={self.desktop_driver} "
+            f"input_watch={'on' if watching else 'off'}"
+        )
+        if self.desktop_driver == "screen":
+            desktop_control = ScreenUIControl(
+                observer=self.computer_control.ui_observer,
+                cursor=self.cursor_driver,
+            )
+        else:
+            desktop_control = WindowsUIControl(
+                observer=self.computer_control.ui_observer,
+            )
         # Shares computer_control's own live UI observer rather than
         # standing up a second one, so both see the same real window state.
         self.desktop_action_planner = DesktopActionPlanner(
@@ -458,8 +517,10 @@ class ChatEngine:
             model=self.model,
             keep_alive=self.keep_alive,
             observer=self.computer_control.ui_observer,
+            control=desktop_control,
             computer_control=self.computer_control,
             response_language=self.response_language,
+            session_actions=self._session_actions,
         )
         # Shares computer_control's own live UI observer (Phase 4B) so
         # active-tab detection can cross-check the real OS window title --
@@ -470,10 +531,37 @@ class ChatEngine:
         # owns the live connection for the whole chat lifetime, so opening,
         # observing, and acting keep the exact same controlled page identity
         # rather than disconnecting/reconnecting between turns.
-        self.browser_service = BrowserService(
-            connection=self.browser_connection,
-            ui_observer=self.computer_control.ui_observer,
-        )
+        # Phase 4E: the screen driver operates the browser window the user
+        # already has open -- reading its live page through UI Automation and
+        # moving the real pointer -- instead of launching an isolated,
+        # logged-out profile and speaking CDP to it. Both drivers present the
+        # same observer/control surface, so everything downstream (the action
+        # planner, the task planner, the confirmation flow) is unchanged.
+        if self.browser_driver == "screen":
+            def launch_default_browser() -> None:
+                resolution = browser_catalog.resolve("Default Browser")
+                if resolution.status != "resolved" or resolution.entry is None:
+                    raise OSError("No default browser is registered.")
+                browser_catalog.launch(resolution.entry)
+
+            self.browser_service = ScreenBrowserService(
+                safe_browser=SafeBrowserControl(
+                    opener=lambda url: None,
+                    allow_local_urls=self.allow_local_browser_urls,
+                    search_url_template=self.default_search_url,
+                ),
+                # Desktop and browser actions are one physical-control
+                # session. Sharing this driver makes the same immediate
+                # takeover and emergency-stop boundary govern both.
+                cursor=self.cursor_driver,
+                window_launcher=launch_default_browser,
+            )
+        else:
+            self.browser_service = BrowserService(
+                connection=self.browser_connection,
+                ui_observer=self.computer_control.ui_observer,
+            )
+        print(f"[Browser] driver={self.browser_driver}")
         self.browser_observer = self.browser_service.observer
         self.browser_control = self.browser_service.control
         self.browser_action_planner = BrowserActionPlanner(
@@ -783,6 +871,7 @@ class ChatEngine:
             "computer_control_enabled": self.computer_control_mode.enabled,
             "active_desktop_surface": self._desktop_surface_for_turn(),
             "recently_created_items": self._session_items.recent_context(),
+            "recent_desktop_actions": self._session_actions.recent_context(),
             "pending_agent_offer": (
                 pending_offer.public_context()
                 if pending_offer is not None
@@ -1649,12 +1738,36 @@ class ChatEngine:
                     f"{planner_goal}\n"
                     f"Original user request: {original_goal}"
                 )
-            plan_result = self.desktop_action_planner.act(
-                planner_goal,
-                surface_context=DesktopSurfaceContext.from_public_snapshot(
-                    self._desktop_surface_for_turn()
-                ),
-            )
+            # Open the interruption window here, not earlier. begin_run
+            # both remembers where the user left the pointer and marks the
+            # instant after which their input counts as taking it back --
+            # scoped to this one task, so input from ten minutes ago cannot
+            # abort a run that has only just started.
+            self.cursor_driver.begin_run()
+            plan_result = None
+            try:
+                plan_result = self.desktop_action_planner.act(
+                    planner_goal,
+                    surface_context=DesktopSurfaceContext.from_public_snapshot(
+                        self._desktop_surface_for_turn()
+                    ),
+                )
+            finally:
+                # Do not pull the pointer away after the person physically
+                # reclaims it. Normal completion still restores its starting
+                # position.
+                interrupted = (
+                    plan_result is not None
+                    and plan_result.status == "interrupted"
+                )
+                self.cursor_driver.end_run(restore=not interrupted)
+
+            if plan_result.status == "interrupted":
+                # Physical user input remains the immediate emergency stop.
+                # It is not converted into another permission question; a
+                # later explicit command starts immediately like any other.
+                done = ", ".join(plan_result.steps_taken[-2:]) or "nothing yet"
+                return f"You took control, so I stopped. Completed: {done}", None
 
         print(
             "[Computer Control] action=ui_action target="
@@ -1731,45 +1844,50 @@ class ChatEngine:
                 operation="browser_action",
             ), None
 
-        if approved_action is not None:
-            if hasattr(self.browser_action_planner, "resume_confirmed_action"):
-                plan_result = self.browser_action_planner.resume_confirmed_action(
-                    tab_index=approved_action.tab_index,
-                    element_id=approved_action.target,
-                    element_label=approved_action.display_name,
-                    action=approved_action.browser_action or "click",
-                    text=approved_action.browser_text,
-                    expected_url=approved_action.url,
-                    expected_scan_id=approved_action.browser_scan_id,
-                    expected_href=approved_action.browser_href,
-                    goal=approved_action.browser_goal,
-                    context=self._followup_subject(approved_action.browser_goal),
-                )
+        screen_run = getattr(self, "browser_driver", "") == "screen"
+        if screen_run:
+            self.cursor_driver.begin_run()
+        plan_result = None
+        try:
+            if approved_action is not None:
+                if hasattr(self.browser_action_planner, "resume_confirmed_action"):
+                    plan_result = self.browser_action_planner.resume_confirmed_action(
+                        tab_index=approved_action.tab_index,
+                        element_id=approved_action.target,
+                        element_label=approved_action.display_name,
+                        action=approved_action.browser_action or "click",
+                        text=approved_action.browser_text,
+                        expected_url=approved_action.url,
+                        expected_scan_id=approved_action.browser_scan_id,
+                        expected_href=approved_action.browser_href,
+                        goal=approved_action.browser_goal,
+                        context=self._followup_subject(approved_action.browser_goal),
+                    )
+                else:
+                    # Keeps third-party/test planners written for Phase 4C.1
+                    # compatible; production uses the frozen metadata path.
+                    plan_result = self.browser_action_planner.resume_confirmed_click(
+                        tab_index=approved_action.tab_index or 0,
+                        element_id=approved_action.target,
+                        element_label=approved_action.display_name,
+                    )
             else:
-                # Keeps third-party/test planners written for Phase 4C.1
-                # compatible; the production planner always uses the frozen
-                # metadata path above.
-                plan_result = self.browser_action_planner.resume_confirmed_click(
-                    tab_index=approved_action.tab_index or 0,
-                    element_id=approved_action.target,
-                    element_label=approved_action.display_name,
+                normalized_goal = str(route.normalized_request or "").strip()
+                original_goal = str(original_request or "").strip()
+                # The original utterance remains the authoritative browser
+                # goal; surface identity comes from the bound live session.
+                planner_goal = original_goal or normalized_goal
+                plan_result = self.browser_action_planner.act(
+                    planner_goal,
+                    context=self._followup_subject(planner_goal),
                 )
-        else:
-            normalized_goal = str(route.normalized_request or "").strip()
-            original_goal = str(original_request or "").strip()
-            # The browser planner has deterministic parsers for small spoken
-            # follow-ups ("click Images", "open the first hotel result").
-            # Feeding it a multi-line normalized goal plus an "Original user
-            # request" annotation breaks those parsers when the only
-            # difference is punctuation, and then lets a general model choose
-            # an unrelated page control.  The original utterance is the
-            # authoritative browser goal; surface identity is resolved by the
-            # observer, not by extra prompt text.
-            planner_goal = original_goal or normalized_goal
-            plan_result = self.browser_action_planner.act(
-                planner_goal,
-                context=self._followup_subject(planner_goal),
-            )
+        finally:
+            if screen_run:
+                reclaimed = (
+                    plan_result is not None
+                    and plan_result.failure_code == "user_took_over"
+                )
+                self.cursor_driver.end_run(restore=not reclaimed)
 
         print(
             "[Computer Control] action=browser_action target="
@@ -1846,6 +1964,7 @@ class ChatEngine:
             "stale": "That page changed while I was working on it.",
             "verification_failed": "I tried, but couldn't confirm it worked.",
             "unavailable": "I couldn't reach the browser.",
+            "user_took_over": "You took control, so I stopped.",
             "planner_unavailable": "I couldn't reach the browser planner.",
             "missing_tab_identity": (
                 "I lost track of which page that was, so I stopped."
@@ -1877,31 +1996,49 @@ class ChatEngine:
             and approved_strategy_task_state is None
             and declined_strategy_task_state is None
         )
-        if approved_task is not None:
-            task_result = self.task_planner.resume(
-                approved_task.task_state,
-                approved_action=approved_task.prepared,
-                step=approved_task.step,
-            )
-        elif approved_strategy_task_state is not None:
-            task_result = self.task_planner.continue_with_strategy(
-                approved_strategy_task_state, accepted=True,
-            )
-        elif declined_strategy_task_state is not None:
-            task_result = self.task_planner.continue_with_strategy(
-                declined_strategy_task_state, accepted=False,
-            )
-        else:
-            goal = str(route.normalized_request or original_request).strip()
-            followup_context = self.task_sessions.context_for_followup(goal)
-            if followup_context is not None:
-                task_result = self.task_planner.run(
-                    goal,
-                    initial_information=followup_context.information,
-                    initial_items=followup_context.items,
+        screen_run = (
+            getattr(self, "browser_driver", "") == "screen"
+            or getattr(self, "desktop_driver", "") == "screen"
+        )
+        if screen_run:
+            self.cursor_driver.begin_run()
+        task_result = None
+        try:
+            if approved_task is not None:
+                task_result = self.task_planner.resume(
+                    approved_task.task_state,
+                    approved_action=approved_task.prepared,
+                    step=approved_task.step,
+                )
+            elif approved_strategy_task_state is not None:
+                task_result = self.task_planner.continue_with_strategy(
+                    approved_strategy_task_state, accepted=True,
+                )
+            elif declined_strategy_task_state is not None:
+                task_result = self.task_planner.continue_with_strategy(
+                    declined_strategy_task_state, accepted=False,
                 )
             else:
-                task_result = self.task_planner.run(goal)
+                goal = str(route.normalized_request or original_request).strip()
+                followup_context = self.task_sessions.context_for_followup(goal)
+                if followup_context is not None:
+                    task_result = self.task_planner.run(
+                        goal,
+                        initial_information=followup_context.information,
+                        initial_items=followup_context.items,
+                    )
+                else:
+                    task_result = self.task_planner.run(goal)
+        finally:
+            if screen_run:
+                reclaimed = bool(
+                    task_result is not None
+                    and any(
+                        str(error).endswith(": user_took_over")
+                        for error in task_result.task_state.errors
+                    )
+                )
+                self.cursor_driver.end_run(restore=not reclaimed)
 
         print(
             "[Task Planner] status="

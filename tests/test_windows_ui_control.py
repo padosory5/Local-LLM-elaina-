@@ -38,6 +38,7 @@ class _FakeControl:
         self.focused = False
         self.invoked = False
         self.clicked = False
+        self.double_clicked = False
         self.typed_text = None
         self.selected_option = None
         self.scrolled = None
@@ -60,8 +61,12 @@ class _FakeControl:
             raise RuntimeError("no Invoke pattern on this control")
         self.invoked = True
 
-    def click_input(self):
+    def click_input(self, double=False):
         self.clicked = True
+        self.double_clicked = double
+
+    def double_click_input(self):
+        self.double_clicked = True
 
     def type_keys(self, text, with_spaces=True, with_tabs=False, pause=None):
         self.typed_text = text
@@ -212,6 +217,52 @@ class ControlClassifierTests(unittest.TestCase):
     def test_korean_credential_fields_are_detected(self):
         for name in ("비밀번호", "신용카드"):
             self.assertTrue(is_credential_field(name), name)
+
+
+class DoubleClickTests(unittest.TestCase):
+    """A play gesture is a real double-click, not an Invoke."""
+
+    def _control(self, window):
+        desktop = _FakeDesktop([window])
+        observer = WindowsUIObserver(desktop=desktop, foreground_window=lambda: "")
+        return WindowsUIControl(observer=observer)
+
+    def test_a_track_row_is_double_clicked_rather_than_invoked(self):
+        row = _FakeControl("Hyperlink", "Bang Bang")
+        window = _FakeWindow("Spotify Premium", [row])
+
+        result = self._control(window).double_click_control(
+            "Spotify", "Bang Bang",
+        )
+
+        self.assertEqual(result.status, "clicked")
+        self.assertTrue(row.double_clicked)
+        # Invoke is what opens the row instead of playing it.
+        self.assertFalse(row.invoked)
+
+    def test_a_plain_text_row_is_still_reachable(self):
+        # Spotify renders a result title as a Text node with no invoke
+        # pattern at all; a pointer can still hit its rectangle.
+        row = _FakeControl("Text", "Bang Bang")
+        window = _FakeWindow("Spotify Premium", [row])
+
+        result = self._control(window).double_click_control(
+            "Spotify", "Bang Bang",
+        )
+
+        self.assertEqual(result.status, "clicked")
+        self.assertTrue(row.double_clicked)
+
+    def test_a_committing_row_still_needs_confirmation(self):
+        row = _FakeControl("ListItem", "Delete playlist")
+        window = _FakeWindow("Spotify Premium", [row])
+
+        result = self._control(window).double_click_control(
+            "Spotify", "Delete playlist",
+        )
+
+        self.assertEqual(result.status, "confirmation_required")
+        self.assertFalse(row.double_clicked)
 
 
 class WindowsUIControlTests(unittest.TestCase):

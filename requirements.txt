@@ -36,8 +36,12 @@ PyYAML>=6,<7
 python-dotenv>=1,<2
 tzdata>=2025
 
-# Desktop control (Windows only) -- Phase 4A app/process/file control and
-# Phase 4B.1 read-only UI Automation window/control observation.
+# Desktop control (Windows only) -- Phase 4A app/process/file control,
+# Phase 4B.1 read-only UI Automation window/control observation, and the
+# Phase 4E screen-native browser driver, which reads the live page of an
+# already-open browser through UI Automation and drives the real mouse and
+# keyboard through the Win32 SendInput API. No extra dependency: the
+# screen driver needs exactly these two packages.
 pywin32>=306
 pywinauto>=0.6,<1
 

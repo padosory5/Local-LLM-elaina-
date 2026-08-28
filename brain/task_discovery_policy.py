@@ -176,9 +176,18 @@ class TaskDiscoveryPolicy:
     @classmethod
     def category_for(cls, text: str) -> tuple[str, str, str] | None:
         text = str(text)
+        matches: dict[str, tuple[str, str, str]] = {}
         for category, pattern, source_kind, preference_hint in cls._CATEGORY_PATTERNS:
             if pattern.search(text):
-                return category, source_kind, preference_hint
+                matches[category] = (category, source_kind, preference_hint)
+        # Specific verticals retain their own marketplaces. For a product,
+        # however, "second hand" changes the source class completely: a used
+        # RTX card belongs on 당근/번개장터, not new-product GPU retailers.
+        for preferred in (
+            "hotel", "restaurant", "car", "flight", "secondhand", "gpu", "shopping",
+        ):
+            if preferred in matches:
+                return matches[preferred]
         return None
 
     @classmethod
@@ -226,11 +235,18 @@ class TaskDiscoveryPolicy:
             # abstract -- and it shows the user immediately whether Elaina
             # has the right market in mind.
             named = " and ".join(sites[:2])
-            offer = (
-                f"{named} are what people in {market} actually use for "
-                f"this. Want me to check there, or is a quick overview "
-                "enough?"
-            )
+            if kind == "hotel" and "dates" not in cls.extract_preferences(goal):
+                offer = (
+                    f"{named} can check live availability and prices in "
+                    f"{market}. What dates are you staying, or should I give "
+                    "a general shortlist without live rates?"
+                )
+            else:
+                offer = (
+                    f"{named} are what people in {market} actually use for "
+                    f"this. Want me to check there, or is a quick overview "
+                    "enough?"
+                )
         elif browser_ready:
             offer = (
                 f"Live {source_kind} would narrow this better than a "
@@ -250,6 +266,27 @@ class TaskDiscoveryPolicy:
             offer_text=offer,
             browser_ready=browser_ready,
         )
+
+    @classmethod
+    def missing_required_preferences(
+        cls, category: str, preferences: dict[str, str],
+    ) -> tuple[str, ...]:
+        """Inputs required before live listings can be compared truthfully."""
+        if str(category).casefold() == "hotel" and not preferences.get("dates"):
+            return ("dates",)
+        return ()
+
+    @classmethod
+    def required_preference_prompt(
+        cls, category: str, preferences: dict[str, str],
+    ) -> str:
+        if cls.missing_required_preferences(category, preferences) == ("dates",):
+            return (
+                "What check-in and check-out dates should I use? I need them "
+                "to compare real hotel availability and prices; say “general "
+                "overview” if you do not want live rates."
+            )
+        return ""
 
     @staticmethod
     def _local_sites(

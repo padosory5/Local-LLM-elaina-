@@ -290,6 +290,8 @@ class TaskState:
     # unfiltered goal.
     discovery_category: str = ""
     discovery_source_kind: str = ""
+    preferred_sources: tuple[str, ...] = ()
+    allowed_source_hosts: tuple[str, ...] = ()
     # Set when the request was resolved against candidates from an immediately
     # preceding task ("which of those hotels?").  Such a request must verify
     # those candidates, not ask the user to choose a discovery source again.
@@ -394,6 +396,10 @@ class TaskPlanner:
             collected_items=list(initial_items),
             is_follow_up=bool(initial_items),
         )
+        if self.discovery_policy is not None:
+            task_state.preferences.update(
+                self.discovery_policy.extract_preferences(task_state.goal),
+            )
         if task_state.is_follow_up:
             task_state.verification_level = "verify"
         if self.discovery_policy is not None:
@@ -440,6 +446,15 @@ class TaskPlanner:
             return
         if not sites:
             return
+        task_state.preferred_sources = tuple(sites)
+        try:
+            task_state.allowed_source_hosts = tuple(
+                self.user_locale.source_hosts_for_goal(
+                    category, task_state.goal,
+                )
+            )
+        except Exception:
+            task_state.allowed_source_hosts = ()
         task_state.collected_information.append(
             f"Known local sources for {category} in {market}, best first: "
             f"{', '.join(sites)}. Prefer these over international "
@@ -569,6 +584,17 @@ class TaskPlanner:
             # same way a goal that itself asks for verification already
             # does, rather than adding a second, parallel exemption path.
             task_state.verification_level = "verify"
+            if self.discovery_policy is not None:
+                prompt = self.discovery_policy.required_preference_prompt(
+                    task_state.discovery_category,
+                    task_state.preferences,
+                )
+                if prompt:
+                    task_state.specialized_source_offer = prompt
+                    task_state.status = "needs_strategy_choice"
+                    return TaskRunResult(
+                        "needs_strategy_choice", prompt, task_state,
+                    )
         else:
             task_state.specialized_source_offer = ""
         task_state.status = "in_progress"
@@ -845,7 +871,9 @@ class TaskPlanner:
                 f"[Task Planner] step={task_state.step_count} "
                 f"capability={capability} risk={risk_level} sub_goal={sub_goal!r}"
             )
-            step_result, prepared = self._run_step(step, self.executors[capability])
+            step_result, prepared = self._run_step(
+                step, self.executors[capability], task_state=task_state,
+            )
             task_state = self._fold_result(task_state, step_result)
             print(
                 f"[Task Planner] step={task_state.step_count} "
@@ -862,6 +890,11 @@ class TaskPlanner:
                     pending_prepared=prepared,
                 )
             if step_result.status == "failed":
+                if step_result.failure_code == "user_took_over":
+                    task_state.status = "stopped"
+                    return TaskRunResult(
+                        "stopped", "You took control, so I stopped.", task_state,
+                    )
                 if task_state.consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                     task_state.status = "failed"
                     return TaskRunResult(
@@ -880,7 +913,7 @@ class TaskPlanner:
         )
 
     def _run_step(
-        self, step: TaskStep, executor: Any,
+        self, step: TaskStep, executor: Any, *, task_state: TaskState,
     ) -> tuple[TaskStepResult, PreparedComputerAction | None]:
         try:
             if (
@@ -893,9 +926,18 @@ class TaskPlanner:
                 # engine and follows only an observed link.  Top-level user
                 # requests still retain BrowserActionPlanner's direct URL
                 # path, outside this higher-level planner.
-                plan_result = executor.act(
-                    step.sub_goal, allow_direct_navigation=False,
-                )
+                kwargs: dict[str, Any] = {"allow_direct_navigation": False}
+                if (
+                    task_state.allowed_source_hosts
+                    and self._accepts_keyword(executor.act, "allowed_hosts")
+                ):
+                    kwargs["allowed_hosts"] = task_state.allowed_source_hosts
+                if (
+                    task_state.preferred_sources
+                    and self._accepts_keyword(executor.act, "source_names")
+                ):
+                    kwargs["source_names"] = task_state.preferred_sources
+                plan_result = executor.act(step.sub_goal, **kwargs)
             else:
                 plan_result = executor.act(step.sub_goal)
         except Exception as error:
