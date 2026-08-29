@@ -62,6 +62,7 @@ _PLAY_DECOYS = (
     "playlists", "playlist",
 )
 _PAUSE_TERMS = ("pause", "일시 정지", "일시정지", "정지", "중지")
+_SHUFFLE_TERMS = ("shuffle", "셔플")
 
 # What each collection is called in the app's own sidebar. A collection is
 # playable only if it appears here: "my playlist" names no particular
@@ -117,6 +118,10 @@ def _without_play_verb(label: str) -> str:
 def _names_pause(label: str) -> bool:
     text = _normalized(label)
     return any(term in text for term in _PAUSE_TERMS)
+
+
+def _names_shuffle(label: str) -> bool:
+    return any(term in _normalized(label) for term in _SHUFFLE_TERMS)
 
 
 def live_window_titles(observer: Any) -> dict[int, str]:
@@ -791,6 +796,168 @@ class PlayCollectionSkill:
         )
 
 
+class ShuffleCollectionSkill:
+    """Open one named collection and use its observed Shuffle control."""
+
+    name = "shuffle_collection"
+    goal_kinds = ("shuffle_collection",)
+    required_slots = ("collection",)
+
+    def run(self, goal: Goal, surface: MediaSurface) -> SkillResult:
+        collection = _normalized(goal.value("collection"))
+        labels = _COLLECTION_LABELS.get(collection, ())
+        if not labels or not surface.can_activate:
+            return HANDED_BACK
+        window = surface.window("Spotify")
+        if window is None:
+            return SkillResult(
+                "failed", "I couldn't find the Spotify window.",
+                failure_code="spotify_not_found",
+            )
+        focus = surface.control.focus_window(window)
+        if focus.status == "user_took_over":
+            return _interrupted(focus, [])
+        if focus.status != "focused":
+            return HANDED_BACK
+        entry = PlayCollectionSkill._entry(surface, window, labels)
+        if entry is None:
+            return SkillResult(
+                "failed",
+                "Spotify isn't exposing your Liked Songs controls, so I can't safely shuffle it.",
+                steps=(focus.message,), failure_code="collection_not_observed",
+            )
+        opened = surface.control.click_control(
+            window, entry.name, element_id=entry.element_id,
+        )
+        if opened.status == "user_took_over":
+            return _interrupted(opened, [focus.message])
+        if opened.status != "clicked":
+            return SkillResult(
+                "failed", "I couldn't open your Liked Songs in Spotify.",
+                steps=(focus.message,), failure_code="collection_open_failed",
+            )
+        observation = surface.observe(
+            window,
+            expecting=lambda control: control.is_actionable and _names_shuffle(control.name),
+        )
+        shuffle = next(
+            (
+                control for control in getattr(observation, "controls", ())
+                if control.is_actionable and _names_shuffle(control.name)
+            ),
+            None,
+        )
+        if shuffle is None:
+            return SkillResult(
+                "failed",
+                "I opened your Liked Songs, but Spotify did not expose a Shuffle control I can safely use.",
+                steps=(focus.message, opened.message), failure_code="shuffle_not_observed",
+            )
+        shuffled = surface.control.click_control(
+            window, shuffle.name, element_id=shuffle.element_id,
+        )
+        if shuffled.status == "user_took_over":
+            return _interrupted(shuffled, [focus.message, opened.message])
+        if shuffled.status != "clicked":
+            return SkillResult(
+                "failed", "I couldn't activate Shuffle in your Liked Songs.",
+                steps=(focus.message, opened.message), failure_code="shuffle_failed",
+            )
+        return SkillResult(
+            "done", "Shuffling your liked songs now.",
+            steps=(focus.message, opened.message, shuffled.message),
+            activated=shuffle.name,
+        )
+
+
+class FindInCollectionSkill:
+    """Find one exact track by scrolling a named, observed collection."""
+
+    name = "find_in_collection"
+    goal_kinds = ("find_in_collection",)
+    required_slots = ("collection", "title")
+
+    def run(self, goal: Goal, surface: MediaSurface) -> SkillResult:
+        collection = _normalized(goal.value("collection"))
+        title = goal.value("title").strip()
+        labels = _COLLECTION_LABELS.get(collection, ())
+        if not labels or not title or not surface.can_activate:
+            return HANDED_BACK
+        window = surface.window("Spotify")
+        if window is None:
+            return SkillResult("failed", "I couldn't find the Spotify window.")
+        focus = surface.control.focus_window(window)
+        if focus.status == "user_took_over":
+            return _interrupted(focus, [])
+        if focus.status != "focused":
+            return HANDED_BACK
+        entry = PlayCollectionSkill._entry(surface, window, labels)
+        if entry is None:
+            return SkillResult(
+                "failed",
+                "Spotify isn't exposing your Liked Songs controls, so I can't safely search inside it.",
+                steps=(focus.message,), failure_code="collection_not_observed",
+            )
+        opened = surface.control.click_control(window, entry.name, element_id=entry.element_id)
+        if opened.status == "user_took_over":
+            return _interrupted(opened, [focus.message])
+        if opened.status != "clicked":
+            return SkillResult("failed", "I couldn't open your Liked Songs in Spotify.")
+        steps = [focus.message, opened.message]
+        scroll = getattr(surface.control, "scroll_control", None)
+        for _attempt in range(6):
+            row = surface.exact_row(window, title)
+            if row is not None:
+                baseline = surface.live_title(window)
+                played = surface.control.double_click_control(
+                    window, row.name, element_id=row.element_id,
+                )
+                if played.status == "user_took_over":
+                    return _interrupted(played, steps)
+                if played.status == "clicked":
+                    playing, _ = playback_evidence(
+                        surface.observer, window, title,
+                        baseline=baseline, sleeper=surface._sleep,
+                    )
+                    if playing:
+                        return SkillResult(
+                            "done", f"Playing {title} from your liked songs.",
+                            steps=tuple(steps + [played.message]), activated=row.name,
+                        )
+                return SkillResult(
+                    "failed", f"I found {title}, but couldn't confirm it started playing.",
+                    steps=tuple(steps + [played.message]), failure_code="playback_unverified",
+                )
+            observation = surface.observe(window)
+            container = next(
+                (
+                    control for control in getattr(observation, "controls", ())
+                    if control.is_actionable
+                    and _role_key(control.role) in {"list", "document", "pane", "table", "tree"}
+                ),
+                None,
+            )
+            if container is None or not callable(scroll):
+                return SkillResult(
+                    "failed",
+                    "I opened your Liked Songs, but Spotify did not expose a list I can safely scroll.",
+                    steps=tuple(steps), failure_code="collection_not_scrollable",
+                )
+            moved = scroll(window, container.name, "down", element_id=container.element_id)
+            if moved.status == "user_took_over":
+                return _interrupted(moved, steps)
+            if moved.status != "scrolled":
+                return SkillResult(
+                    "failed", "I couldn't scroll your Liked Songs safely.",
+                    steps=tuple(steps), failure_code="collection_scroll_failed",
+                )
+            steps.append(moved.message)
+        return SkillResult(
+            "failed", f"I couldn't find {title} in the visible part of your Liked Songs.",
+            steps=tuple(steps), failure_code="track_not_found_in_collection",
+        )
+
+
 def _collection_playing(
     surface: MediaSurface, window: WindowInfo, baseline: str,
 ) -> tuple[bool, str]:
@@ -839,7 +1006,10 @@ def _interrupted(result: UIActionResult, steps: list[str]) -> SkillResult:
     )
 
 
-_SKILLS: tuple[Skill, ...] = (PlayTrackSkill(), PlayCollectionSkill())
+_SKILLS: tuple[Skill, ...] = (
+    PlayTrackSkill(), PlayCollectionSkill(), ShuffleCollectionSkill(),
+    FindInCollectionSkill(),
+)
 
 
 def skill_for(goal: Goal) -> Skill | None:

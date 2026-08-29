@@ -17,10 +17,21 @@ desktop/dist/
 # Generated runtime state
 runtime/debug/
 runtime/data/visual_search_usage.json
-runtime/data/browser-profile/
+# What she has learned about this person -- which track they meant,
+# what they picked last time. Personal, and local by definition.
+runtime/data/user_profile.json
 runtime/agents/
 runtime/audit/
 runtime/secrets/
+
+# Every browser-driver working profile lives directly under runtime/data/
+# as its own directory (browser-profile, plus -probe/-recovery-<port>
+# variants live tests spin up under other base names) -- only the two
+# JSON files above belong to git. A whole Chromium profile (~100MB+ of
+# cert lists, crash metadata, ad-block rules) was committed once under
+# names this rule didn't cover; this pattern covers any base name so it
+# can't happen again.
+runtime/data/*/
 
 # Keep personal memory data local by default
 runtime/database/*.db

@@ -1,7 +1,0 @@
-video {
-    cursor: pointer;
-}
-
-video::-webkit-media-controls {
-    cursor: default;
-}

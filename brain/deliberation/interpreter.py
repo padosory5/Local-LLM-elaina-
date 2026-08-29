@@ -41,6 +41,10 @@ _SEARCH_REQUEST = re.compile(
     r"\b(?:search(?:\s+for)?|look\s+up|lookup|find)\s+(?P<value>.+)$",
     re.IGNORECASE,
 )
+# A value cannot begin with the word that introduces where it goes.
+_DESTINATION_FIRST = re.compile(
+    r"^(?:in|into|inside|on|onto|to|at|for)\b", re.IGNORECASE,
+)
 _INDIRECT_OBJECT = re.compile(r"^(?:me|us|for\s+me|for\s+us)\s+", re.IGNORECASE)
 _SURFACE_TAIL = re.compile(
     r"\s+(?:in|inside|on|using|with)\s+(?:the\s+)?(?P<surface>\S+"
@@ -70,6 +74,22 @@ _RESEARCH_SUBJECT = re.compile(
 _TRAILING_NOISE = re.compile(
     r"(?:\s+(?:for\s+me|please|now|right\s+now))+[.!?]*$", re.IGNORECASE,
 )
+
+_SHUFFLE_COLLECTION = re.compile(
+    r"\b(?:shuffle|random(?:ly)?\s+play)\b|셔플", re.IGNORECASE,
+)
+_FIND_IN_COLLECTION = re.compile(
+    r"\b(?:find|look\s+for)\s+(?P<title>.+?)(?:\s+(?:in|from|on)\s+.+)?$"
+    r"|(?P<korean_title>.+?)(?:을|를)?\s*(?:찾아|찾아줘)",
+    re.IGNORECASE,
+)
+
+
+def _explicit_collection(text: str) -> str:
+    lowered = str(text).casefold()
+    if any(term in lowered for term in ("liked", "좋아요", "saved", "favourite", "favorite")):
+        return "liked songs"
+    return ""
 
 
 def semantic_text(utterance: str) -> str:
@@ -111,6 +131,26 @@ def interpret(utterance: str) -> Goal:
 
     def said(name: str, value: str) -> dict[str, Slot]:
         return {name: Slot(name, value, SOURCE_UTTERANCE)}
+
+    # Collection navigation is a real, observable desktop task in its own
+    # right.  It must not be mistaken for a request to play a track named
+    # "shuffle" or handed to the general planner without its collection.
+    collection = _explicit_collection(text)
+    if collection and _SHUFFLE_COLLECTION.search(text):
+        return Goal(
+            kind="shuffle_collection",
+            utterance=text,
+            slots=said("collection", collection),
+        )
+    if collection and ("scroll" in text.casefold() or "스크롤" in text):
+        match = _FIND_IN_COLLECTION.search(text)
+        title = ""
+        if match is not None:
+            title = (match.group("title") or match.group("korean_title") or "").strip(" ,.?!\"'")
+        slots = said("collection", collection)
+        if title:
+            slots.update(said("title", title))
+        return Goal(kind="find_in_collection", utterance=text, slots=slots)
 
     media = classify_spotify_media_request(text)
     if media.kind == "track" and media.target is not None:
@@ -181,10 +221,15 @@ def interpret(utterance: str) -> Goal:
         value = _cleaned(
             quoted.group(1) if quoted is not None else typing.group("value")
         )
-        if value:
+        if value and not _DESTINATION_FIRST.match(value):
             return Goal(
                 kind="text_input", utterance=text, slots=said("text", value),
             )
+        # "Type in Notepad" names where, not what: the words after the verb
+        # are the destination. The kind is known and the value is not, which
+        # is exactly what the gate turns into a question -- filling the slot
+        # with "in Notepad" would have typed that into the document.
+        return Goal(kind="text_input", utterance=text)
 
     searching = _SEARCH_REQUEST.search(text)
     if searching is not None:

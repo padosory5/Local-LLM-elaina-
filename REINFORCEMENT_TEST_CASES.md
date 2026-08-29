@@ -2,16 +2,18 @@
 
 Restart both Python and Electron after replacing the files.
 
-Run the safe automated suite before the manual voice checks:
+Run the safe automated suite before the manual voice checks, then the
+model-backed routing run:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_feature_regression.py --mode all
+.\.venv\Scripts\python.exe tests\run_tests.py
+.\.venv\Scripts\python.exe tests\run_tests.py live --check router
 ```
 
 To see every phrase without running a model or changing the computer:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_feature_regression.py --list-cases
+.\.venv\Scripts\python.exe tests\run_tests.py --list-cases
 ```
 
 Add `--feature create_folder`, for example, to show only one capability.
@@ -488,28 +490,28 @@ Expected:
 
 ## 23. Automated coverage commands
 
-Run the fast deterministic suite:
+Run the complete deterministic suite:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_feature_regression.py
+.\.venv\Scripts\python.exe tests\run_tests.py
 ```
 
-Run one live Ollama case for every feature:
+Route one live Ollama case for every feature:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_feature_regression.py --mode all
+.\.venv\Scripts\python.exe tests\run_tests.py live --check router
 ```
 
-Run every paraphrase in the feature matrix:
+Route every paraphrase in the feature matrix:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_feature_regression.py --mode all --exhaustive
+.\.venv\Scripts\python.exe tests\run_tests.py live --check router --exhaustive
 ```
 
 Run only the newest computer-control routes:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_feature_regression.py --mode live --exhaustive `
+.\.venv\Scripts\python.exe tests\run_tests.py live --check router --exhaustive `
   --feature computer_action --feature computer_close `
   --feature computer_force_quit --feature browser_tab `
   --feature create_file --feature create_folder `

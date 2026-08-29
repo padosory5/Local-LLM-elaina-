@@ -42,6 +42,7 @@ class SimulatedState:
     opened_apps: int = 0
     clicked_controls: list[str] = field(default_factory=list)
     typed_text: str = ""
+    type_attempts: list[tuple[str, str, str]] = field(default_factory=list)
 
 
 class SimulatedObserver:
@@ -72,7 +73,7 @@ class SimulatedObserver:
                 class_name="Dialog",
             )
         return WindowInfo(
-            "Spotify Premium",
+            "Dynamite - Spotify" if self.state.playing else "Spotify Premium",
             app_name="Spotify",
             is_active=True,
             handle=100,
@@ -172,8 +173,13 @@ class SimulatedControl:
         )
 
     def type_text(self, target, control, text, *, element_id=""):
+        self.state.type_attempts.append((str(control), str(text), str(element_id)))
         if self.state.surface == "notepad":
-            if element_id == "scan1-e0":
+            # The real driver accepts either the fresh scan id or the exact
+            # visible Document control name. The id is preferred, but the
+            # model is also allowed to copy the observed name; rejecting it
+            # here made this simulator stricter than WindowsUIControl.
+            if element_id == "scan1-e0" or control == "텍스트 편집기":
                 self.state.typed_text = str(text)
                 return UIActionResult(
                     "typed", "Typed into the text editor.",
@@ -215,6 +221,32 @@ class SimulatedControl:
             self.state.playing = "dynamite" in normalized_query
             return UIActionResult(
                 "clicked", f"Clicked {control}.",
+                window_title=self.observer.window().title,
+                control_name=control,
+                verified=True,
+                evidence="The simulated playback state became active.",
+            )
+        return UIActionResult(
+            "not_found", f"No control named {control} exists in this surface.",
+            window_title=self.observer.window().title,
+            control_name=control,
+            verified=False,
+        )
+
+    def double_click_control(
+        self, target, control, *, confirmed=False, element_id="",
+    ):
+        normalized_control = control.casefold().strip()
+        normalized_query = self.state.query.casefold().strip()
+        if (
+            self.state.surface == "spotify"
+            and normalized_query
+            and normalized_control == normalized_query
+        ):
+            self.state.clicked_controls.append(control)
+            self.state.playing = "dynamite" in normalized_query
+            return UIActionResult(
+                "clicked", f"Double-clicked {control}.",
                 window_title=self.observer.window().title,
                 control_name=control,
                 verified=True,

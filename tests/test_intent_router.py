@@ -85,6 +85,85 @@ class SemanticIntentRouterTests(unittest.TestCase):
         self.assertEqual(result.action_target, "spotify")
         self.assertEqual(result.computer_operation, "open_app")
 
+    def test_normalizes_user_spoken_computer_targets(self):
+        """A model may label the operation correctly but echo the sentence."""
+        cases = (
+            (
+                "Open youtube.com in a new browser tab.",
+                "open_url",
+                "Open youtube.com in a new browser tab.",
+                "",
+                "youtube.com",
+            ),
+            (
+                "Open the browser and search for best hotels in Guam.",
+                "open_search",
+                "search for best hotels in Guam",
+                "",
+                "best hotels in Guam",
+            ),
+            (
+                "Create a folder called Receipts in Documents.",
+                "create_folder",
+                "Create a folder called Receipts in Documents.",
+                "Documents",
+                "Receipts",
+            ),
+            (
+                "Delete notes.txt from Documents.",
+                "delete_file",
+                "Delete notes.txt from Documents.",
+                "Documents",
+                "notes.txt",
+            ),
+            (
+                "Delete the Hello folder in Documents.",
+                "unsupported",
+                "Delete the Hello folder in Documents.",
+                "Documents",
+                "Hello",
+            ),
+        )
+        for request, operation, target, location, expected_target in cases:
+            with self.subTest(request=request):
+                router = SemanticIntentRouter(
+                    FakeClient({
+                        "intent": "computer_action",
+                        "confidence": 0.95,
+                        "normalized_request": request,
+                        "reason": "Model selected a computer action.",
+                        "speech_act": "action_request",
+                        "action_requested": operation != "unsupported",
+                        "action_target": target,
+                        "computer_operation": operation,
+                        "computer_location": location,
+                    }),
+                    "qwen3:8b",
+                )
+                result = router.route(request, computer_control_enabled=True)
+                self.assertTrue(result.action_requested)
+                self.assertEqual(result.action_target, expected_target)
+                self.assertEqual(result.computer_location, "Documents" if location else "")
+                if "folder" in request.casefold():
+                    self.assertIn(result.computer_operation, {"create_folder", "delete_folder"})
+
+    def test_memory_recall_is_not_misrouted_as_general_knowledge(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "knowledge_question",
+                "confidence": 0.9,
+                "normalized_request": "What do you remember about my favorite foods?",
+                "reason": "The model treated it as factual knowledge.",
+                "speech_act": "information_request",
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("What do you remember about my favorite foods?")
+
+        self.assertEqual(result.intent, "conversation")
+        self.assertTrue(result.memory_relevant)
+
     def test_active_desktop_surface_is_available_for_deictic_page_actions(self):
         client = self.RecordingClient({
             "intent": "computer_action",
@@ -691,6 +770,47 @@ class SemanticIntentRouterTests(unittest.TestCase):
             result.search_query,
             "winner of the 2026 FIFA World Cup",
         )
+
+    def test_recent_unqualified_world_cup_repairs_a_bad_model_query(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "web_search",
+                "confidence": 0.99,
+                "normalized_request": "who won the 2026 world cup",
+                "reason": "Current sports result.",
+                "search_query": "who won the 2026 world cup",
+                "speech_act": "information_request",
+                "verification_required": True,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Who won the recent World Cup?")
+
+        self.assertEqual(result.intent, "web_search")
+        self.assertIn("latest completed edition", result.search_query)
+        self.assertIn("FIFA Men's World Cup", result.search_query)
+        self.assertIn("as of", result.search_query)
+        self.assertNotIn("South Korea", result.search_query)
+        self.assertNotEqual(result.search_query, "who won the 2026 world cup")
+
+    def test_a_named_cricket_world_cup_is_not_rewritten_as_fifa(self):
+        router = SemanticIntentRouter(
+            FakeClient({
+                "intent": "web_search",
+                "confidence": 0.99,
+                "normalized_request": "latest Cricket World Cup winner",
+                "reason": "Current sports result.",
+                "search_query": "latest Cricket World Cup winner",
+                "speech_act": "information_request",
+                "verification_required": True,
+            }),
+            "qwen3:8b",
+        )
+
+        result = router.route("Who won the latest Cricket World Cup?")
+
+        self.assertEqual(result.search_query, "latest Cricket World Cup winner")
 
     def test_read_only_research_does_not_require_magic_search_words(self):
         router = SemanticIntentRouter(

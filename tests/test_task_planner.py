@@ -137,6 +137,19 @@ def _planner(
 
 
 class TaskPlannerTests(unittest.TestCase):
+    def test_recommendation_cannot_finish_without_observed_candidates(self):
+        planner, _, _ = _planner(
+            responses=[
+                {"done": True, "summary": "Ocean View Resort is the best choice."},
+            ],
+            task_extractor=FakeExtractor([()]),
+        )
+
+        result = planner.run("Give me a general hotel overview for Guam.")
+
+        self.assertEqual(result.status, "failed")
+        self.assertIn("won't make up", result.summary)
+
     def test_executes_a_single_step_task_to_completion(self):
         planner, _, browser = _planner(
             responses=[

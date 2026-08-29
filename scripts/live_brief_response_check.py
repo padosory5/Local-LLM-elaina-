@@ -1,4 +1,10 @@
-"""Check live short-response variety without executing any action tools."""
+"""Check live short-response variety without executing any action tools.
+
+Only the outcome-reporting kinds are model-generated and belong here.
+Status lines while work runs moved to ``brain.action_status``, which
+chooses locally and is covered by ``tests/test_action_status.py`` -- there
+is no model to check.
+"""
 
 from __future__ import annotations
 
@@ -35,9 +41,9 @@ def main() -> int:
         keep_alive=keep_alive,
     )
     cases = (
-        ("agent start one", "work_started", "web search", "Search starting", ""),
-        ("agent start two", "work_started", "screen analysis", "Vision starting", ""),
-        ("agent start three", "work_started", "project review", "Review starting", ""),
+        ("app closed", "closed", "Discord", "Closed Discord", "close_app"),
+        ("file created", "file_created", "notes.txt", "Created file", "create_file"),
+        ("app not running", "not_running", "Steam", "Not running", "close_app"),
         ("open Discord", "opened", "Discord", "Opened Discord", "open_app"),
         ("open Steam", "opened", "Steam", "Opened Steam", "open_app"),
         ("open Battle.net", "opened", "Battle.net", "Opened Battle.net", "open_app"),
@@ -67,10 +73,10 @@ def main() -> int:
         )
         truthful = True
         if kind == "not_found":
-            truthful = any(
-                phrase in reply.casefold()
-                for phrase in ("can't", "couldn't", "isn't", "not found")
-            )
+            # Ask the class itself rather than keeping a shorter copy:
+            # this list once omitted "missing" and failed one of the
+            # module's own not_found lines.
+            truthful = generator.reads_as_negative(reply)
         if kind == "control_mode_off":
             truthful = "computer control" in reply.casefold() and any(
                 phrase in reply.casefold()
@@ -81,10 +87,10 @@ def main() -> int:
                 word in reply.casefold()
                 for word in ("delete", "recycle", "trash", "remove")
             )
-        if kind == "work_started":
-            truthful = "?" not in reply and not any(
-                word in reply.casefold()
-                for word in ("done", "finished", "confirmation")
+        if kind == "not_running":
+            truthful = (
+                generator.reads_as_negative(reply)
+                or "already closed" in reply.casefold()
             )
         passed = short and unique and not generic and truthful
         failures += 0 if passed else 1

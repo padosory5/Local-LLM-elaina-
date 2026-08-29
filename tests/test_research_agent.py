@@ -2,9 +2,28 @@ import unittest
 from datetime import datetime
 
 from agents.research_agent import ResearchAgent
+from brain.user_locale import UserLocale
 
 
 class ResearchAgentTests(unittest.TestCase):
+    def test_global_world_cup_query_is_not_localized_to_korea(self):
+        calls = []
+
+        agent = ResearchAgent(
+            lambda query, max_results: calls.append(query) or "Evidence",
+            locale=UserLocale(country="KR", city="Seoul"),
+        )
+        agent.research(
+            request="Who won the recent World Cup?",
+            search_query="latest completed FIFA Men's World Cup champion",
+            verify=True,
+        )
+
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all("FIFA Men's World Cup" in query for query in calls))
+        self.assertTrue(all("South Korea" not in query for query in calls))
+        self.assertIn("official source", calls[1])
+
     def test_temporal_winner_uses_independent_verification_query(self):
         calls = []
 

@@ -152,6 +152,13 @@ _COMMITTING_KEYWORDS = (
     "예약", "다운로드", "신청", "구독", "가입", "비밀번호 변경", "계정 삭제",
 )
 
+_COMMITTING_ELEMENT_PATTERN = re.compile(
+    r"\b(?:send|submit|post|publish|confirm|delete|remove|discard|accept|"
+    r"agree|allow|install|uninstall|unsubscribe|deactivate|download|apply|"
+    r"book|reserve)\b|예약|구독|삭제|제출|전송|확인|다운로드",
+    re.IGNORECASE,
+)
+
 # "Payments ... should remain user-only" -- a stricter line than the
 # generic committing tier above. checkout/order alone are deliberately not
 # here: "Go to checkout" is usually just navigation to a review page, not
@@ -223,8 +230,11 @@ _AD_NETWORK_HOSTS = (
 
 def is_committing_element(label: str) -> bool:
     """True if activating this element is a consequential, not-undoable step."""
-    lowered = label.casefold()
-    return any(keyword in lowered for keyword in _COMMITTING_KEYWORDS)
+    # Word matching is essential here: a search result headed
+    # "Booking.com" is a normal, reversible link to a listing, not the
+    # actual Book/Reserve action.  The former should be inspectable without
+    # confirmation; only the real committing button should pause.
+    return bool(_COMMITTING_ELEMENT_PATTERN.search(str(label)))
 
 
 def is_payment_element(label: str) -> bool:

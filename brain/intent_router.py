@@ -149,6 +149,48 @@ _OPEN_APP_GRAMMAR_WORDS = frozenset({
     "to", "up", "would", "you",
 })
 
+# These are narrow, local normalizers for structured computer requests. They
+# do not decide whether an arbitrary sentence may control the computer: that
+# remains the model's intent decision plus _apply_computer_control_policy.
+# They only recover the exact user-provided target when the model has already
+# selected a supported operation but copied the whole sentence into
+# action_target (a common small-model failure in live routing checks).
+_SPOKEN_URL = re.compile(
+    r"\b(?:(?:https?://)?(?:www\.)?[a-z0-9][a-z0-9-]*"
+    r"(?:\.[a-z0-9][a-z0-9-]*)+)(?:/[^\s]*)?",
+    flags=re.IGNORECASE,
+)
+_SPOKEN_SEARCH = re.compile(
+    r"\b(?:search|look\s+up|find)\s+(?:for\s+)?(?P<query>.+?)"
+    r"(?:\s+(?:in|on|using)\s+(?:my\s+|the\s+)?"
+    r"(?:new\s+)?(?:browser|tab).*)?[.?!]*$",
+    flags=re.IGNORECASE,
+)
+_SPOKEN_FILESYSTEM_ACTION = re.compile(
+    r"^\s*(?P<verb>create|make|add|delete|remove|trash|get\s+rid\s+of|move)"
+    r"\s+(?:(?:me\s+)?(?:an?|the)\s+)?(?:(?:empty|blank)\s+)?"
+    r"(?:(?P<kind>file|folder|directory)\s+)?(?:(?:named|called)\s+)?"
+    r"(?P<target>.+?)\s+(?:in|inside|from|on|under)\s+"
+    r"(?:(?:my|the)\s+)?(?P<location>documents|downloads|desktop)\b",
+    flags=re.IGNORECASE,
+)
+_MEMORY_RECALL_QUESTION = re.compile(
+    r"^\s*(?:what\s+do\s+you\s+remember(?:\s+about)?|"
+    r"tell\s+me\s+what\s+you\s+remember)\b",
+    flags=re.IGNORECASE,
+)
+
+# "World Cup" without a sport qualifier conventionally means the men's FIFA
+# tournament. A small model sometimes binds "recent" to the current calendar
+# year even while that edition is still scheduled, or turns a national-team
+# match into the tournament winner. This is narrow periodic-event
+# normalization, not a sports keyword router: explicitly named cricket, rugby,
+# women's, hockey, basketball, or other World Cups remain model-owned.
+_OTHER_WORLD_CUP = re.compile(
+    r"\b(?:women(?:'s)?|cricket|rugby|hockey|basketball|fiba|icc)\b",
+    flags=re.IGNORECASE,
+)
+
 
 def _open_app_has_unresolved_goal(transcript: str, target: str) -> bool:
     words = re.findall(r"[^\W_]+", str(transcript).casefold())
@@ -391,6 +433,14 @@ class SemanticIntentRouter:
                     routed_input,
                 )
             if decision is not None:
+                decision = self._normalize_deterministic_request_shape(
+                    decision,
+                    original_input=user_input,
+                )
+                decision = self._apply_periodic_event_policy(
+                    decision,
+                    original_input=user_input,
+                )
                 decision = self._apply_computer_control_policy(
                     decision,
                     original_input=user_input,
@@ -578,6 +628,95 @@ class SemanticIntentRouter:
                 encoded.append(digit)
             previous = digit
         return ("".join(encoded) + "000")[:4]
+
+    @staticmethod
+    def _normalize_deterministic_request_shape(
+        decision: IntentDecision,
+        *,
+        original_input: str,
+    ) -> IntentDecision:
+        """Keep exact, user-spoken targets stable across model phrasing.
+
+        The router still supplies the meaning for open/close/UI work. These
+        few request shapes have a safer local truth: a URL, a search query,
+        a file/folder name, and a direct question about stored memories. A
+        normalizer prevents the model's explanatory words from becoming the
+        filesystem or browser target without broadening any capability.
+        """
+        text = " ".join(str(original_input or "").split())
+        if _MEMORY_RECALL_QUESTION.match(text):
+            return replace(
+                decision,
+                intent="conversation",
+                normalized_request=text,
+                reason="The user asked about their own stored memories.",
+                action_requested=False,
+                action_target="",
+                computer_operation="none",
+                memory_relevant=True,
+            )
+
+        if decision.intent != "computer_action":
+            return decision
+
+        operation = decision.computer_operation
+        if operation == "open_url":
+            match = _SPOKEN_URL.search(text)
+            if match is not None:
+                return replace(
+                    decision,
+                    action_target=match.group(0).rstrip(".,!?)\"]}"),
+                )
+
+        if operation == "open_search":
+            match = _SPOKEN_SEARCH.search(text)
+            if match is not None:
+                query = match.group("query").strip(" .!?")
+                if query:
+                    return replace(decision, action_target=query)
+
+        filesystem = _SPOKEN_FILESYSTEM_ACTION.match(text)
+        if filesystem is None:
+            return decision
+
+        target = filesystem.group("target").strip(" .,!?'\"")
+        target = re.sub(r"^(?:my|the|a|an)\s+", "", target, flags=re.IGNORECASE)
+        kind = (filesystem.group("kind") or "").casefold()
+        trailing_kind = re.search(
+            r"\s+(file|folder|directory)\s*$", target, flags=re.IGNORECASE,
+        )
+        if trailing_kind is not None:
+            kind = kind or trailing_kind.group(1).casefold()
+            target = target[:trailing_kind.start()].strip()
+        if not target:
+            return decision
+
+        verb = filesystem.group("verb").casefold().replace("  ", " ")
+        creates = verb in {"create", "make", "add"}
+        deletes = verb in {"delete", "remove", "trash", "get rid of", "move"}
+        if not kind:
+            kind = (
+                "folder" if operation in {"create_folder", "delete_folder"}
+                else "file" if operation in {"create_file", "delete_file"}
+                else ""
+            )
+        if not kind or not (creates or deletes):
+            return decision
+
+        inferred_operation = (
+            ("create_" if creates else "delete_")
+            + ("folder" if kind in {"folder", "directory"} else "file")
+        )
+        location = filesystem.group("location").title()
+        return replace(
+            decision,
+            intent="computer_action",
+            normalized_request=text,
+            speech_act="action_request",
+            action_target=target,
+            computer_operation=inferred_operation,
+            computer_location=location,
+        )
 
     @staticmethod
     def _apply_action_safety_policy(
@@ -907,6 +1046,52 @@ class SemanticIntentRouter:
                 )
             ),
             requires_external_evidence=True,
+        )
+
+    @staticmethod
+    def _apply_periodic_event_policy(
+        decision: IntentDecision,
+        *,
+        original_input: str,
+    ) -> IntentDecision:
+        """Resolve an unqualified recent World Cup to a completed tournament.
+
+        This corrects only the information request and query. Search still
+        supplies the winner; no champion or edition year is hardcoded here.
+        """
+        text = " ".join(str(original_input or "").split())
+        lowered = text.casefold()
+        asks_for_recent_winner = (
+            "world cup" in lowered
+            and any(word in lowered for word in ("recent", "latest", "last"))
+            and any(word in lowered for word in ("won", "winner", "champion"))
+        )
+        if not asks_for_recent_winner or _OTHER_WORLD_CUP.search(text):
+            return decision
+
+        as_of = datetime.now().strftime("%Y-%m-%d")
+        return replace(
+            decision,
+            intent="web_search",
+            normalized_request=text,
+            reason=(
+                "The latest completed FIFA Men's World Cup winner is a "
+                "date-dependent tournament result and needs current evidence."
+            ),
+            search_query=(
+                "latest completed edition FIFA Men's World Cup tournament "
+                f"champion official as of {as_of}"
+            ),
+            topic="FIFA Men's World Cup",
+            entity="FIFA Men's World Cup",
+            speech_act="information_request",
+            action_requested=True,
+            verification_required=True,
+            information_freshness="historical_record",
+            requires_external_evidence=True,
+            recommendation_needed=False,
+            advice_domain="general",
+            time_scope="current",
         )
 
     @staticmethod

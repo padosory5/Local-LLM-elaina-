@@ -177,7 +177,7 @@ class ClassifierTests(unittest.TestCase):
             self.assertFalse(is_committing_element(label), label)
 
     def test_ordinary_navigation_is_not_committing(self):
-        for label in ("Home", "Next", "Search", "Learn more"):
+        for label in ("Home", "Next", "Search", "Learn more", "Booking.com"):
             self.assertFalse(is_committing_element(label), label)
 
     def test_korean_committing_keywords_are_detected(self):

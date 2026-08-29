@@ -1,4 +1,17 @@
-"""Short, varied, outcome-locked voice responses for actions and agents."""
+"""Short, varied, outcome-locked voice responses for actions and agents.
+
+Every kind here reports a **result** and names a **subject** -- "Got it,
+Spotify is open." They are outcome-locked on purpose: a line claiming success
+for a failure is a correctness bug, so each candidate is validated against the
+real status before it is allowed out, and the model call is worth its latency
+because the wording has to carry a specific subject.
+
+The contentless lines -- an acknowledgement, a status while work is still
+running -- belong to :mod:`brain.action_status` instead. Those are chosen
+locally with no model call, because the sentence covering a wait must not
+itself wait. The ``work_started`` kind that used to live here was exactly that
+sentence, and it is gone rather than duplicated.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +27,44 @@ class BriefResponseGenerator:
     """Generate natural variety without allowing a line to change action state."""
 
     MAX_WORDS = 7
+
+    # How many recent openings a category bars. Every line competes for these
+    # slots now, not only the stock ones, so the window has to leave a small
+    # bank somewhere to go: the narrowest here holds three lines.
+    OPENING_WINDOW = 4
+
+    # What counts as reporting something that did not happen. Public, and used
+    # by scripts/live_brief_response_check.py, because that check kept its own
+    # shorter copy: "That app is missing." is one of this class's own
+    # not_found lines and the check called it untruthful.
+    NEGATIVE_PHRASES = (
+        "can't", "cannot", "couldn't", "didn't", "doesn't", "don't",
+        "failed", "isn't", "not found", "won't", "missing", "wrong",
+        "not allowed", "invalid", "restricted", "unavailable", "not ",
+    )
+
+    # Kinds that read as the same *type* of line (a plain success ack, or a
+    # yes/no offer) share one opening-repetition budget, so "Got it" isn't
+    # allowed back-to-back just because the second one was technically a
+    # different kind (opened then closed, say). Anything not listed here
+    # tracks against its own kind alone -- "on it" starting a task must
+    # never compete with "got it" closing one for the same few slots, or
+    # the rarer kind starves and the busier one dominates every fallback.
+    _OPENING_CATEGORIES = {
+        "opened": "success",
+        "closed": "success",
+        "close_requested": "success",
+        "force_quit": "success",
+        "url_opened": "success",
+        "file_created": "success",
+        "folder_created": "success",
+        "file_deleted": "success",
+        "folder_deleted": "success",
+        "force_quit_offer": "offer",
+        "delete_offer": "offer",
+        "ui_action_offer": "offer",
+    }
+
     _FALLBACKS = {
         "opened": (
             "Got it—{subject} is open.",
@@ -21,6 +72,9 @@ class BriefResponseGenerator:
             "Done—{subject} is open.",
             "All set with {subject}.",
             "Opened {subject}.",
+            "There you go—{subject} is up.",
+            "{subject} is open now.",
+            "Up and running—{subject}.",
         ),
         "control_mode_off": (
             "Enable Computer Control to {action} {subject}.",
@@ -48,6 +102,8 @@ class BriefResponseGenerator:
             "Done, {subject} is closed.",
             "All set—closed {subject}.",
             "Sure, {subject} is closed.",
+            "{subject} is closed now.",
+            "That's {subject} closed.",
         ),
         "close_requested": (
             "Closing {subject} now.",
@@ -65,18 +121,24 @@ class BriefResponseGenerator:
             "Sure, new tab opened.",
             "Opened {subject} in a new tab.",
             "All set—{subject} is open.",
+            "New tab, {subject} is up.",
+            "There it is—{subject}.",
         ),
         "file_created": (
             "Got it—created {subject}.",
             "Sure, {subject} is ready.",
             "Done—your file is ready.",
             "Created {subject}.",
+            "{subject} is ready to go.",
+            "Made {subject} for you.",
         ),
         "folder_created": (
             "Got it—created {subject}.",
             "Sure, the folder is ready.",
             "Done—{subject} is ready.",
             "Created the {subject} folder.",
+            "{subject} folder is ready.",
+            "Made the {subject} folder.",
         ),
         "file_deleted": (
             "Got it—{subject} is recycled.",
@@ -148,14 +210,6 @@ class BriefResponseGenerator:
             "Got it, I won't proceed.",
             "No problem, I won't continue.",
         ),
-        "work_started": (
-            "On it.",
-            "Checking now.",
-            "Right away.",
-            "Got it.",
-            "On that.",
-            "Sure, one moment.",
-        ),
     }
 
     def __init__(
@@ -171,7 +225,7 @@ class BriefResponseGenerator:
         self.keep_alive = keep_alive
         self._recent: deque[str] = deque(maxlen=max(6, int(recent_limit)))
         self._recent_shapes: deque[str] = deque(maxlen=max(6, int(recent_limit)))
-        self._recent_openings: deque[str] = deque(maxlen=4)
+        self._recent_openings: dict[str, deque[str]] = {}
 
     def generate(
         self,
@@ -212,7 +266,9 @@ class BriefResponseGenerator:
         self._recent_shapes.append(self._response_shape(candidate, subject))
         opening = self._opening(candidate)
         if opening:
-            self._recent_openings.append(opening)
+            self._recent_openings.setdefault(
+                self._category(kind), deque(maxlen=self.OPENING_WINDOW)
+            ).append(opening)
         return candidate
 
     def _prompt(
@@ -251,7 +307,6 @@ class BriefResponseGenerator:
             "ambiguous": "Ask which matching application the user means.",
             "blocked": "State that this computer action is unsupported.",
             "declined": "Acknowledge that the action will not happen.",
-            "work_started": "Work is beginning. Do not claim completion.",
         }[kind]
         variation = (
             "minimal acknowledgement",
@@ -260,17 +315,25 @@ class BriefResponseGenerator:
             "verb-first phrasing",
             "lightly playful but clear phrasing",
         )[len(self._recent) % 5]
+        # Naming stock openers here taught the model to use them: the old
+        # wording listed okay/sure/got it/done/all set as examples, and those
+        # words then opened most of what she said. Now the recent openings go
+        # in as words to avoid, and starting with the result or the target is
+        # what gets recommended instead.
+        avoid = ", ".join(self._recent_openings_for(kind)) or "(none yet)"
         return (
             "Write one natural voice-bot line only, without quotes or labels. "
-            f"Use no more than {self.MAX_WORDS} words. Vary openings among "
-            "phrases like okay, sure, got it, done, all set, and original "
-            "alternatives. Never add an offer to help. Never repeat or closely "
-            "paraphrase a recent line. The trusted status is absolute: never "
-            "claim success for failure or failure for success. Confirmation "
-            "lines must be questions and clearly name the action and target.\n\n"
+            f"Use no more than {self.MAX_WORDS} words. Start the line with a "
+            "different word than the recent ones; leading with the result or "
+            "the target usually sounds better than a stock opener. Never add "
+            "an offer to help. Never repeat or closely paraphrase a recent "
+            "line. The trusted status is absolute: never claim success for "
+            "failure or failure for success. Confirmation lines must be "
+            "questions and clearly name the action and target.\n\n"
             f"Status: {kind}\nOperation: {operation or '(none)'}\n"
             f"Subject: {subject or '(none)'}\nDetail: {detail or '(none)'}\n"
             f"Instruction: {rules}\nVariation style: {variation}\n"
+            f"Do not start with: {avoid}\n"
             f"Recent lines: {' | '.join(self._recent) or '(none)'}"
         )
 
@@ -289,17 +352,10 @@ class BriefResponseGenerator:
             for phrase in ("anything else", "let me know", "need help")
         ):
             return False
-        if self._is_repeated(text, subject):
+        if self._is_repeated(text, subject, kind):
             return False
 
-        negative = any(
-            phrase in lowered
-            for phrase in (
-                "can't", "cannot", "couldn't", "didn't", "failed", "isn't",
-                "not found", "won't", "missing", "wrong", "not allowed",
-                "invalid", "restricted", "unavailable", "not ",
-            )
-        )
+        negative = self.reads_as_negative(text)
         if kind in {
             "opened", "closed", "force_quit", "url_opened", "file_created",
             "folder_created", "file_deleted", "folder_deleted",
@@ -315,10 +371,27 @@ class BriefResponseGenerator:
             or "takeover" in lowered
         ):
             return False
+        # "blocked" is also where every unrecognized kind lands, so it is the
+        # last line of defence for a caller asking for something this class no
+        # longer knows about. Without it, a model line such as "Done, I found
+        # it." was returned verbatim for an action she had actually refused.
         if kind in {
             "not_found", "item_not_found", "failed", "declined", "not_running",
-            "invalid_target", "outside_allowed", "wrong_type",
+            "invalid_target", "outside_allowed", "wrong_type", "blocked",
         } and not negative:
+            return False
+        if kind == "blocked" and "?" in text:
+            return False
+        # A close was requested, not observed. Claiming the app is closed is
+        # the same class of lie as claiming success for a failure, and the
+        # prompt's "do not claim full exit" was the only thing preventing it.
+        if kind == "close_requested" and any(
+            phrase in lowered
+            for phrase in (
+                "is closed", "has closed", "closed it", "is gone",
+                "fully closed", "is now closed",
+            )
+        ):
             return False
 
         if kind == "control_mode_off":
@@ -358,16 +431,6 @@ class BriefResponseGenerator:
             return False
         if kind == "ambiguous" and "?" not in text:
             return False
-        if kind == "work_started" and any(
-            phrase in lowered
-            for phrase in (
-                "completed", "done", "finished", "found it", "opened",
-                "confirmation", "ready",
-            )
-        ):
-            return False
-        if kind == "work_started" and "?" in text:
-            return False
         return True
 
     def _fallback(self, kind: str, subject: str, operation: str) -> str:
@@ -392,13 +455,19 @@ class BriefResponseGenerator:
         short_options = [
             option for option in options if len(option.split()) <= self.MAX_WORDS
         ] or options
+        # Scanning from index 0 every time systematically preferred whatever
+        # sat first in each bank -- and the first entry was nearly always the
+        # stock "Got it" or "Sure". Starting the scan at a rotating offset
+        # gives the rest of the bank the same chance.
+        start = len(self._recent) % len(short_options)
+        ordered = short_options[start:] + short_options[:start]
         return next(
             (
                 option
-                for option in short_options
-                if not self._is_repeated(option, subject)
+                for option in ordered
+                if not self._is_repeated(option, subject, kind)
             ),
-            short_options[len(self._recent) % len(short_options)],
+            ordered[0],
         )
 
     def _subject_is_named(self, text: str, subject: str) -> bool:
@@ -435,9 +504,25 @@ class BriefResponseGenerator:
             )
         return bool(words.intersection(alternatives))
 
-    def _is_repeated(self, candidate: str, subject: str = "") -> bool:
+    @classmethod
+    def reads_as_negative(cls, text: str) -> bool:
+        """Whether this line reports something that did not happen."""
+        lowered = str(text).casefold()
+        return any(phrase in lowered for phrase in cls.NEGATIVE_PHRASES)
+
+    def _category(self, kind: str) -> str:
+        """The opening-repetition budget this kind draws on."""
+        return self._OPENING_CATEGORIES.get(kind, kind)
+
+    def _recent_openings_for(self, kind: str) -> tuple[str, ...]:
+        return tuple(self._recent_openings.get(self._category(kind), ()))
+
+    def _is_repeated(
+        self, candidate: str, subject: str = "", kind: str = "",
+    ) -> bool:
         opening = self._opening(candidate)
-        if opening and opening in self._recent_openings:
+        category = self._category(kind)
+        if opening and opening in self._recent_openings.get(category, ()):
             return True
         normalized = self._normalize(candidate)
         if any(
@@ -469,12 +554,16 @@ class BriefResponseGenerator:
 
     @staticmethod
     def _opening(value: str) -> str:
+        """The first word, for any line -- not only the stock ones.
+
+        This used to return "" unless the line began with one of eight
+        approved openers, so "Opened Discord" and "Created the Trip folder"
+        recorded nothing and never displaced "sure" or "done" from the
+        window. Measured over twenty spoken outcome lines, three stock words
+        opened twelve of them. Every line competes for the window now.
+        """
         words = re.findall(r"[a-z]+", str(value).casefold())
-        if not words or words[0] not in {
-            "got", "sure", "okay", "done", "alright", "all", "on", "right",
-        }:
-            return ""
-        return "".join(words[:2]) if len(words) > 1 else words[0]
+        return words[0] if words else ""
 
     @staticmethod
     def _normalize(value: str) -> str:

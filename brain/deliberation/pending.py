@@ -24,6 +24,13 @@ from brain.deliberation.interpreter import interpret
 # unrelated sentence is never mistaken for the answer.
 _DEFAULT_EXPIRY_SECONDS = 120
 
+# Openers that start a new question rather than answer one.
+_QUESTION_OPENER = re.compile(
+    r"^(?:what|who|when|where|why|how|which|is|are|do|does|did|can|could|"
+    r"would|will|should|tell\s+me)\b",
+    re.IGNORECASE,
+)
+
 # A reply that issues an instruction of its own is a new request, not an
 # answer to the outstanding question -- "no, open Discord instead".
 _INSTRUCTION_REPLY = re.compile(
@@ -31,6 +38,39 @@ _INSTRUCTION_REPLY = re.compile(
     r"|\b(?:open|launch|close|search|pause|stop|type|write|click)\b",
     re.IGNORECASE,
 )
+
+
+def reads_as_new_request(reply: str) -> bool:
+    """Whether this is plainly a fresh request rather than an answer.
+
+    A pending offer must not consume the next thing said. Measured live: a
+    strategy offer left over from "find hotels in guam" swallowed "what is
+    the tallest building in seoul" and answered it with the hotel question.
+    A question is not an answer, and neither is an instruction.
+    """
+    text = " ".join(str(reply or "").split())
+    if not text:
+        return False
+    if text.endswith("?"):
+        return True
+    if _QUESTION_OPENER.match(text):
+        return True
+    return bool(_INSTRUCTION_REPLY.search(text))
+
+
+def asks_something_else(reply: str) -> bool:
+    """Whether this reply is a question of its own.
+
+    Narrower than reads_as_new_request on purpose. A consent offer takes
+    "no, the quick overview is fine" as a perfectly good answer, so a bare
+    refusal must not count -- but "what is the tallest building in Seoul"
+    is not an answer to anything, and a pending offer that swallows it
+    replies to the wrong request entirely.
+    """
+    text = " ".join(str(reply or "").split())
+    if not text:
+        return False
+    return bool(text.endswith("?") or _QUESTION_OPENER.match(text))
 
 
 @dataclass(frozen=True)
@@ -54,7 +94,7 @@ class PendingClarification:
         text = " ".join(str(reply or "").split())
         if not text or not self.bindable:
             return False
-        if _INSTRUCTION_REPLY.search(text):
+        if reads_as_new_request(text):
             return False
         # An answer is short. A paragraph is a change of subject.
         return len(text.split()) <= 12
@@ -64,6 +104,25 @@ class PendingClarification:
         answer = " ".join(str(reply or "").split()).strip(" .!?,")
         if not answer or not self.bindable:
             return None
+        # The hotel-date prompt explicitly offers "general overview" as an
+        # alternative.  It is not a date, and treating it as one let a
+        # booking flow continue with neither dates nor live listings, where
+        # a model could then invent hotels and prices.  Preserve the user's
+        # original subject but turn this into non-committing research.
+        if (
+            self.goal.kind == "booking"
+            and self.slot == "dates"
+            and re.fullmatch(r"(?:a\s+)?(?:quick\s+|general\s+)?overview", answer, re.I)
+        ):
+            subject = self.goal.value("subject") or self.goal.utterance
+            slots = dict(self.goal.slots)
+            slots.pop("dates", None)
+            slots["overview"] = Slot("overview", "general", SOURCE_ASKED, 1.0)
+            return Goal(
+                kind="research",
+                utterance=f"Give me a general hotel overview for {subject}",
+                slots=slots,
+            )
         completed = interpret(self.template.format(answer=answer))
         if not completed.has(self.slot):
             return None

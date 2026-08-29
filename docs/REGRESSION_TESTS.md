@@ -35,7 +35,7 @@ Elaina must not ask whether to search a second time.
 To check the real local model rather than test doubles, run:
 
 ```text
-python scripts/live_router_check.py
+python tests/run_tests.py live --check router
 ```
 
 This performs six read-only routing checks against the configured Ollama model.
@@ -263,7 +263,7 @@ Expected:
 Run the four read-only calculation samples against the configured local model:
 
 ```text
-python scripts/live_response_check.py
+python tests/run_tests.py live --check response
 ```
 
 The script checks proportional distribution, bill splitting, a discount, and
@@ -330,5 +330,5 @@ Expected:
 Run all semantic router variants for this capability with:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_feature_regression.py --mode live --exhaustive --feature computer_ui_action
+.\.venv\Scripts\python.exe tests\run_tests.py live --check router --exhaustive --feature computer_ui_action
 ```

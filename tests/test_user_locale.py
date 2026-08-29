@@ -130,6 +130,32 @@ class QueryLocalizationTests(unittest.TestCase):
             "second-hand phone marketplaces in Seoul",
         )
 
+    def test_a_global_sports_result_is_not_pinned_to_the_users_market(self):
+        locale = UserLocale(country="KR", city="Seoul")
+
+        self.assertEqual(
+            locale.localize_query(
+                "latest completed FIFA Men's World Cup champion"
+            ),
+            "latest completed FIFA Men's World Cup champion",
+        )
+
+    def test_a_global_exchange_rate_is_not_pinned_to_the_users_market(self):
+        locale = UserLocale(country="KR", city="Seoul")
+
+        self.assertEqual(
+            locale.localize_query("current USD to KRW exchange rate"),
+            "current USD to KRW exchange rate",
+        )
+
+    def test_local_weather_is_pinned_to_the_users_location(self):
+        locale = UserLocale(country="KR", city="Seoul")
+
+        self.assertEqual(
+            locale.localize_query("weather tomorrow"),
+            "weather tomorrow in Seoul",
+        )
+
     def test_an_english_default_market_leaves_queries_untouched(self):
         locale = UserLocale(country="US")
 

@@ -160,6 +160,20 @@ _DESTINATION_HINT = re.compile(
     r"([A-Za-z][\w'-]*(?:\s+[A-Za-z][\w'-]*){0,2})",
 )
 
+# Only searches whose answer genuinely depends on where the user is should be
+# pinned to the home market. The old code localized *every* placeless query,
+# turning global facts such as "latest World Cup winner" into "... in Seoul"
+# and exchange-rate lookups into Korean-local searches. Keep this deliberately
+# narrower than generic words such as "current", "best", or "price".
+_MARKET_SENSITIVE_QUERY = re.compile(
+    r"\b(?:near\s+me|nearby|local(?:ly)?|weather|forecast|air\s+quality|"
+    r"traffic|transit|hotel|lodging|restaurant|cafe|café|bar|marketplace|"
+    r"second[-\s]?hand|shopping|retailer|flight|airfare|jobs?|real\s+estate|"
+    r"apartments?)\b|"
+    r"주변|근처|날씨|호텔|숙소|맛집|식당|중고|쇼핑|항공권|취업|부동산",
+    flags=re.IGNORECASE,
+)
+
 # Cities matter more than countries here: people say "hotels in Seoul", not
 # "hotels in South Korea". Only places whose market this module can actually
 # serve are listed -- an unlisted destination resolves to no sites at all,
@@ -185,6 +199,27 @@ _PLACE_COUNTRIES: dict[str, str] = {
     "france": "FR", "paris": "FR",
     "india": "IN", "mumbai": "IN", "delhi": "IN",
 }
+
+
+# Two different languages meet in this module and must never be confused.
+# ``LocaleContext.language`` is the language of the user's *market* -- what
+# local sources and shop listings are written in. What Elaina *answers* in is
+# ``language.response`` in config.yaml, and only that. Saying "answer in their
+# own language" next to "the user is in South Korea" made her greet an
+# English-configured user in Korean, so nothing here decides the reply
+# language any more: callers pass in the configured one and it is named
+# outright.
+LANGUAGE_NAMES = {
+    "en": "English",
+    "ko": "Korean",
+}
+
+
+def language_name(code: str) -> str:
+    """A prompt-ready name for a language code, e.g. "en" -> "English"."""
+    key = str(code or "").strip().casefold()
+    key = key.split("-")[0]
+    return LANGUAGE_NAMES.get(key, key.upper() or "English")
 
 
 @dataclass(frozen=True)
@@ -390,11 +425,13 @@ class UserLocale:
         return tuple(_REGIONAL_SITE_HOSTS.get(market, {}).get(category, ()))
 
     def localize_query(self, query: str, *, category: str = "") -> str:
-        """Add the market to a search query when it names no place at all.
+        """Add the market only when a query's answer depends on location.
 
         A query that already names a destination ("hotels in Hong Kong") is
         left exactly as written -- adding the user's home country there
-        would actively make the results wrong.
+        would actively make the results wrong. Global facts, sports, releases,
+        exchange rates, and other placeless but non-local questions are also
+        left alone.
         """
         text = " ".join(str(query).split()).strip()
         if not text:
@@ -403,11 +440,24 @@ class UserLocale:
             return text
         if _DESTINATION_HINT.search(text):
             return text
+        category = str(category or "").strip().casefold()
+        market_categories = set(_REGIONAL_SITES.get(self.country_code, {}))
+        if category not in market_categories and not _MARKET_SENSITIVE_QUERY.search(text):
+            return text
         place = self.context.city or self.context.country_name
         return f"{text} in {place}"
 
-    def context_text(self) -> str:
-        """A short, factual block for any prompt that makes recommendations."""
+    def context_text(self, response_language: str = "en") -> str:
+        """A short, factual block for any prompt that makes recommendations.
+
+        ``response_language`` is the configured reply language, not this
+        locale's. The two are different for anyone living outside their
+        reply language's home country, and this block used to end with
+        "always answer the user in their own language" directly under "The
+        user is in South Korea" -- which read as an instruction to answer in
+        Korean, and was obeyed.
+        """
+        reply_in = language_name(response_language)
         lines = [
             "USER LOCATION",
             f"The user is in {self.context.home}.",
@@ -421,10 +471,11 @@ class UserLocale:
                 "destination's own local options instead of the user's."
             ),
         ]
-        if self.context.language != "en":
+        if language_name(self.context.language) != reply_in:
             lines.append(
-                f"Local sources are often in {self.context.language}; that is "
-                "fine, but always answer the user in their own language."
+                f"Local sources are often in "
+                f"{language_name(self.context.language)}; reading them is "
+                f"fine, but write the answer itself in {reply_in}."
             )
         return "\n".join(lines)
 

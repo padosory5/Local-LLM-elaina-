@@ -32,7 +32,8 @@ tools/          project MCP, search, visual search, and calendar integrations
 vision/         on-demand screen capture
 voice/          microphone input, VAD, STT, TTS, and interruption
 runtime/        generated agents, memories, captures, tokens, and audit records
-tests/          automated regression tests
+scripts/        live checks against the real model, browser, and desktop
+tests/          the test suite and its single entry point, run_tests.py
 ```
 
 ## Features
@@ -208,7 +209,7 @@ pointer but cannot type into many apps).
 Verify it live:
 
 ```
-python scripts/live_desktop_control_check.py
+python tests/run_tests.py live --check desktop-control
 ```
 
 Limits: apps that expose nothing to UI Automation (some games, custom-drawn
@@ -255,8 +256,8 @@ Switch drivers with `browser_control.driver` in `config/config.yaml`:
 Verify it live:
 
 ```
-python scripts/live_screen_browser_check.py       # mechanism
-python scripts/live_screen_browser_task_check.py  # full planner, real goals
+python tests/run_tests.py live --check screen-browser       # mechanism
+python tests/run_tests.py live --check screen-browser-task  # full stack
 ```
 
 Limits of the screen driver: a page whose accessibility tree never becomes
@@ -302,51 +303,75 @@ Current limitations:
 
 ## Testing
 
-Run the fast deterministic suite after ordinary code changes:
+Everything runnable lives behind one entry point. There is no second runner and
+no list of scripts to remember:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_feature_regression.py
+.\.venv\Scripts\python.exe tests\run_tests.py --list
 ```
 
-Run one live Ollama smoke case for every feature, plus live advice and
-calculation-response checks:
+Run the complete deterministic suite -- every unit test, plus Python and
+JavaScript syntax. It needs nothing running; duration depends on the machine:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_feature_regression.py --mode all
+.\.venv\Scripts\python.exe tests\run_tests.py
 ```
 
-Run every natural-language variant in `tests/feature_matrix.json`:
+Run the smoke test alone. This is the "did I break startup" check: config, the
+event bus, the Electron WebSocket channel in both directions, the agent
+registry, and one whole turn through `ChatEngine.chat()`:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_feature_regression.py --mode all --exhaustive
+.\.venv\Scripts\python.exe tests\run_tests.py smoke
 ```
 
-Run the live semantic cases for native UI requests:
+Run one category of unit tests -- `smoke`, `intent`, `planning`,
+`conversation`, `permission`, `browser`, `desktop`, `tools`, `agents`, `voice`,
+`ui`, or `integration`:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_feature_regression.py --mode live --exhaustive --feature computer_ui_action
+.\.venv\Scripts\python.exe tests\run_tests.py planning
 ```
 
-List the available feature groups or print every voice phrase without running
-Ollama:
+### Live checks
+
+The `live` suite runs the `scripts/live_*_check.py` checks against the real
+model and, for some tiers, the real machine. It is never part of the default
+run, because it needs things to be switched on. Pick a tier:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_feature_regression.py --list-features
-.\.venv\Scripts\python.exe scripts\run_feature_regression.py --list-cases
+.\.venv\Scripts\python.exe tests\run_tests.py live                    # tier model: Ollama only
+.\.venv\Scripts\python.exe tests\run_tests.py live --tier browser     # drives a real browser
+.\.venv\Scripts\python.exe tests\run_tests.py live --tier desktop     # drives the real mouse
+.\.venv\Scripts\python.exe tests\run_tests.py live --tier app         # needs main.py running
 ```
 
-Use `--list-cases --feature create_folder` to inspect one capability. For real
-voice and Windows integration checks, follow
+Or run exactly one, by the name `--list` prints:
+
+```powershell
+.\.venv\Scripts\python.exe tests\run_tests.py live --check router
+.\.venv\Scripts\python.exe tests\run_tests.py live --check router --exhaustive
+.\.venv\Scripts\python.exe tests\run_tests.py live --check router --feature computer_ui_action
+```
+
+Print the natural-language routing phrases in `tests/feature_matrix.json`
+without calling Ollama:
+
+```powershell
+.\.venv\Scripts\python.exe tests\run_tests.py --list-features
+.\.venv\Scripts\python.exe tests\run_tests.py --list-cases --feature create_folder
+```
+
+For real voice and Windows integration checks, follow
 [`REINFORCEMENT_TEST_CASES.md`](REINFORCEMENT_TEST_CASES.md).
 
-The exhaustive run is intentionally slower because each semantic-routing case
-calls the configured local model. Write-capable cases stop at classification,
-proposal, approval-policy, or mocked-tool boundaries; the regression runner
-never edits project files, creates commits, pushes, installs an agent, or adds
-a real calendar event. Computer-control tests never open the browser or a user
+The exhaustive routing run is intentionally slower because each case calls the
+configured local model. Write-capable cases stop at classification, proposal,
+approval-policy, or mocked-tool boundaries; the deterministic suite never edits
+project files, creates commits, pushes, installs an agent, or adds a real
+calendar event. Computer-control tests never open the browser or a user
 application; the native force-quit regression creates and removes only its own
 temporary hidden test process.
-
 ## Installation
 
 ### 1. Install the prerequisites
@@ -457,7 +482,15 @@ project_access:
   project_root: "C:/Users/YourName/Projects/YourProject"
 ```
 
-### 8. Start Elaina
+### 8. Create the memory database
+
+The SQLite tables behind Elaina's long-term memory are created once, by:
+
+```powershell
+python scripts/setup_database.py
+```
+
+### 9. Start Elaina
 
 From the project root with the virtual environment activated:
 
@@ -476,18 +509,18 @@ $env:ELAINA_OPEN_DESKTOP="0"
 python main.py
 ```
 
-### 9. Verify the installation
+### 10. Verify the installation
 
-Run the automated tests:
+Run the complete deterministic suite:
 
 ```powershell
-python -m unittest discover -s tests -v
+python tests/run_tests.py
 ```
 
 Run the live semantic-router check against your configured Ollama model:
 
 ```powershell
-python scripts/live_router_check.py
+python tests/run_tests.py live --check router
 ```
 
 When Elaina starts successfully, the console should include:

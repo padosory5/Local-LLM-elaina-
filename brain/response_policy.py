@@ -157,6 +157,76 @@ class AnswerCompletionGuard:
         return not bool(re.search(r"\d", cleaned))
 
 
+class ClosingOfferGuard:
+    """Cut the canned "anything else?" footer off the end of an answer.
+
+    ``personality_en.txt`` already forbids these -- "Avoid canned lines...
+    Don't tack a generic 'anything else?' onto every answer" -- and qwen3:8b
+    adds them anyway: measured live, "Let me know if you need help with
+    anything else!" closed a plain exchange-rate answer. Prompt wording alone
+    has not held, so the removal is deterministic. It also costs nothing,
+    which a rewrite call would not.
+
+    Deliberately narrow. Only a *trailing* sentence is considered, and only
+    one carrying a generic marker -- "anything else", "any questions", "feel
+    free to ask". An offer with a real referent is content, not filler, and
+    has to survive:
+
+        "Let me know which one you'd prefer."      kept
+        "Want me to pull up the hotel page?"       kept
+        "Let me know if you need anything else."   cut
+    """
+
+    # Generic markers. Each says "ask me something, anything" -- none of them
+    # points at a thing in the conversation, which is what makes them filler.
+    _GENERIC = (
+        r"anything\s+else",
+        r"any\s+(?:other\s+)?questions?",
+        r"anything\s+(?:i|else\s+i)\s+can\s+(?:help|do|assist)",
+        r"feel\s+free\s+to\s+(?:ask|reach)",
+        r"happy\s+to\s+help",
+        r"here\s+(?:to|if\s+you\s+need)\s+help",
+        r"here\s+to\s+help\s+with\s+anything",
+        r"with\s+anything\s+you\s+need",
+        r"if\s+you\s+need\s+anything",
+        r"let\s+me\s+know\s+if\s+you\s+(?:need|want|have)\s+"
+        r"(?:any|anything|more|further)",
+    )
+    _CLOSER = re.compile("|".join(_GENERIC), flags=re.IGNORECASE)
+
+    @staticmethod
+    def _sentences(text: str) -> list[str]:
+        return [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", str(text).strip())
+            if sentence.strip()
+        ]
+
+    @classmethod
+    def is_closing_offer(cls, sentence: str) -> bool:
+        return bool(cls._CLOSER.search(str(sentence)))
+
+    @classmethod
+    def strip(cls, text: str) -> str:
+        """The answer without its trailing generic offer, if it had one.
+
+        Returns the original whenever removal would leave nothing: an answer
+        that is *only* a canned offer is a different failure, and silently
+        emptying it would turn a weak reply into no reply at all.
+        """
+        sentences = cls._sentences(text)
+        if len(sentences) < 2:
+            return text
+
+        kept = list(sentences)
+        while len(kept) > 1 and cls.is_closing_offer(kept[-1]):
+            kept.pop()
+
+        if len(kept) == len(sentences):
+            return text
+        return " ".join(kept)
+
+
 class AdviceResponseGuard:
     """Request a rewrite when routine advice turns into a referral footer."""
 

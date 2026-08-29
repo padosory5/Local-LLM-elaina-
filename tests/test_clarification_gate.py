@@ -137,6 +137,22 @@ class BookingPreconditionTests(unittest.TestCase):
         self.assertIn("Guam", completed.value("subject"))
         self.assertEqual(decide(completed).action, ACT)
 
+    def test_general_overview_is_research_not_a_fake_date(self):
+        decision = decide(interpret("Book me a hotel in Guam"))
+        pending = ClarificationGate().offer(
+            goal=decision.goal,
+            slot=decision.missing,
+            question=decision.question,
+            template=decision.template,
+        )
+
+        completed = pending.completed("general overview")
+
+        self.assertEqual(completed.kind, "research")
+        self.assertFalse(completed.has("dates"))
+        self.assertEqual(completed.value("overview"), "general")
+        self.assertIn("Guam", completed.utterance)
+
     def test_a_category_with_no_such_requirement_is_not_delayed(self):
         decision = decide(interpret("Find the cheapest second-hand RTX 5080"))
 

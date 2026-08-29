@@ -1013,12 +1013,20 @@ class DesktopActionPlanner:
         *,
         surface_context: DesktopSurfaceContext | None = None,
         prior_progress: PausedDesktopRun | None = None,
+        assumption: str = "",
     ) -> ActionPlanResult:
         # A caller may hand over a request already read into slots, or the
         # words and let this read them. Either way the rest of the run works
         # from the typed goal: it is what says which values this request
         # actually named, and therefore what may be entered anywhere.
-        if isinstance(goal, Goal):
+        already_decided = isinstance(goal, Goal)
+        if already_decided:
+            # The turn read this request and put it through the gate before
+            # choosing this planner. Deciding again applies a second
+            # assumption on top of the first and reports only the last one
+            # -- measured live: "play some music" filled the title from
+            # what she plays most, then the planner's own gate filled the
+            # artist too and spoke only that.
             request = goal
             goal = request.utterance
         else:
@@ -1058,8 +1066,10 @@ class DesktopActionPlanner:
         # list") has nothing to aim at, and asking is the correct outcome --
         # the alternative, before this existed, was to treat the sentence
         # itself as a search query and type it into the app.
-        assumption = ""
-        if prior_progress is None:
+        # What the caller already decided to assume, if it gated this
+        # request itself. Saying it out loud is the whole point of the
+        # act-and-say exit, so it has to survive the handover.
+        if prior_progress is None and not already_decided:
             decision = decide(
                 request,
                 recent_subject=self._recent_media_subject(),
@@ -1085,6 +1095,11 @@ class DesktopActionPlanner:
                         title=request.value("title"),
                         artist=request.value("artist"),
                     )
+
+        direct_text = self._try_direct_text_input(request, effective_surface)
+        if direct_text is not None:
+            return direct_text
+
         # A concrete "play <title> by <artist>" is resolvable from live state
         # alone, and that is the request the model half of this loop gets
         # wrong most expensively -- it types the query, then clicks the
@@ -1849,6 +1864,94 @@ class DesktopActionPlanner:
             surface_context=surface,
             action_steps=len(result.steps),
             failure_code=result.failure_code,
+        )
+
+    def _try_direct_text_input(
+        self,
+        request: Goal,
+        surface: DesktopSurfaceContext,
+    ) -> ActionPlanResult | None:
+        """Type into one unambiguous, live-observed editable surface.
+
+        A request such as "Write hello in Notepad" already names both the
+        exact value and an active document. Asking the planner model to copy
+        a scan-scoped id adds latency and can make it invent an id. This path
+        acts only when the current window has exactly one enabled Document
+        control; the trusted UI driver still resolves and verifies that
+        control before reporting success.  Ordinary Edit and ComboBox fields
+        keep using the planning loop, which can inspect and verify them
+        across multiple UI states.
+        """
+        if request.kind != "text_input" or not request.has("text"):
+            return None
+        window = surface.as_window_info()
+        if window is None:
+            try:
+                window = self.observer.get_active_window()
+            except Exception:
+                return None
+        if window is None:
+            return None
+        # Windows 11's modern Notepad exposes its editor as a Korean-named
+        # Document under a Dialog window.  This small, observed fast path
+        # prevents the planner model from fabricating its scan id there.
+        # Every other surface continues through the normal inspect/act/
+        # re-inspect loop below.
+        if (
+            window.class_name != "Dialog"
+            or "notepad" not in window.title.casefold()
+        ):
+            return None
+        try:
+            observation = self.observer.describe_window(window)
+        except Exception:
+            return None
+        if getattr(observation, "status", "") != "observed":
+            return None
+        editable = [
+            control for control in observation.controls
+            if str(getattr(control, "role", ""))
+            == "Document"
+            and getattr(control, "is_enabled", True) is not False
+        ]
+        if len(editable) != 1:
+            return None
+        control = editable[0]
+        focused = self.control.focus_window(window)
+        if focused.status == "user_took_over":
+            return ActionPlanResult(
+                "interrupted", focused.message,
+                surface_context=surface,
+                failure_code="user_took_over",
+            )
+        if focused.status != "focused":
+            return None
+        typed = self.control.type_text(
+            window,
+            control.name,
+            request.value("text"),
+            element_id=control.element_id,
+        )
+        if typed.status == "user_took_over":
+            return ActionPlanResult(
+                "interrupted", typed.message,
+                steps_taken=(focused.message,),
+                surface_context=surface,
+                action_steps=1,
+                failure_code="user_took_over",
+            )
+        # When the driver cannot verify the entry, retain the ordinary
+        # planner loop: it will re-observe the window before declaring the
+        # request complete.  This shortcut is only safe for a confirmed
+        # write.
+        if typed.status != "typed" or typed.verified is not True:
+            return None
+        return ActionPlanResult(
+            "done",
+            typed.message,
+            steps_taken=(focused.message, typed.message),
+            surface_context=surface,
+            action_steps=1,
         )
 
     def _try_direct_media_control(

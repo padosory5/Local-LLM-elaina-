@@ -217,7 +217,14 @@ class TaskDiscoveryPolicy:
         A follow-up that already names or refers to candidates should proceed
         to verification rather than asking the user to choose a source again.
         """
-        if has_prior_candidates or cls.requests_immediate_execution(goal):
+        if (
+            has_prior_candidates
+            or cls.requests_immediate_execution(goal)
+            # A person who picked the overview branch has already made the
+            # source/detail choice.  Asking the exact same choice again is
+            # what caused the Guam loop in the recorded conversation.
+            or re.search(r"\b(?:quick|general)\s+overview\b", str(goal), re.I)
+        ):
             return None
         category = cls.category_for(goal)
         if category is None or not cls.needs_discovery_conversation(goal):

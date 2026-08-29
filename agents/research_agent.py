@@ -117,7 +117,12 @@ class ResearchAgent:
 
     def _verification_query(self, request: str, query: str) -> str:
         as_of = self._now().strftime("%Y-%m-%d")
-        base = " ".join((request or query).split())
+        # The router query is deliberately self-contained and may have repaired
+        # ambiguity in the original wording (for example, "recent World Cup"
+        # becomes the latest completed FIFA men's tournament). Rebuilding the
+        # verification search from the raw request throws that repair away and
+        # can retrieve an unrelated national-team match instead.
+        base = " ".join((query or request).split())
         return f"official source {base} as of {as_of}"
 
     @staticmethod

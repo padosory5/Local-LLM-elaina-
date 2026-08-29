@@ -72,12 +72,17 @@ class FakeDesktopActionPlanner:
         self.act_result = act_result
         self.resume_result = resume_result
         self.act_calls = []
+        self.assumptions = []
         self.resume_calls = []
         self.resume_snapshots = []
         self.resume_element_ids = []
         self.prior_progress = []
 
-    def act(self, goal, *, surface_context=None, prior_progress=None):
+    def act(self, goal, *, surface_context=None, prior_progress=None,
+            assumption=""):
+        # An assumption the turn made and will say out loud with the
+        # result; recorded so a test can assert it survived the handover.
+        self.assumptions.append(assumption)
         self.act_calls.append(goal)
         self.prior_progress.append(prior_progress)
         return self.act_result

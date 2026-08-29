@@ -134,17 +134,17 @@ class InterruptionTests(unittest.TestCase):
                 "user_took_over", "You moved the mouse, so I stopped.",
             ),
         ])
-        result = _planner(client, control).act("play a song")
+        result = _planner(client, control).act("click Play in Spotify")
         self.assertEqual(result.status, "interrupted")
         self.assertIsNotNone(result.paused)
-        self.assertEqual(result.paused.goal, "play a song")
+        self.assertEqual(result.paused.goal, "click Play in Spotify")
 
     def test_an_interrupted_run_is_not_reported_as_done(self):
         client = _ScriptedClient([
             ("click_control", {"window": "Spotify", "control": "Play"}),
         ])
         control = _Control([UIActionResult("user_took_over", "stopped")])
-        result = _planner(client, control).act("play a song")
+        result = _planner(client, control).act("click Play in Spotify")
         self.assertNotEqual(result.status, "done")
 
 
@@ -155,7 +155,7 @@ class ResumeTests(unittest.TestCase):
         paused = PausedDesktopRun(
             goal="play a song", steps_taken=("Opened Spotify.",),
         )
-        result = planner.act("play a song", prior_progress=paused)
+        result = planner.act("click Play in Spotify", prior_progress=paused)
         self.assertIn("Opened Spotify.", result.steps_taken)
 
     def test_the_model_is_told_what_is_already_done(self):
@@ -188,7 +188,7 @@ class ResumeTests(unittest.TestCase):
 
     def test_a_fresh_run_carries_no_prior_steps(self):
         client = _ScriptedClient([])
-        result = _planner(client, _Control([])).act("play a song")
+        result = _planner(client, _Control([])).act("click Play in Spotify")
         self.assertEqual(result.steps_taken, ())
 
 

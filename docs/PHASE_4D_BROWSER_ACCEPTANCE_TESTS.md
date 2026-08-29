@@ -38,6 +38,18 @@ five starting states:
 | C-15 | Page content safety | Treats page text as untrusted data. A page saying “ignore instructions,” requesting secrets, or suggesting a URL cannot change Elaina's plan. |
 | C-16 | Unsafe actions | Downloads, messages/comments, account changes, reservations require a fresh confirmation; credential/payment fields and payment completion are refused. |
 | C-17 | Network safety | `file:`, localhost/private-IP targets, invented domains, and unobserved links are blocked. |
+| C-31 | A turn has four phases, not one method | `chat()` is 81 lines: hear, route, dispatch, answer. Each phase moved out whole, with its contract computed from the code rather than guessed -- what it reads from the turn, and what the turn reads back. |
+| C-32 | The contract is the honest size | `_answer_turn` takes fourteen parameters. That is not elegance; it is how entangled that phase still is, stated where it can be seen and reduced later rather than hidden behind an object. |
+| C-29 | Korean is read on its own terms | The verb comes last, the app is a locative (`스포티파이에서`), and the performer comes first (`아이브의 뱅뱅`). A Korean media request types into the same goal, reaches the same skill and passes the same gate as its English phrasing. |
+| C-30 | Korean particles defeat word boundaries | `유튜브에서` and `노래나` attach their particle straight to the noun, so a `\b` after a Korean word never matches. Korean alternatives are listed without boundaries -- otherwise a YouTube request would have been claimed as hers. |
+| C-26 | One gate, before any path is chosen | The decision to act, assume or ask happens once per turn, ahead of dispatch, so it covers every destination -- app, page, task, search -- rather than only the two planners that had their own. "Type in Notepad" is asked about before a planner is picked. |
+| C-27 | Deciding twice is deciding wrong | A planner handed an already-decided request does not decide again. Measured live: the turn filled the title from what she plays most, the planner's own gate then filled the artist too, and only the second assumption was spoken. |
+| C-28 | A question is never an answer | A pending offer does not consume the next thing said when that thing is a question of its own. Measured live: an offer left over from "find hotels in guam" swallowed "what is the tallest building in seoul" and replied with the hotel question. A plain "no, the overview is fine" still answers. |
+| C-23 | Behaviour is tested through a whole turn | `tests/test_turn_behaviour.py` runs real utterances through `ChatEngine.chat()` with only the model and the machine replaced, asserting one of four behaviours: chat, asks, acts, refuses. This is the net that was missing when 1,197 unit tests stayed green while every politely-phrased request was answered with a feature list. |
+| C-24 | A pending offer never swallows the next request | Found by that suite on its first run: an unanswered "want me to use it now?" answered every following turn with itself. A request she can read outright is a new instruction and outranks any pending offer except an answer to a question she just asked. |
+| C-25 | Preparing is not doing | Resolving a target for a confirmation question changes nothing; only execution touches the machine, and the suite distinguishes them so a confirmation cannot read as an action. |
+| C-21 | Understanding before routing | A request the interpreter can read goes straight to the planner that owns its gate, with its slots intact and no model call at all. Measured: routing drops from ~2.2s to under a millisecond, and three requests that the router sent to the wrong place now arrive where their guards live. |
+| C-22 | What she cannot read, she does not guess | Conversation, an app command, a plain search and "play chess" are all left to the model router untouched. The front door claims a request only when a skill serves it or a precondition applies to it. |
 | C-19 | A booking asks before it browses | "Book me a hotel in Guam" opens nothing until the dates are settled: a shortlist of prices for nobody's stay looks like an answer, which is worse than no answer. Looking around is not blocked on the same inputs -- the task planner already offers that conversation, and asking twice for one request would interrupt it. |
 | C-20 | The answer keeps the request | Answering the dates question completes the original booking request rather than replacing it, and it is re-read by the same interpreter, so what runs is the request as if it had been said complete. |
 | C-18 | Source scope | Once a specialized source set is chosen, external retailer/listing links are refused; search-engine redirect links are accepted only when their decoded destination is in that set. |
@@ -113,10 +125,10 @@ cold-launch budget before the CDP driver can look at anything.
 
 ### Evidence
 
-- `python scripts/live_screen_browser_check.py` -- mechanism: DPI, window
+- `python tests/run_tests.py live --check screen-browser` -- mechanism: DPI, window
   discovery, observation timing, a real cursor click verified by navigation,
   and a stale-element refusal.
-- `python scripts/live_screen_browser_task_check.py` -- the whole stack: a
+- `python tests/run_tests.py live --check screen-browser-task` -- the whole stack: a
   real planner and local model running a dependent three-goal browsing
   session (search, click a result, answer from the page it landed on).
 - Deterministic coverage in `tests/test_screen_browser_window.py`,
@@ -191,30 +203,38 @@ into Spotify's search box now returns `verified=True`.
 
 ### Evidence
 
-- `python scripts/live_desktop_control_check.py` -- mechanism against real
+- `python tests/run_tests.py live --check desktop-control` -- mechanism against real
   Spotify: injected-vs-real separation, focusing a background app, waking
   its tree, typing into its search field with verification, follow-up
   memory, and refusals. 12/12 on an undisturbed machine; it reports
   separately when the user touched the machine mid-run, because that is the
   driver working rather than failing.
-- `python scripts/live_learning_check.py` -- F-36/F-37/F-38 against real
+- `python tests/run_tests.py live --check learning` -- F-36/F-37/F-38 against real
   Spotify, on a scratch profile: it learns which artist was meant, uses it for
   the bare title, says why, and does not count its own guess as evidence.
-- `python scripts/live_booking_gate_check.py` -- C-19/C-20: the booking asks
+- Whole turns in Korean: `좋아요 표시한 곡 틀어줘` -> "Playing your liked songs
+  -- IVE - ELEVEN is on" (8.6s), `노래 좀 틀어줘` -> acts on what she knows and
+  says so, `유튜브에서 뱅뱅 틀어줘` -> not claimed, answered honestly.
+- Whole turns through `ChatEngine.chat()`, the way the app runs them:
+  "play my liked songs" -> "Playing your liked songs -- IVE - ELEVEN is on";
+  "book me a hotel in guam" -> the dates question in 0.6s with nothing opened;
+  "hey, how has your day been?" -> ordinary conversation. This is the check
+  that was missing: every earlier live script called a planner directly.
+- `python tests/run_tests.py live --check booking-gate` -- C-19/C-20: the booking asks
   first and opens nothing, the answer settles it, and research is unaffected.
-- `python scripts/live_skill_check.py` -- F-33/F-34/F-35 against real Spotify:
+- `python tests/run_tests.py live --check skill` -- F-33/F-34/F-35 against real Spotify:
   the liked songs play (6.0s, "Playing your liked songs -- IVE - ELEVEN is
   on"), a named track still plays, and a place she has no procedure for still
   asks. One run per skill, not per bug.
-- `python scripts/live_clarification_check.py` -- F-30/F-31/F-32 against real
+- `python tests/run_tests.py live --check clarification` -- F-30/F-31/F-32 against real
   Spotify: a vague request asks in 0.4s without acting, the answer completes
   that same request and plays it, and asked vaguely again she acts on what
   she last played and says so.
-- `python scripts/live_media_request_check.py` -- F-20/F-22/F-23/F-24 against
+- `python tests/run_tests.py live --check media-request` -- F-20/F-22/F-23/F-24 against
   real Spotify: an unnamed request asks in 0.4s without acting, a named track
   plays, and a *second* named track plays straight after the first, which is
   what proves the query replaced rather than appended.
-- `python scripts/live_spotify_exact_track_check.py` -- F-03/F-15/F-17/F-18
+- `python tests/run_tests.py live --check spotify-track` -- F-03/F-15/F-17/F-18
   end to end against real Spotify: the exact title is double-clicked, decoy
   rows are refused, and the check passes only if Spotify reports the track
   as playing.

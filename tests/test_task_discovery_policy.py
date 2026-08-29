@@ -47,6 +47,12 @@ class DiscoveryCategoryTests(unittest.TestCase):
             "Search hotels in Seoul right away.", browser_ready=True,
         ))
 
+    def test_general_overview_does_not_reopen_the_same_source_choice(self):
+        self.assertIsNone(TaskDiscoveryPolicy.advise(
+            "Give me a general hotel overview for hotels in Guam.",
+            browser_ready=True,
+        ))
+
     def test_used_gpu_is_routed_to_secondhand_marketplaces_not_new_retailers(self):
         category = TaskDiscoveryPolicy.category_for(
             "Find the cheapest second-hand RTX 5080 in Korea."

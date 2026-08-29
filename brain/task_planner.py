@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -783,6 +784,13 @@ class TaskPlanner:
                 )
             if decision.get("done"):
                 summary = str(decision.get("summary", "")).strip() or "Done."
+                if self._requires_observed_candidates(task_state) and not task_state.collected_items:
+                    task_state.status = "failed"
+                    return TaskRunResult(
+                        "failed",
+                        "I couldn't retrieve verified listings, so I won't make up a shortlist or prices.",
+                        task_state,
+                    )
                 task_state.status = "done"
                 return TaskRunResult(
                     "done", self._truncated(summary, _MAX_SUMMARY_LENGTH), task_state,
@@ -824,6 +832,13 @@ class TaskPlanner:
                 forced = self._plan_next(task_state, force_decision=True)
                 if forced is not None and forced.get("done"):
                     summary = str(forced.get("summary", "")).strip() or "Done."
+                    if self._requires_observed_candidates(task_state) and not task_state.collected_items:
+                        task_state.status = "failed"
+                        return TaskRunResult(
+                            "failed",
+                            "I couldn't retrieve verified listings, so I won't make up a shortlist or prices.",
+                            task_state,
+                        )
                     task_state.status = "done"
                     return TaskRunResult(
                         "done",
@@ -1085,6 +1100,31 @@ class TaskPlanner:
     @staticmethod
     def _normalize(text: str) -> str:
         return " ".join(str(text).casefold().split())
+
+    def _requires_observed_candidates(self, task_state: TaskState) -> bool:
+        """Whether a recommendation may only finish with extracted evidence.
+
+        A task that asks for hotel, product, restaurant, car, or flight
+        options is not a general-knowledge answer.  The task planner is the
+        boundary that turns tool output into a user-facing shortlist, so it
+        must not accept a fluent model summary until an executor supplied at
+        least one extractable candidate.
+        """
+        # Older callers that intentionally constructed a planner without an
+        # extractor have no structured-evidence boundary to enforce.  The
+        # production planner always supplies one; keeping this conditional
+        # preserves that explicit lightweight/testing mode.
+        if (
+            self.task_extractor is None
+            or TaskDiscoveryPolicy.category_for(task_state.goal) is None
+        ):
+            return False
+        return bool(re.search(
+            r"\b(?:shortlist|recommend|top\s+\d+|best|compare|overview|"
+            r"options?|list)\b|추천|목록|비교",
+            task_state.goal,
+            re.IGNORECASE,
+        ))
 
     @staticmethod
     def _truncated(text: str, limit: int = _MAX_DISPLAYED_TEXT_LENGTH) -> str:

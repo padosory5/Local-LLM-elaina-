@@ -5,7 +5,7 @@ import threading
 import time
 import ollama
 from collections import deque
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from memory.memory_manager import MemoryManager
 from memory.extractor import MemoryExtractor
@@ -13,6 +13,8 @@ from memory.consolidator import MemoryConsolidator
 from memory.context_builder import ContextBuilder
 from brain.prompt_builder import PromptBuilder
 from brain.deliberation import ClarificationGate, Goal
+from brain.deliberation import front_door
+from brain.deliberation.pending import asks_something_else
 from brain.deliberation.profile import UserProfile
 from brain.conversation_manager import ConversationManager
 from brain.memory_ranker import MemoryRanker
@@ -30,6 +32,7 @@ from brain.response_quality import ResponseQualityGuard
 from brain.response_policy import (
     AdviceResponseGuard,
     AnswerCompletionGuard,
+    ClosingOfferGuard,
     ResponseLimits,
 )
 from brain.calculation_planner import CalculationPlanner
@@ -46,6 +49,12 @@ from brain.task_session import TaskSessionStore
 from brain.user_locale import UserLocale
 from brain.capabilities import CapabilityRegistry
 from brain.action_commitment import ActionCommitmentGuard
+from brain.action_status import (
+    ActionStatusSelector,
+    StatusContext,
+    action_for_intent,
+    is_continuation,
+)
 from brain.answer_condenser import AnswerCondenser
 from brain.grounded_values import GroundedValueGuard
 from brain.web_search_planner import WebSearchActionPlanner
@@ -141,6 +150,14 @@ _ABILITY_INVENTORY_QUESTION = re.compile(
     flags=re.IGNORECASE,
 )
 
+# A short thank-you closes an unfinished offer/task context.  Without this,
+# normal conversational history can cause the next model reply to resume a
+# hotel search the person has plainly finished discussing.
+_CLOSING_ACKNOWLEDGEMENT = re.compile(
+    r"^\s*(?:ok(?:ay)?\s*,?\s*)?(?:thanks?|thank you|thx|고마워(?:요)?|감사(?:합니다|해요)?)\s*[.!?]*\s*$",
+    flags=re.IGNORECASE,
+)
+
 # An imperative or explicit request, as opposed to a remark that merely
 # mentions a browser or an app ("I like using Chrome"). Paired with
 # CapabilityRegistry.match() so a conversational turn is only ever
@@ -172,10 +189,34 @@ from tools.browser_control.safe_browser import SafeBrowserControl
 from tools.computer_control.safe_filesystem import SafeFilesystemControl
 from tools.computer_control.windows_app_catalog import WindowsAppCatalog
 
+@dataclass
+class TurnRouting:
+    """Everything the routing phase decided, and nothing else.
+
+    A small, explicit contract in place of ten locals shared down a
+    two-thousand-line method: what the request is, what may already have
+    been answered for it, and what a later phase is allowed to assume.
+    """
+
+    route: IntentDecision
+    user_input: str
+    locked_response: str = ""
+    clarified_goal: Goal | None = None
+    assumed_aloud: str = ""
+    approved_computer_action: PreparedComputerAction | None = None
+    approved_task_action: PendingTaskAction | None = None
+    approved_strategy_task_state: TaskState | None = None
+    declined_strategy_task_state: TaskState | None = None
+    agent_permission_context: str = ""
+
+
 class ChatEngine:
 
-    def __init__(self):
-        self.config = Config()
+    def __init__(self, config: Config | None = None):
+        # The one seam a test needs: a turn suite builds the real engine
+        # with heavy, side-effectful features switched off in a copy of the
+        # configuration, rather than reconstructing half of it by hand.
+        self.config = config if config is not None else Config()
 
         self.model = self.config.get(
             "llm",
@@ -226,8 +267,6 @@ class ChatEngine:
             default=10,
             required=False,
         ))
-        self._recent_work_statuses: deque[str] = deque(maxlen=5)
-
         self.vision_model = self.config.get(
             "vision",
             "model",
@@ -335,9 +374,21 @@ class ChatEngine:
             self.response_language
         )
 
-        self.memory_manager = MemoryManager()
-        self.extractor = MemoryExtractor(config=self.config)
-        self.consolidator = MemoryConsolidator(config=self.config)
+        # Memory is optional. Besides being a user-facing privacy and
+        # resource setting, honouring this flag lets diagnostics and whole-
+        # turn tests start the real orchestration without loading the
+        # sentence-transformer model or opening the memory database.
+        self.memory_enabled = bool(self.config.get(
+            "memory", "enabled", default=True, required=False,
+        ))
+        self.memory_manager = MemoryManager() if self.memory_enabled else None
+        self.extractor = (
+            MemoryExtractor(config=self.config) if self.memory_enabled else None
+        )
+        self.consolidator = (
+            MemoryConsolidator(config=self.config)
+            if self.memory_enabled else None
+        )
         self.context_builder = ContextBuilder()
         self.conversation = ConversationManager()
         self.memory_ranker = MemoryRanker()
@@ -669,6 +720,12 @@ class ChatEngine:
             self.client,
             self.model,
             keep_alive=self.keep_alive,
+        )
+        # Status lines cover slow work, so they cannot afford to wait on the
+        # model themselves. One selector for the whole session: repetition is
+        # only visible across turns, so its memory has to outlive them.
+        self.action_status = ActionStatusSelector(
+            language=self.response_language,
         )
         self.answer_condenser = AnswerCondenser(
             self.client,
@@ -1233,7 +1290,7 @@ class ChatEngine:
                 "the user's own to enter. A request about 'this page' stays "
                 "locked to the captured foreground surface."
             ),
-            self.user_locale.context_text(),
+            self.user_locale.context_text(self.response_language),
         ) if part)
 
     def _followup_subject(self, request: str) -> str:
@@ -1304,6 +1361,13 @@ class ChatEngine:
 
     def _store_memory_candidate(self, user_input: str) -> None:
         """Perform expensive extraction/consolidation outside response latency."""
+        if (
+            not self.memory_enabled
+            or self.memory_manager is None
+            or self.extractor is None
+            or self.consolidator is None
+        ):
+            return
         with self._memory_store_lock:
             started = time.perf_counter()
             try:
@@ -1431,6 +1495,7 @@ class ChatEngine:
             ),
             user_input=question,
             context_sections=context_sections,
+            response_language=self.response_language,
         )
 
     def _build_tool_result_messages(
@@ -1450,62 +1515,50 @@ class ChatEngine:
                     self._capability_context(),
                 ),
             ),
+            response_language=self.response_language,
         )
 
     def _announce_work_status(
         self,
         intent: str,
         user_input: str,
+        *,
+        confidence: float = 1.0,
     ) -> None:
-        """Use Ollama for one brief acknowledgement before slower work."""
-        work_by_intent = {
-            "web_search": "A one-time web search is starting.",
-            "entity_correction": (
-                "The web search is restarting with the corrected entity."
-            ),
-            "screen_analysis": (
-                "The selected screen region is being analyzed."
-            ),
-            "project_question": (
-                "The Coding Agent is inspecting relevant project files."
-            ),
-            "project_edit": (
-                "The Coding Agent is inspecting files and preparing a change "
-                "proposal. No file has changed yet."
-            ),
-            "git_commit": (
-                "The Git Agent is preparing a commit proposal. Nothing has "
-                "been committed yet."
-            ),
-            "git_publish": (
-                "The Git Agent is preparing a commit and push proposal. "
-                "Nothing has been committed or pushed yet."
-            ),
-            "agent_create": (
-                "The Agent Builder is checking requirements and permissions."
-            ),
-            "calendar_action": (
-                "The Calendar Agent is preparing event details. Nothing has "
-                "been added yet."
-            ),
-        }
-        work = work_by_intent.get(intent, "")
-        if not work:
+        """Say one line locally before slow work, or say nothing.
+
+        This used to spend an Ollama round-trip on the sentence whose entire
+        job was to cover the wait -- and, whenever that call failed or its
+        answer was rejected, fell back to one flat list shared by every kind
+        of work. The choice is now local and made from what she is actually
+        about to do, so a search no longer sounds like a Git commit.
+        """
+        action = action_for_intent(intent)
+        if action is None:
             return
 
-        text = self.brief_responses.generate(
-            "work_started",
-            subject=intent.replace("_", " "),
-            detail=f"User request: {user_input.strip()} Work: {work}",
-        )
+        text = self.action_status.select(StatusContext(
+            action=action,
+            phase="execution_started",
+            subject=user_input.strip(),
+            continuing=is_continuation(intent),
+            confidence=confidence,
+        ))
+        if not text:
+            return
 
-        self._recent_work_statuses.append(text)
         print(f"[Status] Elaina: {text}")
         self.events.emit(
             "assistant_status",
             text=text,
             intent=intent,
         )
+        # Said out loud, not only shown on the activity pill. Measured on a
+        # real search turn: the answer arrived 9.5 seconds after this line,
+        # and every one of those seconds was silent. Speaking costs nothing
+        # here -- AudioManager.speak queues onto its worker thread and
+        # returns, so the work starts immediately and the real answer simply
+        # queues behind this sentence rather than talking over it.
         self.audio.speak(text)
 
     @staticmethod
@@ -1543,6 +1596,7 @@ class ChatEngine:
         approved_action: PreparedComputerAction | None = None,
         original_request: str = "",
         clarified_goal: Goal | None = None,
+        assumption: str = "",
     ) -> tuple[str, ComputerActionResult | None]:
         """Return one outcome-locked line and one trusted action result."""
         if route.computer_operation in {"none", "unsupported"}:
@@ -1575,6 +1629,7 @@ class ChatEngine:
                 approved_action=approved_action,
                 original_request=original_request,
                 clarified_goal=clarified_goal,
+                assumption=assumption,
             )
         if route.computer_operation == "browser_action" or (
             approved_action is not None
@@ -1706,6 +1761,7 @@ class ChatEngine:
         approved_action: PreparedComputerAction | None,
         original_request: str = "",
         clarified_goal: Goal | None = None,
+        assumption: str = "",
     ) -> tuple[str, ComputerActionResult | None]:
         """Phase 4B.2: goal-driven UI actions (click/type/focus/select/scroll).
 
@@ -1766,6 +1822,7 @@ class ChatEngine:
                     # so the run continues the original request rather than
                     # re-reading a sentence the person never said in full.
                     clarified_goal if clarified_goal is not None else planner_goal,
+                    assumption=assumption,
                     surface_context=DesktopSurfaceContext.from_public_snapshot(
                         self._desktop_surface_for_turn()
                     ),
@@ -2159,712 +2216,33 @@ class ChatEngine:
             return summary
         return f"{preview} {summary}".strip()
 
-    def chat(
+    def _answer_turn(
         self,
+        *,
+        route,
         user_input,
-        screen_region=None,
-        screen_snapshot=None,
-    ):
-        turn_started = time.perf_counter()
-        timings: dict[str, float] = {}
-        user_input = str(user_input).strip()
+        context_prompt,
+        locked_response,
+        action_performed,
+        agent_task_id,
+        project_edit_requested,
+        screen_context,
+        screen_snapshot,
+        use_screen_vision,
+        turn_cancel,
+        turn_started,
+        timings,
+        forced_response,
+    ) -> str:
+        """Produce the answer, once the turn has decided what it is.
 
-        if not user_input:
-            return ""
-
-        self._begin_desktop_turn()
-
-        turn_cancel = threading.Event()
-        with self._turn_lock:
-            self._active_turn_cancel = turn_cancel
-        self._turn_visual_subject = ""
-
-        self.events.emit(
-            "user_message",
-            text=user_input,
-        )
-
-        ####################################################
-        # Retrieve Memories
-        ####################################################
-
-        memory_text = ""
-
-        ####################################################
-        # Build Prompt
-        ####################################################
-        route_started = time.perf_counter()
-        continuing_agent_flow = bool(
-            self.agent_builder.active or self.calendar_agent.active
-        )
-        has_explicit_attachment = bool(
-            screen_region is not None or screen_snapshot is not None
-        )
-        pending_offer = self.agent_consent.peek()
-        pending_computer = self.computer_consent.peek()
-        pending_task = self.task_consent.peek()
-        pending_strategy = self.task_strategy_consent.peek()
-        pending_capability = self.capability_offer.peek()
-        pending_clarification = (
-            self.clarification.peek()
-            if hasattr(self, "clarification")
-            else None
-        )
-        clarified_goal: Goal | None = None
-        locked_response = ""
-        approved_computer_action: PreparedComputerAction | None = None
-        approved_task_action: PendingTaskAction | None = None
-        approved_strategy_task_state: TaskState | None = None
-        declined_strategy_task_state: TaskState | None = None
-
-        def route_current(
-            transcript: str,
-        ) -> IntentDecision:
-            return self.intent_router.route(
-                transcript,
-                recent_turns=list(self._router_history),
-                has_screen_selection=has_explicit_attachment,
-                project_tools_available=self.project_mcp is not None,
-                conversation_state=self._build_conversation_state(),
-                pending_action=self._pending_action,
-                computer_control_enabled=self.computer_control_mode.enabled,
-            )
-
-        def route_fresh(transcript: str) -> IntentDecision:
-            """Route a genuinely new request, task gate included.
-
-            Every "this reply was about something else entirely" branch
-            below used to call route_current directly, which skips
-            TaskIntentGate -- so a new multi-step goal arriving while any
-            offer happened to be pending silently lost the whole task
-            planner. Found live: a pending ability offer turned "what are
-            the best second-hand websites to buy a used phone" into a
-            one-shot web_search that answered with US marketplaces,
-            bypassing the discovery policy that would have named the
-            user's own.
-            """
-            if continuing_agent_flow or has_explicit_attachment:
-                return route_current(transcript)
-            decision = self.task_intent_gate.check(
-                transcript,
-                conversation_state=self._build_conversation_state(),
-            )
-            if not decision.is_multistep:
-                return route_current(transcript)
-            return IntentDecision(
-                intent="task_action",
-                confidence=decision.confidence,
-                normalized_request=transcript,
-                reason=(
-                    decision.reason
-                    or "This goal needs more than one capability."
-                ),
-                speech_act="action_request",
-                action_requested=True,
-                action_target=transcript,
-            )
-
-        if (
-            pending_clarification is not None
-            and not has_explicit_attachment
-            and not continuing_agent_flow
-            and pending_clarification.reads_as_answer(user_input)
-            and (completed := pending_clarification.completed(user_input))
-            is not None
-        ):
-            # The person answered the question. The answer is folded back
-            # into the request that prompted it, so what runs now is the
-            # whole request -- through every guard on that path -- rather
-            # than a bare fragment routed on its own.
-            self.clarification.clear()
-            clarified_goal = completed
-            route = IntentDecision(
-                intent="computer_action",
-                # An answered question continues the request it belongs to,
-                # which decides which planner sees it.
-                computer_operation=(
-                    "browser_action"
-                    if completed.kind in {"research", "booking"}
-                    else "ui_action"
-                ),
-                confidence=1.0,
-                normalized_request=completed.utterance,
-                reason="The user answered the outstanding question.",
-                is_follow_up=True,
-                speech_act="action_request",
-                action_requested=True,
-                action_target=completed.utterance,
-            )
-        elif self.agent_builder.active:
-            route = IntentDecision(
-                intent="agent_create",
-                confidence=1.0,
-                normalized_request=user_input,
-                reason="Continuing the active agent setup.",
-                speech_act="information_request",
-                action_requested=True,
-                action_target="agent setup",
-            )
-        elif self.calendar_agent.active:
-            route = IntentDecision(
-                intent="calendar_action",
-                confidence=1.0,
-                normalized_request=user_input,
-                reason="Continuing the active calendar event draft.",
-                speech_act="information_request",
-                action_requested=True,
-                action_target="calendar event",
-            )
-        elif pending_strategy is not None and not has_explicit_attachment:
-            browser_ready = bool(
-                self.browser_page_control_enabled
-                and self.computer_control_mode.enabled
-            )
-            strategy_reply = self.task_discovery_policy.interpret_reply(
-                user_input, browser_ready=browser_ready,
-            )
-            # Clear replies are resolved locally.  This makes the central
-            # conversational handoff reliable even if the small local model
-            # is offline, and it preserves a reply such as "yes, under
-            # ₩200k near Hongdae" as task preferences instead of discarding
-            # it under a generic "modify" label.
-            if strategy_reply.mode in {"specialized", "overview"}:
-                self.task_strategy_consent.clear()
-                pending_strategy.task_state.preferences.update(
-                    strategy_reply.preferences,
-                )
-                accepted_strategy = strategy_reply.mode == "specialized"
-                if accepted_strategy:
-                    approved_strategy_task_state = pending_strategy.task_state
-                else:
-                    declined_strategy_task_state = pending_strategy.task_state
-                route = IntentDecision(
-                    intent="task_action",
-                    confidence=1.0,
-                    normalized_request=pending_strategy.task_state.goal,
-                    reason=(
-                        "The user selected live specialised research."
-                        if accepted_strategy
-                        else "The user selected the quick-overview path."
-                    ),
-                    is_follow_up=True,
-                    speech_act="action_request",
-                    action_requested=True,
-                    action_target=pending_strategy.task_state.goal,
-                )
-            else:
-                consent = self.consent_classifier.classify(
-                    user_input,
-                    pending_strategy,
-                    recent_turns=list(self._router_history),
-                )
-                if consent.decision == "accept":
-                    self.task_strategy_consent.clear()
-                    approved_strategy_task_state = pending_strategy.task_state
-                    route = IntentDecision(
-                        intent="task_action",
-                        confidence=consent.confidence,
-                        normalized_request=pending_strategy.task_state.goal,
-                        reason="The user accepted the live-research offer.",
-                        is_follow_up=True,
-                        speech_act="action_request",
-                        action_requested=True,
-                        action_target=pending_strategy.task_state.goal,
-                    )
-                elif consent.decision == "modify":
-                    # A modified strategy reply still authorises the same
-                    # task; merge its literal user details into the paused
-                    # TaskState and keep the live-research branch.  The old
-                    # implementation treated this as a decline and silently
-                    # threw away filters.
-                    self.task_strategy_consent.clear()
-                    preference_text = consent.modified_request or user_input
-                    pending_strategy.task_state.preferences.update(
-                        self.task_discovery_policy.extract_preferences(
-                            preference_text,
-                        ),
-                    )
-                    approved_strategy_task_state = pending_strategy.task_state
-                    route = IntentDecision(
-                        intent="task_action",
-                        confidence=consent.confidence,
-                        normalized_request=pending_strategy.task_state.goal,
-                        reason="The user updated preferences for live research.",
-                        is_follow_up=True,
-                        speech_act="action_request",
-                        action_requested=True,
-                        action_target=pending_strategy.task_state.goal,
-                    )
-                elif consent.decision == "reject":
-                    self.task_strategy_consent.clear()
-                    declined_strategy_task_state = pending_strategy.task_state
-                    route = IntentDecision(
-                        intent="task_action",
-                        confidence=consent.confidence,
-                        normalized_request=pending_strategy.task_state.goal,
-                        reason="The user declined the live-research offer.",
-                        is_follow_up=True,
-                        speech_act="action_request",
-                        action_requested=True,
-                        action_target=pending_strategy.task_state.goal,
-                    )
-                elif consent.decision == "unrelated":
-                    self.task_strategy_consent.clear()
-                    route = route_fresh(user_input)
-                else:
-                    route = IntentDecision(
-                        intent="conversation",
-                        confidence=consent.confidence,
-                        normalized_request=user_input,
-                        reason="The strategy offer reply was unclear.",
-                        is_follow_up=True,
-                    )
-                    locked_response = (
-                        pending_strategy.offer_text
-                        or "Would you like live research, or a quick overview?"
-                    )
-        elif pending_task is not None and not has_explicit_attachment:
-            consent = self.consent_classifier.classify(
-                user_input,
-                pending_task,
-                recent_turns=list(self._router_history),
-            )
-            if consent.decision == "accept":
-                self.task_consent.clear()
-                approved_task_action = pending_task
-                route = IntentDecision(
-                    intent="task_action",
-                    confidence=consent.confidence,
-                    normalized_request=pending_task.request,
-                    reason="The user accepted the pending task step.",
-                    is_follow_up=True,
-                    speech_act="action_request",
-                    action_requested=True,
-                    action_target=pending_task.request,
-                )
-            elif consent.decision == "modify":
-                # A modified multi-step task is treated as a fresh goal
-                # rather than grafting a changed instruction onto in-flight
-                # task state -- simpler and safer than partial-state surgery.
-                self.task_consent.clear()
-                revised_request = consent.modified_request.strip()
-                route = route_fresh(revised_request or user_input)
-            elif consent.decision == "reject":
-                self.task_consent.clear()
-                route = IntentDecision(
-                    intent="conversation",
-                    confidence=consent.confidence,
-                    normalized_request=user_input,
-                    reason="The user declined the pending task step.",
-                    is_follow_up=True,
-                )
-                gathered = "; ".join(
-                    pending_task.task_state.collected_information
-                )
-                locked_response = (
-                    f"Okay, I'll stop there. So far: {gathered}"
-                    if gathered
-                    else "Okay, I'll stop there."
-                )
-            elif consent.decision == "unrelated":
-                self.task_consent.clear()
-                route = route_fresh(user_input)
-            else:
-                route = IntentDecision(
-                    intent="conversation",
-                    confidence=consent.confidence,
-                    normalized_request=user_input,
-                    reason="The pending task confirmation reply was unclear.",
-                    is_follow_up=True,
-                )
-                locked_response = (
-                    pending_task.reason or "Should I continue with that step?"
-                )
-        elif pending_computer is not None and not has_explicit_attachment:
-            consent = self.consent_classifier.classify(
-                user_input,
-                pending_computer,
-                recent_turns=list(self._router_history),
-            )
-            if consent.decision == "accept":
-                self.computer_consent.clear()
-                approved_computer_action = pending_computer.prepared
-                route = IntentDecision(
-                    intent="computer_action",
-                    confidence=consent.confidence,
-                    normalized_request=pending_computer.request,
-                    reason="The user accepted the exact high-risk confirmation.",
-                    is_follow_up=True,
-                    speech_act="action_request",
-                    action_requested=True,
-                    action_target=pending_computer.target_name,
-                    computer_operation=pending_computer.operation,
-                )
-            elif consent.decision == "modify":
-                self.computer_consent.clear()
-                revised_request = consent.modified_request.strip()
-                route = route_fresh(
-                    revised_request or user_input,
-                )
-            elif consent.decision == "reject":
-                self.computer_consent.clear()
-                route = IntentDecision(
-                    intent="conversation",
-                    confidence=consent.confidence,
-                    normalized_request=user_input,
-                    reason="The user declined the pending computer action.",
-                    is_follow_up=True,
-                )
-                locked_response = self.brief_responses.generate(
-                    "declined",
-                    subject=pending_computer.target_name,
-                    operation=pending_computer.operation,
-                )
-            elif consent.decision == "unrelated":
-                self.computer_consent.clear()
-                route = route_fresh(user_input)
-            else:
-                route = IntentDecision(
-                    intent="conversation",
-                    confidence=consent.confidence,
-                    normalized_request=user_input,
-                    reason="The high-risk confirmation reply was unclear.",
-                    is_follow_up=True,
-                )
-                locked_response = self.brief_responses.generate(
-                    (
-                        "force_quit_offer"
-                        if pending_computer.operation == "force_quit_app"
-                        else "delete_offer"
-                        if pending_computer.operation in {
-                            "delete_file", "delete_folder"
-                        }
-                        else "ui_action_offer"
-                        if pending_computer.operation in {"ui_action", "browser_action"}
-                        else "blocked"
-                    ),
-                    subject=pending_computer.target_name,
-                    detail=pending_computer.request,
-                    operation=pending_computer.operation,
-                )
-        elif pending_capability is not None and not has_explicit_attachment:
-            # Elaina offered an ability in ordinary conversation ("I can
-            # check that in the browser -- want me to?"). Without this
-            # branch the user's "ok" routed as a brand-new, contextless
-            # turn -- observed live re-emitting the identical offer while
-            # nothing ever opened.
-            consent = self.consent_classifier.classify(
-                user_input,
-                pending_capability,
-                recent_turns=list(self._router_history),
-            )
-            if consent.decision in {"accept", "modify"}:
-                self.capability_offer.clear()
-                goal = (
-                    consent.modified_request.strip()
-                    if consent.decision == "modify"
-                    else ""
-                ) or pending_capability.goal
-                operation = {
-                    "browser_control": "browser_action",
-                    "ui_control": "ui_action",
-                }.get(pending_capability.capability_id, "")
-                route = IntentDecision(
-                    intent="computer_action" if operation else "task_action",
-                    confidence=consent.confidence,
-                    normalized_request=goal,
-                    reason="The user accepted the offered ability.",
-                    is_follow_up=True,
-                    speech_act="action_request",
-                    action_requested=True,
-                    action_target=goal,
-                    computer_operation=operation,
-                )
-                user_input = goal or user_input
-            elif consent.decision == "reject":
-                self.capability_offer.clear()
-                route = IntentDecision(
-                    intent="conversation",
-                    confidence=consent.confidence,
-                    normalized_request=user_input,
-                    reason="The user declined the offered ability.",
-                    is_follow_up=True,
-                )
-                locked_response = "Okay, I'll leave it."
-            elif consent.decision == "unrelated":
-                self.capability_offer.clear()
-                route = route_fresh(user_input)
-            else:
-                route = IntentDecision(
-                    intent="conversation",
-                    confidence=consent.confidence,
-                    normalized_request=user_input,
-                    reason="The ability offer reply was unclear.",
-                    is_follow_up=True,
-                )
-                locked_response = (
-                    pending_capability.offer_text
-                    or "Want me to go ahead with that?"
-                )
-        elif pending_offer is not None and not has_explicit_attachment:
-            consent = self.consent_classifier.classify(
-                user_input,
-                pending_offer,
-                recent_turns=list(self._router_history),
-            )
-            if consent.decision == "unrelated":
-                # The dedicated consent classifier has established that this
-                # is a new topic. Clear the stale offer before normal routing.
-                self.agent_consent.clear()
-                route = route_fresh(user_input)
-            else:
-                route = IntentDecision(
-                    intent="agent_consent",
-                    confidence=consent.confidence,
-                    normalized_request=user_input,
-                    reason=consent.reason,
-                    is_follow_up=True,
-                    speech_act="approval_response",
-                    consent_decision=consent.decision,
-                    offered_request=consent.modified_request,
-                )
-        else:
-            if has_explicit_attachment and pending_computer is not None:
-                self.computer_consent.clear()
-            route = route_fresh(user_input)
-        route, agent_permission_context = apply_agent_permission(
-            self.agent_consent,
-            route,
-            user_input=user_input,
-            has_explicit_attachment=has_explicit_attachment,
-            continuing_agent_flow=continuing_agent_flow,
-            available_intents={
-                intent
-                for agent in self.agent_registry.all()
-                if agent.enabled
-                for intent in agent.intents
-            },
-        )
-        if not locked_response:
-            route, capability_note = self._rescue_capability_route(
-                route, user_input,
-            )
-            if capability_note:
-                locked_response = capability_note
-        timings["route"] = time.perf_counter() - route_started
-        self._update_conversation_state(route)
-        print(
-            f"[Router] {route.intent} ({route.confidence:.2f}): "
-            f"{route.reason or route.normalized_request}"
-        )
-        if route.intent in {"knowledge_question", "web_search"}:
-            print(
-                "[Router Source] "
-                f"freshness={route.information_freshness} "
-                f"external={route.requires_external_evidence} "
-                f"verify={route.verification_required}"
-            )
-            # Scenario 1's fast path: a plain web_search never touches the
-            # task planner, so it needs its own decision-log call rather
-            # than TaskPlanner._preview()'s (which only fires on the
-            # task_action path).
-            log_information_need(
-                intent=route.intent,
-                freshness=route.information_freshness,
-                verification=route.verification_required,
-                effort="discover",
-                capabilities=("web_search",) if route.intent == "web_search" else (),
-            )
-        if route.normalized_request != user_input:
-            print(
-                f"[Router] Interpreted transcript as: "
-                f"{route.normalized_request}"
-            )
-
-        agent_task_id = None
-        if route.intent in AGENT_EXECUTION_INTENTS:
-            assignment_intent = route.intent
-            if (
-                route.intent == "calendar_action"
-                and not self.agent_registry.has_agent(
-                    "google_calendar_agent"
-                )
-            ):
-                assignment_intent = "agent_create"
-            assignment = self.agent_coordinator.assign(
-                assignment_intent,
-                route.normalized_request,
-            )
-            agent_task_id = assignment.task.id
-            self.events.emit(
-                "agent_task_started",
-                task_id=agent_task_id,
-                agent_id=assignment.definition.id,
-                agent_name=assignment.definition.name,
-                intent=route.intent,
-            )
-            if route.intent == "fact_check" and route.search_query:
-                self._announce_work_status(
-                    "web_search",
-                    route.normalized_request,
-                )
-            else:
-                self._announce_work_status(
-                    route.intent,
-                    route.normalized_request,
-                )
-
-        memory_started = time.perf_counter()
-        use_memory = (
-            route.intent == "conversation"
-            and route.memory_relevant
-        )
-        if use_memory:
-            memories = self.memory_manager.search(
-                user_input,
-                k=20,
-            )
-            memories = self.memory_ranker.rank(memories)
-            memory_text = self.context_builder.build(memories)
-        timings["memory_retrieval"] = (
-            time.perf_counter() - memory_started
-        )
-
-        # The router's local safety policy must explicitly authorize a write
-        # proposal. A model label alone is never enough to invoke MCP edits.
-        project_edit_requested = (
-            route.intent == "project_edit"
-            and route.action_requested
-        )
-        use_screen_vision = route.intent == "screen_analysis"
-        forced_response = ""
-        # Whether a real capability ran this turn. Used by the commitment
-        # guard below, which treats "let me open that for you" as a broken
-        # promise unless something actually happened.
-        action_performed = route.intent in {
-            "web_search",
-            "screen_analysis",
-            "fact_check",
-            "calendar_action",
-            "project_question",
-            "project_edit",
-            "git_commit",
-            "git_publish",
-        }
-        if route.intent == "computer_action" and not locked_response:
-            action_performed = True
-            locked_response, computer_result = self._handle_computer_action(
-                route,
-                approved_action=approved_computer_action,
-                original_request=user_input,
-                clarified_goal=clarified_goal,
-            )
-
-            if computer_result is not None:
-                if (
-                    computer_result.succeeded
-                    and computer_result.operation in {"open_url", "open_search"}
-                    and computer_result.url
-                ):
-                    # Text-mode requests can briefly focus Elaina's own
-                    # Electron window before the next utterance.  Preserve
-                    # the Elaina-opened page so terse follow-ups such as
-                    # "click Images" remain bound to it instead of an
-                    # unrelated background tab.
-                    controlled_url = str(
-                        getattr(self.browser_connection, "last_opened_url", "")
-                        or computer_result.url
-                    )
-                    self.browser_observer.prefer_page(controlled_url)
-                    self._remember_desktop_surface({
-                        "kind": "browser",
-                        "title": "",
-                        "url": controlled_url,
-                    })
-                self.events.emit(
-                    "computer_action_completed",
-                    status=computer_result.status,
-                    operation=computer_result.operation,
-                    target=computer_result.target,
-                    message=computer_result.message,
-                )
-        if route.intent == "task_action" and not locked_response:
-            action_performed = True
-            locked_response = self._handle_task_action(
-                route,
-                approved_task=approved_task_action,
-                approved_strategy_task_state=approved_strategy_task_state,
-                declined_strategy_task_state=declined_strategy_task_state,
-                original_request=user_input,
-            )
-        screen_target = route.screen_target or "configured"
-        if screen_snapshot is not None:
-            pass
-        elif screen_region is not None:
-            screen_snapshot = self.screen_monitor.capture_region(
-                screen_region
-            )
-        elif use_screen_vision:
-            precondition_ok, precondition_message = check_precondition(
-                "screen_capture_enabled",
-                screen_monitor=self.screen_monitor,
-            )
-            if precondition_ok:
-                screen_snapshot = self.screen_monitor.capture_now(
-                    screen_target
-                )
-            else:
-                screen_snapshot = None
-                forced_response = precondition_message
-        else:
-            screen_snapshot = None
-        screen_context = (
-            self._build_screen_context(screen_snapshot)
-            if use_screen_vision
-            else ""
-        )
-
-        context_prompt = self.prompt_builder.build(
-            memory_text=memory_text,
-            screen_text=screen_context,
-            user_input=user_input,
-        )
-        grounded_context = self._grounded_context_text()
-        if (
-            grounded_context
-            and self._grounded_context_is_relevant(route)
-            and route.intent in {
-            "conversation",
-            "clarification",
-            "fact_check",
-            }
-        ):
-            context_prompt += (
-                "\n\nRECENT VERIFIED CONTEXT\n"
-                f"{grounded_context}"
-            )
-        if route.intent == "time_question":
-            context_prompt += (
-                "\n\nCURRENT LOCAL TIME CONTEXT\n"
-                f"{self.build_time_context()}"
-            )
-        if route.intent == "clarification" and route.reason:
-            context_prompt += (
-                "\n\nCLARIFICATION NEEDED\n"
-                f"{route.reason}\n"
-                "Ask one short clarifying question instead of guessing or "
-                "answering as if a decision had already been made."
-            )
-        context_prompt += (
-            "\n\nCURRENTLY AVAILABLE AI AGENTS\n"
-            f"{self._capability_context()}"
-        )
-        if agent_permission_context:
-            context_prompt += (
-                "\n\nAGENT PERMISSION STATE\n"
-                f"{agent_permission_context}"
-            )
-
+        The tail of a turn: build the prompt, generate or speak the
+        locked result, then filter, remember and publish it. It reads
+        the decisions above and returns the reply; nothing after it
+        depends on anything it computes, which is what let it move in
+        one piece. Thirteen parameters is not elegance -- it is the
+        honest size of what this phase still needs to know.
+        """
         ####################################################
         # Ask Qwen
         ####################################################
@@ -2920,7 +2298,7 @@ class ChatEngine:
 
         turn_grounding_source = ""
         turn_grounding_subject = ""
-        
+
         if not use_screen_vision and route.intent == "web_search":
             search_started = time.perf_counter()
             try:
@@ -3741,6 +3119,7 @@ class ChatEngine:
                             + advice_footer_rule,
                         ),
                     ),
+                    response_language=self.response_language,
                 )
                 rewrite_response = self.client.chat(
                     model=active_model,
@@ -3863,6 +3242,10 @@ class ChatEngine:
                 user_input=user_input,
                 action_performed=action_performed,
             )
+            # Last, so it also catches a footer a rewrite reintroduced. Her
+            # personality file bans these outright and the model adds them
+            # anyway, so the removal is code rather than more prompt wording.
+            reply = ClosingOfferGuard.strip(reply)
             speech_buffer = reply
             if reply:
                 print(
@@ -4004,7 +3387,8 @@ class ChatEngine:
         )
 
         if (
-            route.intent == "conversation"
+            self.memory_enabled
+            and route.intent == "conversation"
             and route.memory_candidate
         ):
             threading.Thread(
@@ -4041,6 +3425,956 @@ class ChatEngine:
                 self._active_turn_cancel = None
 
         return reply
+
+    def _dispatch_turn(
+        self,
+        *,
+        assumed_aloud,
+        clarified_goal,
+        locked_response,
+        memory_text,
+        route,
+        routing,
+        screen_region,
+        screen_snapshot,
+        timings,
+        user_input,
+    ) -> dict:
+        """Carry out whatever the routing phase decided this turn is.
+
+        Deliberately not a dispatch table: these branches are not
+        mutually exclusive alternatives but a sequence of effects --
+        one may act, another may set a flag the answering phase reads,
+        a third may log. A table here would be a tidier shape than the
+        truth. What it does give is one place where all of it lives.
+        """
+        approved_computer_action = routing.approved_computer_action
+        approved_task_action = routing.approved_task_action
+        approved_strategy_task_state = routing.approved_strategy_task_state
+        declined_strategy_task_state = routing.declined_strategy_task_state
+        agent_permission_context = routing.agent_permission_context
+        self._update_conversation_state(route)
+        print(
+            f"[Router] {route.intent} ({route.confidence:.2f}): "
+            f"{route.reason or route.normalized_request}"
+        )
+        if route.intent in {"knowledge_question", "web_search"}:
+            print(
+                "[Router Source] "
+                f"freshness={route.information_freshness} "
+                f"external={route.requires_external_evidence} "
+                f"verify={route.verification_required}"
+            )
+            # Scenario 1's fast path: a plain web_search never touches the
+            # task planner, so it needs its own decision-log call rather
+            # than TaskPlanner._preview()'s (which only fires on the
+            # task_action path).
+            log_information_need(
+                intent=route.intent,
+                freshness=route.information_freshness,
+                verification=route.verification_required,
+                effort="discover",
+                capabilities=("web_search",) if route.intent == "web_search" else (),
+            )
+        if route.normalized_request != user_input:
+            print(
+                f"[Router] Interpreted transcript as: "
+                f"{route.normalized_request}"
+            )
+
+        agent_task_id = None
+        if route.intent in AGENT_EXECUTION_INTENTS:
+            assignment_intent = route.intent
+            if (
+                route.intent == "calendar_action"
+                and not self.agent_registry.has_agent(
+                    "google_calendar_agent"
+                )
+            ):
+                assignment_intent = "agent_create"
+            assignment = self.agent_coordinator.assign(
+                assignment_intent,
+                route.normalized_request,
+            )
+            agent_task_id = assignment.task.id
+            self.events.emit(
+                "agent_task_started",
+                task_id=agent_task_id,
+                agent_id=assignment.definition.id,
+                agent_name=assignment.definition.name,
+                intent=route.intent,
+            )
+            # A fact check with a query really is a search, and should sound
+            # like one. Without a query nothing is searched, so it stays
+            # unannounced rather than promising a look she is not taking.
+            status_intent = (
+                "web_search"
+                if route.intent == "fact_check" and route.search_query
+                else route.intent
+            )
+            self._announce_work_status(
+                status_intent,
+                route.normalized_request,
+                confidence=float(getattr(route, "confidence", 1.0) or 1.0),
+            )
+
+        memory_started = time.perf_counter()
+        use_memory = (
+            self.memory_enabled
+            and route.intent == "conversation"
+            and route.memory_relevant
+        )
+        if use_memory:
+            memories = self.memory_manager.search(
+                user_input,
+                k=20,
+            )
+            memories = self.memory_ranker.rank(memories)
+            memory_text = self.context_builder.build(memories)
+        timings["memory_retrieval"] = (
+            time.perf_counter() - memory_started
+        )
+
+        # The router's local safety policy must explicitly authorize a write
+        # proposal. A model label alone is never enough to invoke MCP edits.
+        project_edit_requested = (
+            route.intent == "project_edit"
+            and route.action_requested
+        )
+        use_screen_vision = route.intent == "screen_analysis"
+        forced_response = ""
+        # Whether a real capability ran this turn. Used by the commitment
+        # guard below, which treats "let me open that for you" as a broken
+        # promise unless something actually happened.
+        action_performed = route.intent in {
+            "web_search",
+            "screen_analysis",
+            "fact_check",
+            "calendar_action",
+            "project_question",
+            "project_edit",
+            "git_commit",
+            "git_publish",
+        }
+        if route.intent == "computer_action" and not locked_response:
+            action_performed = True
+            locked_response, computer_result = self._handle_computer_action(
+                route,
+                approved_action=approved_computer_action,
+                original_request=user_input,
+                clarified_goal=clarified_goal,
+                assumption=assumed_aloud,
+            )
+
+            if computer_result is not None:
+                if (
+                    computer_result.succeeded
+                    and computer_result.operation in {"open_url", "open_search"}
+                    and computer_result.url
+                ):
+                    # Text-mode requests can briefly focus Elaina's own
+                    # Electron window before the next utterance.  Preserve
+                    # the Elaina-opened page so terse follow-ups such as
+                    # "click Images" remain bound to it instead of an
+                    # unrelated background tab.
+                    controlled_url = str(
+                        getattr(self.browser_connection, "last_opened_url", "")
+                        or computer_result.url
+                    )
+                    self.browser_observer.prefer_page(controlled_url)
+                    self._remember_desktop_surface({
+                        "kind": "browser",
+                        "title": "",
+                        "url": controlled_url,
+                    })
+                self.events.emit(
+                    "computer_action_completed",
+                    status=computer_result.status,
+                    operation=computer_result.operation,
+                    target=computer_result.target,
+                    message=computer_result.message,
+                )
+        if route.intent == "task_action" and not locked_response:
+            action_performed = True
+            locked_response = self._handle_task_action(
+                route,
+                approved_task=approved_task_action,
+                approved_strategy_task_state=approved_strategy_task_state,
+                declined_strategy_task_state=declined_strategy_task_state,
+                original_request=user_input,
+            )
+        screen_target = route.screen_target or "configured"
+        if screen_snapshot is not None:
+            pass
+        elif screen_region is not None:
+            screen_snapshot = self.screen_monitor.capture_region(
+                screen_region
+            )
+        elif use_screen_vision:
+            precondition_ok, precondition_message = check_precondition(
+                "screen_capture_enabled",
+                screen_monitor=self.screen_monitor,
+            )
+            if precondition_ok:
+                screen_snapshot = self.screen_monitor.capture_now(
+                    screen_target
+                )
+            else:
+                screen_snapshot = None
+                forced_response = precondition_message
+        else:
+            screen_snapshot = None
+        screen_context = (
+            self._build_screen_context(screen_snapshot)
+            if use_screen_vision
+            else ""
+        )
+
+        context_prompt = self.prompt_builder.build(
+            memory_text=memory_text,
+            screen_text=screen_context,
+            user_input=user_input,
+        )
+        grounded_context = self._grounded_context_text()
+        if (
+            grounded_context
+            and self._grounded_context_is_relevant(route)
+            and route.intent in {
+            "conversation",
+            "clarification",
+            "fact_check",
+            }
+        ):
+            context_prompt += (
+                "\n\nRECENT VERIFIED CONTEXT\n"
+                f"{grounded_context}"
+            )
+        if route.intent == "time_question":
+            context_prompt += (
+                "\n\nCURRENT LOCAL TIME CONTEXT\n"
+                f"{self.build_time_context()}"
+            )
+        if route.intent == "clarification" and route.reason:
+            context_prompt += (
+                "\n\nCLARIFICATION NEEDED\n"
+                f"{route.reason}\n"
+                "Ask one short clarifying question instead of guessing or "
+                "answering as if a decision had already been made."
+            )
+        context_prompt += (
+            "\n\nCURRENTLY AVAILABLE AI AGENTS\n"
+            f"{self._capability_context()}"
+        )
+        if agent_permission_context:
+            context_prompt += (
+                "\n\nAGENT PERMISSION STATE\n"
+                f"{agent_permission_context}"
+            )
+
+        return {
+            "action_performed": action_performed,
+            "agent_task_id": agent_task_id,
+            "context_prompt": context_prompt,
+            "forced_response": forced_response,
+            "locked_response": locked_response,
+            "project_edit_requested": project_edit_requested,
+            "screen_context": screen_context,
+            "screen_snapshot": screen_snapshot,
+            "use_screen_vision": use_screen_vision,
+        }
+
+    def _route_turn(
+        self,
+        user_input: str,
+        *,
+        timings: dict,
+        screen_region=None,
+        screen_snapshot=None,
+    ) -> "TurnRouting":
+        """Decide what this turn is, before anything acts on it.
+
+        One phase of the turn, lifted out whole: pending answers first,
+        then what the request reads as, then the model router for
+        whatever could not be read, then the repair layer. It reaches
+        the rest of the turn through the ten decisions below and
+        nothing else -- which is what made it safe to move.
+        """
+        route_started = time.perf_counter()
+        continuing_agent_flow = bool(
+            self.agent_builder.active or self.calendar_agent.active
+        )
+        has_explicit_attachment = bool(
+            screen_region is not None or screen_snapshot is not None
+        )
+        pending_offer = self.agent_consent.peek()
+        pending_computer = self.computer_consent.peek()
+        pending_task = self.task_consent.peek()
+        pending_strategy = self.task_strategy_consent.peek()
+        pending_capability = self.capability_offer.peek()
+        pending_clarification = (
+            self.clarification.peek()
+            if hasattr(self, "clarification")
+            else None
+        )
+        if (
+            _CLOSING_ACKNOWLEDGEMENT.fullmatch(user_input)
+            and not has_explicit_attachment
+            and not continuing_agent_flow
+        ):
+            # Do not let a completed or paused hotel/discovery task bleed
+            # into a simple social acknowledgement.
+            self.clarification.clear()
+            self.computer_consent.clear()
+            self.task_consent.clear()
+            self.task_strategy_consent.clear()
+            self.capability_offer.clear()
+            self.task_sessions.clear()
+            self._grounded_context = {}
+            timings["route"] = time.perf_counter() - route_started
+            return TurnRouting(
+                route=IntentDecision(
+                    intent="conversation",
+                    confidence=1.0,
+                    normalized_request=user_input,
+                    reason="The user closed the previous task.",
+                ),
+                user_input=user_input,
+                locked_response="You're welcome.",
+            )
+        clarified_goal: Goal | None = None
+        # What she filled in herself for this turn, to be said out loud with
+        # the result rather than silently acted on.
+        assumed_aloud = ""
+        # Read the request before anything else looks at it. A sentence she
+        # can type is a fresh instruction, and it outranks every pending
+        # offer except an answer to a question she just asked -- found by
+        # the turn suite: an unanswered "want me to use it now?" swallowed
+        # every following request and re-offered itself instead.
+        understood = (
+            None if has_explicit_attachment or continuing_agent_flow
+            else front_door.read(
+                user_input,
+                recent_subject=(
+                    self.desktop_action_planner._recent_media_subject()
+                    if hasattr(self.desktop_action_planner, "_recent_media_subject")
+                    else ""
+                ),
+                profile=getattr(self, "user_profile", None),
+            )
+        )
+        locked_response = ""
+        approved_computer_action: PreparedComputerAction | None = None
+        approved_task_action: PendingTaskAction | None = None
+        approved_strategy_task_state: TaskState | None = None
+        declined_strategy_task_state: TaskState | None = None
+
+        def route_current(
+            transcript: str,
+        ) -> IntentDecision:
+            return self.intent_router.route(
+                transcript,
+                recent_turns=list(self._router_history),
+                has_screen_selection=has_explicit_attachment,
+                project_tools_available=self.project_mcp is not None,
+                conversation_state=self._build_conversation_state(),
+                pending_action=self._pending_action,
+                computer_control_enabled=self.computer_control_mode.enabled,
+            )
+
+        def route_fresh(transcript: str) -> IntentDecision:
+            """Route a genuinely new request, task gate included.
+
+            Every "this reply was about something else entirely" branch
+            below used to call route_current directly, which skips
+            TaskIntentGate -- so a new multi-step goal arriving while any
+            offer happened to be pending silently lost the whole task
+            planner. Found live: a pending ability offer turned "what are
+            the best second-hand websites to buy a used phone" into a
+            one-shot web_search that answered with US marketplaces,
+            bypassing the discovery policy that would have named the
+            user's own.
+            """
+            if continuing_agent_flow or has_explicit_attachment:
+                return route_current(transcript)
+            decision = self.task_intent_gate.check(
+                transcript,
+                conversation_state=self._build_conversation_state(),
+            )
+            if not decision.is_multistep:
+                return route_current(transcript)
+            return IntentDecision(
+                intent="task_action",
+                confidence=decision.confidence,
+                normalized_request=transcript,
+                reason=(
+                    decision.reason
+                    or "This goal needs more than one capability."
+                ),
+                speech_act="action_request",
+                action_requested=True,
+                action_target=transcript,
+            )
+
+        if (
+            pending_clarification is not None
+            and not has_explicit_attachment
+            and not continuing_agent_flow
+            and pending_clarification.reads_as_answer(user_input)
+            and (completed := pending_clarification.completed(user_input))
+            is not None
+        ):
+            # The person answered the question. The answer is folded back
+            # into the request that prompted it, so what runs now is the
+            # whole request -- through every guard on that path -- rather
+            # than a bare fragment routed on its own.
+            self.clarification.clear()
+            clarified_goal = completed
+            route = IntentDecision(
+                # "general overview" turns a booking clarification into
+                # research.  It needs the task planner's evidence gate, not
+                # a direct browser action that still reads like a booking.
+                intent=(
+                    "task_action" if completed.kind == "research"
+                    else "computer_action"
+                ),
+                # An answered question continues the request it belongs to,
+                # which decides which planner sees it.
+                computer_operation=(
+                    "browser_action"
+                    if completed.kind == "booking"
+                    else "ui_action"
+                ),
+                confidence=1.0,
+                normalized_request=completed.utterance,
+                reason="The user answered the outstanding question.",
+                is_follow_up=True,
+                speech_act="action_request",
+                action_requested=True,
+                action_target=completed.utterance,
+            )
+        elif (
+            understood is not None
+            and understood.asks
+            and not self.agent_builder.active
+        ):
+            # One gate, on every path. Whatever this request was headed for
+            # -- an app, a page, a multi-step task, a search -- it cannot
+            # proceed, so the question is asked here rather than by whoever
+            # would have received it. Nothing is dispatched.
+            self.capability_offer.clear()
+            self.clarification.offer(
+                goal=understood.decision.goal,
+                slot=understood.decision.missing,
+                question=understood.question,
+                template=understood.decision.template,
+            )
+            locked_response = understood.question
+            route = IntentDecision(
+                intent="clarification",
+                confidence=1.0,
+                normalized_request=understood.target,
+                reason="The request cannot proceed until this is answered.",
+                speech_act="information_request",
+            )
+            print(f"[Gate] asked before dispatch: {understood.goal.kind}")
+        elif (
+            understood is not None
+            and understood.operation
+            and not self.agent_builder.active
+        ):
+            # Understood outright: it goes to the planner that owns its gate,
+            # with its slots intact and no model call at all.
+            clarified_goal = understood.goal
+            assumed_aloud = understood.decision.assumption
+            self.capability_offer.clear()
+            route = IntentDecision(
+                intent="computer_action",
+                computer_operation=understood.operation,
+                confidence=1.0,
+                normalized_request=understood.target,
+                reason=understood.reason,
+                speech_act="action_request",
+                action_requested=True,
+                action_target=understood.target,
+            )
+            print(
+                f"[Front Door] {understood.goal.kind} -> "
+                f"{understood.operation} without the router."
+            )
+        elif self.agent_builder.active:
+            route = IntentDecision(
+                intent="agent_create",
+                confidence=1.0,
+                normalized_request=user_input,
+                reason="Continuing the active agent setup.",
+                speech_act="information_request",
+                action_requested=True,
+                action_target="agent setup",
+            )
+        elif self.calendar_agent.active:
+            route = IntentDecision(
+                intent="calendar_action",
+                confidence=1.0,
+                normalized_request=user_input,
+                reason="Continuing the active calendar event draft.",
+                speech_act="information_request",
+                action_requested=True,
+                action_target="calendar event",
+            )
+        elif (
+            pending_strategy is not None
+            and not has_explicit_attachment
+            # A question is not an answer to an offer. Measured live: the
+            # offer from "find hotels in guam" swallowed "what is the
+            # tallest building in seoul" and replied with the hotel
+            # question. A plain "no, the overview is fine" still answers.
+            and not asks_something_else(user_input)
+        ):
+            browser_ready = bool(
+                self.browser_page_control_enabled
+                and self.computer_control_mode.enabled
+            )
+            strategy_reply = self.task_discovery_policy.interpret_reply(
+                user_input, browser_ready=browser_ready,
+            )
+            # Clear replies are resolved locally.  This makes the central
+            # conversational handoff reliable even if the small local model
+            # is offline, and it preserves a reply such as "yes, under
+            # ₩200k near Hongdae" as task preferences instead of discarding
+            # it under a generic "modify" label.
+            if strategy_reply.mode in {"specialized", "overview"}:
+                self.task_strategy_consent.clear()
+                pending_strategy.task_state.preferences.update(
+                    strategy_reply.preferences,
+                )
+                accepted_strategy = strategy_reply.mode == "specialized"
+                if accepted_strategy:
+                    approved_strategy_task_state = pending_strategy.task_state
+                else:
+                    declined_strategy_task_state = pending_strategy.task_state
+                route = IntentDecision(
+                    intent="task_action",
+                    confidence=1.0,
+                    normalized_request=pending_strategy.task_state.goal,
+                    reason=(
+                        "The user selected live specialised research."
+                        if accepted_strategy
+                        else "The user selected the quick-overview path."
+                    ),
+                    is_follow_up=True,
+                    speech_act="action_request",
+                    action_requested=True,
+                    action_target=pending_strategy.task_state.goal,
+                )
+            else:
+                consent = self.consent_classifier.classify(
+                    user_input,
+                    pending_strategy,
+                    recent_turns=list(self._router_history),
+                )
+                if consent.decision == "accept":
+                    self.task_strategy_consent.clear()
+                    approved_strategy_task_state = pending_strategy.task_state
+                    route = IntentDecision(
+                        intent="task_action",
+                        confidence=consent.confidence,
+                        normalized_request=pending_strategy.task_state.goal,
+                        reason="The user accepted the live-research offer.",
+                        is_follow_up=True,
+                        speech_act="action_request",
+                        action_requested=True,
+                        action_target=pending_strategy.task_state.goal,
+                    )
+                elif consent.decision == "modify":
+                    # A modified strategy reply still authorises the same
+                    # task; merge its literal user details into the paused
+                    # TaskState and keep the live-research branch.  The old
+                    # implementation treated this as a decline and silently
+                    # threw away filters.
+                    self.task_strategy_consent.clear()
+                    preference_text = consent.modified_request or user_input
+                    pending_strategy.task_state.preferences.update(
+                        self.task_discovery_policy.extract_preferences(
+                            preference_text,
+                        ),
+                    )
+                    approved_strategy_task_state = pending_strategy.task_state
+                    route = IntentDecision(
+                        intent="task_action",
+                        confidence=consent.confidence,
+                        normalized_request=pending_strategy.task_state.goal,
+                        reason="The user updated preferences for live research.",
+                        is_follow_up=True,
+                        speech_act="action_request",
+                        action_requested=True,
+                        action_target=pending_strategy.task_state.goal,
+                    )
+                elif consent.decision == "reject":
+                    self.task_strategy_consent.clear()
+                    declined_strategy_task_state = pending_strategy.task_state
+                    route = IntentDecision(
+                        intent="task_action",
+                        confidence=consent.confidence,
+                        normalized_request=pending_strategy.task_state.goal,
+                        reason="The user declined the live-research offer.",
+                        is_follow_up=True,
+                        speech_act="action_request",
+                        action_requested=True,
+                        action_target=pending_strategy.task_state.goal,
+                    )
+                elif consent.decision == "unrelated":
+                    self.task_strategy_consent.clear()
+                    route = route_fresh(user_input)
+                else:
+                    route = IntentDecision(
+                        intent="conversation",
+                        confidence=consent.confidence,
+                        normalized_request=user_input,
+                        reason="The strategy offer reply was unclear.",
+                        is_follow_up=True,
+                    )
+                    locked_response = (
+                        pending_strategy.offer_text
+                        or "Would you like live research, or a quick overview?"
+                    )
+        elif pending_task is not None and not has_explicit_attachment:
+            consent = self.consent_classifier.classify(
+                user_input,
+                pending_task,
+                recent_turns=list(self._router_history),
+            )
+            if consent.decision == "accept":
+                self.task_consent.clear()
+                approved_task_action = pending_task
+                route = IntentDecision(
+                    intent="task_action",
+                    confidence=consent.confidence,
+                    normalized_request=pending_task.request,
+                    reason="The user accepted the pending task step.",
+                    is_follow_up=True,
+                    speech_act="action_request",
+                    action_requested=True,
+                    action_target=pending_task.request,
+                )
+            elif consent.decision == "modify":
+                # A modified multi-step task is treated as a fresh goal
+                # rather than grafting a changed instruction onto in-flight
+                # task state -- simpler and safer than partial-state surgery.
+                self.task_consent.clear()
+                revised_request = consent.modified_request.strip()
+                route = route_fresh(revised_request or user_input)
+            elif consent.decision == "reject":
+                self.task_consent.clear()
+                route = IntentDecision(
+                    intent="conversation",
+                    confidence=consent.confidence,
+                    normalized_request=user_input,
+                    reason="The user declined the pending task step.",
+                    is_follow_up=True,
+                )
+                gathered = "; ".join(
+                    pending_task.task_state.collected_information
+                )
+                locked_response = (
+                    f"Okay, I'll stop there. So far: {gathered}"
+                    if gathered
+                    else "Okay, I'll stop there."
+                )
+            elif consent.decision == "unrelated":
+                self.task_consent.clear()
+                route = route_fresh(user_input)
+            else:
+                route = IntentDecision(
+                    intent="conversation",
+                    confidence=consent.confidence,
+                    normalized_request=user_input,
+                    reason="The pending task confirmation reply was unclear.",
+                    is_follow_up=True,
+                )
+                locked_response = (
+                    pending_task.reason or "Should I continue with that step?"
+                )
+        elif pending_computer is not None and not has_explicit_attachment:
+            consent = self.consent_classifier.classify(
+                user_input,
+                pending_computer,
+                recent_turns=list(self._router_history),
+            )
+            if consent.decision == "accept":
+                self.computer_consent.clear()
+                approved_computer_action = pending_computer.prepared
+                route = IntentDecision(
+                    intent="computer_action",
+                    confidence=consent.confidence,
+                    normalized_request=pending_computer.request,
+                    reason="The user accepted the exact high-risk confirmation.",
+                    is_follow_up=True,
+                    speech_act="action_request",
+                    action_requested=True,
+                    action_target=pending_computer.target_name,
+                    computer_operation=pending_computer.operation,
+                )
+            elif consent.decision == "modify":
+                self.computer_consent.clear()
+                revised_request = consent.modified_request.strip()
+                route = route_fresh(
+                    revised_request or user_input,
+                )
+            elif consent.decision == "reject":
+                self.computer_consent.clear()
+                route = IntentDecision(
+                    intent="conversation",
+                    confidence=consent.confidence,
+                    normalized_request=user_input,
+                    reason="The user declined the pending computer action.",
+                    is_follow_up=True,
+                )
+                locked_response = self.brief_responses.generate(
+                    "declined",
+                    subject=pending_computer.target_name,
+                    operation=pending_computer.operation,
+                )
+            elif consent.decision == "unrelated":
+                self.computer_consent.clear()
+                route = route_fresh(user_input)
+            else:
+                route = IntentDecision(
+                    intent="conversation",
+                    confidence=consent.confidence,
+                    normalized_request=user_input,
+                    reason="The high-risk confirmation reply was unclear.",
+                    is_follow_up=True,
+                )
+                locked_response = self.brief_responses.generate(
+                    (
+                        "force_quit_offer"
+                        if pending_computer.operation == "force_quit_app"
+                        else "delete_offer"
+                        if pending_computer.operation in {
+                            "delete_file", "delete_folder"
+                        }
+                        else "ui_action_offer"
+                        if pending_computer.operation in {"ui_action", "browser_action"}
+                        else "blocked"
+                    ),
+                    subject=pending_computer.target_name,
+                    detail=pending_computer.request,
+                    operation=pending_computer.operation,
+                )
+        elif (
+            pending_capability is not None
+            and not has_explicit_attachment
+            and not asks_something_else(user_input)
+        ):
+            # Elaina offered an ability in ordinary conversation ("I can
+            # check that in the browser -- want me to?"). Without this
+            # branch the user's "ok" routed as a brand-new, contextless
+            # turn -- observed live re-emitting the identical offer while
+            # nothing ever opened.
+            consent = self.consent_classifier.classify(
+                user_input,
+                pending_capability,
+                recent_turns=list(self._router_history),
+            )
+            if consent.decision in {"accept", "modify"}:
+                self.capability_offer.clear()
+                goal = (
+                    consent.modified_request.strip()
+                    if consent.decision == "modify"
+                    else ""
+                ) or pending_capability.goal
+                operation = {
+                    "browser_control": "browser_action",
+                    "ui_control": "ui_action",
+                }.get(pending_capability.capability_id, "")
+                route = IntentDecision(
+                    intent="computer_action" if operation else "task_action",
+                    confidence=consent.confidence,
+                    normalized_request=goal,
+                    reason="The user accepted the offered ability.",
+                    is_follow_up=True,
+                    speech_act="action_request",
+                    action_requested=True,
+                    action_target=goal,
+                    computer_operation=operation,
+                )
+                user_input = goal or user_input
+            elif consent.decision == "reject":
+                self.capability_offer.clear()
+                route = IntentDecision(
+                    intent="conversation",
+                    confidence=consent.confidence,
+                    normalized_request=user_input,
+                    reason="The user declined the offered ability.",
+                    is_follow_up=True,
+                )
+                locked_response = "Okay, I'll leave it."
+            elif consent.decision == "unrelated":
+                self.capability_offer.clear()
+                route = route_fresh(user_input)
+            else:
+                route = IntentDecision(
+                    intent="conversation",
+                    confidence=consent.confidence,
+                    normalized_request=user_input,
+                    reason="The ability offer reply was unclear.",
+                    is_follow_up=True,
+                )
+                locked_response = (
+                    pending_capability.offer_text
+                    or "Want me to go ahead with that?"
+                )
+        elif pending_offer is not None and not has_explicit_attachment:
+            consent = self.consent_classifier.classify(
+                user_input,
+                pending_offer,
+                recent_turns=list(self._router_history),
+            )
+            if consent.decision == "unrelated":
+                # The dedicated consent classifier has established that this
+                # is a new topic. Clear the stale offer before normal routing.
+                self.agent_consent.clear()
+                route = route_fresh(user_input)
+            else:
+                route = IntentDecision(
+                    intent="agent_consent",
+                    confidence=consent.confidence,
+                    normalized_request=user_input,
+                    reason=consent.reason,
+                    is_follow_up=True,
+                    speech_act="approval_response",
+                    consent_decision=consent.decision,
+                    offered_request=consent.modified_request,
+                )
+        else:
+            if has_explicit_attachment and pending_computer is not None:
+                self.computer_consent.clear()
+            route = route_fresh(user_input)
+        route, agent_permission_context = apply_agent_permission(
+            self.agent_consent,
+            route,
+            user_input=user_input,
+            has_explicit_attachment=has_explicit_attachment,
+            continuing_agent_flow=continuing_agent_flow,
+            available_intents={
+                intent
+                for agent in self.agent_registry.all()
+                if agent.enabled
+                for intent in agent.intents
+            },
+        )
+        if not locked_response:
+            before = (route.intent, route.computer_operation)
+            route, capability_note = self._rescue_capability_route(
+                route, user_input,
+            )
+            if capability_note or (route.intent, route.computer_operation) != before:
+                # Visible on purpose. This layer exists to repair the
+                # router's own mistakes, so how often it fires is the
+                # measure of whether the router still needs repairing --
+                # and the evidence for retiring it when it stops firing.
+                print(
+                    f"[Rescue] {before[0]}/{before[1] or '-'} -> "
+                    f"{route.intent}/{route.computer_operation or '-'}"
+                )
+            if capability_note:
+                locked_response = capability_note
+        timings["route"] = time.perf_counter() - route_started
+        return TurnRouting(
+            route=route,
+            user_input=user_input,
+            locked_response=locked_response,
+            clarified_goal=clarified_goal,
+            assumed_aloud=assumed_aloud,
+            approved_computer_action=approved_computer_action,
+            approved_task_action=approved_task_action,
+            approved_strategy_task_state=approved_strategy_task_state,
+            declined_strategy_task_state=declined_strategy_task_state,
+            agent_permission_context=agent_permission_context,
+        )
+
+    def chat(
+        self,
+        user_input,
+        screen_region=None,
+        screen_snapshot=None,
+    ):
+        turn_started = time.perf_counter()
+        timings: dict[str, float] = {}
+        user_input = str(user_input).strip()
+
+        if not user_input:
+            return ""
+
+        self._begin_desktop_turn()
+
+        turn_cancel = threading.Event()
+        with self._turn_lock:
+            self._active_turn_cancel = turn_cancel
+        self._turn_visual_subject = ""
+
+        self.events.emit(
+            "user_message",
+            text=user_input,
+        )
+
+        ####################################################
+        # Retrieve Memories
+        ####################################################
+
+        memory_text = ""
+
+        ####################################################
+        # Build Prompt
+        ####################################################
+        routing = self._route_turn(
+            user_input,
+            timings=timings,
+            screen_region=screen_region,
+            screen_snapshot=screen_snapshot,
+        )
+        route = routing.route
+        user_input = routing.user_input
+        locked_response = routing.locked_response
+        clarified_goal = routing.clarified_goal
+        assumed_aloud = routing.assumed_aloud
+        decided = self._dispatch_turn(
+            assumed_aloud=assumed_aloud,
+            clarified_goal=clarified_goal,
+            locked_response=locked_response,
+            memory_text=memory_text,
+            route=route,
+            routing=routing,
+            screen_region=screen_region,
+            screen_snapshot=screen_snapshot,
+            timings=timings,
+            user_input=user_input,
+        )
+        action_performed = decided["action_performed"]
+        agent_task_id = decided["agent_task_id"]
+        context_prompt = decided["context_prompt"]
+        forced_response = decided["forced_response"]
+        locked_response = decided["locked_response"]
+        project_edit_requested = decided["project_edit_requested"]
+        screen_context = decided["screen_context"]
+        screen_snapshot = decided["screen_snapshot"]
+        use_screen_vision = decided["use_screen_vision"]
+        return self._answer_turn(
+            route=route,
+            user_input=user_input,
+            context_prompt=context_prompt,
+            locked_response=locked_response,
+            action_performed=action_performed,
+            agent_task_id=agent_task_id,
+            project_edit_requested=project_edit_requested,
+            screen_context=screen_context,
+            screen_snapshot=screen_snapshot,
+            use_screen_vision=use_screen_vision,
+            turn_cancel=turn_cancel,
+            turn_started=turn_started,
+            timings=timings,
+            forced_response=forced_response,
+        )
 
     def prepare_screen_region(self, region: dict) -> bool:
         """Capture a selected region and hold it for the next spoken message."""

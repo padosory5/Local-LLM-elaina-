@@ -822,6 +822,8 @@ function handlePythonMessage(event) {
                 setActivity("thinking", "Thinking...");
                 break;
             case "assistant_status":
+                // Status lines are part of Elaina's side of the conversation,
+                // so render them exactly like every other assistant message.
                 addAssistantMessage(message.text);
                 setActivity("thinking", message.text || "Working...");
                 break;

@@ -109,7 +109,37 @@ def collection_phrase(collection: str) -> str:
     return _COLLECTION_PHRASES.get(label, f"your whole {label}")
 
 
-_SPOTIFY_CUE = re.compile(r"\bspotify\b", re.I)
+# Korean attaches its particles directly to a noun -- 유튜브*에서*, 노래*나* --
+# so a \b after a Korean word never matches: both sides are word
+# characters. Korean alternatives are therefore listed without boundaries,
+# and only the English ones keep them.
+_SPOTIFY_CUE = re.compile(r"\bspotify\b|스포티파이", re.I)
+
+# Somewhere else was named outright, so this is not her media app's
+# request to answer -- "play it on youtube" means youtube.
+_OTHER_MEDIA_SURFACE = re.compile(
+    r"\b(?:youtube|netflix|disney|browser|chrome|whale|edge|firefox|"
+    r"soundcloud|apple\s+music|spotify\s+web|vlc|twitch|melon|genie|bugs)\b"
+    r"|유튜브|넷플릭스|멜론|지니",
+    re.I,
+)
+# The words that make an app-less request a *music* request. Without
+# one of these, "play chess" would be read as a song title -- so a
+# bare play request is left to the router rather than assumed to be
+# music.
+_MEDIA_NOUN = re.compile(
+    r"\b(?:song|songs|music|track|tracks|album|albums|playlist|tune|tunes)\b"
+    r"|노래|음악|앨범|곡",
+    re.I,
+)
+# "Click Play in Spotify" asks for a button by name; the word "play" is the
+# control, not the verb. Without this the subject came out as "in Spotify"
+# and the media guard then refused a perfectly ordinary click.
+_PLAY_AS_A_CONTROL = re.compile(
+    r"\b(?:click|press|tap|hit|push|select)\s+(?:the\s+)?"
+    r"(?:play|pause|resume|next|previous)\b",
+    re.I,
+)
 _TRAILING_POLITENESS = re.compile(
     r"(?:\s+(?:for\s+me|please|now|right\s+now))+[.!?]*$", re.I,
 )
@@ -125,6 +155,23 @@ _COMPOUND_REQUEST = re.compile(
     re.I,
 )
 _ARTIST_SEPARATOR = re.compile(r"\s+(?:by|from)\s+", re.I)
+
+# Korean puts the verb last and the app in a locative, so none of the
+# patterns above can see it: "스포티파이에서 뱅뱅 틀어줘" is
+# [in Spotify] [Bang Bang] [play-please]. Read on its own terms rather
+# than translated into an English shape.
+_KOREAN_PLAY_REQUEST = re.compile(
+    r"^(?P<subject>.+?)\s*(?:을|를)?\s*(?:좀\s*)?"
+    r"(?:틀어|재생\s*(?:해)?|들려|켜|플레이\s*(?:해)?)"
+    r"(?:\s*(?:줘|주세요|줄래|주라|봐|라|다오))?\s*$"
+)
+# "스포티파이에서" / "스포티파이로" -- where to play it, not what to play.
+_KOREAN_APP_LOCATIVE = re.compile(
+    r"^\s*스포티파이\s*(?:에서|에|로|으로)?\s+|"
+    r"\s*스포티파이\s*(?:에서|에|로|으로)?\s*$"
+)
+# Korean names the performer first, joined by the possessive: 아이브의 뱅뱅.
+_KOREAN_POSSESSIVE = re.compile(r"^(?P<artist>.+?)의\s+(?P<title>.+)$")
 
 # A place inside the app, not a performer. "Play X from my liked songs"
 # splits on the same word as "Play X by IVE", so without this the library
@@ -154,7 +201,7 @@ _CATEGORY_WORDS = frozenset({
     "song", "songs", "music", "track", "tracks", "tune", "tunes", "audio",
     "sound", "sounds", "stuff", "thing", "things", "something", "anything",
     "whatever", "playlist", "playlists", "list", "album", "albums", "mix",
-    "노래", "음악", "아무거나",
+    "노래", "노래나", "음악", "곡", "아무거나", "아무",
 })
 _GENRE_WORDS = frozenset({
     "kpop", "k", "pop", "jpop", "hiphop", "hip", "hop", "rap", "rock",
@@ -170,6 +217,33 @@ def _named_collection(text: str) -> str:
         if cue in lowered:
             return label
     return ""
+
+
+# The words a collection is made of. "My liked songs" is entirely these,
+# so it names a place; "Bohemian Rhapsody from my liked songs" is not, so
+# it names a track inside one.
+_COLLECTION_WORDS = frozenset({
+    "liked", "saved", "favourite", "favourites", "favorite", "favorites",
+    "playlist", "playlists", "library", "queue", "list",
+    # "좋아요 표시한 곡" is Spotify's own Korean name for Liked Songs; the
+    # words between are part of the name, not a title inside it.
+    "좋아요", "표시한", "표시된", "누른", "라이브러리", "재생목록",
+    "플레이리스트", "내",
+})
+
+
+def _collection_only(subject: str) -> bool:
+    """True when the whole subject is a place, with no item named in it."""
+    text = " ".join(str(subject or "").split()).casefold().strip(" \"'")
+    for quantifier in _QUANTIFIERS:
+        if text.startswith(f"{quantifier} "):
+            text = text[len(quantifier):].strip()
+            break
+    tokens = re.findall(r"[^\W_]+", text)
+    return bool(tokens) and all(
+        token in _COLLECTION_WORDS or token in _CATEGORY_WORDS
+        for token in tokens
+    )
 
 
 def _names_no_track(title: str) -> bool:
@@ -194,24 +268,62 @@ def _names_no_track(title: str) -> bool:
 def classify_spotify_media_request(goal: str) -> MediaRequest:
     """Read a Spotify play request without inventing what it did not say."""
     text = " ".join(str(goal or "").split()).strip()
-    if not text or not _SPOTIFY_CUE.search(text):
+    if not text or _OTHER_MEDIA_SURFACE.search(text):
+        return MediaRequest("none")
+    if _PLAY_AS_A_CONTROL.search(text):
         return MediaRequest("none")
 
-    match = _COMPOUND_REQUEST.search(text) or _PLAY_REQUEST.search(text)
+    korean = _KOREAN_PLAY_REQUEST.match(text)
+    match = (
+        _COMPOUND_REQUEST.search(text)
+        or _PLAY_REQUEST.search(text)
+        or korean
+    )
     if match is None:
         return MediaRequest("none")
     subject = _TRAILING_POLITENESS.sub("", match.group("subject")).strip(" ,.!?")
+    if korean is not None and match is korean:
+        # The app is where, not what.
+        subject = _KOREAN_APP_LOCATIVE.sub("", subject).strip(" ,.!?")
     if not subject:
         return MediaRequest("none")
 
-    pieces = _ARTIST_SEPARATOR.split(subject, maxsplit=1)
-    title = pieces[0].strip(" \"'")
-    artist = pieces[1].strip(" \"'") if len(pieces) == 2 else ""
+    # Naming the app is one way to mean music; saying "songs", naming a
+    # collection, or naming an artist are the others. Measured live: the
+    # app was previously required, so "play my liked songs" -- the request
+    # this whole layer was built for -- typed as nothing at all.
+    if not (
+        _SPOTIFY_CUE.search(text)
+        or _MEDIA_NOUN.search(subject)
+        or _named_collection(subject)
+        or _ARTIST_SEPARATOR.search(subject)
+        or _KOREAN_POSSESSIVE.match(subject)
+    ):
+        return MediaRequest("none")
+
+    possessive = _KOREAN_POSSESSIVE.match(subject)
+    if possessive is not None and not _named_collection(subject):
+        # 아이브의 뱅뱅 -- performer first, which is the opposite order to
+        # "Bang Bang by IVE" and the reason a shared splitter cannot do it.
+        title = possessive.group("title").strip(" \"'")
+        artist = possessive.group("artist").strip(" \"'")
+    else:
+        pieces = _ARTIST_SEPARATOR.split(subject, maxsplit=1)
+        title = pieces[0].strip(" \"'")
+        artist = pieces[1].strip(" \"'") if len(pieces) == 2 else ""
     collection = _named_collection(artist) or _named_collection(subject)
     if artist and _named_collection(artist):
         # "from my liked songs" says where to look, not who performed it.
         artist = ""
 
+    if _collection_only(subject):
+        # "Play my liked songs" names a place and nothing inside it, so
+        # there is no title here to be got wrong.
+        return MediaRequest(
+            "unclear",
+            collection=collection or _named_collection(subject),
+            subject=subject,
+        )
     if _names_no_track(title):
         return MediaRequest("unclear", collection=collection, subject=subject)
     return MediaRequest(
