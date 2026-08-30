@@ -1,0 +1,495 @@
+"""Checking what came back against what was actually asked for.
+
+Getting the constraints into the search query is not the same as getting
+them into the answer. Measured live, with an open recommendation holding
+``electric`` and ``~500,000 won``:
+
+    requested:  electric guitar, about 500,000 won
+    returned:   "Yamaha APX500 Acoustic-Electric Guitar"
+    said:       "You could try the Yamaha APX500..."
+
+The query was right and the top recommendation was an acoustic guitar.
+Nothing had compared the candidate to the constraint, so a result that
+contained the word "electric" inside "acoustic-electric" read as a match.
+
+Every check here is deterministic. Scoring "is this electric" or "is this
+under 500,000 won" does not need a model, and asking one would add a
+round-trip to a comparison that string and number handling settle exactly.
+A hard conflict never wins: a candidate that contradicts a stated
+constraint is ranked below every candidate that does not, and if it is
+mentioned at all it is mentioned as the mismatch it is.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, replace
+
+from brain import acquisition
+from brain import recommendation_state as rs
+
+# How far over a stated budget still counts as "around" it. A person who
+# says 500,000 will look at 560,000 and will not thank you for 1,200,000.
+_BUDGET_TOLERANCE = 1.25
+
+_AMOUNT = re.compile(
+    r"(?:[$₩€£¥]\s?)?(\d[\d,]*(?:\.\d+)?)\s*"
+    r"(?:won|krw|usd|eur|gbp|jpy|dollars?|euros?|pounds?|yen|원|만원)?",
+    re.IGNORECASE,
+)
+
+# Words too common to mean anything as a match. "New" appears in half of
+# all product titles.
+_UNINFORMATIVE = frozenset({
+    "new", "best", "good", "great", "top", "cheap", "quality", "the", "a",
+})
+
+
+def _amounts(text: str) -> tuple[float, ...]:
+    """Every number in the text that could be a price, largest first."""
+    found: list[float] = []
+    for match in _AMOUNT.finditer(str(text or "")):
+        raw = match.group(1).replace(",", "")
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        # A "10,000원" is a price; a "2026" or a "500" model number is
+        # usually not, but there is no way to tell them apart reliably, so
+        # only clearly price-shaped magnitudes are considered.
+        if value >= 1000:
+            found.append(value)
+    return tuple(sorted(found, reverse=True))
+
+
+def _opposite_of(value: str) -> tuple[str, ...]:
+    """The other kinds of the same thing, from the variants already known."""
+    wanted = value.strip().casefold()
+    others: list[str] = []
+    for variants in rs._VARIANTS.values():
+        lowered = [variant.casefold() for variant in variants]
+        if wanted in lowered:
+            others.extend(other for other in lowered if other != wanted)
+    return tuple(dict.fromkeys(others))
+
+
+@dataclass(frozen=True)
+class Fit:
+    """One candidate, read against the open problem."""
+
+    name: str
+    url: str = ""
+    summary: str = ""
+    matches: tuple[str, ...] = ()
+    conflicts: tuple[str, ...] = ()
+    unknown: tuple[str, ...] = ()
+    score: float = 0.0
+    # Why this is not a candidate of the expected kind at all -- an article
+    # about guitars rather than a guitar. Empty when it is one.
+    shape_problem: str = ""
+    # candidate / source_surface / off_target. A surface is somewhere
+    # candidates can be found -- a map, a directory, a marketplace. It is
+    # kept and never recommended: Naver Maps is how a great many people in
+    # Korea find somewhere to eat, and is not a restaurant.
+    kind: str = acquisition.CANDIDATE
+
+    @property
+    def rejected(self) -> bool:
+        """Whether this contradicts something the person actually said."""
+        return bool(self.conflicts)
+
+    @property
+    def verdict(self) -> str:
+        """FITS, UNCHECKED or MISMATCH.
+
+        The middle one matters. A restaurant listing rarely says "soft" in
+        its title, so a search for soft food comes back with candidates
+        that neither match nor contradict -- and calling those a fit is how
+        a sore-throat dinner came back recommending Korean BBQ. Not knowing
+        is its own answer and gets said out loud.
+        """
+        if self.kind == acquisition.SOURCE_SURFACE:
+            return "SOURCE"
+        if self.shape_problem or self.kind == acquisition.OFF_TARGET:
+            # Both mean "writing about the thing". The reason may come from
+            # the title (a round-up) or from the host (a blog platform), and
+            # a blog carries no shape_problem of its own.
+            return "OFF-TARGET"
+        if self.conflicts:
+            return "MISMATCH"
+        return "FITS" if self.matches else "UNCHECKED"
+
+    @property
+    def viable(self) -> bool:
+        """An actual candidate, of the right kind, contradicting nothing."""
+        return (
+            self.kind == acquisition.CANDIDATE
+            and not self.shape_problem
+            and not self.conflicts
+        )
+
+    @property
+    def is_surface(self) -> bool:
+        """Somewhere to find candidates, rather than one of them."""
+        return self.kind == acquisition.SOURCE_SURFACE
+
+    def because(self) -> str:
+        """Why it fits, or why it does not -- in one short clause."""
+        if self.is_surface:
+            return "a place to search, not something to recommend"
+        if self.kind == acquisition.OFF_TARGET and not self.shape_problem:
+            return "writing about these, not one of them"
+        if self.shape_problem:
+            return self.shape_problem
+        if self.conflicts:
+            return f"conflicts with {', '.join(self.conflicts)}"
+        if self.matches:
+            return f"fits {', '.join(self.matches)}"
+        return "nothing to check it against"
+
+
+def _check(text: str, problem) -> tuple[list[str], list[str], list[str]]:
+    matches: list[str] = []
+    conflicts: list[str] = []
+    unknown: list[str] = []
+    lowered = f" {text.casefold()} "
+
+    for value in problem.values(rs.ATTRIBUTE):
+        wanted = value.casefold().strip()
+        if not wanted or wanted in _UNINFORMATIVE:
+            continue
+        opposites = _opposite_of(wanted)
+        # Checked before the positive match, and deliberately: an
+        # "Acoustic-Electric" guitar contains "electric" and is not an
+        # electric guitar. Naming the other kind is decisive whether or not
+        # the requested word also appears.
+        if any(other in lowered for other in opposites):
+            conflicts.append(value)
+        elif wanted in lowered:
+            matches.append(value)
+        else:
+            unknown.append(value)
+
+    for value in problem.values(rs.EXCLUSION):
+        if value.casefold().strip() in lowered:
+            conflicts.append(f"excluded {value}")
+
+    for value in problem.values(rs.BUDGET):
+        limits = _amounts(value)
+        prices = _amounts(text)
+        if not limits:
+            continue
+        if not prices:
+            unknown.append(value)
+            continue
+        if min(prices) > limits[0] * _BUDGET_TOLERANCE:
+            conflicts.append(f"over {value}")
+        else:
+            matches.append(value)
+
+    for value in problem.values(rs.AREA):
+        if value.casefold().strip() in lowered:
+            matches.append(value)
+
+    return matches, conflicts, unknown
+
+
+def evaluate(
+    candidates, problem, *, shape: str = "", surface_hosts=(),
+) -> tuple[Fit, ...]:
+    """Rank what was found against what was asked for, best first.
+
+    Candidates are dicts of title/url/summary as ``research_structured``
+    returns them. A candidate that conflicts is kept rather than dropped --
+    saying "not that one, because it is acoustic" is more useful than
+    silently returning fewer results -- but it can never rank first.
+    """
+    wanted = shape or expected_shape(problem)
+    fits: list[Fit] = []
+    for candidate in candidates or ():
+        if isinstance(candidate, dict):
+            name = str(candidate.get("title", "")).strip()
+            url = str(candidate.get("url", "")).strip()
+            summary = str(candidate.get("summary", "")).strip()
+        else:
+            name, url, summary = str(candidate).strip(), "", ""
+        if not name:
+            continue
+        matches, conflicts, unknown = _check(f"{name} {summary}", problem)
+        score = len(matches) - 2.0 * len(conflicts) - 0.25 * len(unknown)
+        kind = acquisition.classify(url, surface_hosts=surface_hosts)
+        problem_shape = (
+            "" if kind != acquisition.CANDIDATE
+            else off_target(name, url, summary, wanted)
+        )
+        if problem_shape:
+            # A round-up on somebody's blog: writing about candidates, and
+            # not a surface that can be searched for them either.
+            kind = acquisition.OFF_TARGET
+        if kind == acquisition.CANDIDATE and not looks_like(
+            name, url, summary, wanted,
+        ):
+            # Nothing that a real one of these carries -- no price on a
+            # product, no hours or rating on a place. Kept, ranked last.
+            score -= 1.0
+        fits.append(Fit(
+            name=name, url=url, summary=summary,
+            matches=tuple(matches), conflicts=tuple(conflicts),
+            unknown=tuple(unknown), score=score,
+            shape_problem=problem_shape, kind=kind,
+        ))
+    return tuple(sorted(fits, key=_rank))
+
+
+def _rank(fit: "Fit"):
+    """Candidates first, then surfaces, then writing about them.
+
+    Within each, a conflict sinks below anything that contradicts nothing.
+    A surface can never outrank a real candidate and can never be the
+    recommendation, but it outranks an article, because it is somewhere to
+    actually look.
+    """
+    tier = 0
+    if fit.kind == acquisition.SOURCE_SURFACE:
+        tier = 1
+    elif fit.kind == acquisition.OFF_TARGET or fit.shape_problem:
+        tier = 2
+    return (tier, fit.rejected, -fit.score, fit.name)
+
+
+def surfaces(fits) -> tuple["Fit", ...]:
+    """The places candidates could be found, when none were."""
+    return tuple(fit for fit in fits if fit.is_surface)
+
+
+def shortlist_text(fits, *, limit: int = 5) -> str:
+    """The ranked candidates, as evidence a reply can be written from."""
+    lines: list[str] = []
+    for index, fit in enumerate(fits[:limit], start=1):
+        verdict = fit.verdict
+        lines.append(
+            f"{index}. [{verdict}] {fit.name} -- {fit.because()}"
+            + (f"\n   {fit.summary}" if fit.summary else "")
+            + (f"\n   {fit.url}" if fit.url else "")
+        )
+    return "\n".join(lines)
+
+
+def log_block(fits, *, chosen: str = "", why: str = "") -> str:
+    """Console only -- a decision summary, never the reasoning itself."""
+    fitting = [fit for fit in fits if fit.verdict == "FITS"]
+    unchecked = [fit for fit in fits if fit.verdict == "UNCHECKED"]
+    rejected = [fit for fit in fits if fit.rejected and not fit.is_surface]
+    found = surfaces(fits)
+    lines = [
+        "[Recommendation Reasoning]",
+        f"  Candidates: {len(fits) - len(found)} ({len(fitting)} fit, "
+        f"{len(unchecked)} unchecked, {len(rejected)} mismatched)",
+    ]
+    if found:
+        lines.append(
+            "  Surfaces: "
+            + ", ".join(fit.name[:32] for fit in found[:3])
+            + " (searchable, never recommended)"
+        )
+    if rejected:
+        lines.append(
+            "  Rejected: "
+            + "; ".join(f"{fit.name[:40]} ({fit.because()})" for fit in rejected[:3])
+        )
+    lines.append(f"  Decision: {'recommend' if fitting else 'no clear fit'}")
+    if chosen:
+        lines.append(f"  Selected: {chosen}")
+    if why:
+        lines.append(f"  Why: {why}")
+    return "\n".join(lines)
+
+
+# ------------------------------------------------------------------- shape
+#
+# A search for "electric guitar around 500,000 won" comes back with "25 Best
+# Electric Guitars in 2026", and a search for a soft dinner comes back with
+# recipe collections and a YouTube travel vlog. Those are articles *about*
+# candidates, not candidates, and ranking them is how the recommendation
+# became a link to a listicle.
+#
+# What counts as a candidate depends on what is being recommended, so this
+# is keyed on the expected type rather than on a list of sites.
+
+PRODUCT = "product"
+PLACE = "place"
+ANY = "any"
+
+# Somewhere that publishes writing and video about things, rather than the
+# things themselves. Not a judgement about the sites -- a wikipedia article
+# on guitars is a fine page and a poor candidate.
+_ARTICLE_HOSTS = (
+    "youtube.com", "youtu.be", "tiktok.com", "instagram.com",
+    "pinterest.com", "pinterest.co.kr", "reddit.com", "quora.com",
+    "medium.com", "wikipedia.org", "facebook.com", "x.com", "twitter.com",
+    "brunch.co.kr", "tistory.com", "blogspot.com", "wordpress.com",
+    "vimeo.com", "dailymotion.com",
+)
+
+# Titles that announce themselves as writing about a set of things.
+_ARTICLE_TITLE = re.compile(
+    r"^\s*\d+\s*\+?\s*(?:best|top|great|amazing|must|cozy|authentic|"
+    r"beautiful|essential)\b"
+    r"|\b(?:top|best)\s+\d+\b"
+    r"|\b(?:recipes?|ideas|guide|guides|tips|how\s+to|why\s+you|"
+    r"everything\s+you|explained|review\s+round[- ]?up|listicle|"
+    r"vs\.?\b|versus)\b"
+    r"|\bin\s+20\d\d\s*$"
+    r"|\b(?:blog|article|youtube|vlog)\b"
+    r"|추천\s*\d+|정리|후기\s*모음",
+    re.IGNORECASE,
+)
+
+_ARTICLE_PATH = re.compile(
+    r"/(?:blog|blogs|article|articles|news|magazine|guide|guides|story|"
+    r"stories|watch|shorts|pin|posts?)(?:/|$|\?)",
+    re.IGNORECASE,
+)
+
+# Something a candidate has and an article does not: a price to pay, or an
+# address to go to.
+_HAS_PRICE = re.compile(
+    r"[$₩€£¥]\s?\d|\b\d[\d,]*\s*(?:won|krw|usd|eur|원)\b", re.IGNORECASE,
+)
+_HAS_PLACE_DETAIL = re.compile(
+    r"\b(?:open(?:s|ing)?\s+(?:at|until|daily)|hours?|address|"
+    r"reservation|reserve|book\s+a\s+table|menu|reviews?|rating|"
+    r"\d+\.\d\s*(?:stars?|/\s*5))\b"
+    r"|\b(?:-?gu|-?dong|-?ro)\b|구\s|동\s|로\s|영업시간|예약|메뉴|평점",
+    re.IGNORECASE,
+)
+
+
+def expected_shape(problem) -> str:
+    """What kind of thing would actually answer this recommendation."""
+    category = str(getattr(problem, "category", "") or "")
+    if category in {"restaurant", "hotel"}:
+        return PLACE
+    if category in {"gpu", "car", "shopping", "secondhand", "flight"}:
+        return PRODUCT
+    if getattr(problem, "purchase", False):
+        return PRODUCT
+    # "I want a guitar" names no buying verb and is plainly about buying a
+    # guitar -- the same reading the clarification layer already uses.
+    try:
+        thing = problem._thing()
+    except Exception:
+        thing = ""
+    if thing and thing in rs._VARIANTS:
+        return PRODUCT
+    return ANY
+
+
+def _host(url: str) -> str:
+    match = re.search(r"https?://([^/]+)", str(url or ""), re.IGNORECASE)
+    return (match.group(1) if match else "").casefold().lstrip("www.")
+
+
+def off_target(name: str, url: str, summary: str, shape: str) -> str:
+    """Why this is not a candidate at all, or empty if it might be one.
+
+    Only ever used to *exclude*: something that survives this is not
+    thereby a match, it is merely the right kind of thing to check.
+    """
+    if shape == ANY:
+        return ""
+    host = _host(url)
+    if any(host.endswith(article) for article in _ARTICLE_HOSTS):
+        return f"{host} publishes articles, not {shape}s"
+    if _ARTICLE_PATH.search(str(url or "")):
+        return "the page is an article"
+    if _ARTICLE_TITLE.search(str(name or "")):
+        # A round-up can still be a page worth reading; it is not a thing
+        # that can be bought or visited, which is what was asked for.
+        return "a round-up article, not a single candidate"
+    return ""
+
+
+def looks_like(name: str, url: str, summary: str, shape: str) -> bool:
+    """Whether the result carries what a real candidate of this kind has."""
+    text = f"{name} {summary}"
+    if shape == PRODUCT:
+        return bool(_HAS_PRICE.search(text))
+    if shape == PLACE:
+        return bool(_HAS_PLACE_DETAIL.search(text))
+    return True
+
+
+# Constraints worth holding out for. A situation explains the request and a
+# budget is settled arithmetically; what needs evidence is the qualities the
+# person actually asked for, and the things they ruled out.
+_IMPORTANT = (rs.ATTRIBUTE, rs.EXCLUSION)
+
+
+def viable(fits) -> tuple[Fit, ...]:
+    """The candidates still in the running: right kind, no contradiction."""
+    return tuple(fit for fit in fits if fit.viable)
+
+
+def unresolved_constraints(fits, problem) -> tuple[str, ...]:
+    """Constraints no surviving candidate has been shown to satisfy.
+
+    This is the difference between "none of these fit" and "nothing here
+    tells me whether any of these fit". The second is not permission to
+    recommend one anyway -- measured live, three UNCHECKED restaurants for
+    a sore throat produced a confident recommendation of Korean BBQ.
+    """
+    survivors = viable(fits)
+    if not survivors:
+        return ()
+    unresolved: list[str] = []
+    for name in _IMPORTANT:
+        for value in problem.values(name):
+            if not any(value in fit.matches for fit in survivors):
+                unresolved.append(value)
+    return tuple(dict.fromkeys(unresolved))
+
+
+def confident(fits, problem) -> bool:
+    """Whether anything here can be recommended without pretending."""
+    survivors = viable(fits)
+    if not survivors:
+        return False
+    if not unresolved_constraints(fits, problem):
+        return True
+    # Some important quality is still unevidenced for every survivor.
+    return False
+
+
+def with_semantic(fits, constraint: str, verdicts: dict) -> tuple[Fit, ...]:
+    """Fold a semantic judgement back in as ordinary matches and conflicts.
+
+    The judgement arrives as yes/no/unknown per candidate name. Everything
+    downstream -- ranking, the invariant that a conflict never wins, the
+    shortlist -- then works exactly as it does for a deterministic check.
+    """
+    updated: list[Fit] = []
+    for fit in fits:
+        answer = str(verdicts.get(fit.name, "unknown")).strip().casefold()
+        if answer == "yes":
+            updated.append(replace(
+                fit,
+                matches=fit.matches + (constraint,),
+                unknown=tuple(v for v in fit.unknown if v != constraint),
+                score=fit.score + 1.0,
+            ))
+        elif answer == "no":
+            updated.append(replace(
+                fit,
+                conflicts=fit.conflicts + (constraint,),
+                unknown=tuple(v for v in fit.unknown if v != constraint),
+                score=fit.score - 2.0,
+            ))
+        else:
+            updated.append(fit)
+    return tuple(sorted(
+        updated,
+        key=lambda fit: (
+            bool(fit.shape_problem), fit.rejected, -fit.score, fit.name,
+        ),
+    ))

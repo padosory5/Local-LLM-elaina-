@@ -10,8 +10,12 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
+
+from brain import conversation_focus
+from brain import recommendation_state
+from brain.recommendation_state import RecommendationProblem
 
 
 # Widened for the recall ladder, which needs the same judgement. The four
@@ -49,6 +53,15 @@ class TaskSessionStore:
     def __init__(self, *, ttl_seconds: int = 15 * 60) -> None:
         self.ttl_seconds = max(60, int(ttl_seconds))
         self._context: TaskEvidenceContext | None = None
+        # The recommendation the conversation is currently working on. It
+        # lives here rather than in a store of its own: this is already the
+        # session-scoped, TTL'd holder of "what we were just talking
+        # about", and a second one would only be a place for the two to
+        # disagree. See brain/recommendation_state.py.
+        self._problem: RecommendationProblem | None = None
+        # The one answer to "what are we talking about", so the layers
+        # downstream read it instead of each deriving their own.
+        self._focus: conversation_focus.Focus | None = None
 
     def remember(self, task_state: Any) -> None:
         raw_items = tuple(getattr(task_state, "collected_items", ()) or ())
@@ -78,8 +91,120 @@ class TaskSessionStore:
             expires_at=time.monotonic() + self.ttl_seconds,
         )
 
+    # -------------------------------------------------- conversation focus
+
+    def note_turn(self, text: str, *, subject: str = ""):
+        """Fold this turn into the focus, and hand back what it now is."""
+        focus = self.focus()
+        if focus is None:
+            focus = conversation_focus.start(now=time.monotonic())
+        self._focus = conversation_focus.update(
+            focus, text, subject=subject, now=time.monotonic(),
+        )
+        return self._focus
+
+    def focus(self):
+        held = self._focus
+        if held is not None and held.expired(time.monotonic()):
+            self._focus = None
+            return None
+        return held
+
+    # ------------------------------------------------- active recommendation
+
+    def note_recommendation_turn(
+        self,
+        text: str,
+        *,
+        subject: str = "",
+        topic_shift: bool = False,
+    ) -> "RecommendationProblem":
+        """Fold this turn into the open recommendation, or open a new one.
+
+        Called once per turn on the conversational path. Whether anything
+        is *done* with the result is the caller's decision; keeping the
+        problem current is not, because the turn that needs it ("pull up
+        some spots") is never the turn that establishes it.
+        """
+        problem = self.active_recommendation()
+        if problem is None or not recommendation_state.about_the_same_thing(
+            problem, text, subject=subject, topic_shift=topic_shift,
+        ):
+            problem = recommendation_state.start(
+                subject or text,
+                domain=recommendation_state.domain_for(text),
+                now=time.monotonic(),
+            )
+        self._problem = recommendation_state.update(
+            problem, text, subject=subject, now=time.monotonic(),
+        )
+        return self._problem
+
+    def active_recommendation(self) -> "RecommendationProblem | None":
+        problem = self._problem
+        if problem is not None and problem.expired(time.monotonic()):
+            self._problem = None
+            return None
+        return problem
+
+    def record_candidates(self, items, *, evidence=()) -> None:
+        """Keep what a search actually found against the open problem.
+
+        So a follow-up ranks the candidates already in hand rather than
+        searching a second time for the same list.
+        """
+        problem = self.active_recommendation()
+        if problem is None:
+            return
+        names = tuple(
+            str(name).strip() for name in items if str(name).strip()
+        )[:8]
+        if not names and not evidence:
+            return
+        self._problem = replace(
+            problem,
+            candidates=names or problem.candidates,
+            evidence=(
+                tuple(str(value) for value in evidence)[-4:]
+                or problem.evidence
+            ),
+        )
+
+    def note_source_override(self, value: str) -> bool:
+        """Hold a named source for the length of the open task.
+
+        Returns whether there was a task to hold it against -- an override
+        with no active problem has nothing to scope it to and is the
+        caller's business, not this store's.
+        """
+        problem = self.active_recommendation()
+        if problem is None or not str(value or "").strip():
+            return False
+        self._problem = replace(problem, source_override=str(value).strip())
+        return True
+
+    def source_override(self) -> str:
+        problem = self.active_recommendation()
+        return getattr(problem, "source_override", "") if problem else ""
+
+    def note_dimension_asked(self, dimension: str) -> None:
+        """Record that this question has been put, so it is not re-asked."""
+        problem = self.active_recommendation()
+        if problem is None or not dimension:
+            return
+        if dimension in problem.asked:
+            return
+        self._problem = replace(
+            problem, asked=problem.asked + (dimension,),
+        )
+
+    def clear_recommendation(self) -> None:
+        self._problem = None
+
     def clear(self) -> None:
         self._context = None
+        self._problem = None
+        self._focus = None
 
     def current(self) -> TaskEvidenceContext | None:
         context = self._context

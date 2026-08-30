@@ -166,10 +166,16 @@ _DESTINATION_HINT = re.compile(
 # and exchange-rate lookups into Korean-local searches. Keep this deliberately
 # narrower than generic words such as "current", "best", or "price".
 _MARKET_SENSITIVE_QUERY = re.compile(
+    # The trailing \b closes the whole alternation, so every noun here had
+    # to be spelled with its plural or it silently failed to match. Measured
+    # live: "hotel" localized and "hotels" did not, and a search for "easy
+    # to eat dinner restaurants" by a user in Seoul returned a restaurant in
+    # Nha Trang.
     r"\b(?:near\s+me|nearby|local(?:ly)?|weather|forecast|air\s+quality|"
-    r"traffic|transit|hotel|lodging|restaurant|cafe|café|bar|marketplace|"
-    r"second[-\s]?hand|shopping|retailer|flight|airfare|jobs?|real\s+estate|"
-    r"apartments?)\b|"
+    r"traffic|transit|hotels?|lodging|restaurants?|cafes?|cafés?|bars?|"
+    r"marketplaces?|eateries|eatery|diners?|"
+    r"second[-\s]?hand|shopping|shops?|stores?|retailers?|dealers?|"
+    r"flights?|airfare|jobs?|real\s+estate|apartments?)\b|"
     r"주변|근처|날씨|호텔|숙소|맛집|식당|중고|쇼핑|항공권|취업|부동산",
     flags=re.IGNORECASE,
 )
@@ -424,7 +430,36 @@ class UserLocale:
             return ()
         return tuple(_REGIONAL_SITE_HOSTS.get(market, {}).get(category, ()))
 
-    def localize_query(self, query: str, *, category: str = "") -> str:
+    @staticmethod
+    def _names_a_place(text: str) -> bool:
+        """Whether a preposition here really introduces a destination.
+
+        ``_DESTINATION_HINT`` alone matches "easy **to eat** dinner", which
+        looks exactly like "flights **to Tokyo**". Reading that as a named
+        destination left the query unlocalized, and a Seoul user asking for
+        easy-to-eat dinner restaurants got one in Nha Trang.
+
+        A hint counts when it names a place this module knows, or when the
+        words after the preposition are capitalised the way a place name is
+        -- which keeps somewhere unlisted ("in Nha Trang") respected while
+        an infinitive is not.
+        """
+        for match in _DESTINATION_HINT.finditer(str(text or "")):
+            phrase = " ".join(match.group(1).split()).strip()
+            place = phrase.lower()
+            while place:
+                if place in _PLACE_COUNTRIES:
+                    return True
+                if " " not in place:
+                    break
+                place = place.rsplit(" ", 1)[0]
+            if phrase[:1].isupper():
+                return True
+        return False
+
+    def localize_query(
+        self, query: str, *, category: str = "", assume_local: bool = False,
+    ) -> str:
         """Add the market only when a query's answer depends on location.
 
         A query that already names a destination ("hotels in Hong Kong") is
@@ -438,11 +473,20 @@ class UserLocale:
             return text
         if self.country_code == DEFAULT_COUNTRY and self.language == "en":
             return text
-        if _DESTINATION_HINT.search(text):
+        if self._names_a_place(text):
             return text
         category = str(category or "").strip().casefold()
         market_categories = set(_REGIONAL_SITES.get(self.country_code, {}))
-        if category not in market_categories and not _MARKET_SENSITIVE_QUERY.search(text):
+        if (
+            not assume_local
+            and category not in market_categories
+            and not _MARKET_SENSITIVE_QUERY.search(text)
+        ):
+            # ``assume_local`` is for a caller that already knows this is a
+            # real-world purchase or place -- an open recommendation for a
+            # guitar to actually buy, say, where no noun in the query is
+            # market-sensitive on its own but the market still decides what
+            # can be bought and at what price.
             return text
         place = self.context.city or self.context.country_name
         return f"{text} in {place}"

@@ -1,0 +1,932 @@
+"""The recommendation the conversation is currently working on.
+
+A recommendation is not a turn, it is a problem that stays open across
+several of them. Measured live, treating each turn independently produced
+this:
+
+    "What should I eat for dinner?"          -> Korean BBQ
+    "I have a sore throat, something easy."  -> soft ramen or bibimbap
+    "Pull up some spots for me."             -> Korean BBQ again
+
+The third turn routed correctly and searched with none of what the second
+turn established, because nothing carried it. ``SemanticGoal`` is rebuilt
+from scratch every turn and holds three fields; the rich structure that
+*does* hold constraints, candidates and evidence -- ``TaskState`` -- only
+comes into existence when the task planner runs, which a conversational
+recommendation never does.
+
+So this is that same structure, reachable from the conversational path,
+and stored in the session store that already keeps short-lived grounded
+context (``brain/task_session.py``). Field names mirror ``TaskState`` on
+purpose: ``constraints`` is its ``preferences``, ``candidates`` its
+``collected_items``, ``evidence`` its ``collected_information``.
+
+Two rules do most of the work:
+
+* a constraint is never anonymous -- each carries the ``Slot`` provenance
+  the deliberation layer already uses, so "you said soft" and "I assumed
+  soft" stay distinguishable;
+* a superseded value may never reach a query. That single rule is what
+  stops "actually, my throat hurts" from still searching for Korean BBQ.
+
+Nothing here calls a model. Every constraint is read from the words.
+"""
+
+from __future__ import annotations
+
+import re
+import time
+from dataclasses import dataclass, replace
+from typing import Any
+
+from brain.deliberation.goal import (
+    SOURCE_ASKED,
+    SOURCE_RESEARCH,
+    SOURCE_UTTERANCE,
+    SOURCE_WORLD,
+    Slot,
+)
+
+DEFAULT_TTL_SECONDS = 20 * 60
+
+# What kind of thing a constraint is. The distinction that matters is not
+# semantic tidiness but whether the value belongs in a search box:
+# "soft" and "under 500,000 won" narrow a search, "sore throat" does not.
+# Searching for "sore throat restaurants" is how a constraint meant to
+# explain a preference turns into a query that finds throat clinics.
+PREFERENCE = "preference"      # a thing asked for: "Korean BBQ"
+ATTRIBUTE = "attribute"        # a quality asked for: "soft", "electric"
+BUDGET = "budget"
+AREA = "area"
+DATES = "dates"
+SITUATION = "situation"        # why: "sore throat"
+EXCLUSION = "exclusion"        # "nothing spicy"
+
+QUERY_SAFE = (ATTRIBUTE, PREFERENCE, BUDGET, AREA, DATES)
+CONTEXT_ONLY = (SITUATION, EXCLUSION)
+
+# Said when the person is replacing what they asked for, not adding to it.
+_REVISION = re.compile(
+    r"\b(?:actually|instead|on second thought|second thoughts|"
+    r"changed my mind|never\s?mind|scratch that|forget (?:that|it)|"
+    r"rather than that|no wait)\b"
+    r"|아니(?:요|다)?\s|그냥\s+말고",
+    re.IGNORECASE,
+)
+
+# A situation is a fact about the person that shapes what suits them. Read
+# narrowly and verbatim: the architecture's job is to carry "sore throat"
+# into the reasoning, never to decide what a sore throat implies.
+_SITUATIONS = (
+    re.compile(
+        r"\bmy\s+([a-z][a-z ]{1,20}?\s+(?:hurts?|aches?|is\s+sore|are\s+sore))",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bi\s*(?:'ve|’ve|\s+have|\s+got)\s+(?:a|an)\s+"
+        r"((?:sore|bad|upset|stiff|broken|sprained|runny|blocked)\s+[a-z]+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bi\s*(?:'m|’m|\s+am)\s+"
+        r"((?:really\s+|a bit\s+|quite\s+)?"
+        r"(?:sick|ill|unwell|tired|exhausted|hungover|pregnant|"
+        r"allergic\s+to\s+[a-z]+|on\s+a\s+[a-z]+\s+diet))",
+        re.IGNORECASE,
+    ),
+)
+
+# What was asked for, and in what shape. "something soft" is a quality;
+# "Korean BBQ" is a thing. The difference decides whether a later "actually"
+# retires it.
+_WANTED = re.compile(
+    r"\b(?:want|wanted|looking for|prefer|feel like|craving|"
+    r"in the mood for|fancy|after)\s+"
+    r"(?:some\s+|a\s+|an\s+|the\s+)?"
+    r"(something\s+[a-z][a-z ]{1,30}?|anything\s+[a-z][a-z ]{1,30}?"
+    r"|[a-z][a-z' -]{1,30}?)"
+    r"(?=[,.;!?]|$|\s+(?:and|but|or|because|since|so|that|which|"
+    r"to\s+(?:eat|buy|get|play|drink|wear|use)))",
+    re.IGNORECASE,
+)
+
+# "something soft" is a constraint on its own, with no verb in front of it.
+# Kept separate from _WANTED because that pattern must still cut "a guitar
+# to play" at "to play", while "easy to eat" has to survive whole.
+_SOMETHING = re.compile(
+    r"\b(?:something|anything)\s+([a-z][a-z ]{1,30}?)"
+    r"(?=[,.;!?]|$|\s+(?:and|but|or|because|since|so|that|which))",
+    re.IGNORECASE,
+)
+
+# A recommendation about something that exists in the world and can be
+# bought or visited -- as opposed to "what should I cook tonight". The
+# market decides what is available and at what price, so these queries get
+# the user's own locale even when no word in them is market-sensitive.
+_PURCHASE = re.compile(
+    r"\b(?:buy|buying|purchase|purchasing|get|getting|shop|shopping|"
+    r"order|ordering|pick\s+up|price|prices|cost|costs|"
+    r"store|stores|shop|shops|retailer|retailers|dealer|dealers)\b"
+    r"|사고|구매|구입|가격|어디서\s*파",
+    re.IGNORECASE,
+)
+
+# Things whose two obvious kinds lead to completely different candidate
+# sets, so that one question is worth asking before searching. A knowledge
+# table in the same spirit as the category patterns and the place list --
+# not a mapping from a constraint to an answer. Anything unlisted still
+# gets asked, just in general terms.
+_VARIANTS: dict[str, tuple[str, str]] = {
+    "guitar": ("electric", "acoustic"),
+    "bass": ("electric", "upright"),
+    "piano": ("digital", "acoustic"),
+    "keyboard": ("digital piano", "synth"),
+    "drums": ("electronic", "acoustic"),
+    "headphones": ("over-ear", "in-ear"),
+    "earphones": ("wireless", "wired"),
+    "bike": ("road", "mountain"),
+    "bicycle": ("road", "mountain"),
+    "laptop": ("Windows", "Mac"),
+    "camera": ("mirrorless", "DSLR"),
+    "watch": ("smart", "analogue"),
+    "car": ("new", "used"),
+}
+
+# The order questions are worth asking in. Type first: it splits the
+# candidate set in two, and a budget for the wrong kind of thing is a
+# wasted question.
+TYPE = "type"
+DIMENSIONS = (TYPE, BUDGET)
+
+_THINKING_ABOUT = re.compile(
+    r"\b(?:thinking (?:about|of)|considering|might get|planning to get)\s+"
+    r"(?:getting\s+|buying\s+|purchasing\s+|picking up\s+)?"
+    r"(?:a\s+|an\s+|some\s+)?"
+    r"([a-z][a-z' -]{1,30}?)(?=[,.;!?]|$|\s+(?:and|but|or|because|for))",
+    re.IGNORECASE,
+)
+
+# "Where can I buy a guitar in Seoul?" names the thing after a buying verb,
+# which _WANTED deliberately cuts at ("a guitar to play"). Without this the
+# thing fell back to the router's subject -- "guitar stores" -- and she
+# asked "what kind of stores did you have in mind?".
+_BUYING = re.compile(
+    r"\b(?:buy|buying|purchase|purchasing|order|shop\s+for|get\s+hold\s+of)\s+"
+    r"(?:a\s+|an\s+|some\s+|the\s+)?"
+    r"([a-z][a-z' -]{1,30}?)"
+    r"(?=[,.;!?]|$|\s+(?:in|at|near|from|for|and|or|under|around|online))",
+    re.IGNORECASE,
+)
+
+_EXCLUSIONS = (
+    re.compile(
+        r"\b(?:no|without|avoid|nothing)\s+"
+        r"((?:too\s+)?[a-z][a-z ]{1,24}?)"
+        r"(?=[,.;!?]|$|\s+(?:and|but|or|please|though))",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bnot\s+(too\s+[a-z]+|[a-z]+y)\b(?!\s+sure)",
+        re.IGNORECASE,
+    ),
+)
+
+# A bare amount. TaskDiscoveryPolicy._BUDGET wants a lead-in word ("under",
+# "up to"); a reply that is only "About 500,000 won" has none.
+_BARE_MONEY = re.compile(
+    r"([$₩€£¥]\s?\d[\d,]*(?:\.\d+)?"
+    r"|\b\d[\d,]*(?:\.\d+)?\s*(?:won|krw|usd|eur|gbp|jpy|"
+    r"dollars?|euros?|pounds?|yen|원|만원))",
+    re.IGNORECASE,
+)
+
+# Words that are grammar, not content, once the specifics are stripped out.
+_EMPTY_SUBJECTS = frozenset({
+    "some", "something", "anything", "one", "ones", "it", "them", "those",
+    "these", "any", "few", "couple", "options", "option", "stuff", "things",
+    "thing",
+})
+
+# Real words, and poor search terms. Beaten by the category's own noun when
+# one is known -- "soft restaurants" finds more than "soft places".
+_WEAK_SUBJECTS = frozenset({
+    "place", "places", "spot", "spots", "somewhere", "shop", "shops",
+    "store", "stores", "one", "ones",
+})
+
+_FILLER = re.compile(
+    r"^(?:the|a|an|some|any|me|my|of|for|that|this)\b\s*", re.IGNORECASE,
+)
+
+# Trailing words that add emphasis, not meaning. "something mild too" is a
+# constraint on mildness; "mild too" is not a phrase worth searching for.
+_TRAILING_FILLER = re.compile(
+    r"\s*\b(?:too|also|as well|please|though|then|now|instead)\b\s*$",
+    re.IGNORECASE,
+)
+
+# "Pull up some spots for me" is a request wrapper around one content word.
+# Stripped so the wrapper does not become the search query when the subject
+# has been retired out from under it.
+_REQUEST_WRAPPER = re.compile(
+    r"\b(?:pull\s+up|show|find|get|look\s+(?:up|for)|search\s+for|search|"
+    r"check|bring\s+up|give)\b|\b(?:me|us|some|a\s+few|couple|please|"
+    r"for\s+me|now)\b",
+    re.IGNORECASE,
+)
+
+
+_ASKS_FOR_PLACES = re.compile(
+    r"\b(?:place|places|spot|spots|shop|shops|store|stores|"
+    r"restaurant|restaurants|somewhere|where|nearby|near\s+me|around\s+here)\b"
+    r"|근처|어디",
+    re.IGNORECASE,
+)
+
+
+_WANTS_TO_SEE = re.compile(
+    r"\b(?:show|pull\s+up|bring\s+up|find|look\s+(?:up|for)|search|"
+    r"list|give)\b.{0,20}?\b(?:me|some|a\s+few|them|options?|ones?)\b"
+    r"|\b(?:show|pull\s+up|find)\s+(?:me\s+)?(?:some|a\s+few)\b"
+    r"|\bwhat\s+(?:are|were)\s+(?:my|the)\s+options\b"
+    r"|보여|찾아|알아봐",
+    re.IGNORECASE,
+)
+
+
+def wants_to_see_options(request: str) -> bool:
+    """Whether the turn asks to be shown real options, not given advice.
+
+    "Show me some" carries no subject, no verb the router recognises as a
+    lookup, and no evidence requirement -- measured live it was classified
+    as plain conversation and answered from nothing, three turns into a
+    recommendation that had a type and a budget ready to search on.
+    """
+    return bool(_WANTS_TO_SEE.search(str(request or "")))
+
+
+def asks_where(request: str) -> bool:
+    """Whether the turn asks *where*, rather than *which*."""
+    return bool(re.search(
+        r"\bwhere\b|\bwhich\s+(?:shop|store|place)", str(request or ""),
+        re.IGNORECASE,
+    ))
+
+
+def _asks_for_places(request: str) -> bool:
+    """Whether the turn asked for somewhere to go, rather than for advice."""
+    return bool(_ASKS_FOR_PLACES.search(str(request or "")))
+
+
+def _content_of(request: str) -> str:
+    """What a request is *about*, once the asking is stripped off it."""
+    return " ".join(
+        _REQUEST_WRAPPER.sub(" ", str(request or "")).split()
+    ).strip(" ,.;:!?-")
+
+
+# The general thing a category is about, used when the specific thing the
+# person named has been retired ("actually, not Korean BBQ") and the turn
+# itself only says "show me some places".
+_DOMAIN_NOUNS = {
+    "restaurant": "restaurants",
+    "hotel": "hotels",
+    "gpu": "graphics cards",
+    "car": "cars",
+    "flight": "flights",
+    "secondhand": "second-hand listings",
+}
+
+
+def category_for(text: str) -> str:
+    """The discovery category key this request belongs to, or nothing."""
+    try:
+        from brain.task_discovery_policy import TaskDiscoveryPolicy
+
+        category = TaskDiscoveryPolicy.category_for(str(text or ""))
+    except Exception:
+        return ""
+    return category[0] if category else ""
+
+
+def domain_for(text: str) -> str:
+    """The category noun this request belongs to, or nothing."""
+    return _DOMAIN_NOUNS.get(category_for(text), "")
+
+
+def is_purchase(text: str) -> bool:
+    """Whether the turn is about acquiring something real."""
+    return bool(_PURCHASE.search(str(text or "")))
+
+
+def _clean(value: str) -> str:
+    value = " ".join(str(value or "").split()).strip(" ,.;:!?-")
+    while True:
+        stripped = _TRAILING_FILLER.sub("", _FILLER.sub("", value)).strip()
+        if stripped == value:
+            return value
+        value = stripped
+
+
+def _slot(name: str, value: str, source: str) -> Slot | None:
+    value = _clean(value)
+    if not value or value.casefold() in _EMPTY_SUBJECTS:
+        return None
+    return Slot(name=name, value=value, source=source)
+
+
+def revises(text: str) -> bool:
+    """Whether this turn replaces what was asked for rather than adding."""
+    return bool(_REVISION.search(str(text or "")))
+
+
+def read_constraints(
+    text: str, *, source: str = SOURCE_UTTERANCE,
+) -> tuple[Slot, ...]:
+    """Every constraint this utterance states, read from the words alone.
+
+    Deliberately incomplete rather than speculative: an unrecognised
+    sentence contributes nothing instead of contributing a guess. What is
+    missed shows up as a thinner query, which is recoverable; what is
+    invented shows up as a confident wrong recommendation, which is not.
+    """
+    text = " ".join(str(text or "").split())
+    if not text:
+        return ()
+    found: list[Slot] = []
+
+    for pattern in _SITUATIONS:
+        for match in pattern.finditer(text):
+            slot = _slot(SITUATION, match.group(1), source)
+            if slot is not None:
+                found.append(slot)
+
+    for pattern in (_SOMETHING, _WANTED, _THINKING_ABOUT, _BUYING):
+        for match in pattern.finditer(text):
+            raw = match.group(1)
+            lowered = raw.casefold().strip()
+            # "something soft" is a quality; "Korean BBQ" is a thing. Only
+            # the latter is a preference a later "actually" retires.
+            if pattern is _SOMETHING:
+                slot = _slot(ATTRIBUTE, raw, source)
+            elif lowered.startswith(("something ", "anything ")):
+                slot = _slot(ATTRIBUTE, raw.split(" ", 1)[1], source)
+            else:
+                slot = _slot(PREFERENCE, raw, source)
+            if slot is not None:
+                found.append(slot)
+
+    for pattern in _EXCLUSIONS:
+        for match in pattern.finditer(text):
+            slot = _slot(EXCLUSION, match.group(1), source)
+            if slot is not None:
+                found.append(slot)
+
+    try:
+        from brain.task_discovery_policy import TaskDiscoveryPolicy
+
+        # The budget/area/date readers already exist and are already tested
+        # against live phrasing; there is no reason for a second set.
+        for name, value in TaskDiscoveryPolicy.extract_preferences(
+            text,
+        ).items():
+            if name in {BUDGET, AREA, DATES}:
+                slot = _slot(name, value, source)
+                if slot is not None:
+                    found.append(slot)
+    except Exception:
+        pass
+
+    if not any(slot.name == BUDGET for slot in found):
+        bare = _BARE_MONEY.search(text)
+        if bare is not None:
+            slot = _slot(BUDGET, bare.group(1), source)
+            if slot is not None:
+                found.append(slot)
+
+    return _prune(found)
+
+
+def _prune(found: list[Slot]) -> tuple[Slot, ...]:
+    """Drop a reading that another reading already contains.
+
+    Two patterns legitimately match "want something easy to eat" -- one
+    keyed on "something", one on "want" -- and they cut the phrase in
+    different places, leaving both "easy to eat" and "easy". Keeping the
+    truncated one would put a weaker word in the query alongside the
+    stronger one.
+    """
+    kept: list[Slot] = []
+    for slot in found:
+        longer = any(
+            other is not slot
+            and other.name == slot.name
+            and other.value.casefold() != slot.value.casefold()
+            and f" {other.value.casefold()} ".startswith(
+                f" {slot.value.casefold()} ",
+            )
+            for other in found
+        )
+        if not longer:
+            kept.append(slot)
+    return tuple(kept)
+
+
+def read_short_reply(text: str) -> tuple[Slot, ...]:
+    """A bare answer to a question, taken as a constraint on the open problem.
+
+    "Electric." is not a sentence any of the readers above can parse, and
+    it is exactly how people answer "electric or acoustic?". Only used
+    while a problem is already open, so a stray one-word utterance cannot
+    invent a constraint out of nothing.
+    """
+    text = " ".join(str(text or "").split()).strip(" .!?")
+    if not text or len(text.split()) > 3:
+        return ()
+    # "Show me some" is three words and an instruction, not an answer.
+    # Without this it became an attribute and went into the search query --
+    # and so did "Find some places", whose content word is only "places".
+    content = _content_of(text)
+    words = {
+        word for word in re.findall(r"[a-z0-9가-힣]+", content.casefold())
+    }
+    if not words - _EMPTY_SUBJECTS - _WEAK_SUBJECTS:
+        return ()
+    # A quality, not a name: "Electric." reads badly mid-sentence and
+    # duplicates "electric" from the router topic in a query.
+    slot = _slot(ATTRIBUTE, text.casefold(), SOURCE_ASKED)
+    return (slot,) if slot is not None else ()
+
+
+@dataclass(frozen=True)
+class RecommendationProblem:
+    """The open recommendation, and everything established about it.
+
+    Mirrors the ``TaskState`` fields that matter here rather than inventing
+    a second vocabulary for them: ``constraints`` is its ``preferences``,
+    ``candidates`` its ``collected_items``, ``evidence`` its
+    ``collected_information``, and ``verification_level`` is the same
+    "discover" / "verify" judgement.
+    """
+
+    subject: str = ""
+    domain: str = ""
+    # The discovery category key ("restaurant", "hotel"), kept alongside the
+    # noun so the locale layer can be asked in its own terms.
+    category: str = ""
+    # Whether this is about something real that can be bought or visited,
+    # as opposed to advice. Decides whether the query gets the user's market.
+    purchase: bool = False
+    # Dimensions already put to the person. One question each, ever: a
+    # re-asked question reads as not having listened.
+    asked: tuple[str, ...] = ()
+    # "Use Google Maps for this one" -- held for as long as this problem is
+    # open, not for one message. A clarifying question in the middle of the
+    # task must not drop back to the saved default halfway through; a new
+    # task starts a new problem and therefore drops it.
+    source_override: str = ""
+    constraints: tuple[Slot, ...] = ()
+    superseded: tuple[Slot, ...] = ()
+    candidates: tuple[Any, ...] = ()
+    evidence: tuple[str, ...] = ()
+    verification_level: str = "discover"
+    previous_recommendation: str = ""
+    turns: int = 0
+    expires_at: float = 0.0
+
+    def expired(self, now: float | None = None) -> bool:
+        return (now if now is not None else time.monotonic()) >= self.expires_at
+
+    def values(self, *names: str) -> tuple[str, ...]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for name in names:
+            for slot in self.constraints:
+                if slot.name != name:
+                    continue
+                key = slot.value.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(slot.value)
+        return tuple(out)
+
+    def _thing(self) -> str:
+        """The noun this recommendation is about, as a single word."""
+        for slot in self.constraints:
+            if slot.name == PREFERENCE:
+                return slot.value.split()[-1].casefold()
+        words = [
+            word for word in self.subject.split()
+            if word.casefold() not in _WEAK_SUBJECTS
+        ]
+        return words[-1].casefold() if words else ""
+
+    def missing_dimension(self) -> str:
+        """The one unresolved thing worth asking about, or nothing.
+
+        At most one, and only when the answer would genuinely change which
+        candidates come back. Everything else is left to a sensible default
+        -- five questions before a suggestion is worse than a suggestion
+        that turns out to be slightly off.
+        """
+        thing = self._thing()
+        # "I need headphones" names no buying verb and is plainly about
+        # buying headphones. A thing whose kinds are known is a thing you
+        # acquire, so it counts on its own.
+        if not thing or not (self.purchase or thing in _VARIANTS):
+            # Advice ("what should I eat tonight") is low-stakes: suggest
+            # something rather than interrogate.
+            return ""
+        if TYPE not in self.asked and not self.values(ATTRIBUTE):
+            return TYPE
+        if (
+            BUDGET not in self.asked
+            and not self.values(BUDGET)
+            and self.values(ATTRIBUTE)
+        ):
+            # Only worth asking once the kind is settled -- a budget for
+            # the wrong kind of thing decides nothing.
+            return BUDGET
+        return ""
+
+    def question_for(self, dimension: str) -> str:
+        """How to ask for that dimension, in one short sentence."""
+        thing = self._thing()
+        if dimension == TYPE:
+            variants = _VARIANTS.get(thing)
+            if variants:
+                return f"{variants[0].capitalize()} or {variants[1]}?"
+            return f"What kind of {thing or 'one'} did you have in mind?"
+        if dimension == BUDGET:
+            return "What sort of budget are you thinking?"
+        return ""
+
+    @property
+    def real_world(self) -> bool:
+        """Whether the answer names things that exist in a market."""
+        return bool(self.domain or self.category or self.purchase)
+
+    @property
+    def retired_values(self) -> tuple[str, ...]:
+        return tuple(slot.value for slot in self.superseded)
+
+    def as_task_preferences(self) -> dict[str, str]:
+        """The same constraints in TaskState's own ``preferences`` shape."""
+        preferences: dict[str, str] = {}
+        for slot in self.constraints:
+            existing = preferences.get(slot.name)
+            preferences[slot.name] = (
+                f"{existing}, {slot.value}" if existing else slot.value
+            )
+        return preferences
+
+    def strip_retired(self, text: str) -> str:
+        """Remove anything the conversation has already moved on from.
+
+        The router still sees the whole history, so on the turn after a
+        revision its topic can come back as "Korean BBQ places" -- the very
+        thing that was just retired. One rule covers every such route in:
+        a superseded value may not appear in a query.
+        """
+        cleaned = " ".join(str(text or "").split())
+        for retired in self.retired_values:
+            cleaned = re.sub(
+                re.escape(retired), " ", cleaned, flags=re.IGNORECASE,
+            )
+        return " ".join(cleaned.split()).strip(" ,.;:-")
+
+    def search_query(self, fallback: str = "") -> str:
+        """What to actually search for, given everything established.
+
+        Qualities lead, the thing follows, and the numbers trail -- "soft
+        mild restaurants near Gangnam" rather than the raw utterance or a
+        bare subject. Situations stay out of it: they explain the request,
+        and a search for "sore throat restaurants" finds clinics.
+        """
+        head = " ".join(self.values(ATTRIBUTE, PREFERENCE))
+        core = self.strip_retired(self.subject) or self.domain
+        if not core or core.casefold() in _EMPTY_SUBJECTS:
+            # The turn's own words are the last resort, and only their
+            # content half: "pull up some spots for me" contributes
+            # "spots", never the asking.
+            core = (
+                _content_of(self.strip_retired(fallback)) or self.domain
+            )
+        if core.casefold() in _WEAK_SUBJECTS and self.domain:
+            # "places" is a real word and a poor search term. Once the
+            # category is known, its own noun is strictly better.
+            core = self.domain
+        elif self.domain and _asks_for_places(fallback):
+            # They asked for somewhere to go, so say what kind of somewhere:
+            # "easy to eat dinner" is advice, "easy to eat dinner
+            # restaurants" is a list of places.
+            if not set(self.domain.casefold().split()) & set(
+                core.casefold().split()
+            ):
+                core = f"{core} {self.domain}".strip()
+        tail_parts = []
+        for value in self.values(AREA):
+            tail_parts.append(value if " " in value else f"in {value}")
+        for value in self.values(BUDGET):
+            tail_parts.append(f"around {value}")
+        tail_parts.extend(self.values(DATES))
+        query = " ".join(
+            part for part in (head, core, " ".join(tail_parts)) if part
+        )
+        # Case-insensitive: "Electric" from a one-word reply and "electric"
+        # from the router's topic are the same word twice.
+        seen: set[str] = set()
+        words: list[str] = []
+        for word in query.split():
+            if word.casefold() in seen:
+                continue
+            seen.add(word.casefold())
+            words.append(word)
+        return " ".join(words).strip()
+
+    def reasoning_context(self) -> str:
+        """The full picture for the answering prompt, situations included."""
+        parts = []
+        if self.subject:
+            parts.append(f"about: {self.subject}")
+        for name in (ATTRIBUTE, PREFERENCE, BUDGET, AREA, DATES, SITUATION):
+            values = self.values(name)
+            if values:
+                parts.append(f"{name}: {', '.join(values)}")
+        excluded = self.values(EXCLUSION)
+        if excluded:
+            parts.append(f"avoid: {', '.join(excluded)}")
+        if self.retired_values:
+            parts.append(
+                f"no longer wanted: {', '.join(self.retired_values)}"
+            )
+        return "; ".join(parts)
+
+    def log_block(self) -> str:
+        """Console only -- never the conversation UI."""
+        def line(label: str, values) -> str:
+            rendered = ", ".join(values) if values else "(none)"
+            return f"  {label}: {rendered}"
+
+        constraints = [
+            f"{slot.name}={slot.value} [{slot.source}]"
+            for slot in self.constraints
+        ]
+        return "\n".join([
+            "[Recommendation Context]",
+            f"  Subject: {self.subject or '(none)'}",
+            line("Constraints", constraints),
+            line("Superseded", self.retired_values),
+            line("Candidates", [str(c)[:40] for c in self.candidates]),
+            f"  Evidence: {len(self.evidence)} record(s)",
+            f"  Verification: {self.verification_level}",
+        ])
+
+
+def start(subject: str, *, domain: str = "", ttl: int = DEFAULT_TTL_SECONDS,
+          now: float | None = None) -> RecommendationProblem:
+    now = now if now is not None else time.monotonic()
+    return RecommendationProblem(
+        subject=_clean(subject), domain=domain, expires_at=now + ttl,
+    )
+
+
+def _merge(
+    existing: tuple[Slot, ...], incoming: tuple[Slot, ...],
+) -> tuple[Slot, ...]:
+    """Add what is new, and let a later value replace an earlier one.
+
+    Single-valued dimensions (a budget, an area) are replaced rather than
+    accumulated -- two budgets is not twice the information, it is a
+    contradiction. Qualities accumulate, because "soft" and "mild" are
+    both true at once.
+    """
+    single = {BUDGET, AREA, DATES}
+    kept = list(existing)
+    for slot in incoming:
+        if slot.name in single:
+            kept = [held for held in kept if held.name != slot.name]
+            kept.append(slot)
+            continue
+        if any(
+            held.name == slot.name
+            and held.value.casefold() == slot.value.casefold()
+            for held in kept
+        ):
+            continue
+        kept.append(slot)
+    return tuple(kept)
+
+
+def _fits(
+    offered: str,
+    problem: RecommendationProblem,
+    constraints: tuple[Slot, ...],
+) -> bool:
+    """Whether a proposed subject belongs to the problem already open.
+
+    The router re-reads the whole history every turn and its topic drifts:
+    two turns into a sore-throat dinner it offered "places to visit", which
+    would have turned the query into a travel search. A subject that agrees
+    with neither the category nor anything established is not adopted --
+    what is already known is better than a fresh guess.
+    """
+    if not offered:
+        return False
+    if not problem.domain and not problem.subject:
+        return True
+    words = set(re.findall(r"[a-z0-9가-힣]+", offered.casefold()))
+    known = set(re.findall(r"[a-z0-9가-힣]+", problem.domain.casefold()))
+    known |= set(re.findall(r"[a-z0-9가-힣]+", problem.subject.casefold()))
+    known |= {
+        word
+        for slot in constraints
+        for word in re.findall(r"[a-z0-9가-힣]+", slot.value.casefold())
+    }
+    if not known:
+        return True
+    return bool(words & known)
+
+
+def update(
+    problem: RecommendationProblem,
+    text: str,
+    *,
+    subject: str = "",
+    source: str = SOURCE_UTTERANCE,
+    now: float | None = None,
+    ttl: int = DEFAULT_TTL_SECONDS,
+) -> RecommendationProblem:
+    """Fold this turn into the open problem.
+
+    A revision ("actually...") retires what was asked for and keeps what
+    the person is -- a sore throat does not stop being true because they
+    changed their mind about barbecue.
+    """
+    now = now if now is not None else time.monotonic()
+    incoming = read_constraints(text, source=source)
+    if not incoming and problem.constraints:
+        incoming = read_short_reply(text)
+
+    constraints = problem.constraints
+    superseded = problem.superseded
+    previous = problem.previous_recommendation
+
+    situational = any(slot.name in CONTEXT_ONLY for slot in incoming)
+    if revises(text) or situational:
+        # Only the things asked for are retired. Qualities, budgets and
+        # areas survive: "actually something soft" narrows the problem, it
+        # does not restart it.
+        retiring = tuple(
+            slot for slot in constraints if slot.name == PREFERENCE
+        )
+        if retiring:
+            constraints = tuple(
+                slot for slot in constraints if slot.name != PREFERENCE
+            )
+            superseded = superseded + retiring
+            previous = ""
+
+    constraints = _merge(constraints, incoming)
+    # Stripped against what has *just* been retired, and applied to the
+    # held subject as well as the incoming one. Using the old superseded
+    # set cleared "Korean BBQ" from the new subject and then fell straight
+    # back to the old subject, which was still "Korean BBQ".
+    settled = replace(problem, superseded=superseded)
+    held = settled.strip_retired(problem.subject)
+    offered = settled.strip_retired(_clean(subject))
+    resolved = offered if _fits(offered, problem, constraints) else held
+    # The thing they actually named beats the router's topic for it.
+    # Measured live: "I want a guitar" was topic'd "personal desire", and
+    # the summary read "electric guitar personal desire around 500,000 won".
+    named = next(
+        (slot.value for slot in constraints if slot.name == PREFERENCE), "",
+    )
+    if named and named.casefold() not in resolved.casefold():
+        resolved = named
+    domain = problem.domain or domain_for(text) or domain_for(problem.subject)
+    category = problem.category or category_for(text) or category_for(
+        problem.subject,
+    )
+    return replace(
+        problem,
+        subject=resolved,
+        domain=domain,
+        category=category,
+        purchase=problem.purchase or is_purchase(text),
+        constraints=constraints,
+        superseded=superseded,
+        previous_recommendation=previous,
+        turns=problem.turns + 1,
+        expires_at=now + ttl,
+    )
+
+
+
+def starts_a_recommendation(text: str) -> bool:
+    """Whether these words open a recommendation, whatever the router said.
+
+    Measured live: "I want a guitar." was routed as plain conversation with
+    recommendation_needed false and topic "personal desire", so no problem
+    was opened, nothing was asked, and the two turns that followed had
+    nothing to attach to. The words themselves are a better signal than the
+    flag.
+    """
+    text = str(text or "")
+    named = [
+        slot for slot in read_constraints(text) if slot.name == PREFERENCE
+    ]
+    if not named:
+        return False
+    thing = named[0].value.split()[-1].casefold()
+    return bool(
+        thing in _VARIANTS or is_purchase(text) or category_for(text)
+    )
+
+def about_the_same_thing(
+    problem: RecommendationProblem,
+    text: str,
+    *,
+    subject: str = "",
+    topic_shift: bool = False,
+) -> bool:
+    """Whether a new turn continues this problem or starts another.
+
+    Decided on what the turn *introduces*, not on word overlap. Overlap
+    was the first attempt and it failed live in both directions: "actually
+    my throat hurts, something soft" shares no word with "Korean BBQ", so
+    the revision started a fresh problem and the preference it was meant to
+    retire was never superseded -- it just vanished, and the turn after it
+    searched for travel destinations.
+
+    Naming a different thing starts a new problem. Adding a quality, a
+    situation or a budget refines the open one. Asking to see what is
+    already being discussed continues it, whatever words it uses.
+    """
+    text = str(text or "")
+    # A revision is by definition about the problem it revises.
+    if revises(text):
+        return True
+
+    incoming = read_constraints(text)
+    bare = {
+        word for word in re.findall(
+            r"[a-z0-9가-힣]+", _content_of(text).casefold(),
+        )
+    } - _EMPTY_SUBJECTS - _WEAK_SUBJECTS
+    if not bare and not incoming:
+        # Nothing but the asking -- "find some places", "show me a few".
+        # A turn that names no topic cannot be a shift to another one, and
+        # the router says otherwise often enough to matter: measured live,
+        # "Find some places." was flagged a topic shift three turns into a
+        # sore-throat dinner and the search came back with travel
+        # destinations from Harper's Bazaar.
+        return True
+
+    if topic_shift:
+        return False
+
+    known = {
+        word for word in re.findall(
+            r"[a-z0-9가-힣]+", problem.subject.casefold(),
+        )
+    }
+    known |= {
+        word
+        for slot in tuple(problem.constraints) + tuple(problem.superseded)
+        for word in re.findall(r"[a-z0-9가-힣]+", slot.value.casefold())
+    }
+
+    named = [slot for slot in incoming if slot.name == PREFERENCE]
+    if named:
+        # A new thing by name: the same problem only if it is the thing
+        # already under discussion.
+        return any(
+            set(re.findall(r"[a-z0-9가-힣]+", slot.value.casefold())) & known
+            for slot in named
+        )
+    if incoming:
+        # Qualities, situations and budgets refine; they never redirect.
+        return True
+
+    # Nothing was stated at all. A bare follow-up ("show me some places")
+    # continues; a whole unrelated sentence does not.
+    content = _content_of(text)
+    words = {word for word in re.findall(r"[a-z0-9가-힣]+", content.casefold())}
+    words -= _EMPTY_SUBJECTS | _WEAK_SUBJECTS
+    if not words:
+        # Nothing but the asking: "show me some places", "pull up a few".
+        return True
+    if len(words) == 1:
+        # One bare word. "Electric." answers the question just asked and
+        # belongs to this problem; "guitar" names a different thing
+        # entirely and starts another. What separates them is whether the
+        # word is a thing rather than a quality.
+        lone = next(iter(words))
+        if lone not in _VARIANTS and not category_for(lone):
+            return True
+    subject_words = {
+        word for word in re.findall(r"[a-z0-9가-힣]+", _clean(subject).casefold())
+    }
+    return bool((words | subject_words) & known)

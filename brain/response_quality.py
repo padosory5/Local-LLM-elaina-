@@ -83,6 +83,27 @@ class ResponseQualityGuard:
             re.sub(r"[^\w\s]", " ", str(text).lower()).split()
         )
 
+    # An explicit correction. Measured live:
+    #
+    #   "yep I'm going there"      -> "Seattle's a great place..."
+    #   "no I mean I'm going to UW" -> the same words, byte for byte
+    #
+    # The reacted-only rule below does not catch this, because a
+    # correction is not a reaction -- it is the strongest possible signal
+    # that the previous answer was about the wrong thing.
+    _CORRECTS = re.compile(
+        r"^(?:no|nope|nah)[,! ]|\bi\s+me(?:an|ant)\b|\bi\s+was\s+talking\s+about\b|\bnot\s+[\w]+,\s*|\bactually[, ]|\bthat's\s+not\s+what\b",
+        re.IGNORECASE,
+    )
+
+    # Asking why is asking for something the previous answer did not
+    # say. Measured live: "Which one would you choose?" was answered,
+    # then "Why?" got the same sentence back, word for word.
+    _ASKS_FOR_REASONS = re.compile(
+        r"^(?:but\s+)?(?:why|how come)\b|^\s*(?:why|how come)[?.\s]*$|\bwhat makes\b|\bhow so\b|\bfor what reason\b",
+        re.IGNORECASE,
+    )
+
     @classmethod
     def _is_thanking(cls, text: str) -> bool:
         """Whether this turn actually thanks her.
@@ -170,4 +191,16 @@ class ResponseQualityGuard:
             cls._IS_REACTION.search(said.strip())
             and not cls._REQUESTS_SOMETHING.search(said)
         )
-        return reacted_only
+        if reacted_only:
+            return True
+
+        # They asked for the reasoning behind the answer, and got the answer
+        # again. Whatever else is true of the turn, that is not a reply to
+        # what was asked.
+        if cls._ASKS_FOR_REASONS.search(said.strip()):
+            return True
+
+        # Third shape: they said the last answer was about the wrong thing,
+        # and the same answer came back. Whatever else is true of the turn,
+        # that reply has already been rejected by the person hearing it.
+        return bool(cls._CORRECTS.search(said))

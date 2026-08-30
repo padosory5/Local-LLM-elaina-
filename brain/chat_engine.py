@@ -21,8 +21,12 @@ from brain import browser_outcome
 from brain.capability_selection import CapabilityChoice
 from brain.deliberation.interaction import InteractionDecision
 from brain.deliberation import front_door
-from brain.deliberation.pending import asks_something_else
+from brain.deliberation.pending import (
+    asks_something_else,
+    reads_as_new_request,
+)
 from brain.deliberation.profile import UserProfile
+from brain.deliberation import profile as profile_module
 from brain.conversation_manager import ConversationManager
 from brain.memory_ranker import MemoryRanker
 from voice.audio_manager import AudioManager
@@ -56,6 +60,13 @@ from brain.task_intent_gate import TaskIntentGate
 from brain.task_extractor import TaskExtractor
 from brain.task_discovery_policy import TaskDiscoveryPolicy
 from brain.task_session import DEICTIC_REFERENCE, TaskSessionStore
+from brain.recommendation_state import RecommendationProblem
+from brain import recommendation_state
+from brain import acquisition
+from brain import conversation_focus
+from brain import preferences
+from brain import candidate_fit
+from brain import semantic_fit
 from brain.user_locale import UserLocale
 from brain.capabilities import CapabilityRegistry
 from brain.action_commitment import ActionCommitmentGuard
@@ -73,6 +84,8 @@ from brain.action_status import (
 )
 from brain.answer_condenser import AnswerCondenser
 from brain.grounded_values import GroundedValueGuard
+from brain import grounded_values
+from brain.grounded_values import _SENTENCE_SPLIT
 from brain.web_search_planner import WebSearchActionPlanner
 from brain.decision_log import log_information_need
 from tools.browser_control.browser_connection import BrowserConnection
@@ -90,7 +103,7 @@ from brain.intent_router import IntentDecision, SemanticIntentRouter
 from agents.builder import AgentBuilder
 from agents.calendar_agent import GoogleCalendarAgent
 from agents.coordinator import AgentCoordinator
-from agents.research_agent import ResearchAgent
+from agents.research_agent import ResearchAgent, ResearchResult
 from agents.consent import (
     AgentConsentGate,
     SemanticConsentClassifier,
@@ -234,6 +247,12 @@ class TurnRouting:
     capability: CapabilityChoice = field(default_factory=CapabilityChoice)
     # What she already had that answers this, when recall found some.
     recalled_evidence: str = ""
+    # The recommendation the conversation is working on, when it is working
+    # on one. Carried here so the acting phase can build a query from
+    # everything established rather than from this turn's words alone --
+    # "pull up some spots" says nothing about the sore throat that decided
+    # what to look for.
+    problem: RecommendationProblem | None = None
 
 
 class ChatEngine:
@@ -767,6 +786,16 @@ class ChatEngine:
         # Left behind by a live check that ran and reached nothing,
         # and consumed by the fallback search below.
         self._live_check_note = ""
+        # What the most recent search actually returned, so a named
+        # shop in the reply can be checked against it.
+        self._last_research_evidence = ""
+        # Set when this turn opened a different recommendation, so the
+        # previous one's turns do not stay in the answering prompt.
+        self._recommendation_restarted = False
+        # Named by the person for this turn only. Never written to the
+        # profile: "use Google Maps for this one" must not erase a
+        # standing preference for Naver Maps.
+        self._source_override = ""
         self.answer_condenser = AnswerCondenser(
             self.client,
             self.model,
@@ -1065,6 +1094,89 @@ class ChatEngine:
         print(f"[Ability] Answered from the registry for {capability.id}.")
         return f"Yes. I can {capability.summary}. {offer}"
 
+    def _final_response_check(
+        self,
+        reply: str,
+        *,
+        user_input: str,
+        messages,
+        model: str,
+        temperature: float,
+        num_predict: int,
+        keep_alive,
+        max_words: int,
+        max_sentences: int,
+        forced: bool = False,
+    ) -> str:
+        """The last thing that happens before anything is said out loud.
+
+        The same check already runs on the draft, and that turned out not to
+        be enough: between it and here sit the advice rewrite, the finalizer,
+        the condenser and five guards, and any of them can hand back
+        something the earlier check would have rejected. Measured live, an
+        answer about Seattle came back byte-for-byte after "no I mean I'm
+        going to UW", with no guard line in the log at all -- because the
+        guard had run, and passed, several transformations earlier.
+
+        It is also no longer limited to conversation-shaped turns. A search
+        answer can repeat itself just as easily, and did.
+        """
+        text = str(reply or "").strip()
+        if not text or forced:
+            return reply
+        try:
+            history = self.conversation.get_history()
+        except Exception:
+            return reply
+        if not ResponseQualityGuard.should_retry(text, user_input, history):
+            return reply
+
+        print(
+            "\n[Response Guard] The final text repeated the previous answer "
+            "after a new or corrected message; regenerating once."
+        )
+        try:
+            response = self.client.chat(
+                model=model,
+                messages=[
+                    *messages,
+                    {"role": "assistant", "content": text},
+                    {
+                        "role": "user",
+                        "content": (
+                            "That is the same answer you just gave, and it "
+                            "does not address what I actually said. Answer "
+                            f"this, and only this: {user_input}"
+                        ),
+                    },
+                ],
+                stream=False,
+                options={
+                    "temperature": temperature, "num_predict": num_predict,
+                },
+                keep_alive=keep_alive,
+                think=False,
+            )
+            fresh = TextFilter.for_voice_response(
+                self._value(self._value(response, "message", {}), "content", ""),
+                max_words=max_words,
+                max_sentences=max_sentences,
+            )
+        except Exception as error:
+            print(f"[Response Guard] Could not regenerate: {error}")
+            return reply
+        if not fresh.strip():
+            return reply
+        if ResponseQualityGuard.should_retry(fresh, user_input, history):
+            # Twice is enough. Saying so is better than saying the same
+            # wrong thing a third time.
+            print("[Response Guard] The retry repeated it too; saying so.")
+            return (
+                "Sorry -- I answered the wrong thing there. Say it once "
+                "more and I'll take it properly?"
+            )
+        return fresh
+
     def _enforce_grounded_values(
         self,
         reply: str,
@@ -1108,6 +1220,54 @@ class ChatEngine:
             offer = "I haven't actually checked that, so I'd rather not guess."
         print("[Grounding Guard] Removed a price nothing had verified.")
         return GroundedValueGuard.correct(text, evidence=evidence, offer=offer)
+
+    def _enforce_grounded_entities(
+        self,
+        reply: str,
+        *,
+        user_input: str,
+        action_performed: bool,
+        evidence: str = "",
+    ) -> str:
+        """Never send someone to a shop nothing actually found.
+
+        The same failure as an invented price, in a different shape.
+        Measured live, with no search behind any of it: "check out local
+        music stores in Seoul like Melody House or Guitar Center Korea",
+        and "local stores like GS25 or Hanaro" -- GS25 being a convenience
+        store. Naming a dish or a city stays fine; naming a business is a
+        claim about the world, and this only fires when the reply is
+        actually sending the person somewhere.
+        """
+        text = str(reply or "").strip()
+        if not text or action_performed:
+            return text
+        grounding = " ".join((
+            str(evidence or ""),
+            str(self._grounded_context.get("statement", "")),
+            user_input,
+        ))
+        invented = grounded_values.unverified_entities(
+            text, evidence=grounding, request=user_input,
+        )
+        if not invented:
+            return text
+        print(
+            "[Grounding Guard] Unverified place(s): "
+            f"{', '.join(invented)}."
+        )
+        offer = (
+            "I don't want to send you somewhere I haven't checked -- "
+            "want me to look up real ones?"
+        )
+        kept = [
+            sentence.strip()
+            for sentence in _SENTENCE_SPLIT.split(text)
+            if sentence.strip()
+            and not any(name in sentence for name in invented)
+        ]
+        rebuilt = " ".join(kept).strip()
+        return f"{rebuilt} {offer}".strip() if rebuilt else offer
 
     def _rescue_capability_route(
         self,
@@ -1628,6 +1788,515 @@ class ChatEngine:
             )
         return kept
 
+    def _shaped_query(self, query: str, problem) -> str:
+        """The same query, pointed at where candidates actually live.
+
+        The sources are the locale layer's own, chosen by category rather
+        than named here: a Korean restaurant search belongs on the Korean
+        restaurant sites for the same reason a hotel search belongs on the
+        hotel ones. Scoping is dropped entirely when the market has no
+        table for this category, which leaves the plain query.
+        """
+        shape = candidate_fit.expected_shape(problem)
+        # Not site: operators. Measured live: scoping the first search to
+        # the locale's own restaurant hosts returned "No results found."
+        # and cost a whole query before the plain one ran. What does work
+        # is asking for the shape of thing wanted -- a price or a review is
+        # what listings have and articles about listings do not.
+        if shape == candidate_fit.PRODUCT:
+            extra = "price buy"
+        elif shape == candidate_fit.PLACE:
+            extra = "reviews address"
+        else:
+            return query
+        words = query.split()
+        for word in extra.split():
+            if word.casefold() not in {w.casefold() for w in words}:
+                words.append(word)
+        return " ".join(words)
+
+    def _note_preference(self, user_input: str) -> str:
+        """Record what this turn says about what she should usually use.
+
+        Nothing is written from a bare choice. "Use X for this one" sets a
+        turn-scoped override and touches nothing saved; only language that
+        is plainly about the future reaches the profile at all.
+        """
+        self._source_override = ""
+        try:
+            statement = preferences.read(user_input)
+        except Exception as error:
+            print("[Preference Resolution]")
+            print(f"  Applied: no\n  Why: {error}")
+            return ""
+        if statement is None:
+            return ""
+        if statement.action == "override":
+            self._source_override = statement.value
+            # Scoped to the open task where there is one, so a clarifying
+            # question in the middle of it does not drop back to the saved
+            # default. A new task opens a new problem and drops it.
+            held = self.task_sessions.note_source_override(statement.value)
+            print("[Preference Resolution]")
+            print(f"  Domain: {statement.domain or '(this turn)'}")
+            print(f"  Current override: {statement.value}")
+            print(
+                f"  Applied: {statement.value} for "
+                + ("this task" if held else "this turn")
+            )
+            return ""
+        return preferences.apply(self.user_profile, statement)
+
+    def _sources_for(self, problem, query: str) -> tuple[str, ...]:
+        """The surfaces this market uses to find this kind of thing.
+
+        Asked for by category, so the judgement stays in the locale layer:
+        a Korean restaurant search reaches for the Korean restaurant
+        surfaces for the same reason a hotel search reaches for the hotel
+        ones, and an unserved market reaches for none.
+        """
+        domain = str(getattr(problem, "category", "") or "")
+        ranked = acquisition.surface_names(self.user_locale, domain, query)
+        resolution = preferences.resolve(
+            self.user_profile,
+            profile_module.SOURCE_FOR,
+            domain or str(getattr(problem, "subject", "") or ""),
+            context=" ".join(problem.values(recommendation_state.SITUATION)),
+            override=(
+                getattr(self, "_source_override", "")
+                or self.task_sessions.source_override()
+            ),
+            default=ranked[0] if ranked else "",
+        )
+        if not resolution.applied or not resolution.choice:
+            return ranked
+        print(resolution.log_block())
+        # Preferred, not mandated: it goes to the front of the market's own
+        # ranking rather than replacing it, so a task the surface cannot
+        # serve can still be served by the next one down.
+        chosen = resolution.choice
+        return (chosen,) + tuple(
+            site for site in ranked if site.casefold() != chosen.casefold()
+        )
+
+    def _surface_hosts_for(self, problem, query: str) -> tuple[str, ...]:
+        """The same surfaces as hosts, for reading them out of results."""
+        return acquisition.surface_hosts(
+            self.user_locale,
+            str(getattr(problem, "category", "") or ""),
+            query,
+        )
+
+    def _research_for_recommendation(self, query: str):
+        """Find candidates, check them, and only then call any of them good.
+
+        The cascade, in order, stopping as soon as the answer is settled:
+
+            search -> is this even a candidate -> deterministic checks
+            -> reject conflicts -> targeted re-search if something
+            important is still unevidenced -> semantic check if it still
+            is -> rank -> recommend, or say the evidence is not there
+
+        Returns ``None`` whenever this is not a constrained recommendation,
+        so every other lookup keeps the ordinary research path untouched.
+        """
+        problem = self.task_sessions.active_recommendation()
+        if problem is None or not problem.constraints or not query:
+            return None
+
+        shape = candidate_fit.expected_shape(problem)
+        first = self._shaped_query(query, problem)
+        preferred = self._sources_for(problem, query)
+        if preferred:
+            # The surface they asked for, named in the query itself. This is
+            # what makes a saved preference change the result rather than
+            # only the log -- a surface named in a search is how the
+            # entities behind it get reached.
+            first = f"{first} {preferred[0]}"
+            print("[Acquisition]")
+            print(f"  Candidate shape: {shape}")
+            print(f"  Source: {preferred[0]}")
+        fits = self._candidates_for(first, problem, shape)
+        queries = [first]
+
+        # A scoped search can come back thin, and an unscoped one can come
+        # back full of articles. Either way a second attempt is worth one
+        # more query -- and no more than one, because this is a turn the
+        # person is waiting through.
+        survivors = candidate_fit.viable(fits)
+        unresolved = candidate_fit.unresolved_constraints(fits, problem)
+        if len(survivors) < 2 or unresolved:
+            # A surface in the results is a finding, not a failure: it says
+            # this is where this market keeps these. Naming it in the next
+            # query is how the entities behind it get reached -- measured,
+            # "diningcode <query>" returns restaurant pages where the bare
+            # query returns writing about restaurants.
+            reached = [fit.name for fit in candidate_fit.surfaces(fits)]
+            if reached:
+                print("[Recommendation Reasoning]")
+                print("  Decision: acquire through a surface")
+                print(f"  Why: {reached[0][:48]} indexes these; it is not one")
+            retry = self._retry_query(
+                query, problem, unresolved, shape,
+                self._sources_for(problem, query),
+            )
+            if retry and retry.casefold() != first.casefold():
+                print("[Recommendation Reasoning]")
+                print("  Decision: search again")
+                print(
+                    "  Why: "
+                    + (
+                        f"nothing yet shows {', '.join(unresolved)}"
+                        if unresolved
+                        else "too few candidates of the right kind"
+                    )
+                )
+                more = self._candidates_for(retry, problem, shape)
+                if more:
+                    queries.append(retry)
+                    fits = candidate_fit.evaluate(
+                        [
+                            {
+                                "title": fit.name, "url": fit.url,
+                                "summary": fit.summary,
+                            }
+                            for fit in tuple(fits) + tuple(more)
+                        ],
+                        problem,
+                        shape=shape,
+                        surface_hosts=self._surface_hosts_for(
+                            problem, query,
+                        ),
+                    )
+
+        if not fits:
+            return None
+
+        # Still nothing showing an important quality either way. A search
+        # result rarely says "soft" about a restaurant, and silence is not
+        # evidence -- so one bounded judgement, on the survivors only.
+        for constraint in candidate_fit.unresolved_constraints(
+            fits, problem,
+        )[:1]:
+            verdicts = semantic_fit.check(
+                self.client, self.model,
+                candidate_fit.viable(fits), constraint,
+            )
+            if verdicts:
+                fits = candidate_fit.with_semantic(fits, constraint, verdicts)
+                print("[Recommendation Reasoning]")
+                print(f"  Decision: judged '{constraint}' semantically")
+                print(
+                    "  Why: no source stated it, and it is what they "
+                    "asked for"
+                )
+
+        fitting = [fit for fit in fits if fit.verdict == "FITS"]
+        settled = candidate_fit.confident(fits, problem)
+        print(candidate_fit.log_block(
+            fits,
+            chosen=fitting[0].name if (settled and fitting) else "",
+            why=(
+                fitting[0].because() if (settled and fitting)
+                else "insufficient evidence to rank confidently"
+            ),
+        ))
+        self.task_sessions.record_candidates(
+            [fit.name for fit in fitting]
+            or [fit.name for fit in candidate_fit.viable(fits)],
+            evidence=(candidate_fit.shortlist_text(fits),),
+        )
+
+        if settled:
+            instruction = (
+                "CANDIDATES, already checked against what the user asked "
+                "for. Recommend the best of the ones marked FITS and say "
+                "in one clause why it suits them better than the others. "
+                "A MISMATCH may only be named as a mismatch, never as the "
+                "recommendation. OFF-TARGET items are articles and SOURCE "
+                "items are sites to search -- neither is a real option, so "
+                "do not offer either as one."
+            )
+        else:
+            instruction = (
+                "CANDIDATES, checked against what the user asked for -- and "
+                "none could be shown to meet it. Say plainly that you could "
+                "not confirm which of these actually suits them, then offer "
+                "what you did find as unverified options. Do not pick a "
+                "winner, and do not present an UNCHECKED or OFF-TARGET item "
+                "as though it fits. A SOURCE is a site to search, never a "
+                "recommendation -- name one only as somewhere they could "
+                "look, and only if there is nothing concrete to give."
+            )
+        return ResearchResult(
+            evidence=f"{instruction}\n{candidate_fit.shortlist_text(fits)}",
+            queries=tuple(queries),
+        )
+
+    def _candidates_for(self, query: str, problem, shape: str):
+        """One structured search, read as candidates, surfaces or neither."""
+        try:
+            found = self.research_agent.research_structured(
+                search_query=query, max_results=6,
+            )
+        except Exception as error:
+            print(
+                "[Recommendation Reasoning]\n  Decision: plain search"
+                f"\n  Why: structured results unavailable ({error})"
+            )
+            return ()
+        return candidate_fit.evaluate(
+            found, problem, shape=shape,
+            surface_hosts=self._surface_hosts_for(problem, query),
+        )
+
+    @staticmethod
+    def _retry_query(query, problem, unresolved, shape, sources=()) -> str:
+        """A second query aimed at what the first one left open.
+
+        Puts the unevidenced quality at the front, where a search engine
+        weighs it most, and names the kind of thing wanted so the results
+        are candidates rather than writing about candidates.
+        """
+        parts = [" ".join(unresolved)] if unresolved else []
+        parts.append(query)
+        # The locale's own sources for this category, by name rather than
+        # as a site: filter -- a name is a search term the engine can weigh,
+        # where the filter returned nothing at all.
+        parts.append(" ".join(sources[:2]))
+        seen: set[str] = set()
+        words: list[str] = []
+        for word in " ".join(part for part in parts if part).split():
+            if word.casefold() in seen:
+                continue
+            seen.add(word.casefold())
+            words.append(word)
+        return " ".join(words)
+
+    def _answered_dimension(self, pending, reply: str):
+        """Fold an answer into the open problem, and say what happens next.
+
+        Either the next question worth asking, or an acknowledgement of what
+        is now known -- never a search on its own, because answering a
+        question is not the same as asking for results.
+        """
+        problem = self.task_sessions.note_recommendation_turn(
+            reply, subject=pending.goal.utterance,
+        )
+        print("[Recommendation Reasoning]")
+        print(f"  Decision: record {pending.slot}")
+        print(f"  Why: the turn answers the question she just asked")
+        print(problem.log_block())
+
+        nxt = problem.missing_dimension()
+        if nxt:
+            question = problem.question_for(nxt)
+            self.clarification.offer(
+                goal=Goal(kind="recommendation", utterance=problem.subject),
+                slot=nxt,
+                question=question,
+            )
+            self.task_sessions.note_dimension_asked(nxt)
+            spoken = f"Got it. {question}"
+        else:
+            spoken = (
+                f"Got it -- {problem.search_query()}. Want me to pull "
+                "some up?"
+            )
+        return IntentDecision(
+            intent="conversation",
+            confidence=1.0,
+            normalized_request=reply,
+            reason="The user answered the question about their preference.",
+            is_follow_up=True,
+        ), spoken
+
+    def _ask_missing_dimension(self, problem, request: str = "") -> str:
+        """Ask the one question that would change which candidates come back.
+
+        One at a time, once each, and only when the answer genuinely splits
+        the candidate set -- "electric or acoustic" does, "what colour" does
+        not. A low-stakes suggestion beats an interrogation, so nothing is
+        asked for advice-shaped requests at all.
+        """
+        if recommendation_state.asks_where(request):
+            # "Where can I buy a guitar in Seoul?" wants places, not a
+            # narrowing question. Answering "electric or acoustic?" to it
+            # is answering a question they did not ask.
+            return ""
+        dimension = problem.missing_dimension()
+        if not dimension:
+            return ""
+        question = problem.question_for(dimension)
+        if not question:
+            return ""
+        # One outstanding question at a time, across every kind. Measured
+        # live: a proactive "want me to search?" was still pending when the
+        # budget answer arrived, so "About 500,000 won" was read as
+        # declining the offer and came back "Okay, I'll leave it."
+        self.capability_offer.clear()
+        # Held by the same gate as every other outstanding question, so
+        # only one is ever open and it expires the same way.
+        self.clarification.offer(
+            goal=Goal(kind="recommendation", utterance=problem.subject),
+            slot=dimension,
+            question=question,
+        )
+        self.task_sessions.note_dimension_asked(dimension)
+        print("[Recommendation Reasoning]")
+        print(f"  Decision: clarify")
+        print(
+            f"  Why: {dimension} is unresolved and changes which "
+            "candidates are worth finding"
+        )
+        return question
+
+    def _reselect_for_options(self, route, goal):
+        """Ask the same two layers again, with evidence declared necessary.
+
+        Nothing is decided here that they do not decide -- the route is
+        restated with the one fact the router missed (this turn wants real
+        options), and interaction/capability run again unchanged.
+        """
+        asking = replace(
+            route,
+            intent="web_search",
+            computer_operation="",
+            requires_external_evidence=True,
+            recommendation_needed=True,
+        )
+        decision = interaction.decide(asking, goal=goal)
+        capability = capability_selection.select(
+            goal, decision, route=asking, failures=self._capability_failures,
+        )
+        return decision, capability
+
+    def _track_recommendation(self, route, goal, decision, user_input=""):
+        """Keep the open recommendation current, and say why in the log.
+
+        A recommendation is a problem the conversation works on across
+        several turns, not a shape of answer produced independently each
+        time. The turn that establishes the constraint ("I have a sore
+        throat") is never the turn that needs it ("pull up some spots"),
+        so this runs whether or not the current turn acts.
+        """
+        active = self.task_sessions.active_recommendation()
+        wants_one = bool(
+            getattr(goal, "recommendation", False)
+            or goal.intent in {goal_intent.RECOMMEND, goal_intent.COMPARE}
+            # Measured live: "I want a guitar." came back as plain
+            # conversation with recommendation_needed false and the topic
+            # "personal desire", so no problem was opened at all and the
+            # two turns after it had nothing to attach to. The words are a
+            # better signal than the flag.
+            or recommendation_state.starts_a_recommendation(user_input)
+        )
+        if not wants_one and active is None:
+            return None
+
+        # The person's own words, not the router's paraphrase of them.
+        # Measured live: "Actually my throat hurts, something soft" reached
+        # here as "Throat hurts, something soft" -- without "actually" the
+        # revision was invisible, and without "my" the situation reader had
+        # nothing to match, so the Korean BBQ it was meant to retire stayed
+        # in the problem and went on into the query.
+        request = str(
+            user_input or route.normalized_request or "",
+        ).strip()
+        subject = str(getattr(goal, "subject", "") or "").strip()
+        before = active
+        problem = self.task_sessions.note_recommendation_turn(
+            request,
+            subject=subject,
+            topic_shift=bool(getattr(route, "topic_shift", False)),
+        )
+
+        self._recommendation_restarted = (
+            before is not None and problem.turns <= 1
+        )
+        if before is None:
+            why = "first turn of a new recommendation"
+        elif problem.subject != before.subject and not problem.constraints:
+            why = "the subject changed, so the earlier constraints do not apply"
+        elif len(problem.superseded) > len(before.superseded):
+            why = (
+                f"new information supersedes {', '.join(problem.retired_values)}"
+            )
+        elif len(problem.constraints) > len(before.constraints):
+            why = "the turn added a constraint to the open problem"
+        else:
+            why = "nothing new to add; the problem stands"
+        print("[Recommendation Reasoning]")
+        print(f"  Decision: {decision.mode}")
+        print(f"  Why: {why}")
+        return problem
+
+    def _resolved_search_query(self, route, goal) -> str:
+        """What to search for, once everything established is folded in.
+
+        The open recommendation has the last word, ahead of the router's
+        own suggested query. Measured live: three turns had established a
+        sore throat and "something easy to eat", and "pull up some spots
+        for me" still searched on the router's sentence -- which is built
+        fresh each turn and had drifted back to plain restaurants.
+
+        Nothing is overridden when there are no constraints to apply, so an
+        ordinary lookup keeps the router's query exactly as before.
+        """
+        router_query = str(getattr(route, "search_query", "") or "").strip()
+        request = str(getattr(route, "normalized_request", "") or "").strip()
+        problem = self.task_sessions.active_recommendation()
+        focus = self.task_sessions.focus()
+        if problem is not None and problem.constraints:
+            resolved = problem.search_query(request or router_query)
+            if resolved:
+                # A real-world recommendation is answered in the market the
+                # person can actually buy or eat in. The locale layer already
+                # knows which that is, and leaves a query that names its own
+                # destination alone.
+                resolved = self.user_locale.localize_query(
+                    resolved,
+                    category=problem.category,
+                    assume_local=problem.real_world,
+                )
+            if resolved and resolved.casefold() != router_query.casefold():
+                print(f"[Recommendation Context] Query: {resolved}")
+                return self._with_focus(resolved, focus)
+        return self._with_focus(
+            router_query or self._search_subject(route, goal), focus,
+        )
+
+    def _with_focus(self, query: str, focus) -> str:
+        """Add what the conversation has established to the search.
+
+        Measured live: three turns had settled Seattle and UW, and "which
+        apps do people use for rentals there" searched "apps for finding
+        rental properties" -- which is the question with every answer to it
+        removed. The focus is what "there" meant.
+        """
+        query = " ".join(str(query or "").split())
+        if focus is None or not query:
+            return query
+        seen = {word.casefold() for word in query.split()}
+        # A query that already names somewhere keeps that somewhere.
+        # Measured live: a Korean BBQ search in Korea carried "in South
+        # Korea" from the locale and "Seattle" from a conversation three
+        # topics earlier -- two places, and no answer.
+        try:
+            already_placed = self.user_locale._names_a_place(query)
+        except Exception:
+            already_placed = False
+        location = focus.background.get("location", "")
+        for part in focus.query_context():
+            words = part.split()
+            if any(word.casefold() in seen for word in words):
+                continue
+            if already_placed and location and part == location:
+                continue
+            query = f"{query} {part}"
+            seen.update(word.casefold() for word in words)
+        return query
+
     def _search_subject(self, route, goal) -> str:
         """What to actually search for, when the words are not searchable.
 
@@ -1639,6 +2308,7 @@ class ChatEngine:
         """
         request = str(getattr(route, "normalized_request", "") or "").strip()
         subject = str(getattr(goal, "subject", "") or "").strip()
+
         if not subject or subject.casefold() == request.casefold():
             return request
         if not (
@@ -1676,6 +2346,12 @@ class ChatEngine:
         text = str(reply or "").strip()
         if not text:
             return quiet("the reply was empty")
+        if self.clarification.peek() is not None:
+            # She has just asked a question of her own. Adding "want me to
+            # search?" underneath it puts two questions on the table and
+            # makes the next reply ambiguous -- measured live, the answer
+            # to hers was consumed as a "no" to this one.
+            return quiet("a question of her own is already outstanding")
         capability_id = str(getattr(capability, "capability", "") or "")
         if capability_id in {"direct_answer", "none", ""}:
             # She answered from what she knew, and the offer is the extra
@@ -2767,16 +3443,24 @@ class ChatEngine:
         ):
             search_started = time.perf_counter()
             try:
-                research_result = self.research_agent.research(
+                resolved_query = self._resolved_search_query(
+                    route, goal_intent_result,
+                )
+                research_result = self._research_for_recommendation(
+                    resolved_query,
+                ) or self.research_agent.research(
                     request=route.normalized_request,
-                    search_query=(
-                        route.search_query
-                        or self._search_subject(route, goal_intent_result)
-                    ),
+                    search_query=resolved_query,
                     max_results=5,
                     verify=route.verification_required,
                 )
                 self._last_search_query = research_result.queries[0]
+                self._last_research_evidence = research_result.evidence
+                # Against the open recommendation, so a follow-up can rank
+                # what was found instead of searching for it again.
+                self.task_sessions.record_candidates(
+                    (), evidence=(research_result.evidence,),
+                )
                 messages = self._build_factual_messages(
                     route.normalized_request,
                     (
@@ -2787,7 +3471,13 @@ class ChatEngine:
                     include_grounded=self._grounded_context_is_relevant(
                         route, goal_intent_result,
                     ),
-                    reset_history=route.topic_shift,
+                    # A different recommendation is a different subject.
+                    # Measured live: a dinner search answered with the
+                    # names of two electric guitars, because the guitar
+                    # turns were still in the prompt's history.
+                    reset_history=(
+                        route.topic_shift or self._recommendation_restarted
+                    ),
                     followup_subject=self._followup_subject_for(
                         route, goal_intent_result,
                     ),
@@ -3736,6 +4426,12 @@ class ChatEngine:
                 user_input=user_input,
                 action_performed=action_performed,
             )
+            reply = self._enforce_grounded_entities(
+                reply,
+                user_input=user_input,
+                action_performed=action_performed,
+                evidence=self._last_research_evidence,
+            )
             # Last, so it also catches a footer a rewrite reintroduced. Her
             # personality file bans these outright and the model adds them
             # anyway, so the removal is code rather than more prompt wording.
@@ -3761,6 +4457,18 @@ class ChatEngine:
             reply = self._append_recommendation(
                 reply, decision=decision, capability=capability,
                 goal=goal_intent_result,
+            )
+            reply = self._final_response_check(
+                reply,
+                user_input=user_input,
+                messages=messages,
+                model=active_model,
+                temperature=active_temperature,
+                num_predict=num_predict,
+                keep_alive=active_keep_alive,
+                max_words=max_words,
+                max_sentences=max_sentences,
+                forced=bool(effective_forced_response),
             )
             speech_buffer = reply
             if reply:
@@ -4295,6 +5003,26 @@ class ChatEngine:
         has_explicit_attachment = bool(
             screen_region is not None or screen_snapshot is not None
         )
+        preference_reply = self._note_preference(user_input)
+        if preference_reply:
+            # Saying how she should work is a statement, not a request for
+            # that work. Measured live: "use Spotify whenever I ask you to
+            # play music" was answered "which song would you like me to
+            # play?" -- the preference had already been saved, and the
+            # media path had already claimed the turn.
+            self.clarification.clear()
+            self.capability_offer.clear()
+            timings["route"] = time.perf_counter() - route_started
+            return TurnRouting(
+                route=IntentDecision(
+                    intent="conversation",
+                    confidence=1.0,
+                    normalized_request=user_input,
+                    reason="The user stated a standing preference.",
+                ),
+                user_input=user_input,
+                locked_response=preference_reply,
+            )
         pending_offer = self.agent_consent.peek()
         pending_computer = self.computer_consent.peek()
         pending_task = self.task_consent.peek()
@@ -4402,6 +5130,31 @@ class ChatEngine:
                 speech_act="action_request",
                 action_requested=True,
                 action_target=transcript,
+            )
+
+        if (
+            pending_clarification is not None
+            and pending_clarification.goal.kind == "recommendation"
+            and not has_explicit_attachment
+            and not continuing_agent_flow
+            and not reads_as_new_request(user_input)
+            and len(user_input.split()) <= 12
+        ):
+            # She asked which kind, and this is the answer. It belongs to
+            # the open recommendation before any general reading of it gets
+            # a say -- measured live, "About 500,000 won" three turns into
+            # an electric-guitar search was answered as a currency
+            # conversion, and the budget was never recorded as a budget.
+            self.clarification.clear()
+            route, locked_response = self._answered_dimension(
+                pending_clarification, user_input,
+            )
+            timings["route"] = time.perf_counter() - route_started
+            return TurnRouting(
+                route=route,
+                user_input=user_input,
+                locked_response=locked_response,
+                problem=self.task_sessions.active_recommendation(),
             )
 
         if (
@@ -4896,6 +5649,17 @@ class ChatEngine:
         # before it concluded. The router's label is translated once, at
         # the top, and never consulted as an intent again.
         goal = goal_intent.read(route)
+        # One answer to "what are we talking about", decided here and read
+        # everywhere else. An explicit correction outranks the router's
+        # topic: measured live, "No, I mean I'm going to UW" was routed
+        # correctly and the goal layer still said "moving to Seattle",
+        # because its subject came from a field the correction never
+        # touched -- and the Seattle answer was given twice.
+        focus = self.task_sessions.note_turn(
+            user_input, subject=str(getattr(goal, "subject", "") or ""),
+        )
+        if focus.corrected_to and focus.subject:
+            goal = replace(goal, subject=focus.subject)
         has_context, recalled_evidence, recall_origin = self._recall_context(
             route, goal, locked_response=locked_response,
         )
@@ -4909,13 +5673,53 @@ class ChatEngine:
         capability = capability_selection.select(
             goal, decision, route=route, failures=self._capability_failures,
         )
+        problem = self._track_recommendation(
+            route, goal, decision, user_input,
+        )
+        if problem is not None and not locked_response:
+            question = self._ask_missing_dimension(problem, user_input)
+            if question:
+                locked_response = question
+        if (
+            problem is not None
+            and not locked_response
+            and problem.constraints
+            # Two ways the same turn goes wrong. "Show me some" is read as
+            # plain conversation and answered from nothing, or -- measured
+            # live -- as a machine action, which then reports that desktop
+            # control is switched off. Neither is what was asked for, and
+            # both leave a problem with a type and a budget unsearched.
+            and capability.capability in {
+                capability_selection.DIRECT_ANSWER,
+                capability_selection.UI_CONTROL,
+            }
+            # A named target is a real instruction and is left alone.
+            and not str(getattr(route, "action_target", "") or "").strip()
+            and recommendation_state.wants_to_see_options(user_input)
+        ):
+            # "Show me some" three turns into an electric-guitar budget was
+            # routed as plain conversation and answered from nothing. The
+            # request is an explicit ask for real options, and the problem
+            # already holds enough to look them up -- so the same two
+            # layers are asked again, this time told evidence is wanted.
+            decision, capability = self._reselect_for_options(route, goal)
+            print("[Recommendation Reasoning]")
+            print(f"  Decision: {decision.mode}")
+            print(
+                "  Why: the turn asked to see real options and the problem "
+                "has enough to look them up"
+            )
         if self.intent_router.print_confidence_log:
+            print(focus.log_block())
             print(goal.log_block())
             print(decision.log_block())
             print(capability.log_block())
+            if problem is not None:
+                print(problem.log_block())
 
         timings["route"] = time.perf_counter() - route_started
         return TurnRouting(
+            problem=problem,
             route=route,
             user_input=user_input,
             locked_response=locked_response,
@@ -4962,6 +5766,19 @@ class ChatEngine:
         if not request:
             return False, "", ""
 
+        # Rung 0: the candidates the open recommendation already found and
+        # already checked against the constraints. "Which one would you
+        # choose?" is a question about those, and searching again would
+        # return a different set from the one being chosen between.
+        if DEICTIC_REFERENCE.search(request):
+            problem = self.task_sessions.active_recommendation()
+            if problem is not None and problem.evidence:
+                return (
+                    True,
+                    "\n".join(problem.evidence),
+                    "the options already found for this",
+                )
+
         # A back-reference is what makes recall the right answer. Without one
         # ("what is nvidia trading at"), stored hotel evidence must not be
         # dragged in just because it is recent.
@@ -4998,8 +5815,51 @@ class ChatEngine:
         if not remembered:
             return False, "", ""
 
-        evidence = "\n\n".join(memory.content for memory in remembered)
+        evidence = "\n\n".join(
+            str(getattr(memory, "content", "") or "")
+            for memory in remembered
+        ).strip()
+        if not evidence:
+            # Rows existed and carried nothing. Measured live: "[Recall]
+            # Answering from recent research; no search needed" printed
+            # alongside "Candidates: (none), Evidence: 0 record(s)", and the
+            # answer that followed was about restaurants and the App Store.
+            print("[Recall] Recalled rows carried no evidence; searching.")
+            return False, "", ""
+        if not self._evidence_is_about(evidence, subject):
+            # Memory search is semantic, so it returns the nearest thing it
+            # has rather than nothing. Near is not the same as relevant.
+            print(
+                f"[Recall] Stored research is not about '{subject}'; "
+                "searching instead."
+            )
+            return False, "", ""
+        print(
+            f"[Recall] {len(remembered)} record(s) about '{subject}' "
+            "attached."
+        )
         return True, evidence, "recent research"
+
+    @staticmethod
+    def _evidence_is_about(evidence: str, subject: str) -> bool:
+        """Whether recalled evidence actually concerns the subject asked about.
+
+        One shared content word is a low bar, and deliberately: the point is
+        to reject evidence about a different topic entirely, not to judge
+        how well it answers the question.
+        """
+        words = {
+            word for word in re.findall(
+                r"[a-z0-9가-힣]{3,}", str(subject or "").casefold(),
+            )
+        } - {
+            "the", "and", "for", "with", "about", "what", "which", "one",
+            "some", "any", "you", "your", "near", "there", "here",
+        }
+        if not words:
+            return False
+        haystack = str(evidence or "").casefold()
+        return any(word in haystack for word in words)
 
     @staticmethod
     def _reads_as_followup(request: str) -> bool:

@@ -87,7 +87,18 @@ class TaskDiscoveryPolicy:
         ),
         (
             "restaurant",
-            re.compile(r"\b(?:restaurant|restaurants|cafe|cafes|food|dining|eat)\b|맛집|식당|카페", re.I),
+            # Meal and dish words count too. "I want Korean BBQ" is a food
+            # request by any reading, and without them the category came
+            # back empty -- which left a retired preference with no general
+            # noun to fall back on ("soft places" instead of "soft
+            # restaurants").
+            re.compile(
+                r"\b(?:restaurant|restaurants|cafe|cafes|food|dining|eat|"
+                r"eatery|eateries|bbq|barbecue|barbeque|"
+                r"dinner|lunch|breakfast|brunch|supper|meal|meals)\b"
+                r"|맛집|식당|카페|밥|저녁|점심|아침",
+                re.I,
+            ),
             "local review listings",
             "area, cuisine, budget, or dietary needs",
         ),

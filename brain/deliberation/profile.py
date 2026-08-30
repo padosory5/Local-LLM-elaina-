@@ -33,8 +33,13 @@ from core.paths import DATA_DIRECTORY, ensure_runtime_directories
 # happened. Both are real evidence; only one of them was volunteered.
 STATED = "stated"
 OBSERVED = "observed"
+# Said, but softly -- "I usually use X", as against "always use X". Worth
+# remembering and not yet worth acting on unasked: at 1.5 it sits below the
+# threshold, so one mention is kept and a second one (3.0) makes it real.
+# That is exactly what "persistent, but lower confidence than always" means.
+SUGGESTED = "suggested"
 
-_WEIGHT_BY_SOURCE = {STATED: 2.0, OBSERVED: 1.0}
+_WEIGHT_BY_SOURCE = {STATED: 2.0, SUGGESTED: 1.5, OBSERVED: 1.0}
 # One play is not a taste. Something said outright clears this on its own.
 _MINIMUM_STANDING = 2.0
 # A correction should change behaviour, not be averaged into it.
@@ -42,7 +47,30 @@ _CORRECTION_DECAY = 0.5
 # Kinds this profile knows about, so a typo cannot invent a new one.
 ARTIST_FOR_TITLE = "artist_for_title"
 FAVOURITE_TRACK = "favourite_track"
-_KINDS = frozenset({ARTIST_FOR_TITLE, FAVOURITE_TRACK})
+# What this person wants used, and what they want, in a given situation.
+# Deliberately three kinds rather than one: "search restaurants on Naver
+# Maps" and "when my throat hurts I get porridge from Bonjuk" are different
+# claims -- one is how to look, the other is what to find -- and both can
+# be true at once.
+SOURCE_FOR = "source_for"        # which site or surface to search
+TOOL_FOR = "tool_for"            # which capability or app to use
+FAVOURITE_FOR = "favourite_for"  # which actual thing they go back to
+_KINDS = frozenset({
+    ARTIST_FOR_TITLE, FAVOURITE_TRACK, SOURCE_FOR, TOOL_FOR, FAVOURITE_FOR,
+})
+
+# Context rides in the key, after this separator: "restaurant" is the bare
+# domain and "restaurant|sore throat" is the same domain in a situation.
+# Kept as a key convention rather than a new field so nothing already
+# written to disk has to be migrated, and so the lookup stays two lines.
+CONTEXT_SEPARATOR = "|"
+
+
+def context_key(domain: str, context: str = "") -> str:
+    """The lookup key for a domain, optionally in a situation."""
+    domain = " ".join(str(domain or "").split()).strip().casefold()
+    context = " ".join(str(context or "").split()).strip().casefold()
+    return f"{domain}{CONTEXT_SEPARATOR}{context}" if context else domain
 
 _PROFILE_PATH = DATA_DIRECTORY / "user_profile.json"
 
@@ -67,6 +95,8 @@ class Preference:
         """Why she believes it, in words a person can argue with."""
         if self.source == STATED:
             return "you told me that one"
+        if self.source == SUGGESTED:
+            return "you've said you usually prefer it"
         if self.standing >= 4:
             return "it's the one you usually mean"
         return "it's the one you've played before"
@@ -135,6 +165,31 @@ class UserProfile:
         }
         self._save()
 
+    def forget_value(self, value: str) -> tuple[str, ...]:
+        """Drop everything believed about one named thing.
+
+        "Stop using Naver Maps by default" names the thing, not the slot,
+        which is how people actually say it. Returns the keys dropped so
+        the caller can say what it just stopped doing.
+        """
+        value = " ".join(str(value or "").split()).strip().casefold()
+        if not value:
+            return ()
+        dropped = tuple(
+            entry["key"]
+            for entry in self._entries.values()
+            if str(entry["value"]).casefold() == value
+        )
+        if not dropped:
+            return ()
+        self._entries = {
+            entry_id: entry
+            for entry_id, entry in self._entries.items()
+            if str(entry["value"]).casefold() != value
+        }
+        self._save()
+        return dropped
+
     # ------------------------------------------------------------------
     # recalling
 
@@ -152,6 +207,34 @@ class UserProfile:
             candidates, key=lambda item: (item.standing, item.updated_at),
         )
         return best if best.is_actionable else None
+
+    def preferred_in(
+        self, kind: str, domain: str, context: str = "",
+    ) -> Preference | None:
+        """What they want here, preferring the more specific answer.
+
+        "When my throat hurts" beats a plain restaurant default, because it
+        was said about exactly this situation. Falling back to the bare
+        domain is what makes a general default a default rather than a rule
+        that only fires in the one case it was learned in.
+        """
+        if context:
+            specific = self.preferred(kind, key=context_key(domain, context))
+            if specific is not None:
+                return specific
+        return self.preferred(kind, key=context_key(domain))
+
+    def known_in(self, kind: str, domain: str) -> tuple[Preference, ...]:
+        """Everything known for a domain, in any situation."""
+        domain = " ".join(str(domain or "").split()).strip().casefold()
+        return tuple(
+            preference for preference in self.known()
+            if preference.kind == kind
+            and (
+                preference.key == domain
+                or preference.key.startswith(f"{domain}{CONTEXT_SEPARATOR}")
+            )
+        )
 
     def known(self) -> tuple[Preference, ...]:
         """Everything currently believed, strongest first."""

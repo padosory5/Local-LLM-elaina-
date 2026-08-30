@@ -22,6 +22,11 @@ SOURCE_UTTERANCE = "utterance"
 SOURCE_WORLD = "world"
 SOURCE_PROFILE = "profile"
 SOURCE_ASKED = "asked"
+# A value that came back from a real search or page read, rather than
+# from the person or from an assumption. Recommendation constraints
+# need this fourth origin: "the listing said 500,000 won" and "you said
+# 500,000 won" carry different authority when they disagree.
+SOURCE_RESEARCH = "research"
 
 # Slots whose value is text the person asked to be entered somewhere. Only
 # these may be typed; a window name or an app name never is.
