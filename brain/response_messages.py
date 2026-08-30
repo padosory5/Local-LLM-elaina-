@@ -12,6 +12,7 @@ def build_personality_messages(
     user_input: str,
     context_sections: Iterable[tuple[str, str]] = (),
     response_language: str = "en",
+    followup_subject: str = "",
 ) -> list[dict[str, str]]:
     """Build a final-answer prompt with personality as its only system text.
 
@@ -59,6 +60,21 @@ def build_personality_messages(
             "periods, state each requested result even when values repeat; "
             "shorten explanation before omitting any result."
         )
+    # A sentence that means nothing on its own has to be told what it is
+    # about. Measured live: GPUs, then dinner, then "which one would you
+    # choose?" -- answered about graphics cards, because the model was left
+    # to pick between the topics in history and the GPU answer was the one
+    # that came as a list.
+    subject = str(followup_subject or "").strip()
+    if subject:
+        sections.append(
+            "WHAT THIS MESSAGE IS ABOUT\n"
+            f"{subject}. This refers to the most recent exchange about "
+            "that subject; answer about it, using the options already given "
+            "for it. An earlier, unrelated subject in the history is not "
+            "what is being asked about."
+        )
+
     # Last, so it is the nearest instruction to the message being answered.
     reply_in = language_name(response_language)
     sections.append(

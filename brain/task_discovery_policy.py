@@ -11,12 +11,31 @@ should spend the extra effort; only then does ``TaskPlanner`` run existing
 web-search/browser capabilities.  Keeping this policy deterministic gives the
 same natural request the same preflight even when the local model is busy or
 unavailable.
+
+Deterministic was doing too much work, though.  Every hotel request produced
+one byte-identical sentence, and asking it again on the next hotel request
+made a reasonable question sound like a recorded message -- reported from a
+real session, seen "multiple times today".  Two things separate a good
+preflight from a script, and neither changes what it decides:
+
+* ``advise`` still answers *whether* an offer helps, unchanged and pure.
+* :meth:`TaskDiscoveryPolicy.offer_for` answers *whether to say it now, and
+  in what words* -- suppressing a repeat within the session and rotating the
+  phrasing when it does speak.
+
+The hard gate is untouched by all of this.  A booking still cannot proceed
+without dates; that lives in ``deliberation/clarification.py`` and
+``TaskPlanner``, and is a different question from whether to offer a choice
+of source.
 """
 
 from __future__ import annotations
 
+import random
 import re
-from dataclasses import dataclass
+import time
+from collections import deque
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -28,6 +47,10 @@ class DiscoveryAdvice:
     preference_hint: str
     offer_text: str
     browser_ready: bool
+    # Every equivalent way of saying it. ``offer_text`` is the first of
+    # these; ``offer_for`` picks a different one when the last time she said
+    # this she used that one.
+    phrasings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -224,6 +247,9 @@ class TaskDiscoveryPolicy:
             # source/detail choice.  Asking the exact same choice again is
             # what caused the Guam loop in the recorded conversation.
             or re.search(r"\b(?:quick|general)\s+overview\b", str(goal), re.I)
+            # Said plainly: general information, not live rates. Offering the
+            # live-source choice again reopens a loop they just closed.
+            or cls.wants_general_information(goal)
         ):
             return None
         category = cls.category_for(goal)
@@ -236,58 +262,246 @@ class TaskDiscoveryPolicy:
         # 당근마켓/번개장터 in Korea. The names come from configuration
         # (brain/user_locale.py), never from the model or a webpage.
         sites, market = cls._local_sites(kind, goal, locale)
+        phrasings = cls._phrasings(
+            kind=kind,
+            source_kind=source_kind,
+            preference_hint=preference_hint,
+            sites=sites,
+            market=market,
+            browser_ready=browser_ready,
+            needs_dates=(
+                kind == "hotel"
+                and "dates" not in cls.extract_preferences(goal)
+            ),
+        )
+        return DiscoveryAdvice(
+            category=kind,
+            source_kind=source_kind,
+            preference_hint=preference_hint,
+            # The first phrasing, always. ``advise`` stays pure and
+            # repeatable; ``offer_for`` is what varies.
+            offer_text=phrasings[0],
+            browser_ready=browser_ready,
+            phrasings=phrasings,
+        )
+
+    @classmethod
+    def _phrasings(
+        cls,
+        *,
+        kind: str,
+        source_kind: str,
+        preference_hint: str,
+        sites: tuple[str, ...],
+        market: str,
+        browser_ready: bool,
+        needs_dates: bool,
+    ) -> tuple[str, ...]:
+        """Every way of saying the same offer.
+
+        Each variant carries the same load-bearing content -- the real site
+        names, the dates question, the overview alternative, the honest
+        reason when Desktop Control Mode is off. Only the wrapper changes,
+        so rotating them cannot alter what is being offered or agreed to.
+        ``tests/test_task_discovery_policy.py`` asserts that per variant.
+        """
         if browser_ready and sites:
             # Leading with the real site names is both shorter and more
             # useful than describing the category of source in the
             # abstract -- and it shows the user immediately whether Elaina
             # has the right market in mind.
             named = " and ".join(sites[:2])
-            if kind == "hotel" and "dates" not in cls.extract_preferences(goal):
-                offer = (
+            if needs_dates:
+                return (
                     f"{named} can check live availability and prices in "
                     f"{market}. What dates are you staying, or should I give "
-                    "a general shortlist without live rates?"
+                    "a general overview without live rates?",
+                    f"What dates are you looking at? With those I can pull "
+                    f"live rates from {named} in {market} -- otherwise I'll "
+                    "keep it to a general overview.",
+                    f"I can get live prices from {named} in {market} if you "
+                    "tell me your dates. Or say overview and I'll skip the "
+                    "live rates.",
+                    f"{named} would have real availability for {market}. "
+                    "What dates are you staying? A general overview works "
+                    "too if you'd rather.",
                 )
-            else:
-                offer = (
-                    f"{named} are what people in {market} actually use for "
-                    f"this. Want me to check there, or is a quick overview "
-                    "enough?"
-                )
-        elif browser_ready:
-            offer = (
+            return (
+                f"{named} are what people in {market} actually use for "
+                f"this. Want me to check there, or is a quick overview "
+                "enough?",
+                f"In {market} that usually means {named}. Should I look "
+                "there, or is a quick overview enough?",
+                f"{named} is where I'd look for this in {market}. Want me "
+                "to, or is a quick overview fine?",
+                f"I could check {named} -- that's what {market} actually "
+                "uses. Or a quick overview, if you'd rather.",
+            )
+        if browser_ready:
+            hint = cls._short_hint(preference_hint)
+            return (
                 f"Live {source_kind} would narrow this better than a "
                 f"general overview. Want that, or a quick overview? "
-                f"{cls._short_hint(preference_hint)} helps if you have one."
+                f"{hint} helps if you have one.",
+                f"I can pull live {source_kind} for this, or keep it to a "
+                f"quick overview. Which would you rather? {hint} helps if "
+                "you have one.",
+                f"Want me to check live {source_kind}, or is a quick "
+                f"overview enough? {hint} helps if you have one.",
+                f"Live {source_kind} or a quick overview -- your call. "
+                f"{hint} helps if you have one.",
             )
-        else:
-            offer = (
-                f"For {kind} options, live {source_kind} would help with "
-                f"filters, but Desktop Control Mode is off. I can give a "
-                "quick web overview instead—want that?"
-            )
-        return DiscoveryAdvice(
-            category=kind,
-            source_kind=source_kind,
-            preference_hint=preference_hint,
-            offer_text=offer,
-            browser_ready=browser_ready,
+        return (
+            f"For {kind} options, live {source_kind} would help with "
+            f"filters, but Desktop Control Mode is off. I can give a "
+            "quick web overview instead—want that?",
+            f"Desktop Control Mode is off, so I can't pull live "
+            f"{source_kind}. Want a quick web overview instead?",
+            f"Desktop Control Mode is off, so live {source_kind} is not "
+            "available. A quick web overview is what I can do -- want that?",
+            f"Desktop Control Mode is off, so live {source_kind} is out. "
+            "I can still do a quick web overview if that helps.",
         )
+
+    # ------------------------------------------------- asking, not deciding
+
+    def __init__(self, *, repeat_window_seconds: int = 10 * 60) -> None:
+        self.repeat_window_seconds = max(0, int(repeat_window_seconds))
+        # When each category was last offered, so the same question is not
+        # put twice in one sitting.
+        self._offered_at: dict[str, float] = {}
+        # What she has already said, so she does not say it the same way.
+        self._recent_phrasings: deque[str] = deque(maxlen=4)
+        self._rng = random.Random()
+
+    def question_for(self, advice: DiscoveryAdvice) -> str | None:
+        """The words to ask this offer in, or ``None`` to not ask again.
+
+        ``advise`` decides whether an offer would help; this decides whether
+        to put it to the user *again*, and how to word it. Asked once, a
+        choice of source is a useful question. Asked on every hotel request
+        in the same sitting, in the same words, it reads as a recorded
+        message -- which is what was reported.
+
+        Deliberately separate from the advice itself, so the caller can act
+        on everything the advice established -- which market's sites to
+        prefer, above all -- while staying quiet. Suppressing the question
+        must never mean forgetting the answer.
+        """
+        if self.recently_offered(advice.category):
+            return None
+        self._offered_at[advice.category] = time.monotonic()
+        return self._phrase(advice)
+
+    def offer_for(
+        self,
+        goal: str,
+        *,
+        browser_ready: bool,
+        has_prior_candidates: bool = False,
+        locale: object | None = None,
+    ) -> DiscoveryAdvice | None:
+        """``advise`` plus the repeat and phrasing rules, in one call."""
+        advice = self.advise(
+            goal,
+            browser_ready=browser_ready,
+            has_prior_candidates=has_prior_candidates,
+            locale=locale,
+        )
+        if advice is None:
+            return None
+        question = self.question_for(advice)
+        if question is None:
+            return None
+        return replace(advice, offer_text=question)
+
+    def recently_offered(self, category: str) -> bool:
+        """Whether this same choice was already put to the user just now."""
+        if self.repeat_window_seconds <= 0:
+            return False
+        last = self._offered_at.get(str(category))
+        if last is None:
+            return False
+        return (time.monotonic() - last) < self.repeat_window_seconds
+
+    def forget_offers(self) -> None:
+        """Start asking again. For a new session, and for tests."""
+        self._offered_at.clear()
+        self._recent_phrasings.clear()
+
+    def _phrase(self, advice: DiscoveryAdvice) -> str:
+        options = advice.phrasings or (advice.offer_text,)
+        fresh = [text for text in options if text not in self._recent_phrasings]
+        chosen = self._rng.choice(fresh or list(options))
+        self._recent_phrasings.append(chosen)
+        return chosen
+
+    # Dates change the answer only when the answer is about a stay: what is
+    # free on a given night, what it costs then, or booking it. They change
+    # nothing about which hotels are famous, well regarded, or worth knowing.
+    # Requiring them regardless turned "what are some famous hotels in Seoul"
+    # into a booking interrogation.
+    _DATE_SENSITIVE = re.compile(
+        r"\bavailab(?:le|ility)\b|\bvacan(?:t|cy|cies)\b|\brooms?\s+(?:for|on)\b"
+        r"|\b(?:book|booking|reserve|reservation|stay(?:ing)?|check[- ]?in|"
+        r"check[- ]?out|nights?|per\s+night)\b"
+        r"|\b(?:rate|rates|price|prices|cost|cheap(?:est)?)\b"
+        r"|\d{1,2}\s*(?:st|nd|rd|th)?\s*[-~to]+\s*\d{1,2}"
+        r"|예약|숙박|1박|가격|요금",
+        re.I,
+    )
+
+    # The opposite signal: the person has said, in so many words, that they
+    # want general information rather than live data. "Just tell me the
+    # hotels that are famous in Seoul" is a refusal of the live-rate path,
+    # and asking for dates after it restarts a loop they just exited.
+    _WANTS_GENERAL = re.compile(
+        r"\bjust\s+(?:tell|give|show|list)\b"
+        r"|\b(?:famous|well[- ]known|renowned|iconic|popular|best[- ]known)\b"
+        r"|\b(?:general|quick)\s+(?:overview|idea|list|sense)\b"
+        r"|\bno\s+(?:need\s+for\s+)?(?:live|real[- ]time|current)\s+(?:rates?|prices?)\b"
+        r"|그냥\s*(?:알려|말해)|유명한",
+        re.I,
+    )
+
+    @classmethod
+    def wants_general_information(cls, text: str) -> bool:
+        """Whether the person asked for general information, not live data."""
+        return bool(cls._WANTS_GENERAL.search(str(text or "")))
+
+    @classmethod
+    def dates_would_change_the_answer(cls, text: str) -> bool:
+        """Whether dates materially affect what is being asked for."""
+        request = str(text or "")
+        if cls.wants_general_information(request):
+            return False
+        return bool(cls._DATE_SENSITIVE.search(request))
 
     @classmethod
     def missing_required_preferences(
-        cls, category: str, preferences: dict[str, str],
+        cls, category: str, preferences: dict[str, str], goal: str = "",
     ) -> tuple[str, ...]:
-        """Inputs required before live listings can be compared truthfully."""
-        if str(category).casefold() == "hotel" and not preferences.get("dates"):
-            return ("dates",)
-        return ()
+        """Inputs required before live listings can be compared truthfully.
+
+        ``goal`` is the request itself. Without it this asked every hotel
+        question for check-in dates, including ones where the dates could not
+        possibly change the answer.
+        """
+        if str(category).casefold() != "hotel":
+            return ()
+        if preferences.get("dates"):
+            return ()
+        if goal and not cls.dates_would_change_the_answer(goal):
+            return ()
+        return ("dates",)
 
     @classmethod
     def required_preference_prompt(
-        cls, category: str, preferences: dict[str, str],
+        cls, category: str, preferences: dict[str, str], goal: str = "",
     ) -> str:
-        if cls.missing_required_preferences(category, preferences) == ("dates",):
+        if cls.missing_required_preferences(
+            category, preferences, goal,
+        ) == ("dates",):
             return (
                 "What check-in and check-out dates should I use? I need them "
                 "to compare real hotel availability and prices; say “general "

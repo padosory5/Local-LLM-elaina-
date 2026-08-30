@@ -5,14 +5,21 @@ import threading
 import time
 import ollama
 from collections import deque
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from memory.memory_manager import MemoryManager
+from memory import memory_manager as memory_categories
 from memory.extractor import MemoryExtractor
 from memory.consolidator import MemoryConsolidator
 from memory.context_builder import ContextBuilder
 from brain.prompt_builder import PromptBuilder
 from brain.deliberation import ClarificationGate, Goal
+from brain.deliberation import goal_intent, interaction
+from brain.deliberation.goal_intent import SemanticGoal
+from brain import capability_selection
+from brain import browser_outcome
+from brain.capability_selection import CapabilityChoice
+from brain.deliberation.interaction import InteractionDecision
 from brain.deliberation import front_door
 from brain.deliberation.pending import asks_something_else
 from brain.deliberation.profile import UserProfile
@@ -40,15 +47,24 @@ from brain.desktop_action_planner import (
     DesktopActionPlanner,
     DesktopSurfaceContext,
 )
-from brain.browser_action_planner import BrowserActionPlanner
+from brain.browser_action_planner import (
+    BrowserActionPlanner,
+    wants_information,
+)
 from brain.task_planner import TaskPlanner, TaskState
 from brain.task_intent_gate import TaskIntentGate
 from brain.task_extractor import TaskExtractor
 from brain.task_discovery_policy import TaskDiscoveryPolicy
-from brain.task_session import TaskSessionStore
+from brain.task_session import DEICTIC_REFERENCE, TaskSessionStore
 from brain.user_locale import UserLocale
 from brain.capabilities import CapabilityRegistry
 from brain.action_commitment import ActionCommitmentGuard
+from brain.recommendation import (
+    RecommendationPolicy,
+    reads_as_clear_acceptance,
+    subject_is_offerable,
+    subject_phrase,
+)
 from brain.action_status import (
     ActionStatusSelector,
     StatusContext,
@@ -76,7 +92,6 @@ from agents.calendar_agent import GoogleCalendarAgent
 from agents.coordinator import AgentCoordinator
 from agents.research_agent import ResearchAgent
 from agents.consent import (
-    AGENT_EXECUTION_INTENTS,
     AgentConsentGate,
     SemanticConsentClassifier,
     apply_agent_permission,
@@ -208,6 +223,17 @@ class TurnRouting:
     approved_strategy_task_state: TaskState | None = None
     declined_strategy_task_state: TaskState | None = None
     agent_permission_context: str = ""
+    # What should happen about this request, decided once. Consumers ask this
+    # instead of re-deriving it from route.intent; see
+    # brain/deliberation/interaction.py for why that mattered.
+    decision: InteractionDecision = field(default_factory=InteractionDecision)
+    # What the person wanted, said without naming a tool, and the ability
+    # chosen to meet it. Together with `decision` these are the whole
+    # chain: goal -> need -> capability -> agent.
+    goal_intent: SemanticGoal = field(default_factory=SemanticGoal)
+    capability: CapabilityChoice = field(default_factory=CapabilityChoice)
+    # What she already had that answers this, when recall found some.
+    recalled_evidence: str = ""
 
 
 class ChatEngine:
@@ -727,6 +753,20 @@ class ChatEngine:
         self.action_status = ActionStatusSelector(
             language=self.response_language,
         )
+        # Whether to offer something nobody asked for, and how often not to.
+        # 4E.2 worked out that an action would help and was not requested;
+        # this is what finally reads that.
+        self.recommendations = RecommendationPolicy(
+            language=self.response_language,
+        )
+        # How often each ability has failed this session. Tool selection
+        # scores a repeatedly failing capability down, so the next-best is
+        # chosen instead of the same one forever. TaskPlanner bounds retries
+        # *inside* one task; this is the across-turns case it cannot see.
+        self._capability_failures: dict[str, int] = {}
+        # Left behind by a live check that ran and reached nothing,
+        # and consumed by the fallback search below.
+        self._live_check_note = ""
         self.answer_condenser = AnswerCondenser(
             self.client,
             self.model,
@@ -1440,8 +1480,13 @@ class ChatEngine:
                 oldest = next(iter(self._entity_aliases))
                 self._entity_aliases.pop(oldest, None)
 
-    def _grounded_context_is_relevant(self, route) -> bool:
-        """Use retrieved evidence only for an explicit semantic follow-up."""
+    def _grounded_context_is_relevant(self, route, goal=None) -> bool:
+        """Use retrieved evidence only for a follow-up about the same thing.
+
+        The subject comparison is the part that was missing: a dinner
+        follow-up was handed a GPU comparison verified two turns earlier,
+        purely because both were follow-ups in the same session.
+        """
         return should_include_grounded_context(
             has_statement=bool(
                 self._grounded_context.get("statement", "").strip()
@@ -1449,6 +1494,12 @@ class ChatEngine:
             intent=route.intent,
             is_follow_up=route.is_follow_up,
             topic_shift=route.topic_shift,
+            grounded_subject=str(
+                self._grounded_context.get("subject", "") or ""
+            ),
+            current_subject=str(
+                getattr(goal, "subject", "") or route.topic or ""
+            ),
         )
 
     def _corrected_search_query(self, entity: str) -> str:
@@ -1462,6 +1513,21 @@ class ChatEngine:
                 return " ".join(words)
         return f"latest information about {entity}"
 
+    def _followup_subject_for(self, route, goal) -> str:
+        """The subject to state in the prompt, or "" when the words carry it.
+
+        Only for a message that means nothing on its own. A self-contained
+        request already says what it is about, and naming it again would
+        narrow an answer that did not need narrowing.
+        """
+        subject = str(getattr(goal, "subject", "") or "").strip()
+        request = str(getattr(route, "normalized_request", "") or "").strip()
+        if not subject or not request:
+            return ""
+        if subject.casefold() == request.casefold():
+            return ""
+        return subject if self._reads_as_followup(request) else ""
+
     def _build_factual_messages(
         self,
         question: str,
@@ -1469,6 +1535,7 @@ class ChatEngine:
         *,
         include_grounded: bool = False,
         reset_history: bool = False,
+        followup_subject: str = "",
     ) -> list[dict]:
         """Build a grounded answer without replacing Elaina's personality."""
         grounded_context = self._grounded_context_text()
@@ -1496,6 +1563,7 @@ class ChatEngine:
             user_input=question,
             context_sections=context_sections,
             response_language=self.response_language,
+            followup_subject=followup_subject,
         )
 
     def _build_tool_result_messages(
@@ -1517,6 +1585,329 @@ class ChatEngine:
             ),
             response_language=self.response_language,
         )
+
+    def _memories_about(self, memories, goal):
+        """Drop personal memories that have nothing to do with this subject.
+
+        Reported live: "what should I eat for dinner?" then "which one would
+        you choose?" answered about graphics cards, because a GPU
+        conversation earlier in the session was the nearest neighbour of a
+        sentence that means nothing on its own.
+
+        Embedding similarity is the wrong authority once the goal layer has
+        resolved a subject. The conversation is already in the prompt and
+        already carries the referent; a stored memory only earns its place
+        if it is actually about the same thing. When nothing survives, the
+        turn is answered from the conversation, which is the correct
+        precedence -- immediate context above long-term recall.
+        """
+        subject = str(getattr(goal, "subject", "") or "").strip()
+        if not subject or not memories:
+            return memories
+
+        wanted = {
+            word for word in re.findall(r"[^\W_]{4,}", subject.casefold())
+        }
+        if not wanted:
+            return memories
+
+        kept = [
+            memory
+            for memory in memories
+            if wanted & set(
+                re.findall(r"[^\W_]{4,}", str(
+                    getattr(memory, "content", "")
+                ).casefold())
+            )
+        ]
+        dropped = len(memories) - len(kept)
+        if dropped:
+            print(
+                f"[Recall] Set aside {dropped} memory item(s) unrelated to "
+                f"{subject!r}."
+            )
+        return kept
+
+    def _search_subject(self, route, goal) -> str:
+        """What to actually search for, when the words are not searchable.
+
+        A follow-up says "which one would you choose?" and means the thing
+        the last turn was about. Searching the sentence itself returns
+        whatever the web happens to be comparing -- measured live, a question
+        about Seoul hotels came back recommending an Audi. The goal layer
+        already resolved the subject; this uses it.
+        """
+        request = str(getattr(route, "normalized_request", "") or "").strip()
+        subject = str(getattr(goal, "subject", "") or "").strip()
+        if not subject or subject.casefold() == request.casefold():
+            return request
+        if not (
+            getattr(route, "is_follow_up", False)
+            or self._reads_as_followup(request)
+        ):
+            return request
+        # Keep the question, but say what it is about.
+        return f"{subject} {request}".strip()
+
+    def _append_recommendation(
+        self, reply: str, *, decision, capability, goal,
+    ) -> str:
+        """Offer something that would help, when offering is worth it.
+
+        Only reached when 4E.2 decided the action would help and the user
+        had not asked for it. Level 1 never gets here -- looking something
+        up has no visible cost, so it is simply done -- and level 3 keeps
+        the approval wall it already has in ``security/``.
+
+        The offer is parked in the same gate every other offer uses, so a
+        later "ok" resolves to the action rather than starting a fresh,
+        contextless turn.
+
+        Every way of staying quiet says so. Silence and "the code never ran"
+        look identical from the outside, and telling them apart by reading
+        the source cost a whole debugging pass.
+        """
+        def quiet(why: str) -> str:
+            if str(getattr(decision, "mode", "")) == "recommend":
+                # Only worth a line when an offer was actually on the table.
+                print(f"[Recommendation] Stayed quiet: {why}.")
+            return reply
+
+        text = str(reply or "").strip()
+        if not text:
+            return quiet("the reply was empty")
+        capability_id = str(getattr(capability, "capability", "") or "")
+        if capability_id in {"direct_answer", "none", ""}:
+            # She answered from what she knew, and the offer is the extra
+            # effort on top. Name the ability that would actually provide
+            # it: the live browser when it is switched on, a search when it
+            # is not.
+            state = self._capability_state()
+            # Search first, deliberately. Driving the browser is the heavier,
+            # more disruptive ability and it needs a real page to go to --
+            # offered as the default it produced "Happy to dig into a Dinner
+            # if that helps", and accepting it ran browser control on nothing.
+            wants_browser = goal_intent.names_a_surface(
+                str(getattr(goal, "subject", "") or "")
+            )
+            preference = (
+                ("browser_control", "web_search") if wants_browser
+                else ("web_search",)
+            )
+            capability_id = next(
+                (
+                    option
+                    for option in preference
+                    if CapabilityRegistry.is_available(option, state)
+                ),
+                "",
+            )
+        if not capability_id:
+            return quiet("no ability is available to offer")
+        # She may have offered in her own words already.
+        if RecommendationPolicy.reads_as_offer(text):
+            return quiet("she already offered in her own words")
+        # Or a repair guard may have parked one this turn -- the grounded
+        # value guard does exactly that when it retracts an unchecked claim.
+        # Two offers in one reply is the pushiness this phase exists to
+        # avoid, and the second would overwrite the first in the gate.
+        if self.capability_offer.peek() is not None:
+            return quiet("an offer is already waiting for an answer")
+
+        # Without a distinct topic the goal's subject falls back to the whole
+        # utterance, and the offer becomes "Want me to look into i am
+        # thinking about getting a new monitor?". Better to say nothing than
+        # to say that.
+        subject = str(getattr(goal, "subject", "") or "").strip()
+        if len(subject.split()) > 6:
+            # The router named no topic, so the goal's subject is the whole
+            # utterance. Try to name the thing itself before giving up.
+            subject = subject_phrase(subject)
+        if not subject:
+            return quiet("no subject to name")
+        if not subject_is_offerable(subject):
+            return quiet(f"{subject!r} is about them, not a thing to look up")
+        if len(subject.split()) > 6:
+            return quiet(f"the subject is a whole sentence ({subject!r})")
+
+        state = self._capability_state()
+        if not CapabilityRegistry.is_available(capability_id, state):
+            return quiet(f"{capability_id} is not available")
+        registered = CapabilityRegistry.get(capability_id)
+
+        offer = self.recommendations.offer(
+            decision,
+            capability_id=capability_id,
+            capability_name=registered.name if registered else capability_id,
+            subject=str(getattr(goal, "subject", "") or ""),
+        )
+        if offer is None:
+            return quiet("the cooldown is still running")
+
+        self.capability_offer.offer(
+            capability_id=capability_id,
+            goal=offer.goal,
+            offer_text=offer.text,
+            proactive=True,
+        )
+        print(f"[Recommendation] Offered {capability_id}: {offer.text}")
+        separator = " " if text.endswith((".", "!", "?")) else ". "
+        return f"{text}{separator}{offer.text}"
+
+    _DECLINED_LINES = (
+        "Okay, I'll leave it.",
+        "Sure, no problem.",
+        "Alright, forget it then.",
+        "No worries, leaving it.",
+    )
+
+    def _generic_declined(self) -> str:
+        """Acknowledge a refusal, and vary it without losing the meaning.
+
+        The status bank's bare acknowledgements ("Sure.", "Yeah.") read as
+        agreement rather than as dropping something, which is the opposite
+        of what a refusal deserves.
+        """
+        recent = getattr(self, "_recent_declines", None)
+        if recent is None:
+            recent = self._recent_declines = deque(maxlen=2)
+        options = [line for line in self._DECLINED_LINES if line not in recent]
+        chosen = (options or list(self._DECLINED_LINES))[0]
+        recent.append(chosen)
+        return chosen
+
+    def _run_browser_capability(self, route, routing, user_input: str):
+        """Drive the browser because the capability layer chose it.
+
+        Falls back rather than failing silently: if browser control is
+        unavailable or the run does not succeed, the choice is swapped for
+        its own recorded fallback so the answering phase can still produce a
+        partial answer from a search. Doing nothing was the old behaviour
+        and it is the worst of the three.
+        """
+        state = self._capability_state()
+        if not CapabilityRegistry.is_available("browser_control", state):
+            reason = CapabilityRegistry.blocked_reason(
+                CapabilityRegistry.get("browser_control"), state,
+            )
+            print(f"[Capability] browser_control unavailable: {reason}.")
+            self._fall_back_from(routing, "browser_control")
+            return "", None
+
+        print(
+            "[Capability] Dispatching browser_control for: "
+            f"{route.normalized_request or user_input}"
+        )
+        try:
+            message, result = self._handle_browser_action(
+                route,
+                approved_action=None,
+                original_request=user_input,
+                clarified_goal=None,
+            )
+        except Exception as error:
+            print(
+                f"[Capability] browser_control raised "
+                f"{type(error).__name__}: {error}"
+            )
+            capability_selection.note_failure(
+                self._capability_failures, "browser_control",
+            )
+            self._fall_back_from(routing, "browser_control")
+            return "", None
+
+        failed = result is not None and str(
+            getattr(result, "status", "")
+        ).endswith("failed")
+        goal_text = str(route.normalized_request or user_input or "")
+        # "The planner finished" and "the question is answered" are two
+        # different claims. Reported live: a clean five-round run whose
+        # whole spoken result was "Opened." -- true about the run, and no
+        # answer at all to "does the Lotte Hotel have a room on the 18th".
+        outcome = browser_outcome.read(
+            message,
+            succeeded=not failed,
+            needs_verification=(
+                routing.decision.need == interaction.NEED_VERIFIED
+            ),
+            goal=goal_text,
+        )
+        if outcome.verified:
+            capability_selection.note_success(
+                self._capability_failures, "browser_control",
+            )
+            return outcome.answer, result
+
+        # Either the browser fell over, or it ran and never reached the
+        # answer. Both mean browser control did not deliver this turn, so
+        # both count against choosing it again.
+        capability_selection.note_failure(
+            self._capability_failures, "browser_control",
+        )
+        if browser_outcome.fallback_can_help(goal_text):
+            self._live_check_note = browser_outcome.fallback_notice()
+            self._fall_back_from(routing, "browser_control")
+            return "", None
+
+        # Nothing a search could honestly add -- a snippet does not know
+        # whether one room is free on one night. Say what happened rather
+        # than dress a guess up as a check.
+        print(
+            f"[Capability] browser_control came back {outcome.state}; "
+            "no fallback can honestly answer this one."
+        )
+        if outcome.state == browser_outcome.FAILED:
+            return outcome.answer or self._generic_outcome(False), result
+        return browser_outcome.unverified_line(goal_text), result
+
+    def _take_live_check_note(self) -> str:
+        """Consume the caveat left by a live check that came back empty.
+
+        Read once and cleared, so a later turn that searches for
+        something unrelated never inherits a warning about a check it
+        never ran.
+        """
+        note = getattr(self, "_live_check_note", "")
+        self._live_check_note = ""
+        return f"{note}\n" if note else ""
+
+    def _fall_back_from(self, routing, capability_id: str) -> None:
+        """Move this turn onto the next ability the choice already listed.
+
+        The fallback chain is worked out at selection time, so nothing is
+        re-decided here -- the turn simply moves down it.
+        """
+        remaining = [
+            option for option in routing.capability.fallbacks
+            if option != capability_id
+            and not capability_selection.exhausted(
+                self._capability_failures, option,
+            )
+        ]
+        if not remaining:
+            print(f"[Capability] No fallback left after {capability_id}.")
+            return
+        nxt = remaining[0]
+        print(f"[Capability] Falling back from {capability_id} to {nxt}.")
+        routing.capability = replace(
+            routing.capability,
+            capability=nxt,
+            reason=f"{capability_id} could not be used; {nxt} is the fallback",
+        )
+
+    def _generic_outcome(self, succeeded: bool) -> str:
+        """A done/failed line for when the planner gave no summary of its own.
+
+        Contentless by definition -- there is no subject to name, which is
+        why this is not BriefResponseGenerator's job -- and it was the same
+        fixed sentence at two different call sites. The status banks already
+        hold four ways of saying each, with the same anti-repetition every
+        other status line gets.
+        """
+        return self.action_status.select(StatusContext(
+            phase="success" if succeeded else "failure",
+            force=True,
+        )) or ("That's done." if succeeded else "I couldn't complete that.")
 
     def _announce_work_status(
         self,
@@ -1899,8 +2290,8 @@ class ChatEngine:
             return plan_result.summary, None
 
         succeeded = plan_result.status == "done"
-        message = plan_result.summary.strip() or (
-            "That's done." if succeeded else "I couldn't complete that."
+        message = plan_result.summary.strip() or self._generic_outcome(
+            succeeded,
         )
         return message, ComputerActionResult(
             status="ui_action_done" if succeeded else "ui_action_failed",
@@ -2035,13 +2426,43 @@ class ChatEngine:
             )
 
         succeeded = plan_result.status == "done"
-        message = plan_result.summary.strip() or (
-            "That's done." if succeeded else "I couldn't complete that."
+        message = plan_result.summary.strip() or self._generic_outcome(
+            succeeded,
         )
         if not succeeded:
             message = self._spoken_browser_failure(
                 plan_result.failure_code, message,
             )
+
+        # Both routes into this handler -- the capability layer's and the
+        # router's own computer_action label -- end here, so the reading
+        # happens once, here, rather than in whichever branch called in.
+        #
+        # "status=done" says the planner stopped cleanly. It never said the
+        # question was answered, and a goal that asked for something the
+        # page knows is owed an answer, not a confirmation. Reported live:
+        # a clean five-round run whose entire spoken result was "Opened."
+        goal_text = str(
+            (approved_action.browser_goal if approved_action is not None else "")
+            or original_request
+            or route.normalized_request
+            or ""
+        )
+        if wants_information(goal_text):
+            outcome = browser_outcome.read(
+                message,
+                succeeded=succeeded,
+                needs_verification=True,
+                goal=goal_text,
+            )
+            print(
+                f"[Browser Result] state={outcome.state} ({outcome.reason})"
+            )
+            if outcome.state == browser_outcome.NOT_VERIFIED:
+                # An action report is not an answer, and saying it as one
+                # is the dishonest half of this bug.
+                message = browser_outcome.unverified_line(goal_text)
+
         return message, ComputerActionResult(
             status="ui_action_done" if succeeded else "ui_action_failed",
             target=route.action_target,
@@ -2220,6 +2641,10 @@ class ChatEngine:
         self,
         *,
         route,
+        decision,
+        capability,
+        goal_intent_result,
+        recalled_evidence,
         user_input,
         context_prompt,
         locked_response,
@@ -2257,7 +2682,9 @@ class ChatEngine:
         if route.intent == "knowledge_question":
             messages = self._build_factual_messages(
                 route.normalized_request,
-                include_grounded=self._grounded_context_is_relevant(route),
+                include_grounded=self._grounded_context_is_relevant(
+                    route, goal_intent_result,
+                ),
                 reset_history=route.topic_shift,
             )
         elif route.intent == "calculation":
@@ -2288,6 +2715,9 @@ class ChatEngine:
                 messages = self._build_factual_messages(
                     route.normalized_request,
                     reset_history=route.topic_shift,
+                    followup_subject=self._followup_subject_for(
+                        route, goal_intent_result,
+                    ),
                 )
         elif route.intent == "time_question":
             messages = self._build_factual_messages(
@@ -2299,13 +2729,49 @@ class ChatEngine:
         turn_grounding_source = ""
         turn_grounding_subject = ""
 
-        if not use_screen_vision and route.intent == "web_search":
+        # Recall reached far enough: answer from it rather than looking again.
+        # The evidence travels the same section a live search would have
+        # filled, so the answer is grounded in it identically -- which is what
+        # makes the reply actually name the hotels from the previous turn
+        # instead of merely declining to search.
+        if recalled_evidence and decision.reuses_existing_results:
+            messages = self._build_factual_messages(
+                route.normalized_request,
+                (
+                    "Answer from this, which you already found for this "
+                    "person earlier in the conversation. Do not claim to "
+                    "have looked it up again.\n"
+                    f"{recalled_evidence}"
+                ),
+                include_grounded=self._grounded_context_is_relevant(
+                    route, goal_intent_result,
+                ),
+                reset_history=False,
+            )
+            turn_grounding_source = "Earlier in this conversation"
+            turn_grounding_subject = (
+                str(getattr(goal_intent_result, "subject", "") or "")
+                or route.topic
+                or route.normalized_request
+            )
+
+        # Migrated. The intent says a search would answer this; the
+        # decision says whether one should still run. A follow-up the
+        # session can already answer reaches here with mode=answer, and
+        # a second search would return a different set of options from
+        # the ones the user is actually choosing between.
+        if (
+            not use_screen_vision
+            and decision.acts
+            and capability.capability == capability_selection.WEB_SEARCH
+        ):
             search_started = time.perf_counter()
             try:
                 research_result = self.research_agent.research(
                     request=route.normalized_request,
                     search_query=(
-                        route.search_query or route.normalized_request
+                        route.search_query
+                        or self._search_subject(route, goal_intent_result)
                     ),
                     max_results=5,
                     verify=route.verification_required,
@@ -2315,12 +2781,27 @@ class ChatEngine:
                     route.normalized_request,
                     (
                         f"AS-OF DATE: {datetime.now().strftime('%Y-%m-%d')}\n"
+                        f"{self._take_live_check_note()}"
                         f"{research_result.evidence}"
                     ),
                     include_grounded=self._grounded_context_is_relevant(
-                        route
+                        route, goal_intent_result,
                     ),
                     reset_history=route.topic_shift,
+                    followup_subject=self._followup_subject_for(
+                        route, goal_intent_result,
+                    ),
+                )
+                # Keep it, so the next turn can answer from it instead of
+                # searching the same thing again.
+                self._remember_research(
+                    subject=(
+                        str(getattr(goal_intent_result, "subject", "") or "")
+                        or route.topic
+                        or route.normalized_request
+                    ),
+                    query=self._last_search_query,
+                    result=research_result,
                 )
                 turn_grounding_source = "Current web search"
                 turn_grounding_subject = (
@@ -2329,7 +2810,20 @@ class ChatEngine:
                     or route.topic
                     or route.normalized_request
                 )
+                capability_selection.note_success(
+                    self._capability_failures, capability.capability,
+                )
             except Exception as error:
+                # Recorded, not just reported: a search that keeps failing
+                # should stop being the first choice.
+                capability_selection.note_failure(
+                    self._capability_failures, capability.capability,
+                )
+                fallback = ", ".join(capability.fallbacks) or "(none)"
+                print(
+                    f"[Capability] {capability.capability} failed "
+                    f"({type(error).__name__}); fallback would be {fallback}."
+                )
                 forced_response = (
                     "I couldn't complete that web search: "
                     f"{type(error).__name__}: {error}"
@@ -3245,7 +3739,29 @@ class ChatEngine:
             # Last, so it also catches a footer a rewrite reintroduced. Her
             # personality file bans these outright and the model adds them
             # anyway, so the removal is code rather than more prompt wording.
-            reply = ClosingOfferGuard.strip(reply)
+            before_strip = reply
+            reply = ClosingOfferGuard.strip(
+                reply,
+                # A repair guard or the ability answer may have just parked
+                # an offer whose text is in this reply. Removing it would
+                # leave the gate holding an offer the user never saw.
+                keep_offers=self.capability_offer.peek() is not None,
+            )
+            if reply != before_strip:
+                removed = before_strip[len(reply):].strip()
+                if ClosingOfferGuard.offers_to_act(removed):
+                    # Worth counting separately: this is the model making an
+                    # offer outside the policy, which is what the policy is
+                    # there to bound.
+                    print(f"[Recommendation] Removed the model's own offer: "
+                          f"{removed[:80]!r}")
+            # After the guard, deliberately: a real offer names a capability
+            # and a subject, and stripping it as filler would remove the one
+            # useful thing this phase adds.
+            reply = self._append_recommendation(
+                reply, decision=decision, capability=capability,
+                goal=goal_intent_result,
+            )
             speech_buffer = reply
             if reply:
                 print(
@@ -3474,7 +3990,10 @@ class ChatEngine:
                 freshness=route.information_freshness,
                 verification=route.verification_required,
                 effort="discover",
-                capabilities=("web_search",) if route.intent == "web_search" else (),
+                capabilities=(
+                    (routing.capability.capability,)
+                    if routing.capability.needs_a_tool else ()
+                ),
             )
         if route.normalized_request != user_input:
             print(
@@ -3483,10 +4002,20 @@ class ChatEngine:
             )
 
         agent_task_id = None
-        if route.intent in AGENT_EXECUTION_INTENTS:
-            assignment_intent = route.intent
+        # Dispatch is decided by the capability, not by the router's label.
+        # It used to read `route.intent in AGENT_EXECUTION_INTENTS`, which
+        # made "web_search" both the intent and the tool: the answer was
+        # fixed before the question was asked. Now the goal decides the need,
+        # the need decides the capability, and only then does anything run.
+        # Which agent owns the capability stays declarative, in the
+        # `intents:` list of each agents/definitions/*.yaml.
+        if routing.capability.needs_agent and routing.decision.acts:
+            # Looked up by a label that agrees with the capability. Using the
+            # router's own label here handed a web_search turn labelled
+            # "conversation" to the Conversation Agent.
+            assignment_intent = routing.capability.dispatch_label(route.intent)
             if (
-                route.intent == "calendar_action"
+                assignment_intent == "calendar_action"
                 and not self.agent_registry.has_agent(
                     "google_calendar_agent"
                 )
@@ -3525,11 +4054,20 @@ class ChatEngine:
             and route.memory_relevant
         )
         if use_memory:
+            # Search memory for what the turn is *about*. A bare follow-up
+            # ("which one would you choose?") carries no subject of its own,
+            # so it matched personal memories at random -- a plausible second
+            # source of the car recommendation in a conversation about hotels.
             memories = self.memory_manager.search(
-                user_input,
+                self._search_subject(route, routing.goal_intent) or user_input,
                 k=20,
+                # Research evidence lives in the same index but answers a
+                # different question. Without this, "how has my week been"
+                # could come back with a hotel price as a fact about them.
+                exclude_categories={memory_categories.RESEARCH_CATEGORY},
             )
             memories = self.memory_ranker.rank(memories)
+            memories = self._memories_about(memories, routing.goal_intent)
             memory_text = self.context_builder.build(memories)
         timings["memory_retrieval"] = (
             time.perf_counter() - memory_started
@@ -3546,16 +4084,38 @@ class ChatEngine:
         # Whether a real capability ran this turn. Used by the commitment
         # guard below, which treats "let me open that for you" as a broken
         # promise unless something actually happened.
-        action_performed = route.intent in {
-            "web_search",
-            "screen_analysis",
-            "fact_check",
-            "calendar_action",
-            "project_question",
-            "project_edit",
-            "git_commit",
-            "git_publish",
-        }
+        # What ran, read from what was chosen to run. This was a hand-kept
+        # list of eight router labels that had to stay in step with
+        # AGENT_EXECUTION_INTENTS by hand, and did not: entity_correction
+        # dispatched a real search and was missing from it.
+        action_performed = (
+            routing.decision.acts and routing.capability.needs_agent
+        )
+        # Capability-keyed execution.
+        #
+        # The browser handler was reachable through exactly one door:
+        # route.intent == "computer_action" *and* computer_operation ==
+        # "browser_action" -- both the router's labels. So when the
+        # capability layer concluded browser_control from a request the
+        # router had called web_search ("does the Lotte Hotel have a room on
+        # the 18th"), the decision was computed, logged, and then dropped:
+        # no agent (browser control is not agent-dispatched), no search (the
+        # capability was not web_search), and no handler (the label was not
+        # computer_action). Nothing ran at all.
+        #
+        # 4E.2 made the capability authoritative for *whether* something
+        # runs. This makes it authoritative for *what* runs.
+        if (
+            not locked_response
+            and routing.decision.acts
+            and routing.capability.capability == capability_selection.BROWSER_CONTROL
+            and route.intent != "computer_action"
+        ):
+            locked_response, computer_result = self._run_browser_capability(
+                route, routing, user_input,
+            )
+            action_performed = bool(locked_response)
+
         if route.intent == "computer_action" and not locked_response:
             action_performed = True
             locked_response, computer_result = self._handle_computer_action(
@@ -3594,7 +4154,16 @@ class ChatEngine:
                     target=computer_result.target,
                     message=computer_result.message,
                 )
-        if route.intent == "task_action" and not locked_response:
+        # Migrated. The label says the planner *could* run this; the
+        # capability says whether it should. "Find me some good hotels in
+        # Seoul" is labelled task_action and is a plain information
+        # request -- running the planner for it started a booking-source
+        # workflow for a question about which hotels are good.
+        if (
+            route.intent == "task_action"
+            and routing.capability.capability == capability_selection.TASK_PLANNING
+            and not locked_response
+        ):
             action_performed = True
             locked_response = self._handle_task_action(
                 route,
@@ -3635,10 +4204,30 @@ class ChatEngine:
             screen_text=screen_context,
             user_input=user_input,
         )
+        # A follow-up that means nothing on its own has to be *told* what it
+        # is about. The goal layer resolves it, retrieval already uses it --
+        # but nothing said it in the prompt, so the model chose between the
+        # topics in history by itself and reliably picked the one that came
+        # as a list. Measured live: GPUs, then dinner, then "which one would
+        # you choose?" answered about graphics cards three times running.
+        followup_subject = str(
+            getattr(routing.goal_intent, "subject", "") or ""
+        ).strip()
+        if followup_subject and self._reads_as_followup(
+            route.normalized_request or user_input
+        ):
+            context_prompt += (
+                "\n\nWHAT THIS FOLLOW-UP IS ABOUT\n"
+                f"{followup_subject}\n"
+                "This message refers to the most recent exchange about that "
+                "subject. Answer about it, using the options already given "
+                "for it. Do not answer about an earlier, unrelated subject "
+                "even if it is still in the history above."
+            )
         grounded_context = self._grounded_context_text()
         if (
             grounded_context
-            and self._grounded_context_is_relevant(route)
+            and self._grounded_context_is_relevant(route, routing.goal_intent)
             and route.intent in {
             "conversation",
             "clarification",
@@ -4176,8 +4765,25 @@ class ChatEngine:
                 pending_capability,
                 recent_turns=list(self._router_history),
             )
-            if consent.decision in {"accept", "modify"}:
+            accepted_proactively = (
+                consent.decision == "accept"
+                and reads_as_clear_acceptance(user_input)
+            )
+            if pending_capability.proactive and not accepted_proactively:
+                # She raised this herself; the person did not ask a question
+                # and owes no answer. Measured live: "yeah they are getting
+                # expensive" was read as declining a monitor-search offer,
+                # and a real conversational turn got a content-free
+                # acknowledgement instead of a reply. Anything short of a
+                # clear yes simply drops the suggestion and routes normally.
                 self.capability_offer.clear()
+                if consent.decision == "reject":
+                    self.recommendations.note_declined()
+                route = route_fresh(user_input)
+            elif consent.decision in {"accept", "modify"}:
+                self.capability_offer.clear()
+                # The offer was welcome, so it costs nothing.
+                self.recommendations.note_accepted()
                 goal = (
                     consent.modified_request.strip()
                     if consent.decision == "modify"
@@ -4201,6 +4807,10 @@ class ChatEngine:
                 user_input = goal or user_input
             elif consent.decision == "reject":
                 self.capability_offer.clear()
+                # A refusal is information. Backing off further than an
+                # ordinary gap is what stops the next offer reading as
+                # nagging rather than helping.
+                self.recommendations.note_declined()
                 route = IntentDecision(
                     intent="conversation",
                     confidence=consent.confidence,
@@ -4208,7 +4818,7 @@ class ChatEngine:
                     reason="The user declined the offered ability.",
                     is_follow_up=True,
                 )
-                locked_response = "Okay, I'll leave it."
+                locked_response = self._generic_declined()
             elif consent.decision == "unrelated":
                 self.capability_offer.clear()
                 route = route_fresh(user_input)
@@ -4279,6 +4889,31 @@ class ChatEngine:
                 )
             if capability_note:
                 locked_response = capability_note
+        # One decision for the whole turn, made from signals that already
+        # exist. No model call: this is the last thing routing does, and it
+        # only reads what routing already worked out.
+        # The whole chain, in order, each step reading only what the one
+        # before it concluded. The router's label is translated once, at
+        # the top, and never consulted as an intent again.
+        goal = goal_intent.read(route)
+        has_context, recalled_evidence, recall_origin = self._recall_context(
+            route, goal, locked_response=locked_response,
+        )
+        if has_context:
+            print(f"[Recall] Answering from {recall_origin}; no search needed.")
+        decision = interaction.decide(
+            route,
+            goal=goal,
+            has_usable_context=has_context,
+        )
+        capability = capability_selection.select(
+            goal, decision, route=route, failures=self._capability_failures,
+        )
+        if self.intent_router.print_confidence_log:
+            print(goal.log_block())
+            print(decision.log_block())
+            print(capability.log_block())
+
         timings["route"] = time.perf_counter() - route_started
         return TurnRouting(
             route=route,
@@ -4291,7 +4926,109 @@ class ChatEngine:
             approved_strategy_task_state=approved_strategy_task_state,
             declined_strategy_task_state=declined_strategy_task_state,
             agent_permission_context=agent_permission_context,
+            decision=decision,
+            goal_intent=goal,
+            capability=capability,
+            recalled_evidence=recalled_evidence,
         )
+
+    def _recall_context(
+        self,
+        route: IntentDecision,
+        goal,
+        *,
+        locked_response: str = "",
+    ) -> tuple[bool, str, str]:
+        """What she already has that answers this, and where it came from.
+
+        The ladder, cheapest first:
+
+        1. the active task's own evidence (TaskSessionStore)
+        2. recent research evidence in memory, by resolved subject
+        3. conversation history, which is already in every prompt
+
+        Only if none of those hold enough does a search become the answer.
+        Levels 1 and 2 are the ones that can be *stated*; level 3 needs no
+        retrieval because the history is already there, so reaching it means
+        the decision falls through to whatever the router's evidence flags
+        say -- which is how an incomplete recall escalates rather than
+        answering from nothing.
+
+        Returns ``(has_usable_context, evidence, origin)``.
+        """
+        if locked_response:
+            return False, "", ""
+        request = str(route.normalized_request or "").strip()
+        if not request:
+            return False, "", ""
+
+        # A back-reference is what makes recall the right answer. Without one
+        # ("what is nvidia trading at"), stored hotel evidence must not be
+        # dragged in just because it is recent.
+        try:
+            session = self.task_sessions.context_for_followup(request)
+        except Exception as error:
+            print(
+                "[Recall] Session lookup failed safely: "
+                f"{type(error).__name__}: {error}"
+            )
+            session = None
+        if session is not None:
+            lines = list(session.information) + [
+                str(getattr(item, "name", "")) for item in session.items
+            ]
+            evidence = "\n".join(line for line in lines if str(line).strip())
+            if evidence.strip():
+                return True, evidence, "active task"
+
+        if session is None and not self._reads_as_followup(request):
+            return False, "", ""
+
+        subject = str(getattr(goal, "subject", "") or route.topic or "").strip()
+        if not subject or not self.memory_enabled:
+            return False, "", ""
+        try:
+            remembered = self.memory_manager.recall_research(subject)
+        except Exception as error:
+            print(
+                "[Recall] Research recall failed safely: "
+                f"{type(error).__name__}: {error}"
+            )
+            return False, "", ""
+        if not remembered:
+            return False, "", ""
+
+        evidence = "\n\n".join(memory.content for memory in remembered)
+        return True, evidence, "recent research"
+
+    @staticmethod
+    def _reads_as_followup(request: str) -> bool:
+        """Whether this sentence only makes sense against a previous one.
+
+        The same test the session store applies, deliberately shared: two
+        copies would eventually disagree about what a follow-up is, and the
+        recall ladder and the session store would reuse different turns.
+        """
+        return bool(DEICTIC_REFERENCE.search(str(request)))
+
+    def _remember_research(self, subject: str, query: str, result) -> None:
+        """Keep what a search found, through the memory system she already has."""
+        if not self.memory_enabled or not str(subject or "").strip():
+            return
+        try:
+            self.memory_manager.remember_research(
+                subject=subject,
+                query=query,
+                evidence=getattr(result, "evidence", ""),
+                sources=getattr(result, "queries", ()),
+            )
+        except Exception as error:
+            # Storing evidence must never be able to fail a turn that has
+            # already produced a good answer.
+            print(
+                "[Recall] Could not store research evidence: "
+                f"{type(error).__name__}: {error}"
+            )
 
     def chat(
         self,
@@ -4317,6 +5054,10 @@ class ChatEngine:
             "user_message",
             text=user_input,
         )
+        # Cooldowns are counted in turns, not seconds: a conversation that
+        # pauses for lunch should not become a licence to start offering
+        # again.
+        self.recommendations.begin_turn()
 
         ####################################################
         # Retrieve Memories
@@ -4361,6 +5102,10 @@ class ChatEngine:
         use_screen_vision = decided["use_screen_vision"]
         return self._answer_turn(
             route=route,
+            decision=routing.decision,
+            capability=routing.capability,
+            goal_intent_result=routing.goal_intent,
+            recalled_evidence=routing.recalled_evidence,
             user_input=user_input,
             context_prompt=context_prompt,
             locked_response=locked_response,

@@ -56,7 +56,8 @@ _PROMISE = re.compile(
     r"i'?m\s+(?:now\s+)?(?:going\s+to\s+)?(?:opening|checking|searching|"
     r"looking|browsing|pulling|fetching)|"
     r"(?:give\s+me|just)\s+a\s+(?:moment|second|sec|minute)|"
-    r"hold\s+on\s+while\s+i|one\s+moment\s+while\s+i|"
+    r"hold\s+on\s+while\s+i|"
+    r"one\s+moment(?:\s+please)?|bear\s+with\s+me|"
     r"stand\s+by\s+while\s+i"
     r")\b"
     r"|제가\s*(?:한번\s*)?(?:확인|검색|찾아|열어)\s*(?:해\s*)?(?:볼게|드릴게|보겠)",

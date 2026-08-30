@@ -411,14 +411,23 @@ class TaskPlanner:
                 locale=self.user_locale,
             )
             if advice is not None:
+                # Everything the advice established applies whether or not
+                # she asks about it again. Seeding the market's own sites in
+                # particular: skipping it is how a Korean second-hand search
+                # once came back with ORUphones and Gazelle.
                 task_state.discovery_category = advice.category
                 task_state.discovery_source_kind = advice.source_kind
-                task_state.specialized_source_offer = advice.offer_text
                 self._seed_local_market_knowledge(task_state, advice.category)
-                task_state.status = "needs_strategy_choice"
-                return TaskRunResult(
-                    "needs_strategy_choice", advice.offer_text, task_state,
-                )
+                # Only the *asking* is rate-limited. A repeat inside the
+                # session proceeds instead of putting the same question
+                # twice, which is what made a fair question sound canned.
+                question = self.discovery_policy.question_for(advice)
+                if question is not None:
+                    task_state.specialized_source_offer = question
+                    task_state.status = "needs_strategy_choice"
+                    return TaskRunResult(
+                        "needs_strategy_choice", question, task_state,
+                    )
         return self._prepare_and_advance(task_state)
 
     def _seed_local_market_knowledge(
@@ -589,6 +598,7 @@ class TaskPlanner:
                 prompt = self.discovery_policy.required_preference_prompt(
                     task_state.discovery_category,
                     task_state.preferences,
+                    task_state.goal,
                 )
                 if prompt:
                     task_state.specialized_source_offer = prompt

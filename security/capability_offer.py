@@ -34,6 +34,10 @@ class PendingCapabilityOffer:
     offer_text: str
     created_at: float
     expires_at: float
+    # Whether Elaina raised this herself rather than being asked. A
+    # suggestion is not a question awaiting an answer, and must not be
+    # allowed to interpret whatever the person says next as a reply to it.
+    proactive: bool = False
 
     def public_context(self) -> dict[str, str | int]:
         return {
@@ -58,6 +62,7 @@ class CapabilityOfferGate:
         goal: str,
         offer_text: str,
         intent: str = "computer_action",
+        proactive: bool = False,
     ) -> PendingCapabilityOffer:
         now = time.monotonic()
         goal = " ".join(str(goal).split()).strip()
@@ -69,6 +74,7 @@ class CapabilityOfferGate:
             offer_text=" ".join(str(offer_text).split()).strip(),
             created_at=now,
             expires_at=now + self.expiry_seconds,
+            proactive=bool(proactive),
         )
         return self._pending
 

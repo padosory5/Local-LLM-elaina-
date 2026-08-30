@@ -189,7 +189,7 @@ def _research_decision(goal: Goal) -> Decision:
     preferences = {name: slot.value for name, slot in goal.slots.items()}
     category = goal.value("category")
     missing = TaskDiscoveryPolicy.missing_required_preferences(
-        category, preferences,
+        category, preferences, goal.utterance,
     )
     if not missing:
         return Decision(ACT, goal)

@@ -16,9 +16,18 @@ from brain.deliberation.clarification import (
     decide,
 )
 from brain.deliberation.goal import Goal, Slot
+from brain.deliberation.interaction import (
+    InteractionDecision,
+    decide as decide_interaction,
+)
 from brain.deliberation.interpreter import interpret
 from brain.deliberation.pending import ClarificationGate, PendingClarification
 
+# Two different decisions, both named ``decide`` in their own module and
+# deliberately not sharing a name here. ``decide`` answers "do I know enough
+# to act on this goal"; ``decide_interaction`` answers "what should happen
+# about this request at all". Collapsing them would hide that the second one
+# runs first and can conclude that no goal is needed.
 __all__ = [
     "ACT",
     "ACT_AND_SAY",
@@ -26,8 +35,10 @@ __all__ = [
     "ClarificationGate",
     "Decision",
     "Goal",
+    "InteractionDecision",
     "PendingClarification",
     "Slot",
     "decide",
+    "decide_interaction",
     "interpret",
 ]

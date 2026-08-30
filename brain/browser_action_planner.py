@@ -415,6 +415,17 @@ _INFORMATIONAL_GOAL_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 
+def wants_information(goal: str) -> bool:
+    """Whether the goal asks for something the page knows, not just a click.
+
+    The same distinction _answer_after_action already draws, exposed so the
+    engine can decide whether a finished run owes the user an answer or
+    merely a confirmation. "Clicked Images." is a complete result for one
+    and no result at all for the other.
+    """
+    return bool(_INFORMATIONAL_GOAL_PATTERN.search(str(goal or "")))
+
+
 # Narrower than _INFORMATIONAL_GOAL_PATTERN, and used for a different
 # decision: a live value that only the real site carries. A search
 # result's snippet does not have tonight's price or whether a room is

@@ -185,16 +185,60 @@ class ClosingOfferGuardTests(unittest.TestCase):
 
         self.assertEqual(ClosingOfferGuard.strip(reply), "Spain won.")
 
-    def test_an_offer_with_a_real_referent_survives(self):
-        # This is content, not filler: it names something in the conversation
-        # and the user can act on it. Phase 4E.3 depends on these surviving.
+    def test_a_question_that_is_not_an_offer_to_act_survives(self):
+        # Content, not filler: these name something in the conversation and
+        # do not offer to go and do anything.
         for kept in (
             "There are three I'd look at. Let me know which one you'd prefer.",
-            "I found the page. Want me to pull it up?",
             "I've paused it. Let me know when you're ready to start again.",
             "That's the cheaper one. Tell me if you want the other.",
+            "Since you mentioned eye strain, a 27-inch 1440p IPS monitor "
+            "is probably a good fit.",
         ):
             with self.subTest(kept=kept):
+                self.assertEqual(ClosingOfferGuard.strip(kept), kept)
+
+    def test_the_model_s_own_offers_to_act_are_removed(self):
+        # Phase 4E.3 makes RecommendationPolicy the one layer deciding
+        # whether a proactive offer appears. Measured over twenty live
+        # turns, four of eleven recommend-turns were suppressed *because
+        # the model had already offered* -- uncooled, unparked, and outside
+        # the policy entirely. Its offers go; the policy re-adds one when
+        # its cooldown allows, and that is the only one the user sees.
+        for reply, expected in (
+            ("I hope you enjoyed it. If you want, I can suggest some movies.",
+             "I hope you enjoyed it."),
+            ("That restaurant looks good. Would you like me to search for them?",
+             "That restaurant looks good."),
+            ("It is pricey. Want me to look some up?", "It is pricey."),
+            ("I found the page. Want me to pull it up?", "I found the page."),
+        ):
+            with self.subTest(reply=reply):
+                self.assertEqual(ClosingOfferGuard.strip(reply), expected)
+
+    def test_an_offer_without_the_words_me_to_is_still_an_offer(self):
+        # Live: "Would you like help finding specific models or deals?"
+        # survived, the policy appended its own offer after it, and the reply
+        # carried two.
+        self.assertEqual(
+            ClosingOfferGuard.strip(
+                "Check Coupang for prices. "
+                "Would you like help finding specific models or deals?"
+            ),
+            "Check Coupang for prices.",
+        )
+
+    def test_advice_is_never_mistaken_for_an_offer(self):
+        # "I'd suggest checking their site" recommends that *you* do
+        # something; "I can suggest some options" offers that *she* does.
+        for kept in (
+            "I'd suggest checking out LG or Samsung's websites.",
+            "You could try the Pomodoro Technique to stay focused.",
+            "Start by browsing listings and reaching out to sellers.",
+            "Just make sure to check the inspection reports first.",
+        ):
+            with self.subTest(kept=kept):
+                self.assertFalse(ClosingOfferGuard.offers_to_act(kept))
                 self.assertEqual(ClosingOfferGuard.strip(kept), kept)
 
     def test_an_ordinary_answer_is_untouched(self):
@@ -221,8 +265,31 @@ class ClosingOfferGuardTests(unittest.TestCase):
         self.assertTrue(
             ClosingOfferGuard.is_closing_offer("Anything else I can help with?")
         )
-        self.assertFalse(
+
+    def test_an_offer_to_act_is_now_recognised_too(self):
+        # It was deliberately not, until RecommendationPolicy became the one
+        # layer deciding whether the user sees an offer.
+        self.assertTrue(
             ClosingOfferGuard.is_closing_offer("Want me to open the second one?")
+        )
+
+    def test_a_waiting_offer_is_protected_from_the_strip(self):
+        # Her own "want me to?" is parked, and the next "ok" resolves it.
+        # Removing the sentence would leave the gate holding an offer the
+        # user never saw -- which broke two whole-turn tests when it did.
+        reply = "Yes, I can control the browser. Want me to open it?"
+
+        self.assertEqual(
+            ClosingOfferGuard.strip(reply, keep_offers=True), reply,
+        )
+        self.assertNotEqual(ClosingOfferGuard.strip(reply), reply)
+
+    def test_generic_filler_goes_even_when_an_offer_is_waiting(self):
+        reply = "Discord is open. Let me know if you need anything else."
+
+        self.assertEqual(
+            ClosingOfferGuard.strip(reply, keep_offers=True),
+            "Discord is open.",
         )
 
 

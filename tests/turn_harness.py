@@ -459,6 +459,13 @@ def reset(engine: ChatEngine) -> None:
     profile = getattr(engine, "user_profile", None)
     if profile is not None:
         profile._entries.clear()
+    # She only offers a choice of research source once per sitting. That is
+    # correct in a conversation and wrong in a suite: one engine serves every
+    # case in a module, so the second case to reach a discovery offer would
+    # silently get no question and fail on the previous case's rate limit.
+    discovery = getattr(engine, "task_discovery_policy", None)
+    if discovery is not None and hasattr(discovery, "forget_offers"):
+        discovery.forget_offers()
     for gate in (
         engine.clarification,
         engine.capability_offer,

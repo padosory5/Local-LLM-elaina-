@@ -8,6 +8,7 @@ model-dependent Google search.
 import unittest
 
 from brain.task_discovery_policy import TaskDiscoveryPolicy
+from brain.user_locale import UserLocale
 
 
 class DiscoveryCategoryTests(unittest.TestCase):
@@ -135,6 +136,106 @@ class StrategyReplyTests(unittest.TestCase):
         )
 
         self.assertEqual(reply.mode, "unclear")
+
+
+class OfferRepetitionTests(unittest.TestCase):
+    """Reported live: the same hotel question, word for word, all day.
+
+    "야놀자 and 여기어때 can check live availability and prices in South
+    Korea. What dates are you staying...?" -- seen multiple times in one
+    sitting. It was one hardcoded string with nothing rate-limiting it.
+    """
+
+    def setUp(self):
+        self.korea = UserLocale(country="KR", city="Seoul")
+        self.policy = TaskDiscoveryPolicy()
+
+    def _offer(self, goal="find me some hotels in Seoul"):
+        return self.policy.offer_for(goal, browser_ready=True, locale=self.korea)
+
+    def test_the_same_choice_is_not_put_twice_in_one_sitting(self):
+        self.assertIsNotNone(self._offer())
+
+        for attempt in range(4):
+            with self.subTest(attempt=attempt):
+                self.assertIsNone(
+                    self._offer(),
+                    "asked the same question again instead of proceeding",
+                )
+
+    def test_the_wording_changes_when_it_does_ask_again(self):
+        policy = TaskDiscoveryPolicy(repeat_window_seconds=0)
+
+        said = [
+            policy.offer_for(
+                "find me some hotels in Seoul",
+                browser_ready=True, locale=self.korea,
+            ).offer_text
+            for _ in range(4)
+        ]
+
+        self.assertEqual(len(said), len(set(said)), said)
+
+    def test_forgetting_lets_her_ask_again(self):
+        self._offer()
+        self.assertIsNone(self._offer())
+
+        self.policy.forget_offers()
+
+        self.assertIsNotNone(self._offer())
+
+    def test_a_different_category_is_still_asked_about(self):
+        # The cooldown is per category. Having asked about hotels must not
+        # silence an unrelated restaurant question.
+        self.assertIsNotNone(self._offer())
+
+        self.assertIsNotNone(
+            self._offer("best restaurants to go in Seoul"),
+        )
+
+    def test_every_phrasing_carries_the_same_load_bearing_content(self):
+        # Rotation is only safe while each variant offers the same thing.
+        # The sites are what makes the offer actionable, the dates are what
+        # makes live prices honest, and the overview is the alternative
+        # being agreed to.
+        advice = TaskDiscoveryPolicy.advise(
+            "find me some hotels in Seoul", browser_ready=True,
+            locale=self.korea,
+        )
+
+        self.assertGreaterEqual(len(advice.phrasings), 4)
+        for phrasing in advice.phrasings:
+            with self.subTest(phrasing=phrasing):
+                self.assertIn("야놀자", phrasing)
+                self.assertIn("date", phrasing.casefold())
+                self.assertIn("overview", phrasing.casefold())
+                self.assertNotIn("http", phrasing.casefold())
+
+    def test_every_offline_phrasing_stays_honest_about_why(self):
+        advice = TaskDiscoveryPolicy.advise(
+            "best restaurants to go in Seoul", browser_ready=False,
+        )
+
+        for phrasing in advice.phrasings:
+            with self.subTest(phrasing=phrasing):
+                self.assertIn("Desktop Control Mode is off", phrasing)
+                self.assertIn("overview", phrasing.casefold())
+
+    def test_advise_itself_stays_pure_and_repeatable(self):
+        # The decision must not move with the phrasing: everything that
+        # reasons about discovery still calls advise and still gets one
+        # stable answer.
+        first = TaskDiscoveryPolicy.advise(
+            "find me some hotels in Seoul", browser_ready=True,
+            locale=self.korea,
+        )
+        second = TaskDiscoveryPolicy.advise(
+            "find me some hotels in Seoul", browser_ready=True,
+            locale=self.korea,
+        )
+
+        self.assertEqual(first.offer_text, second.offer_text)
+        self.assertEqual(first.category, second.category)
 
 
 if __name__ == "__main__":

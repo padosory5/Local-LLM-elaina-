@@ -14,11 +14,25 @@ from dataclasses import dataclass
 from typing import Any
 
 
+# Widened for the recall ladder, which needs the same judgement. The four
+# shapes below were all missed before: "which was the cheapest", "which had
+# the best rating", "compare the first two", "any of them".
+_SUPERLATIVE = (
+    r"first|second|third|last|best|worst|cheapest|closest|nearest|"
+    r"biggest|smallest|highest|lowest|top|nicest|quietest"
+)
 _DEICTIC_REFERENCE = re.compile(
-    r"\b(?:these|those|them|the\s+(?:first|second|third|last|best|cheapest)\s+one|"
-    r"which\s+(?:one|of))\b",
+    r"\b(?:these|those|them|they)\b"
+    rf"|\bthe\s+(?:{_SUPERLATIVE})\b"
+    r"|\bwhich\s+(?:one|of|was|is|were|are|had|has|would|do|did)\b"
+    r"|\bcompare\s+(?:the|them|those|these|both)\b"
+    r"|\b(?:any|either|both|each)\s+of\s+(?:them|those|these)\b"
+    r"|\bof\s+(?:those|these|them)\b",
     re.I,
 )
+
+# Public: the recall ladder in brain/chat_engine.py asks the same question.
+DEICTIC_REFERENCE = _DEICTIC_REFERENCE
 
 
 @dataclass(frozen=True)
