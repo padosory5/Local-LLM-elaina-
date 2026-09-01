@@ -124,6 +124,36 @@ class FeatureMatrixTests(unittest.TestCase):
         ]
         self.assertGreaterEqual(len(unsupported), 4)
 
+    def test_conversational_lookalikes_never_expect_a_machine_action(self):
+        """Remarks that merely mention an app must not authorise one.
+
+        This class exists because the router's own safety cases were almost
+        all "unsupported operation" and only one was a genuine conversational
+        lookalike -- so "I like Spotify" and "I'm thinking about getting a
+        monitor" were never measured as routing at all.
+
+        The invariant is deliberately about *safety*, not taste: an
+        expectation may say the operation is "none" or "unsupported" (both
+        are safe -- she does nothing), but never an executable one. Guarding
+        it here stops the class being quietly relaxed into uselessness later.
+        """
+        executable = COMPUTER_OPERATIONS - {"none", "unsupported"}
+        lookalikes = [
+            case for case in self.cases
+            if case["feature"] == "conversational_lookalike"
+        ]
+
+        self.assertGreaterEqual(len(lookalikes), 12)
+        for case in lookalikes:
+            with self.subTest(case=case["id"]):
+                expected = case["expected"]
+                self.assertNotIn(
+                    expected.get("computer_operation"), executable,
+                )
+                self.assertNotEqual(
+                    expected.get("intent"), "computer_action",
+                )
+
     def test_computer_mode_route_state_is_boolean(self):
         for case in self.cases:
             route_kwargs = case.get("route_kwargs", {})
