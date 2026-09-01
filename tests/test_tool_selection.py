@@ -77,9 +77,10 @@ class BriefExampleTests(unittest.TestCase):
     def test_3_opening_a_result_is_browser_control(self):
         self.assertEqual(
             _capability(
-                "browser_action",
+                "computer_action",
                 normalized_request="open the second hotel",
                 action_requested=True,
+                computer_operation="browser_action",
             ),
             caps.BROWSER_CONTROL,
         )
@@ -315,8 +316,6 @@ class SurfaceDifferentiationTests(unittest.TestCase):
         for label, expected in (
             ("computer_action", caps.UI_CONTROL),
             ("media_action", caps.UI_CONTROL),
-            ("browser_action", caps.BROWSER_CONTROL),
-            ("browser_tab", caps.BROWSER_CONTROL),
             ("screen_analysis", caps.SCREEN_ANALYSIS),
             ("project_question", caps.PROJECT_QUESTION),
             ("project_edit", caps.PROJECT_EDIT),
@@ -328,6 +327,51 @@ class SurfaceDifferentiationTests(unittest.TestCase):
                 self.assertEqual(
                     _capability(label, action_requested=True), expected,
                 )
+
+    def test_the_operation_names_the_surface_not_the_intent(self):
+        """Browser versus desktop is carried by computer_operation.
+
+        This used to be asserted against intents "browser_action",
+        "browser_tab" and "browser_search" -- none of which the router has
+        ever emitted. Every machine request arrives as "computer_action",
+        so those branches were unreachable and every page action was filed
+        as Windows UI control: measured, eight of eight browser cases and
+        all three surface follow-ups, including "Click the Sign in button
+        on this page."
+        """
+        for operation, expected in (
+            ("browser_action", caps.BROWSER_CONTROL),
+            ("open_url", caps.BROWSER_CONTROL),
+            ("open_search", caps.BROWSER_CONTROL),
+            ("ui_action", caps.UI_CONTROL),
+            ("open_app", caps.UI_CONTROL),
+            ("close_app", caps.UI_CONTROL),
+            ("force_quit_app", caps.UI_CONTROL),
+            ("list_windows", caps.UI_CONTROL),
+            ("delete_file", caps.UI_CONTROL),
+        ):
+            with self.subTest(operation=operation):
+                self.assertEqual(
+                    _capability(
+                        "computer_action",
+                        action_requested=True,
+                        computer_operation=operation,
+                    ),
+                    expected,
+                )
+
+    def test_an_unsupported_operation_names_no_surface(self):
+        # "Chrome keeps crashing on me lately." routes as a computer action
+        # the machine cannot carry out. Naming ui_control implied a driver
+        # was standing by for a complaint.
+        self.assertEqual(
+            _capability(
+                "computer_action",
+                action_requested=True,
+                computer_operation="unsupported",
+            ),
+            caps.DIRECT_ANSWER,
+        )
 
     def test_native_control_is_never_chosen_for_information(self):
         for request in (

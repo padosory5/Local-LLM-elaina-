@@ -12,6 +12,12 @@ Measured with the real model against `tests/feature_matrix.json`:
 | 2026-09-01 | `qwen3:8b` | 134 | 123 | 91.8% | 0 |
 | 2026-09-01 | `qwen3:8b` | 134 | 130 | 97.0% | 0 |
 | 2026-09-01 | `qwen3:8b` | 134 | **131** | **97.8%** | **0** |
+| 2026-09-02 | `qwen3:8b` | 134 | 130 | 97.0% | 0 |
+
+The tail of this benchmark rotates run to run between 130 and 131 of 134
+(97.0-97.8%): `health_advice_3`, `screen_3`, `offer_3` and `create_folder_3`
+are all borderline for the model and trade places. It has stayed at or above
+the 95% gate on every run, with zero dangerous false positives throughout.
 
 The 97.0% run is the current state, reproduced three times consecutively with
 the identical four failures. **4E-B exit criteria met:** >=95% accuracy, zero

@@ -194,6 +194,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_suite_registry",
             "test_tool_registry",
             "test_tool_selection",
+            "test_tool_surface_policy",
             "test_web_search_tool",
         ),
     ),
@@ -260,6 +261,10 @@ LIVE_CHECKS: tuple[LiveCheck, ...] = (
     LiveCheck(
         "router", "live_router_check.py", "model",
         "the feature matrix, routed by the real model",
+    ),
+    LiveCheck(
+        "tool", "live_tool_check.py", "model",
+        "which surface satisfies the request: none, search, page or machine",
     ),
     LiveCheck(
         "agency", "live_agency_check.py", "model",

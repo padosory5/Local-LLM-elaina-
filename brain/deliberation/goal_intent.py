@@ -68,11 +68,21 @@ _COMPARISON = re.compile(
 # information request wearing an imperative, and treating "find me" as a
 # machine instruction sent a plain question to the task planner and then
 # demanded check-in dates for it.
+# Asking for something to be *operated*, not merely mentioning where it
+# lives. Every alternative here is a verb or a deictic that points at a
+# surface to act on.
+#
+# A bare host name used to be one of these, and a mention is not an
+# instruction: "what do reviews on booking.com say about the Peninsula?" is
+# a research question, and naming the site it is answered from was enough to
+# mark it as a page to drive. That is precisely the rule this must not
+# break -- browser control is not warranted just because a request mentions
+# a website. A domain accompanied by an actual verb ("open booking.com and
+# check the price") still matches, on the verb.
 _NAMES_A_SURFACE = re.compile(
     r"\b(?:open|launch|go\s+to|navigate\s+to|visit|browse|pull\s+up)\b"
     r"|\buse\s+\S+\s+to\b"
     r"|\bon\s+(?:the\s+)?(?:site|website|page|app)\b"
-    r"|\b\w+\.(?:com|co\.kr|net|org|io)\b"
     r"|\b(?:click|scroll|fill\s+in|log\s+in|sign\s+in|book\s+it)\b"
     r"|열어|들어가|사이트에서|앱에서",
     re.IGNORECASE,

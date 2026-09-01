@@ -14,11 +14,12 @@ sometimes.
 |---|---|
 | **Branch** | `phase4e-stabilization` |
 | **Last checkpoint** | `v0.4e-baseline` — 851c8bd5 |
-| **Tests green** | **1857** / 107 modules (regression floor — must never drop) |
+| **Tests green** | **1872** / 108 modules (regression floor — must never drop) |
 | **Model** | `qwen3:8b` via Ollama · vision `qwen3-vl:8b` |
-| **Phase** | 4E-C complete → next: 4E-D tool selection |
-| **Router accuracy** | **97.8%** (131/134) · 0 dangerous false positives · target ≥95% ✅ |
+| **Phase** | 4E-D complete → next: 4E-E execution & verification |
+| **Router accuracy** | **97.0–97.8%** (130–131/134) · 0 dangerous false positives · target ≥95% ✅ |
 | **Agency accuracy** | **100%** (35/35) · 0 unrequested actions · 15/15 consent · target ≥90% ✅ |
+| **Tool selection** | **95.6%** (43/45) · 0 research→browser · 0 UI false positives · target ≥90% ✅ |
 
 **Rollback at any time:**
 
@@ -49,8 +50,8 @@ report ~46 phantom import failures):
 | 2 | 4E-A natural status messages | `[~]` | 20 tool interactions, no repetition or spam |
 | 3 | 4E-B intent understanding | `[x]` | ≥95% routing, **zero** dangerous false-positive actions |
 | 4 | 4E-C agency & recommendation | `[x]` | 30 scenarios, offers resolve, rejections stop |
-| 5 | 4E-D tool selection | `[~]` | 40 scenarios, 90–95% first-choice correct |
-| 6 | 4E-E execution & verification | `[ ]` | 20 multi-step tasks verified by final state |
+| 5 | 4E-D tool selection | `[x]` | 40 scenarios, 90–95% first-choice correct |
+| 6 | 4E-E execution & verification | `[~]` | 20 multi-step tasks verified by final state |
 | 7 | 4E-F memory & continuity | `[ ]` | 20 conversations, ≥90% reference accuracy |
 | 8 | Startup & shutdown | `[ ]` | clean start, clean stop, mic released |
 | 9 | Failure & recovery | `[ ]` | every failure ends in one of 5 terminal states |
@@ -160,7 +161,7 @@ it may ever name a product, app or topic.
 > short-circuits any unambiguous yes, removing a model round-trip from the
 > most common path in the flow.
 
-### 5. 4E-D tool selection `[~]`
+### 5. 4E-D tool selection `[x]`
 
 | Tool | Primary use |
 |---|---|
@@ -169,12 +170,35 @@ it may ever name a product, app or topic.
 | Windows UI control | desktop apps, menus, settings, machine actions |
 | No tool | conversation, sufficient reasoning, no external data needed |
 
-Compound strategies allowed (search → shortlist → verify). Research must **not**
-automatically drive the browser.
+**95.6%** (43/45) · **0** research→browser · **0** UI false positives · stable
+over 3 runs (baseline 68.9%). Full analysis: [docs/TOOL_BASELINE.md](docs/TOOL_BASELINE.md)
 
-- [ ] 40 scenarios; classify every failure by root cause (router / metadata / context / planner / state / model)
+- [x] 45 scenarios covering every boundary in the brief
+- [x] Research never defaults to browser control
+- [x] Browser control chosen when real page interaction is required (8/8, follow-ups 3/3)
+- [x] No-tool answers stay no-tool; remarks reach no surface (4/4)
+- [x] Compound `search → shortlist → verify` preserved
 
-### 6. 4E-E execution & verification `[ ]`
+**The big one — a map keyed on the wrong field.** `_MACHINE_CAPABILITY` mapped
+`route.intent`, carrying `browser_action` / `browser_tab` / `browser_search`
+as intents. **The router has never emitted those as intents** — every machine
+request arrives as `computer_action` and carries the surface in
+`computer_operation`. All three keys were unreachable, so *every* page action
+was filed as Windows UI control: 8/8 browser cases and 3/3 follow-ups.
+`_SURFACE_BY_OPERATION` now decides, which also makes this layer inherit
+4E-B's `ui_action`/`browser_action` corrections instead of re-deriving them.
+
+**A domain read as a verb.** `_AVAILABILITY` matches `book(?:ing)?`, and
+"booking**.com**" contains "booking" — so "what do reviews on booking.com say
+about the Peninsula?" scored as *live availability* and went to the browser.
+Host names are now stripped before the live-state tests; general, not a fix
+for one site.
+
+**A mention is not an instruction.** `_NAMES_A_SURFACE` counted a bare domain
+as naming a page to drive — the brief's rule encoded backwards. Removed; a
+domain with an actual verb still matches, on the verb.
+
+### 6. 4E-E execution & verification `[~]`
 
 **Already built:** `TaskStep` / `TaskStepResult` / `TaskState` / `TaskRunResult`,
 a `discover` vs `verify` split, provenance on every fact
@@ -333,3 +357,18 @@ Newest first. One line per meaningful step.
 - New: `tests/agency_matrix.json` (35 scenarios),
   `scripts/live_agency_check.py`, `tests/test_agency_offers.py` (16 offline
   offer-lifecycle tests).
+
+### 2026-09-02
+
+- **4E-D complete.** Tool selection **68.9% → 95.6%** (43/45), **0** research
+  requests defaulting to browser control, **0** Windows UI false positives,
+  stable over 3 runs. Router held at 130/134 (97.0%), agency at 35/35.
+  Suite 1857 → **1872**.
+- Root cause was architectural, not tuning: the capability map keyed on
+  `route.intent` and carried three intents the router never emits, so every
+  page action became Windows UI control.
+- New: `tests/tool_matrix.json` (45 scenarios), `scripts/live_tool_check.py`,
+  `tests/test_tool_surface_policy.py` (12 offline tests),
+  `docs/TOOL_BASELINE.md`.
+- Two failures reported unweakened: `nt_worldcup` (router prefers a checked
+  source for a 2018 fact) and `sc_display` (known `describe_window` gap).

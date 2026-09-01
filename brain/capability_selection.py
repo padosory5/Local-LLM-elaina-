@@ -79,9 +79,6 @@ ALL_CAPABILITIES = (
 _MACHINE_CAPABILITY = {
     "computer_action": UI_CONTROL,
     "task_action": TASK_PLANNING,
-    "browser_action": BROWSER_CONTROL,
-    "browser_tab": BROWSER_CONTROL,
-    "browser_search": BROWSER_CONTROL,
     "media_action": UI_CONTROL,
     "screen_analysis": SCREEN_ANALYSIS,
     "project_question": PROJECT_QUESTION,
@@ -92,6 +89,46 @@ _MACHINE_CAPABILITY = {
     "agent_create": AGENT_BUILDING,
     "pending_approval": TASK_PLANNING,
 }
+
+# Which surface an operation runs on. This is the map that decides browser
+# versus desktop, and the one that was missing.
+#
+# The table above used to carry "browser_action", "browser_tab" and
+# "browser_search" as *intents* -- and the router has never emitted those as
+# intents. Every machine request arrives as intent "computer_action" and
+# carries the distinction in computer_operation, so all three keys were dead
+# and every page action was filed as Windows UI control. Measured: eight of
+# eight browser cases and three of three surface follow-ups, including
+# "Click the Sign in button on this page."
+#
+# Keying on the operation also means this layer inherits the router's
+# ui_action/browser_action corrections rather than re-deriving them, which is
+# where that decision is already made and tested.
+_SURFACE_BY_OPERATION = {
+    "browser_action": BROWSER_CONTROL,
+    "open_url": BROWSER_CONTROL,
+    "open_search": BROWSER_CONTROL,
+    "ui_action": UI_CONTROL,
+    "open_app": UI_CONTROL,
+    "close_app": UI_CONTROL,
+    "force_quit_app": UI_CONTROL,
+    "list_windows": UI_CONTROL,
+    "describe_window": UI_CONTROL,
+    "create_file": UI_CONTROL,
+    "create_folder": UI_CONTROL,
+    "delete_file": UI_CONTROL,
+    "delete_folder": UI_CONTROL,
+}
+
+# An operation the machine cannot carry out is not a surface choice. Naming
+# ui_control for "Chrome keeps crashing on me lately" implied a driver was
+# standing by for a complaint; there is nothing to run, and saying so is the
+# honest answer.
+#
+# Only the explicit refusal counts. "none" is the field's *default* -- it
+# means the router said nothing, not that it said no -- and treating the two
+# alike sent every caller that omits the operation to direct_answer.
+_NO_SURFACE_OPERATIONS = frozenset({"unsupported"})
 
 # Which capabilities a specialist agent carries out, as opposed to the ones
 # Elaina drives herself through a planner or handler.
@@ -268,9 +305,24 @@ _PRICE = re.compile(
 )
 
 
+# A host name says *where*, never *what*. Left in the text, its parts are
+# read as ordinary words: "booking.com" contains "booking", which
+# _AVAILABILITY matches, so "what do reviews on booking.com say about the
+# Peninsula?" was scored as a live availability check and sent to browser
+# control -- a research question answered by driving a page.
+#
+# Stripping hosts before the tests below is general, not a fix for one site:
+# expedia.com, hotels.com, and any other domain whose name happens to be a
+# verb had exactly the same problem waiting.
+_HOST_NAME = re.compile(
+    r"\b[\w-]+\.(?:com|co\.kr|co\.uk|net|org|io|dev|app|kr|jp|uk|gov|edu)\b",
+    re.IGNORECASE,
+)
+
+
 def _is_live_state(request: str) -> bool:
     """Whether the answer turns on the state of one thing, right now."""
-    text = str(request or "")
+    text = _HOST_NAME.sub(" ", str(request or ""))
     if _AVAILABILITY.search(text):
         return True
     # A price on a named day is a live quote for that day; a price "now" is
@@ -326,6 +378,15 @@ def _score(capability: str, factors: Factors, failures: int) -> float:
         # Nothing outruns an answer already in hand.
         return 1.0 if capability == DIRECT_ANSWER else 0.05
 
+    # Whether anything outside the conversation is actually required. Used
+    # below so a surface named inside a question she can simply answer does
+    # not drag the turn onto a page.
+    needs_something = (
+        factors.live_state_required
+        or factors.verification_required
+        or factors.freshness_required
+    )
+
     fit = 0.0
     if factors.live_state_required:
         fit = _RELIABILITY.get((capability, "live"), 0.0)
@@ -336,9 +397,21 @@ def _score(capability: str, factors: Factors, failures: int) -> float:
     else:
         fit = 1.0 if capability == DIRECT_ANSWER else 0.10
 
-    if factors.interaction_required and capability == BROWSER_CONTROL:
+    if factors.interaction_required:
         # The request named a page to operate; nothing else can do that.
-        fit = max(fit, 0.95)
+        # Raising the browser was not enough on its own -- a search still
+        # outscored it on cost, so "open booking.com and check the price"
+        # came back as a search. The other side of the same fact is what
+        # was missing: a lookup cannot operate a page at all, however well
+        # it answers the question underneath.
+        if capability == BROWSER_CONTROL:
+            fit = max(fit, 0.95)
+        elif needs_something:
+            # Only when something outside the conversation is actually
+            # required. "How do I open Spotify myself?" names a surface and
+            # needs nothing opened -- it is a question *about* an action,
+            # and holding the direct answer down sent it to the browser.
+            fit = min(fit, 0.50)
 
     # Cost is what stops the most capable tool always winning.
     score = fit - _COST.get(capability, 0.5) * 0.35
@@ -471,7 +544,23 @@ def select(
     # sources. The surface is whatever the request names, and the ladder
     # below has nothing cheaper to offer.
     if need == NEED_MACHINE:
-        capability = _MACHINE_CAPABILITY.get(label, TASK_PLANNING)
+        operation = str(getattr(route, "computer_operation", "") or "")
+        if label == "computer_action" and operation in _NO_SURFACE_OPERATIONS:
+            # Routed as a machine request, but nothing here can be run.
+            return CapabilityChoice(
+                DIRECT_ANSWER,
+                "the request reads as a machine action this cannot carry "
+                "out, so the honest answer is to say so",
+                factors=factors,
+                candidates=(
+                    Candidate(DIRECT_ANSWER, 1.0, "no surface can do this"),
+                ),
+                execution_preference=execution_preference,
+            )
+        # The operation names the surface; the intent only names the family.
+        capability = _SURFACE_BY_OPERATION.get(operation) or (
+            _MACHINE_CAPABILITY.get(label, TASK_PLANNING)
+        )
         return CapabilityChoice(
             capability,
             f"the request needs something done, and {capability} is the "

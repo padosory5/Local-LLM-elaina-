@@ -167,7 +167,6 @@ class CapabilityTests(unittest.TestCase):
     def test_each_machine_surface_is_named_honestly(self):
         for label, expected in (
             ("computer_action", caps.UI_CONTROL),
-            ("browser_action", caps.BROWSER_CONTROL),
             ("screen_analysis", caps.SCREEN_ANALYSIS),
             ("project_question", caps.PROJECT_QUESTION),
             ("project_edit", caps.PROJECT_EDIT),
@@ -179,6 +178,21 @@ class CapabilityTests(unittest.TestCase):
                     _route(label, action_requested=True)
                 )
                 self.assertEqual(choice.capability, expected)
+
+    def test_a_page_operation_names_the_browser_not_the_desktop(self):
+        # Browser versus desktop rides on computer_operation; the router has
+        # never emitted "browser_action" as an intent, so asserting it here
+        # tested an unreachable branch while every real page action was
+        # being filed as Windows UI control.
+        _goal, _decision, choice = _chain(
+            _route(
+                "computer_action",
+                action_requested=True,
+                computer_operation="browser_action",
+            )
+        )
+
+        self.assertEqual(choice.capability, caps.BROWSER_CONTROL)
 
     def test_driving_the_machine_herself_dispatches_no_agent(self):
         # ui_control and browser_control are hers; the agent coordinator was
