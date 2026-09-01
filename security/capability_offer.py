@@ -38,6 +38,12 @@ class PendingCapabilityOffer:
     # suggestion is not a question awaiting an answer, and must not be
     # allowed to interpret whatever the person says next as a reply to it.
     proactive: bool = False
+    # When an offer pauses an active recommendation, this ID points back to
+    # the full payload in TaskSessionStore and the canonical query is kept as
+    # a defensive snapshot. Acceptance resumes it instead of routing the
+    # generated offer sentence as a new request.
+    task_id: str = ""
+    task_query: str = ""
 
     def public_context(self) -> dict[str, str | int]:
         return {
@@ -63,6 +69,8 @@ class CapabilityOfferGate:
         offer_text: str,
         intent: str = "computer_action",
         proactive: bool = False,
+        task_id: str = "",
+        task_query: str = "",
     ) -> PendingCapabilityOffer:
         now = time.monotonic()
         goal = " ".join(str(goal).split()).strip()
@@ -75,6 +83,8 @@ class CapabilityOfferGate:
             created_at=now,
             expires_at=now + self.expiry_seconds,
             proactive=bool(proactive),
+            task_id=str(task_id or "").strip(),
+            task_query=" ".join(str(task_query or "").split()).strip(),
         )
         return self._pending
 

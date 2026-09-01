@@ -228,6 +228,18 @@ class ClosingOfferGuardTests(unittest.TestCase):
             "Check Coupang for prices.",
         )
 
+    def test_curly_apostrophe_offer_from_live_search_failure_is_removed(self):
+        reply = (
+            "I couldn't show real listings right now. "
+            "Let me know if you’d like me to search for options or suggest "
+            "areas to look."
+        )
+
+        self.assertEqual(
+            ClosingOfferGuard.strip(reply),
+            "I couldn't show real listings right now.",
+        )
+
     def test_advice_is_never_mistaken_for_an_offer(self):
         # "I'd suggest checking their site" recommends that *you* do
         # something; "I can suggest some options" offers that *she* does.

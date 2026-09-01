@@ -108,6 +108,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
         "how the answer comes out",
         (
             "test_action_status",
+            "test_active_task_continuity",
             "test_answer_condenser",
             "test_brief_response",
             "test_capabilities",
@@ -122,9 +123,11 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_response_language",
             "test_response_policy",
             "test_response_quality",
+            "test_social_lines",
             "test_speak_window_list",
             "test_spoken_label",
             "test_text_filter",
+            "test_unfinished_sentence",
             "test_user_locale",
             "test_user_profile",
         ),
@@ -222,6 +225,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_browser_action_flow",
             "test_browser_navigation_flow",
             "test_computer_action_flow",
+            "test_execution_preferences",
             "test_media_play_flow",
             "test_turn_behaviour",
         ),
@@ -298,6 +302,10 @@ LIVE_CHECKS: tuple[LiveCheck, ...] = (
     LiveCheck(
         "screen-browser-task", "live_screen_browser_task_check.py", "browser",
         "a whole multi-turn browser goal, planner and model included",
+    ),
+    LiveCheck(
+        "source-preference", "live_source_preference_check.py", "browser",
+        "a saved source preference yields concrete live-page candidates",
     ),
     LiveCheck(
         "desktop-control", "live_desktop_control_check.py", "desktop",

@@ -78,6 +78,31 @@ SCENARIOS: dict[str, tuple[tuple[str, str], ...]] = {
             "A real, controlled browser must open.",
         ),
     ),
+    "rental_continuity": (
+        ("I'm going to UW in Seattle.", "Retain UW and Seattle as context."),
+        (
+            "I need rent near my school. Show me some places.",
+            "Create one authorised housing task and ask only for housing type.",
+        ),
+        ("Studio.", "Update that task with housing_type=studio and ask budget."),
+        (
+            "About $1000 to $1300.",
+            "Clear clarification and execute the preserved lookup immediately.",
+        ),
+        ("Yeah.", "Treat this as acknowledgement, never as a constraint."),
+        (
+            "Why aren't you showing me anything?",
+            "Reuse the canonical UW/Seattle studio rental query, not this complaint.",
+        ),
+    ),
+    "pho_progression": (
+        ("I had pho.", "Respond to the current food remark."),
+        (
+            "I don't know what meat was in it.",
+            "Treat this as the answer and do not repeat the prior question.",
+        ),
+        ("No.", "Treat this as a negative answer, never as 'no thanks'."),
+    ),
 }
 
 

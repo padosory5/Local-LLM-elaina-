@@ -360,22 +360,34 @@ def read(text: str) -> Statement | None:
 class Resolution:
     """What she settled on, and on what grounds."""
 
+    kind: str = ""
     domain: str = ""
     context: str = ""
     choice: str = ""
+    saved: str = ""
+    task_override: str = ""
     source: str = ""
+    evidence_source: str = ""
+    standing: float = 0.0
     confidence: str = ""
     applied: bool = False
     why: str = ""
 
     def log_block(self) -> str:
         """Console only -- a decision summary, never the reasoning."""
-        lines = ["[Preference Resolution]", f"  Domain: {self.domain}"]
+        lines = ["[Preference Resolution]"]
+        if self.kind:
+            lines.append(f"  Kind: {self.kind}")
+        lines.append(f"  Domain: {self.domain}")
         if self.context:
             lines.append(f"  Context: {self.context}")
+        lines.append(f"  Saved: {self.saved or '(none)'}")
+        lines.append(f"  Task override: {self.task_override or '(none)'}")
         lines.append(f"  Choice: {self.choice or '(none)'}")
-        if self.source:
-            lines.append(f"  Source: {self.source}")
+        if self.evidence_source or self.source:
+            lines.append(f"  Source: {self.evidence_source or self.source}")
+        if self.standing:
+            lines.append(f"  Standing: {self.standing:g}")
         if self.confidence:
             lines.append(f"  Confidence: {self.confidence}")
         lines.append(f"  Applied: {'yes' if self.applied else 'no'}")
@@ -407,22 +419,26 @@ def resolve(
     """
     domain = " ".join(str(domain or "").split()).strip().casefold()
     if not domain:
-        return Resolution(applied=False, why="nothing to resolve")
-    if override:
-        return Resolution(
-            domain=domain, context=context, choice=override,
-            source="current_turn_override", confidence="high", applied=True,
-            why="asked for by name this turn; the saved default is untouched",
-        )
+        return Resolution(kind=kind, applied=False, why="nothing to resolve")
     preference = None
     if profile is not None:
         try:
             preference = profile.preferred_in(kind, domain, context)
         except Exception:
             preference = None
+    saved = preference.value if preference is not None else ""
+    if override:
+        return Resolution(
+            kind=kind, domain=domain, context=context, choice=override,
+            saved=saved, task_override=override,
+            source="current_turn_override", confidence="high", applied=True,
+            why="asked for by name this turn; the saved default is untouched",
+        )
     if preference is not None:
         return Resolution(
-            domain=domain, context=context, choice=preference.value,
+            kind=kind, domain=domain, context=context, choice=preference.value,
+            saved=preference.value, evidence_source=preference.source,
+            standing=preference.standing,
             source=(
                 "explicit_user_default" if preference.source == STATED
                 else "repeated_behaviour"
@@ -433,12 +449,17 @@ def resolve(
         )
     if default:
         return Resolution(
-            domain=domain, context=context, choice=default,
-            source="locale_default", confidence="low", applied=True,
-            why="no saved preference; this market's usual source",
+            kind=kind, domain=domain, context=context, choice=default,
+            source=("system_default" if kind == TOOL_FOR else "locale_default"),
+            confidence="low", applied=True,
+            why=(
+                "no saved preference; using the system provider"
+                if kind == TOOL_FOR
+                else "no saved preference; this market's usual source"
+            ),
         )
     return Resolution(
-        domain=domain, context=context, applied=False,
+        kind=kind, domain=domain, context=context, applied=False,
         why="nothing saved and no default for this market",
     )
 

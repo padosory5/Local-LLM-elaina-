@@ -83,6 +83,7 @@ class PendingClarification:
     template: str
     created_at: float
     expires_at: float
+    task_id: str = ""
 
     @property
     def bindable(self) -> bool:
@@ -123,6 +124,34 @@ class PendingClarification:
                 utterance=f"Give me a general hotel overview for {subject}",
                 slots=slots,
             )
+        if self.goal.kind in {"play_unnamed", "play_track"} and self.slot == "title":
+            # Preserve the provider decision made before the question.  The
+            # old template rebuilt every answer as "in Spotify", which both
+            # lost a one-task YouTube Music override and silently disagreed
+            # with TOOL_FOR resolution.
+            provider = self.goal.value("provider")
+            utterance = f"Play {answer}" + (f" in {provider}" if provider else "")
+            parsed = interpret(utterance, media_application=provider)
+            if not parsed.has("title"):
+                return None
+            slots = dict(self.goal.slots)
+            slots.update(parsed.slots)
+            slots["title"] = Slot(
+                "title", parsed.value("title"), SOURCE_ASKED, 1.0,
+            )
+            if parsed.has("artist"):
+                slots["artist"] = Slot(
+                    "artist", parsed.value("artist"), SOURCE_ASKED, 1.0,
+                )
+            slots["query"] = Slot(
+                "query",
+                " ".join(filter(None, (
+                    parsed.value("title"), parsed.value("artist"),
+                ))),
+                SOURCE_ASKED,
+                1.0,
+            )
+            return Goal(kind="play_track", utterance=utterance, slots=slots)
         completed = interpret(self.template.format(answer=answer))
         if not completed.has(self.slot):
             return None
@@ -139,6 +168,7 @@ class PendingClarification:
         return {
             "question": self.question,
             "missing": self.slot,
+            "task_id": self.task_id,
             "expires_in_seconds": max(
                 0, int(self.expires_at - time.monotonic()),
             ),
@@ -159,6 +189,7 @@ class ClarificationGate:
         slot: str,
         question: str,
         template: str = "",
+        task_id: str = "",
     ) -> PendingClarification:
         now = time.monotonic()
         self._pending = PendingClarification(
@@ -168,6 +199,7 @@ class ClarificationGate:
             template=template,
             created_at=now,
             expires_at=now + self.expiry_seconds,
+            task_id=str(task_id or "").strip(),
         )
         return self._pending
 

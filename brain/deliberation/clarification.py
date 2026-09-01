@@ -56,8 +56,8 @@ _QUESTIONS = {
 # still get their question; their answer is simply routed as a fresh
 # request rather than bound automatically.
 _ANSWER_TEMPLATES = {
-    ("play_unnamed", "title"): "Play {answer} in Spotify.",
-    ("play_track", "title"): "Play {answer} in Spotify.",
+    ("play_unnamed", "title"): "Play {answer}.",
+    ("play_track", "title"): "Play {answer}.",
 }
 
 
@@ -116,6 +116,7 @@ def decide(
             )
 
     if goal.kind == "play_unnamed":
+        asks_for_another = "another" in goal.utterance.casefold()
         collection = goal.value("collection")
         if collection:
             # A whole collection is not something she can start yet, so the
@@ -129,7 +130,7 @@ def decide(
                     f"{collection_phrase(collection)}. Which song do you want?"
                 ),
             )
-        if recent_subject:
+        if recent_subject and not asks_for_another:
             # Once the title is known the request *is* a track request, and
             # the skill that serves those is the one that should run.
             filled = _with_slot(
@@ -147,7 +148,7 @@ def decide(
         favourite = (
             profile.preferred(FAVOURITE_TRACK) if profile else None
         )
-        if favourite is not None:
+        if favourite is not None and not asks_for_another:
             # Nothing has been played this session, but she has been asked
             # for this often enough to have a good guess.
             filled = _with_slot(

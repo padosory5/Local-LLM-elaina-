@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import re
 
-from brain.deliberation.goal import SOURCE_UTTERANCE, Goal, Slot
+from brain.deliberation.goal import SOURCE_PROFILE, SOURCE_UTTERANCE, Goal, Slot
 from brain.task_discovery_policy import TaskDiscoveryPolicy
 from brain.media_target import (
     PLAYABLE_COLLECTIONS,
-    classify_spotify_media_request,
+    classify_media_request,
 )
 
 # ChatEngine may append the original wording under the router's paraphrase.
@@ -123,7 +123,7 @@ def _without_surface(value: str) -> str:
     return value
 
 
-def interpret(utterance: str) -> Goal:
+def interpret(utterance: str, *, media_application: str = "") -> Goal:
     """Read a desktop request into slots, without inventing any."""
     text = semantic_text(utterance)
     if not text:
@@ -152,11 +152,21 @@ def interpret(utterance: str) -> Goal:
             slots.update(said("title", title))
         return Goal(kind="find_in_collection", utterance=text, slots=slots)
 
-    media = classify_spotify_media_request(text)
+    media = classify_media_request(
+        text,
+        application=media_application or "Spotify",
+        preferred_provider=bool(media_application),
+    )
     if media.kind == "track" and media.target is not None:
         slots = {
             "title": Slot("title", media.target.title, SOURCE_UTTERANCE),
             "query": Slot("query", media.target.search_query, SOURCE_UTTERANCE),
+            "provider": Slot(
+                "provider",
+                media.target.application,
+                SOURCE_UTTERANCE if media.target.application.casefold() in text.casefold()
+                else SOURCE_PROFILE,
+            ),
         }
         if media.target.artist:
             slots["artist"] = Slot(
@@ -171,13 +181,28 @@ def interpret(utterance: str) -> Goal:
             return Goal(
                 kind="play_collection",
                 utterance=text,
-                slots=said("collection", media.collection),
+                slots={
+                    **said("collection", media.collection),
+                    "provider": Slot(
+                        "provider", media_application or "Spotify",
+                        SOURCE_UTTERANCE
+                        if (media_application or "Spotify").casefold() in text.casefold()
+                        else SOURCE_PROFILE,
+                    ),
+                },
             )
         # Otherwise deliberately slotless: the request named a kind of thing
         # to play, never one of them, and the gate turns that into a question.
-        slots = {}
+        slots = {
+            "provider": Slot(
+                "provider", media_application or "Spotify",
+                SOURCE_UTTERANCE
+                if (media_application or "Spotify").casefold() in text.casefold()
+                else SOURCE_PROFILE,
+            ),
+        }
         if media.collection:
-            slots = said("collection", media.collection)
+            slots.update(said("collection", media.collection))
         return Goal(kind="play_unnamed", utterance=text, slots=slots)
 
     category = TaskDiscoveryPolicy.category_for(text)

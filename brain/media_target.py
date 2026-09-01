@@ -132,6 +132,11 @@ _MEDIA_NOUN = re.compile(
     r"|노래|음악|앨범|곡",
     re.I,
 )
+_NON_MUSIC_SUBJECT = re.compile(
+    r"\b(?:chess|game|games|video|videos|movie|movies|film|films|"
+    r"episode|episodes|show|shows|animation|sport|sports)\b",
+    re.IGNORECASE,
+)
 # "Click Play in Spotify" asks for a button by name; the word "play" is the
 # control, not the verb. Without this the subject came out as "in Spotify"
 # and the media guard then refused a perfectly ordinary click.
@@ -144,8 +149,7 @@ _TRAILING_POLITENESS = re.compile(
     r"(?:\s+(?:for\s+me|please|now|right\s+now))+[.!?]*$", re.I,
 )
 _PLAY_REQUEST = re.compile(
-    r"\b(?:play|put\s+on|listen\s+to|start)\s+"
-    r"(?P<subject>.+?)(?=\s+(?:in|inside|on|using|with)\s+(?:the\s+)?spotify\b|$)",
+    r"\b(?:play|put\s+on|listen\s+to|start)\s+(?P<subject>.+)$",
     re.I,
 )
 _COMPOUND_REQUEST = re.compile(
@@ -193,7 +197,7 @@ _COLLECTION_CUES = (
 # Stripped before deciding whether anything was named. Articles are here
 # too, so "a song" reads as unnamed while "A Sky Full of Stars" does not.
 _QUANTIFIERS = (
-    "a couple of", "a bunch of", "a few", "any", "some", "random",
+    "a couple of", "a bunch of", "a few", "another", "any", "some", "random",
     "a", "an", "the", "my", "아무", "아무거나",
 )
 # Words that describe a *kind* of thing to play rather than one of them.
@@ -265,10 +269,46 @@ def _names_no_track(title: str) -> bool:
     )
 
 
-def classify_spotify_media_request(goal: str) -> MediaRequest:
-    """Read a Spotify play request without inventing what it did not say."""
+def _without_application(subject: str, application: str) -> str:
+    """Remove only the selected provider from the end of a media subject."""
+    application = " ".join(str(application or "").split()).strip()
+    if not application:
+        return subject
+    return re.sub(
+        rf"\s+(?:in|inside|on|using|with)\s+(?:the\s+)?"
+        rf"{re.escape(application)}\s*$",
+        "",
+        str(subject),
+        flags=re.IGNORECASE,
+    ).strip()
+
+
+def _provider_is_explicit(text: str, application: str) -> bool:
+    application = " ".join(str(application or "").split()).strip()
+    if application.casefold() == "spotify" and _SPOTIFY_CUE.search(text):
+        return True
+    return bool(application and re.search(
+        rf"(?<!\w){re.escape(application)}(?!\w)", text, re.IGNORECASE,
+    ))
+
+
+def classify_media_request(
+    goal: str,
+    *,
+    application: str = "Spotify",
+    preferred_provider: bool = False,
+) -> MediaRequest:
+    """Read a play request for the already-selected provider.
+
+    Provider selection is deliberately outside this parser.  The parser only
+    turns that decision into a typed target, so a saved ``TOOL_FOR`` value and
+    an explicit one-task override reach the same execution path.
+    """
     text = " ".join(str(goal or "").split()).strip()
-    if not text or _OTHER_MEDIA_SURFACE.search(text):
+    if not text:
+        return MediaRequest("none")
+    named_other = _OTHER_MEDIA_SURFACE.search(text)
+    if named_other and not _provider_is_explicit(text, application):
         return MediaRequest("none")
     if _PLAY_AS_A_CONTROL.search(text):
         return MediaRequest("none")
@@ -282,6 +322,7 @@ def classify_spotify_media_request(goal: str) -> MediaRequest:
     if match is None:
         return MediaRequest("none")
     subject = _TRAILING_POLITENESS.sub("", match.group("subject")).strip(" ,.!?")
+    subject = _without_application(subject, application)
     if korean is not None and match is korean:
         # The app is where, not what.
         subject = _KOREAN_APP_LOCATIVE.sub("", subject).strip(" ,.!?")
@@ -293,11 +334,23 @@ def classify_spotify_media_request(goal: str) -> MediaRequest:
     # app was previously required, so "play my liked songs" -- the request
     # this whole layer was built for -- typed as nothing at all.
     if not (
-        _SPOTIFY_CUE.search(text)
+        _provider_is_explicit(text, application)
         or _MEDIA_NOUN.search(subject)
         or _named_collection(subject)
         or _ARTIST_SEPARATOR.search(subject)
         or _KOREAN_POSSESSIVE.match(subject)
+        # A standing provider makes an otherwise app-less, title-shaped
+        # request actionable ("Play Blinding Lights").  Keep the relaxation
+        # narrow enough that a lower-case one-word activity such as "play
+        # chess" is not silently turned into a song.
+        or (
+            preferred_provider
+            and not _NON_MUSIC_SUBJECT.search(subject)
+            and (
+                len(re.findall(r"[^\W_]+", subject)) >= 2
+                or subject[:1].isupper()
+            )
+        )
     ):
         return MediaRequest("none")
 
@@ -328,10 +381,17 @@ def classify_spotify_media_request(goal: str) -> MediaRequest:
         return MediaRequest("unclear", collection=collection, subject=subject)
     return MediaRequest(
         "track",
-        target=MediaTarget(application="Spotify", title=title, artist=artist),
+        target=MediaTarget(
+            application=application or "Spotify", title=title, artist=artist,
+        ),
         collection=collection,
         subject=subject,
     )
+
+
+def classify_spotify_media_request(goal: str) -> MediaRequest:
+    """Compatibility wrapper for existing direct Spotify callers."""
+    return classify_media_request(goal)
 
 
 def parse_spotify_media_target(goal: str) -> MediaTarget | None:

@@ -196,7 +196,7 @@ class ClosingOfferGuard:
         # "you'd like" and "you would like" were missing, and let
         # "Let me know if you'd like more details or updates." through
         # on a live stock-price answer.
-        r"let\s+me\s+know\s+if\s+you'?(?:d|\s+would)?\s*"
+        r"let\s+me\s+know\s+if\s+you[’']?(?:d|\s+would)?\s*"
         r"(?:need|want|have|like)\s+(?:any|anything|more|further)",
     )
     # The model's own trailing capability offers. Stripping these is what
@@ -221,7 +221,7 @@ class ClosingOfferGuard:
         r"\bshould i\s+(?:look|search|check|find|suggest|pull|show)\b",
         r"\bi (?:can|could|'ll|will)\s+(?:also\s+)?"
         r"(?:suggest|recommend|find|look|search|check|pull|show|dig|help)\b",
-        r"\blet me know if you(?:'d| would)?\s*(?:like|want)\b",
+        r"\blet me know if you(?:[’']d| would)?\s*(?:like|want)\b",
         r"\bi'?m happy to\s+(?:look|search|check|find|suggest|help)\b",
     )
 

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import re
 import time
+import uuid
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -59,10 +60,11 @@ ATTRIBUTE = "attribute"        # a quality asked for: "soft", "electric"
 BUDGET = "budget"
 AREA = "area"
 DATES = "dates"
+HOUSING_TYPE = "housing_type"
 SITUATION = "situation"        # why: "sore throat"
 EXCLUSION = "exclusion"        # "nothing spicy"
 
-QUERY_SAFE = (ATTRIBUTE, PREFERENCE, BUDGET, AREA, DATES)
+QUERY_SAFE = (ATTRIBUTE, PREFERENCE, HOUSING_TYPE, BUDGET, AREA, DATES)
 CONTEXT_ONLY = (SITUATION, EXCLUSION)
 
 # Said when the person is replacing what they asked for, not adding to it.
@@ -126,7 +128,8 @@ _SOMETHING = re.compile(
 _PURCHASE = re.compile(
     r"\b(?:buy|buying|purchase|purchasing|get|getting|shop|shopping|"
     r"order|ordering|pick\s+up|price|prices|cost|costs|"
-    r"store|stores|shop|shops|retailer|retailers|dealer|dealers)\b"
+    r"store|stores|shop|shops|retailer|retailers|dealer|dealers|"
+    r"rent|rental|renting|lease|leasing|apartment|apartments|housing)\b"
     r"|사고|구매|구입|가격|어디서\s*파",
     re.IGNORECASE,
 )
@@ -157,6 +160,50 @@ _VARIANTS: dict[str, tuple[str, str]] = {
 # wasted question.
 TYPE = "type"
 DIMENSIONS = (TYPE, BUDGET)
+
+_HOUSING = re.compile(
+    r"\b(?:rent|rental|renting|lease|leasing|housing|apartments?|"
+    r"studios?|one[- ]bedrooms?|two[- ]bedrooms?)\b",
+    re.IGNORECASE,
+)
+
+_HOUSING_TYPE = re.compile(
+    r"\b(?:like\s+)?(?:a\s+|an\s+)?"
+    r"(studio|one[- ]bedroom|two[- ]bedroom|shared room|private room)\b",
+    re.IGNORECASE,
+)
+
+_NEAR_SCHOOL = re.compile(
+    r"\b(?:near|close\s+to|around)\s+(?:my|the)\s+school\b",
+    re.IGNORECASE,
+)
+
+_ACKNOWLEDGEMENT = re.compile(
+    r"^(?:(?:y+a+h*|yeah|yep|yes|sure|ok(?:ay)?|alright|right|"
+    r"go\s+ahead|do\s+that|please|fine|sounds?\s+good|got\s+it)\s*)+$",
+    re.IGNORECASE,
+)
+
+
+def is_acknowledgement(text: str) -> bool:
+    normalized = " ".join(
+        re.sub(r"[,!.?]", " ", str(text or "")).split()
+    ).strip()
+    return bool(normalized and _ACKNOWLEDGEMENT.fullmatch(normalized))
+
+
+def complains_about_missing_results(text: str) -> bool:
+    return bool(re.search(
+        r"\bwhy\b.{0,40}\b(?:show|showing|find|finding|search|results?)\b"
+        r"|\byou\s+said\s+(?:got\s+it|you\s+would)\b",
+        str(text or ""),
+        re.IGNORECASE,
+    ))
+
+
+def references_conversation_anchor(text: str) -> bool:
+    """Whether this request explicitly points at a known conversational fact."""
+    return bool(_NEAR_SCHOOL.search(str(text or "")))
 
 _THINKING_ABOUT = re.compile(
     r"\b(?:thinking (?:about|of)|considering|might get|planning to get)\s+"
@@ -197,6 +244,14 @@ _BARE_MONEY = re.compile(
     r"([$₩€£¥]\s?\d[\d,]*(?:\.\d+)?"
     r"|\b\d[\d,]*(?:\.\d+)?\s*(?:won|krw|usd|eur|gbp|jpy|"
     r"dollars?|euros?|pounds?|yen|원|만원))",
+    re.IGNORECASE,
+)
+
+_MONEY_RANGE = re.compile(
+    r"((?:[$₩€£¥]\s?)?\d[\d,]*(?:\.\d+)?\s*"
+    r"(?:-|\u2013|\u2014|to|through)\s*"
+    r"(?:[$₩€£¥]\s?)?\d[\d,]*(?:\.\d+)?\s*"
+    r"(?:won|krw|usd|eur|gbp|jpy|dollars?|euros?|pounds?|yen|원|만원)?)",
     re.IGNORECASE,
 )
 
@@ -262,7 +317,10 @@ def wants_to_see_options(request: str) -> bool:
     as plain conversation and answered from nothing, three turns into a
     recommendation that had a type and a budget ready to search on.
     """
-    return bool(_WANTS_TO_SEE.search(str(request or "")))
+    return bool(
+        _WANTS_TO_SEE.search(str(request or ""))
+        or complains_about_missing_results(request)
+    )
 
 
 def asks_where(request: str) -> bool:
@@ -295,11 +353,14 @@ _DOMAIN_NOUNS = {
     "car": "cars",
     "flight": "flights",
     "secondhand": "second-hand listings",
+    "realestate": "apartments",
 }
 
 
 def category_for(text: str) -> str:
     """The discovery category key this request belongs to, or nothing."""
+    if _HOUSING.search(str(text or "")):
+        return "realestate"
     try:
         from brain.task_discovery_policy import TaskDiscoveryPolicy
 
@@ -355,6 +416,12 @@ def read_constraints(
         return ()
     found: list[Slot] = []
 
+    housing_type = _HOUSING_TYPE.search(text)
+    if housing_type is not None:
+        slot = _slot(HOUSING_TYPE, housing_type.group(1).casefold(), source)
+        if slot is not None:
+            found.append(slot)
+
     for pattern in _SITUATIONS:
         for match in pattern.finditer(text):
             slot = _slot(SITUATION, match.group(1), source)
@@ -391,13 +458,25 @@ def read_constraints(
             text,
         ).items():
             if name in {BUDGET, AREA, DATES}:
+                # This is a relationship to an anchor, not an area named
+                # "school". The anchor is resolved from conversation context.
+                if name == AREA and re.fullmatch(
+                    r"(?:my\s+|the\s+)?school", value, re.IGNORECASE,
+                ):
+                    continue
                 slot = _slot(name, value, source)
                 if slot is not None:
                     found.append(slot)
     except Exception:
         pass
 
-    if not any(slot.name == BUDGET for slot in found):
+    money_range = _MONEY_RANGE.search(text)
+    if money_range is not None:
+        found = [slot for slot in found if slot.name != BUDGET]
+        slot = _slot(BUDGET, money_range.group(1), source)
+        if slot is not None:
+            found.append(slot)
+    elif not any(slot.name == BUDGET for slot in found):
         bare = _BARE_MONEY.search(text)
         if bare is not None:
             slot = _slot(BUDGET, bare.group(1), source)
@@ -441,7 +520,11 @@ def read_short_reply(text: str) -> tuple[Slot, ...]:
     invent a constraint out of nothing.
     """
     text = " ".join(str(text or "").split()).strip(" .!?")
-    if not text or len(text.split()) > 3:
+    if (
+        not text
+        or len(text.split()) > 3
+        or is_acknowledgement(text)
+    ):
         return ()
     # "Show me some" is three words and an instruction, not an answer.
     # Without this it became an attribute and went into the search query --
@@ -458,6 +541,51 @@ def read_short_reply(text: str) -> tuple[Slot, ...]:
     return (slot,) if slot is not None else ()
 
 
+def answer_for_dimension(dimension: str, text: str) -> Slot | None:
+    """Return a plausible typed answer to one outstanding dimension.
+
+    This is deliberately stricter than ``read_short_reply``. A clarification
+    may consume a turn only when the words contain a value for the exact
+    dimension being asked; acknowledgements and consent words are never
+    recommendation values.
+    """
+    said = " ".join(str(text or "").split()).strip(" .!?")
+    if not said or is_acknowledgement(said):
+        return None
+    constraints = read_constraints(said, source=SOURCE_ASKED)
+    if dimension == HOUSING_TYPE:
+        return next(
+            (slot for slot in constraints if slot.name == HOUSING_TYPE), None,
+        )
+    if dimension == BUDGET:
+        return next((slot for slot in constraints if slot.name == BUDGET), None)
+    if dimension == TYPE:
+        short = read_short_reply(said)
+        return short[0] if short else None
+    return next((slot for slot in constraints if slot.name == dimension), None)
+
+
+def apply_dimension_answer(
+    problem: RecommendationProblem,
+    dimension: str,
+    text: str,
+    *,
+    now: float | None = None,
+    ttl: int = DEFAULT_TTL_SECONDS,
+) -> RecommendationProblem | None:
+    """Resolve one owned clarification without reinterpreting the reply."""
+    answer = answer_for_dimension(dimension, text)
+    if answer is None:
+        return None
+    now = now if now is not None else time.monotonic()
+    return replace(
+        problem,
+        constraints=_merge(problem.constraints, (answer,)),
+        turns=problem.turns + 1,
+        expires_at=now + ttl,
+    )
+
+
 @dataclass(frozen=True)
 class RecommendationProblem:
     """The open recommendation, and everything established about it.
@@ -469,6 +597,7 @@ class RecommendationProblem:
     "discover" / "verify" judgement.
     """
 
+    id: str = ""
     subject: str = ""
     domain: str = ""
     # The discovery category key ("restaurant", "hotel"), kept alongside the
@@ -477,6 +606,13 @@ class RecommendationProblem:
     # Whether this is about something real that can be bought or visited,
     # as opposed to advice. Decides whether the query gets the user's market.
     purchase: bool = False
+    # Resolved task context copied from the existing conversation focus.
+    # Explicit task constraints still outrank these background facts.
+    location: str = ""
+    anchor: str = ""
+    relationship: str = ""
+    lookup_requested: bool = False
+    authorization_source: str = ""
     # Dimensions already put to the person. One question each, ever: a
     # re-asked question reads as not having listened.
     asked: tuple[str, ...] = ()
@@ -513,6 +649,8 @@ class RecommendationProblem:
 
     def _thing(self) -> str:
         """The noun this recommendation is about, as a single word."""
+        if self.category == "realestate" or self.domain == "apartments":
+            return "housing"
         for slot in self.constraints:
             if slot.name == PREFERENCE:
                 return slot.value.split()[-1].casefold()
@@ -538,12 +676,22 @@ class RecommendationProblem:
             # Advice ("what should I eat tonight") is low-stakes: suggest
             # something rather than interrogate.
             return ""
-        if TYPE not in self.asked and not self.values(ATTRIBUTE):
+        if (
+            thing == "housing"
+            and HOUSING_TYPE not in self.asked
+            and not self.values(HOUSING_TYPE)
+        ):
+            return HOUSING_TYPE
+        if (
+            thing != "housing"
+            and TYPE not in self.asked
+            and not self.values(ATTRIBUTE)
+        ):
             return TYPE
         if (
             BUDGET not in self.asked
             and not self.values(BUDGET)
-            and self.values(ATTRIBUTE)
+            and (self.values(ATTRIBUTE) or self.values(HOUSING_TYPE))
         ):
             # Only worth asking once the kind is settled -- a budget for
             # the wrong kind of thing decides nothing.
@@ -558,6 +706,8 @@ class RecommendationProblem:
             if variants:
                 return f"{variants[0].capitalize()} or {variants[1]}?"
             return f"What kind of {thing or 'one'} did you have in mind?"
+        if dimension == HOUSING_TYPE:
+            return "What type of housing did you have in mind?"
         if dimension == BUDGET:
             return "What sort of budget are you thinking?"
         return ""
@@ -604,6 +754,21 @@ class RecommendationProblem:
         bare subject. Situations stay out of it: they explain the request,
         and a search for "sore throat restaurants" finds clinics.
         """
+        if self.category == "realestate" or self.domain == "apartments":
+            housing_type = " ".join(self.values(HOUSING_TYPE))
+            parts = [f"{housing_type} apartments".strip()]
+            if self.anchor:
+                parts.append(f"near {self.anchor}")
+            elif self.relationship:
+                parts.append(self.relationship)
+            explicit_areas = self.values(AREA)
+            if explicit_areas:
+                parts.extend(explicit_areas)
+            elif self.location:
+                parts.append(f"in {self.location}")
+            parts.extend(self.values(BUDGET))
+            return " ".join(part for part in parts if part).strip()
+
         head = " ".join(self.values(ATTRIBUTE, PREFERENCE))
         core = self.strip_retired(self.subject) or self.domain
         if not core or core.casefold() in _EMPTY_SUBJECTS:
@@ -675,7 +840,14 @@ class RecommendationProblem:
         ]
         return "\n".join([
             "[Recommendation Context]",
+            "[Active Task]",
+            f"  id: {self.id or '(none)'}",
             f"  Subject: {self.subject or '(none)'}",
+            f"  Location: {self.location or '(none)'}",
+            f"  Anchor: {self.anchor or '(none)'}",
+            f"  Relationship: {self.relationship or '(none)'}",
+            f"  Action requested: {str(self.lookup_requested).lower()}",
+            f"  Authorization: {self.authorization_source or '(none)'}",
             line("Constraints", constraints),
             line("Superseded", self.retired_values),
             line("Candidates", [str(c)[:40] for c in self.candidates]),
@@ -688,7 +860,8 @@ def start(subject: str, *, domain: str = "", ttl: int = DEFAULT_TTL_SECONDS,
           now: float | None = None) -> RecommendationProblem:
     now = now if now is not None else time.monotonic()
     return RecommendationProblem(
-        subject=_clean(subject), domain=domain, expires_at=now + ttl,
+        id=uuid.uuid4().hex[:12], subject=_clean(subject), domain=domain,
+        expires_at=now + ttl,
     )
 
 
@@ -755,6 +928,8 @@ def update(
     *,
     subject: str = "",
     source: str = SOURCE_UTTERANCE,
+    location: str = "",
+    anchor: str = "",
     now: float | None = None,
     ttl: int = DEFAULT_TTL_SECONDS,
 ) -> RecommendationProblem:
@@ -795,7 +970,10 @@ def update(
     # back to the old subject, which was still "Korean BBQ".
     settled = replace(problem, superseded=superseded)
     held = settled.strip_retired(problem.subject)
-    offered = settled.strip_retired(_clean(subject))
+    offered = (
+        "" if complains_about_missing_results(text)
+        else settled.strip_retired(_clean(subject))
+    )
     resolved = offered if _fits(offered, problem, constraints) else held
     # The thing they actually named beats the router's topic for it.
     # Measured live: "I want a guitar" was topic'd "personal desire", and
@@ -815,6 +993,19 @@ def update(
         domain=domain,
         category=category,
         purchase=problem.purchase or is_purchase(text),
+        location=problem.location or _clean(location),
+        anchor=problem.anchor or _clean(anchor),
+        relationship=(
+            problem.relationship
+            or ("near school" if _NEAR_SCHOOL.search(text) else "")
+        ),
+        lookup_requested=(
+            problem.lookup_requested or wants_to_see_options(text)
+        ),
+        authorization_source=(
+            problem.authorization_source
+            or ("explicit user request" if wants_to_see_options(text) else "")
+        ),
         constraints=constraints,
         superseded=superseded,
         previous_recommendation=previous,
@@ -867,6 +1058,11 @@ def about_the_same_thing(
     text = str(text or "")
     # A revision is by definition about the problem it revises.
     if revises(text):
+        return True
+    if problem.lookup_requested and (
+        wants_to_see_options(text)
+        or complains_about_missing_results(text)
+    ):
         return True
 
     incoming = read_constraints(text)

@@ -135,7 +135,7 @@ _REGIONAL_SITES: dict[str, dict[str, tuple[str, ...]]] = {
 _REGIONAL_SITE_HOSTS: dict[str, dict[str, tuple[str, ...]]] = {
     "KR": {
         "hotel": ("yanolja.com", "goodchoice.kr", "naver.com"),
-        "restaurant": ("naver.com", "diningcode.com", "catchtable.co.kr"),
+        "restaurant": ("map.naver.com", "diningcode.com", "catchtable.co.kr"),
         "secondhand": ("daangn.com", "bunjang.co.kr", "joongna.com"),
         "shopping": ("naver.com", "coupang.com", "danawa.com"),
         "gpu": ("danawa.com", "compuzone.co.kr", "enuri.com"),

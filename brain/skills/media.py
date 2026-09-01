@@ -541,7 +541,7 @@ class PlayTrackSkill:
         if not surface.can_activate:
             return HANDED_BACK
         target = MediaTarget(
-            application="Spotify",
+            application=goal.value("provider") or "Spotify",
             title=goal.value("title"),
             artist=goal.value("artist"),
         )
@@ -1014,7 +1014,14 @@ _SKILLS: tuple[Skill, ...] = (
 
 def skill_for(goal: Goal) -> Skill | None:
     """The procedure that serves this goal, if she has one."""
+    provider = goal.value("provider") or "Spotify"
     for skill in _SKILLS:
+        # Exact-track activation is provider-neutral: focus the selected app,
+        # search its real UI, activate the exact row, and verify playback.
+        # Collection navigation still uses Spotify-specific labels and safely
+        # hands other providers to the general desktop planner.
+        if provider.casefold() != "spotify" and not isinstance(skill, PlayTrackSkill):
+            continue
         if goal.kind in skill.goal_kinds and all(
             goal.has(slot) for slot in skill.required_slots
         ):

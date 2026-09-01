@@ -31,10 +31,15 @@ class PromptBuilder:
             # content of its own, the previous assistant turn was the
             # strongest thing in the prompt and came back verbatim.
             "Do not repeat your previous answer merely because it appears "
-            "above. A short reply such as \"that sounds good\", \"no "
-            "thanks\" or \"okay\" is a reaction to what you just said: "
-            "acknowledge it briefly and move the conversation on, rather "
-            "than saying the same thing again."
+            "above. If your previous message asked a question, treat a short "
+            "current reply as its answer: acknowledge what the person said "
+            "and progress instead of asking the same question again. A plain "
+            "negative answer is not a courtesy or a request to end the "
+            "conversation. Do not expand it into a phrase the person did not "
+            "say. Do not begin by restating or paraphrasing the current "
+            "message; respond with the reaction, answer, or next useful point. "
+            "For a simple greeting, use one short casual sentence and do not "
+            "advertise services, tools, or locations."
         )
 
         return "\n\n".join(sections)

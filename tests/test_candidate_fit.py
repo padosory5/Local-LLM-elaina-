@@ -13,6 +13,7 @@ title contains "electric" inside "acoustic-electric" read as a match.
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 from brain import candidate_fit as cf
 from brain import recommendation_state as rs
@@ -78,6 +79,118 @@ class HardConflictsTests(unittest.TestCase):
         fits = cf.evaluate([near], _guitar_problem())
 
         self.assertFalse(fits[0].rejected)
+
+    def test_budget_range_uses_its_upper_endpoint(self):
+        store = TaskSessionStore()
+        problem = store.note_recommendation_turn(
+            "Studio apartment near UW in Seattle for $1000 to $1300.",
+            subject="apartments",
+        )
+
+        fits = cf.evaluate([{
+            "title": "University District Studio",
+            "summary": "Studio apartment, $1,295 monthly rent",
+        }], problem)
+
+        self.assertFalse(fits[0].rejected)
+        self.assertIn("$1000 to $1300", fits[0].matches)
+
+    def test_room_is_not_an_unchecked_studio(self):
+        store = TaskSessionStore()
+        problem = store.note_recommendation_turn(
+            "Studio apartment near UW in Seattle for $1000 to $1300.",
+            subject="apartments",
+        )
+
+        fits = cf.evaluate([{
+            "title": "Room for rent",
+            "summary": "$1,100 monthly rent near UW",
+        }], problem)
+
+        self.assertTrue(fits[0].rejected)
+        self.assertIn("studio", fits[0].conflicts)
+
+    def test_unconfirmed_housing_type_prevents_confident_ranking(self):
+        store = TaskSessionStore()
+        problem = store.note_recommendation_turn(
+            "Studio apartment near UW in Seattle for $1000 to $1300.",
+            subject="apartments", location="Seattle", anchor="UW",
+        )
+        problem = replace(problem, location="Seattle", anchor="UW")
+
+        fits = cf.evaluate([{
+            "title": "Apartment near UW",
+            "summary": "$1,195 monthly rent",
+        }], problem)
+
+        self.assertIn("studio", cf.unresolved_constraints(fits, problem))
+        self.assertFalse(cf.confident(fits, problem))
+
+    def test_plural_rental_search_page_is_a_source_not_a_listing(self):
+        store = TaskSessionStore()
+        problem = store.note_recommendation_turn(
+            "Studio apartment near UW in Seattle for $1000 to $1300.",
+            subject="apartments", location="Seattle", anchor="UW",
+        )
+        problem = replace(problem, location="Seattle", anchor="UW")
+
+        fits = cf.evaluate([{
+            "title": "Studio Apartments For Rent in University District Seattle",
+            "url": "https://example.com/university-district/studios/",
+            "summary": "Seattle studios from $1,100",
+        }], problem)
+
+        self.assertEqual(fits[0].verdict, "SOURCE")
+        self.assertFalse(fits[0].viable)
+
+    def test_marketplace_home_page_is_a_source_not_a_listing(self):
+        store = TaskSessionStore()
+        problem = replace(
+            store.note_recommendation_turn(
+                "Studio apartment for $1000 to $1300.", subject="apartments",
+            ),
+            location="Seattle",
+        )
+
+        fits = cf.evaluate([{
+            "title": "Search for Monthly Furnished Rentals | Furnished Finder",
+            "url": "https://www.furnishedfinder.com/",
+            "summary": "Find apartments near you in Seattle from $1,100",
+        }], problem)
+
+        self.assertEqual(fits[0].verdict, "SOURCE")
+        self.assertFalse(fits[0].viable)
+
+    def test_explicit_wrong_city_is_a_hard_conflict(self):
+        store = TaskSessionStore()
+        problem = store.note_recommendation_turn(
+            "Studio apartment near UW in Seattle for $1000 to $1300.",
+            subject="apartments", location="Seattle", anchor="UW",
+        )
+        problem = replace(problem, location="Seattle", anchor="UW")
+
+        fits = cf.evaluate([{
+            "title": "Pittsburgh Studio",
+            "summary": "Studio apartment for $1,200 in Pittsburgh PA",
+        }], problem)
+
+        self.assertTrue(fits[0].rejected)
+        self.assertIn("location Seattle", fits[0].conflicts)
+
+    def test_named_seattle_studio_with_rent_is_confident(self):
+        store = TaskSessionStore()
+        problem = store.note_recommendation_turn(
+            "Studio apartment near UW in Seattle for $1000 to $1300.",
+            subject="apartments", location="Seattle", anchor="UW",
+        )
+        problem = replace(problem, location="Seattle", anchor="UW")
+
+        fits = cf.evaluate([{
+            "title": "DP Studios",
+            "summary": "Studio, $1,269 monthly rent, 802 NE 43rd St, Seattle WA",
+        }], problem)
+
+        self.assertTrue(cf.confident(fits, problem))
 
 
 class RankingTests(unittest.TestCase):

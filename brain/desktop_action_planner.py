@@ -32,6 +32,7 @@ from brain.skills import (
 )
 from brain.media_target import (
     MediaTarget,
+    classify_media_request,
     classify_spotify_media_request,
     parse_spotify_media_target,
 )
@@ -1033,8 +1034,19 @@ class DesktopActionPlanner:
             goal = str(goal).strip()
             request = interpret(goal)
         completion_contract = _completion_contract(goal)
-        media_request = classify_spotify_media_request(goal)
+        selected_provider = request.value("provider") if already_decided else ""
+        media_request = classify_media_request(
+            goal,
+            application=selected_provider or "Spotify",
+            preferred_provider=bool(selected_provider),
+        )
         media_target = media_request.target
+        if request.kind == "play_track" and request.has("title"):
+            media_target = MediaTarget(
+                application=selected_provider or "Spotify",
+                title=request.value("title"),
+                artist=request.value("artist"),
+            )
         effective_surface = self._effective_surface(goal, surface_context)
         if effective_surface.lock_to_surface and not effective_surface.available:
             return ActionPlanResult(
@@ -1091,7 +1103,7 @@ class DesktopActionPlanner:
                 assumption = decision.assumption
                 if request.has("title"):
                     media_target = MediaTarget(
-                        application="Spotify",
+                        application=request.value("provider") or "Spotify",
                         title=request.value("title"),
                         artist=request.value("artist"),
                     )

@@ -155,6 +155,8 @@ class Factors:
     existing_context_available: bool = False
     structured_data_available: bool = False
     permission_level: int = 1
+    preferred_provider_or_source: str = ""
+    preference_kind: str = ""
 
     def log_lines(self) -> tuple[str, ...]:
         return tuple(
@@ -167,6 +169,13 @@ class Factors:
                 ("existing_context", self.existing_context_available),
                 ("permission_level", self.permission_level),
             )
+        ) + tuple(
+            line for line in (
+                f"  preference_kind: {self.preference_kind}"
+                if self.preference_kind else "",
+                f"  preferred_provider_or_source: {self.preferred_provider_or_source}"
+                if self.preferred_provider_or_source else "",
+            ) if line
         )
 
 
@@ -274,6 +283,7 @@ def read_factors(
     decision: Any,
     *,
     route: Any = None,
+    execution_preference: Any = None,
 ) -> Factors:
     """Read the requirement from what earlier layers already established.
 
@@ -301,6 +311,12 @@ def read_factors(
             getattr(decision, "has_usable_context", False)
         ),
         permission_level=int(getattr(decision, "permission_level", 1) or 1),
+        preferred_provider_or_source=str(
+            getattr(execution_preference, "choice", "") or ""
+        ),
+        preference_kind=str(
+            getattr(execution_preference, "kind", "") or ""
+        ),
     )
 
 
@@ -343,6 +359,7 @@ class CapabilityChoice:
     # Everything considered, best first -- so the log can show the working
     # and a failure can fall back without deciding again from scratch.
     candidates: tuple[Candidate, ...] = ()
+    execution_preference: Any = None
 
     @property
     def fallbacks(self) -> tuple[str, ...]:
@@ -416,6 +433,7 @@ def select(
     *,
     route: Any = None,
     failures: Any = None,
+    execution_preference: Any = None,
 ) -> CapabilityChoice:
     """Choose the ability that meets this need, now that the need is known.
 
@@ -444,7 +462,10 @@ def select(
             "a question is outstanding; nothing runs until it is answered",
         )
 
-    factors = read_factors(goal, decision, route=route)
+    factors = read_factors(
+        goal, decision, route=route,
+        execution_preference=execution_preference,
+    )
 
     # Something that has to be *done* is not a choice between information
     # sources. The surface is whatever the request names, and the ladder
@@ -457,6 +478,7 @@ def select(
             "surface that does it",
             factors=factors,
             candidates=(Candidate(capability, 1.0, "the named surface"),),
+            execution_preference=execution_preference,
         )
 
     # Everything else is an information question, and more than one ability
@@ -481,6 +503,7 @@ def select(
         _selection_reason(best.capability, factors, goal),
         factors=factors,
         candidates=candidates,
+        execution_preference=execution_preference,
     )
 
 

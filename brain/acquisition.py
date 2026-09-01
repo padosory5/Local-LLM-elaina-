@@ -33,10 +33,34 @@ for rather than restated here. Nothing in this module names a site.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 CANDIDATE = "candidate"
 SOURCE_SURFACE = "source_surface"
 OFF_TARGET = "off_target"
+
+
+@dataclass(frozen=True)
+class SurfaceAcquisition:
+    """Results proven to come from the selected source surface."""
+
+    preferred: str = ""
+    selected: str = ""
+    results: tuple[dict[str, str], ...] = ()
+    hosts: tuple[str, ...] = ()
+    applied: bool = False
+    fallback: str = ""
+    why: str = ""
+
+    def log_block(self, *, capability: str = "web_search") -> str:
+        return "\n".join([
+            "[Execution Selection]",
+            f"  Required capability: {capability}",
+            f"  Preferred provider/source: {self.preferred or '(none)'}",
+            f"  Selected: {self.selected or '(none)'}",
+            f"  Fallback: {self.fallback or '(none)'}",
+            f"  Why: {self.why or '(none)'}",
+        ])
 
 # Publishing platforms. Checked before anything else, because the big
 # surfaces host blogs on their own domains -- m.blog.naver.com is Naver and
@@ -77,6 +101,33 @@ def host_of(url: str) -> str:
     match = re.search(r"https?://([^/]+)", str(url or ""), re.IGNORECASE)
     host = (match.group(1) if match else "").casefold()
     return host[4:] if host.startswith("www.") else host
+
+
+def same_site_host(host: str, allowed: str) -> bool:
+    """Whether two hosts belong to the same registrable site family.
+
+    Used only after navigation began from a verified selected-source URL, so
+    a legitimate first-party redirect can be read without broadening search
+    result attribution. Common country-code second-level suffixes retain one
+    extra label (``example.co.kr`` rather than the meaningless ``co.kr``).
+    """
+    host = str(host or "").casefold().strip(".")
+    allowed = str(allowed or "").casefold().strip(".")
+    if not host or not allowed:
+        return False
+    if host == allowed or host.endswith(f".{allowed}"):
+        return True
+
+    def root(value: str) -> str:
+        parts = value.split(".")
+        width = 3 if (
+            len(parts) >= 3
+            and len(parts[-1]) == 2
+            and parts[-2] in {"co", "com", "net", "org", "ac"}
+        ) else 2
+        return ".".join(parts[-width:]) if len(parts) >= width else value
+
+    return root(host) == root(allowed)
 
 
 def is_publishing(url: str) -> bool:
@@ -140,3 +191,90 @@ def surface_hosts(locale, category: str, goal: str = "") -> tuple[str, ...]:
         return tuple(locale.source_hosts_for_goal(category, goal))
     except Exception:
         return ()
+
+
+def hosts_for_source(preferred: str, known_hosts=()) -> tuple[str, ...]:
+    """Locale-known hosts whose name identifies ``preferred``.
+
+    This is deliberately lexical and generic: a multi-word source label is
+    matched to a locale-ranked host using its distinctive words. If the
+    locale does not know a matching host, nothing is guessed.
+    """
+    words = tuple(
+        word for word in re.findall(r"[a-z0-9가-힣]+", str(preferred).casefold())
+        if word not in {"app", "apps", "map", "maps", "music", "the"}
+    )
+    if not words:
+        return ()
+    return tuple(
+        str(host).casefold() for host in known_hosts
+        if any(word in str(host).casefold() for word in words)
+    )
+
+
+def select_surface_results(
+    results,
+    preferred: str,
+    *,
+    known_hosts=(),
+) -> SurfaceAcquisition:
+    """Keep only results demonstrably belonging to ``preferred``.
+
+    A source name in a general query is only a hint.  This function turns it
+    into an execution boundary: first discover the source's host from actual
+    result URLs (constrained by locale hosts when available), then retain only
+    pages on that host.  Concrete entity pages remain candidates; search/list
+    pages remain source surfaces and can never be ranked as recommendations.
+    """
+    preferred = " ".join(str(preferred or "").split()).strip()
+    raw = tuple(item for item in (results or ()) if isinstance(item, dict))
+    if not preferred:
+        return SurfaceAcquisition(
+            results=raw, applied=False, fallback="ordinary acquisition",
+            why="no preferred source was resolved",
+        )
+
+    words = tuple(
+        word for word in re.findall(r"[a-z0-9가-힣]+", preferred.casefold())
+        if word not in {"app", "apps", "map", "maps", "music", "the"}
+    )
+    allowed = tuple(str(host).casefold() for host in known_hosts if str(host))
+    discovered: list[str] = []
+    for item in raw:
+        host = host_of(item.get("url", ""))
+        if not host:
+            continue
+        if allowed and not any(
+            host == candidate or host.endswith(f".{candidate}")
+            for candidate in allowed
+        ):
+            continue
+        haystack = " ".join((
+            str(item.get("title", "")), host, str(item.get("url", "")),
+        )).casefold()
+        if not words or any(word in haystack for word in words):
+            discovered.append(host)
+
+    hosts = tuple(dict.fromkeys(discovered))
+    selected = tuple(
+        item for item in raw
+        if (host := host_of(item.get("url", "")))
+        and any(host == source or host.endswith(f".{source}") for source in hosts)
+    )
+    if not selected:
+        return SurfaceAcquisition(
+            preferred=preferred,
+            results=(),
+            hosts=hosts,
+            applied=False,
+            fallback="ordinary acquisition",
+            why="the preferred source returned no attributable pages",
+        )
+    return SurfaceAcquisition(
+        preferred=preferred,
+        selected=preferred,
+        results=selected,
+        hosts=hosts,
+        applied=True,
+        why="returned pages are on the selected source surface",
+    )

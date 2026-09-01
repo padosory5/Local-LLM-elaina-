@@ -158,10 +158,32 @@ class EngineWiringTests(unittest.TestCase):
 
         self.assertNotIn("their own language", context)
 
-    def test_the_locale_block_still_localizes_recommendations(self):
+    def test_generic_capability_context_does_not_prime_every_reply_with_locale(self):
         context = self.engine._capability_context()
 
-        self.assertIn("USER LOCATION", context)
+        self.assertNotIn("USER LOCATION", context)
+
+    def test_a_bare_greeting_is_short_and_never_reaches_the_locale_prompt(self):
+        routing = self.engine._route_turn("Hello", timings={})
+
+        self.assertEqual(routing.route.intent, "conversation")
+        self.assertTrue(routing.locked_response.strip())
+        self.assertLessEqual(len(routing.locked_response.split()), 8)
+        self.assertNotIn("South Korea", routing.locked_response)
+
+    def test_repeated_greetings_do_not_all_get_the_same_sentence(self):
+        # The point of the lock is to keep the locale prompt and the service
+        # pitch out of a greeting, not to say one sentence forever. Pinned to
+        # a literal, every greeting of the session was "Hey, how are you
+        # doing?" -- which is the thing a friend never does.
+        said = [
+            self.engine._route_turn(greeting, timings={}).locked_response
+            for greeting in ("Hello", "hi", "hey", "hello", "hi there")
+        ]
+
+        self.assertGreaterEqual(len(set(said)), 3)
+        for reply in said:
+            self.assertNotIn("South Korea", reply)
 
 
 if __name__ == "__main__":

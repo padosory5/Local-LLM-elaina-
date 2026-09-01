@@ -76,6 +76,7 @@ class DirectRoute:
 
 def read(
     utterance: str, *, recent_subject: str = "", profile=None,
+    media_application: str = "",
 ) -> DirectRoute | None:
     """What this request is, and where it belongs when that is readable.
 
@@ -85,7 +86,7 @@ def read(
     destination for it: a request that cannot proceed should be asked
     about wherever it was headed.
     """
-    goal = interpret(utterance)
+    goal = interpret(utterance, media_application=media_application)
     if goal.kind in {"generic", "unknown"}:
         return None
 

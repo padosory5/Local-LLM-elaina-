@@ -93,6 +93,13 @@ class CorrectionsWinTests(unittest.TestCase):
 
 class BackgroundTests(unittest.TestCase):
 
+    def test_explicit_school_beats_a_generic_router_topic(self):
+        focus = cf.update(
+            cf.start(), "I'm going to UW in Seattle.", subject="education",
+        )
+        self.assertEqual(focus.subject, "University of Washington")
+        self.assertEqual(focus.background.get("location"), "Seattle")
+
     def test_the_location_survives_a_correction_about_something_else(self):
         # "going to UW" was matching the location pattern, so the
         # correction about which school replaced the city.

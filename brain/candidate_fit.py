@@ -33,8 +33,9 @@ from brain import recommendation_state as rs
 _BUDGET_TOLERANCE = 1.25
 
 _AMOUNT = re.compile(
-    r"(?:[$₩€£¥]\s?)?(\d[\d,]*(?:\.\d+)?)\s*"
-    r"(?:won|krw|usd|eur|gbp|jpy|dollars?|euros?|pounds?|yen|원|만원)?",
+    r"(?:(?P<currency>[$₩€£¥])\s?)?"
+    r"(?P<number>\d[\d,]*(?:\.\d+)?)\s*"
+    r"(?P<unit>won|krw|usd|eur|gbp|jpy|dollars?|euros?|pounds?|yen|원|만원)?",
     re.IGNORECASE,
 )
 
@@ -49,7 +50,13 @@ def _amounts(text: str) -> tuple[float, ...]:
     """Every number in the text that could be a price, largest first."""
     found: list[float] = []
     for match in _AMOUNT.finditer(str(text or "")):
-        raw = match.group(1).replace(",", "")
+        # A bare four-digit number is commonly a street address, year,
+        # square footage or model number. It is not price evidence without
+        # a currency marker; measured live, "4733 21st Ave" was read as
+        # $4,733 rent and rejected an otherwise valid UW-area property.
+        if not match.group("currency") and not match.group("unit"):
+            continue
+        raw = match.group("number").replace(",", "")
         try:
             value = float(raw)
         except ValueError:
@@ -170,6 +177,26 @@ def _check(text: str, problem) -> tuple[list[str], list[str], list[str]]:
         else:
             unknown.append(value)
 
+    for value in problem.values(rs.HOUSING_TYPE):
+        wanted = value.casefold().strip()
+        if not wanted:
+            continue
+        if wanted in lowered:
+            matches.append(value)
+            continue
+        # A room or a multi-bedroom home is not an unchecked studio. These
+        # are the concrete false positives exposed by the live Zillow result
+        # page; treating them as unknown let them suppress the fallback.
+        if wanted == "studio" and re.search(
+            r"\b(?:room\s+(?:for\s+rent|in\b)|"
+            r"[1-9]\d*[- ]?(?:bed|bedroom)s?\b)",
+            lowered,
+            re.IGNORECASE,
+        ):
+            conflicts.append(value)
+        else:
+            unknown.append(value)
+
     for value in problem.values(rs.EXCLUSION):
         if value.casefold().strip() in lowered:
             conflicts.append(f"excluded {value}")
@@ -182,7 +209,13 @@ def _check(text: str, problem) -> tuple[list[str], list[str], list[str]]:
         if not prices:
             unknown.append(value)
             continue
-        if min(prices) > limits[0] * _BUDGET_TOLERANCE:
+        # A range's upper endpoint is the ceiling. The old lower-endpoint
+        # comparison rejected a $1,295 listing for a $1,000-$1,300 request.
+        ceiling = (
+            max(limits) if len(limits) > 1
+            else limits[0] * _BUDGET_TOLERANCE
+        )
+        if min(prices) > ceiling:
             conflicts.append(f"over {value}")
         else:
             matches.append(value)
@@ -190,6 +223,19 @@ def _check(text: str, problem) -> tuple[list[str], list[str], list[str]]:
     for value in problem.values(rs.AREA):
         if value.casefold().strip() in lowered:
             matches.append(value)
+
+    location = str(getattr(problem, "location", "") or "").strip()
+    if location:
+        if location.casefold() in lowered:
+            matches.append(location)
+        else:
+            named_cities = tuple(
+                match.group(1).strip() for match in _CITY_STATE.finditer(text)
+            )
+            if named_cities:
+                conflicts.append(f"location {location}")
+            else:
+                unknown.append(location)
 
     return matches, conflicts, unknown
 
@@ -218,6 +264,8 @@ def evaluate(
         matches, conflicts, unknown = _check(f"{name} {summary}", problem)
         score = len(matches) - 2.0 * len(conflicts) - 0.25 * len(unknown)
         kind = acquisition.classify(url, surface_hosts=surface_hosts)
+        if kind == acquisition.CANDIDATE and _COLLECTION_TITLE.search(name):
+            kind = acquisition.SOURCE_SURFACE
         problem_shape = (
             "" if kind != acquisition.CANDIDATE
             else off_target(name, url, summary, wanted)
@@ -351,6 +399,23 @@ _ARTICLE_PATH = re.compile(
     re.IGNORECASE,
 )
 
+# Search and category pages word their titles as plural inventories. They
+# may contain excellent listings in the snippet, but the page itself is not
+# one apartment and must never be ranked as though it were.
+_COLLECTION_TITLE = re.compile(
+    r"\b(?:studio\s+)?apartments\s+(?:for\s+rent|near|under|in)\b"
+    r"|\bapartments\s+for\s+rent\b"
+    r"|\bfind\s+(?:your\s+next\s+place|apartments?\s+for\s+rent|"
+    r"apartments?\s+near\s+you)\b"
+    r"|\bsearch\s+for\s+monthly\s+furnished\s+rentals\b"
+    r"|\bapartment\s*finder\b",
+    re.IGNORECASE,
+)
+
+_CITY_STATE = re.compile(
+    r"\b(?:in|near)\s+([A-Z][A-Za-z .'-]{1,40}?)\s+[A-Z]{2}\b",
+)
+
 # Something a candidate has and an article does not: a price to pay, or an
 # address to go to.
 _HAS_PRICE = re.compile(
@@ -423,7 +488,9 @@ def looks_like(name: str, url: str, summary: str, shape: str) -> bool:
 # Constraints worth holding out for. A situation explains the request and a
 # budget is settled arithmetically; what needs evidence is the qualities the
 # person actually asked for, and the things they ruled out.
-_IMPORTANT = (rs.ATTRIBUTE, rs.EXCLUSION)
+_IMPORTANT = (
+    rs.ATTRIBUTE, rs.HOUSING_TYPE, rs.BUDGET, rs.EXCLUSION,
+)
 
 
 def viable(fits) -> tuple[Fit, ...]:
@@ -447,6 +514,9 @@ def unresolved_constraints(fits, problem) -> tuple[str, ...]:
         for value in problem.values(name):
             if not any(value in fit.matches for fit in survivors):
                 unresolved.append(value)
+    location = str(getattr(problem, "location", "") or "").strip()
+    if location and not any(location in fit.matches for fit in survivors):
+        unresolved.append(location)
     return tuple(dict.fromkeys(unresolved))
 
 

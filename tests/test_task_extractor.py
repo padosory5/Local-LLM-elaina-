@@ -17,6 +17,22 @@ class FakeClient:
 
 
 class TaskExtractorTests(unittest.TestCase):
+    def test_apartment_candidate_prompt_requires_individual_verified_listing(self):
+        client = FakeClient([{"items": []}])
+        extractor = TaskExtractor(
+            client=client, model="qwen3:8b", keep_alive=-1,
+        )
+
+        extractor.extract_candidates(
+            "DP Studios, Studio, $1,269, Seattle",
+            shape="studio apartment listing",
+        )
+
+        prompt = client.calls[0]["messages"][0]["content"]
+        self.assertIn("individual named building or street address", prompt)
+        self.assertIn("unit type and rent", prompt)
+        self.assertIn("Exclude rooms, schools", prompt)
+
     def test_extracts_named_items_with_stated_attributes(self):
         extractor = TaskExtractor(
             client=FakeClient([

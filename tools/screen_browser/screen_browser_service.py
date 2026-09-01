@@ -78,10 +78,25 @@ class ScreenBrowserObserverAdapter:
         # notification or another app steals foreground focus. It is released
         # automatically only when the window actually closes.
         self._bound_handle: int | None = None
+        self._preferred_page_url = ""
 
     @property
     def connected(self) -> bool:
         return bool(self._finder.list_windows())
+
+    def prefer_page(self, url: str) -> None:
+        """Bind follow-ups to the browser window Elaina just opened.
+
+        The CDP observer can remember a page by URL. Screen-native control
+        cannot map a URL to a hidden window without inspecting it, but just
+        after ``open_url`` or ``open_search`` the launched browser is the
+        foreground window. Capturing that HWND supplies the same stable
+        handoff without pretending UI Automation can read background tabs.
+        """
+        self._preferred_page_url = str(url or "").strip()
+        active = self._finder.active_window()
+        if active is not None:
+            self._bound_handle = active.handle
 
     def list_tabs(self) -> tuple[TabInfo, ...]:
         windows = self._finder.list_windows()
@@ -300,6 +315,10 @@ class ScreenBrowserControlAdapter:
             expected_scan_id=expected_scan_id,
             window=self._handle(tab_index),
         )
+
+    def submit(self, tab_index: int | None = None) -> BrowserActionResult:
+        """Submit the currently focused field and verify the page changed."""
+        return self._control.submit(window=self._handle(tab_index))
 
     def dismiss_privacy_overlay(
         self,

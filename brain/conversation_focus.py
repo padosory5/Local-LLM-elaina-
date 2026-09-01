@@ -99,6 +99,22 @@ _DEICTIC_ONLY = re.compile(
     re.IGNORECASE,
 )
 
+_RELATIONAL_REFERENCE = re.compile(
+    r"\b(?:near|close\s+to|around)\s+(?:my|the)\s+"
+    r"(?:school|university|campus|work|office|home)\b",
+    re.IGNORECASE,
+)
+
+_EDUCATION_ANCHOR = re.compile(
+    r"\b(?:going|go|attending|attend|studying|study|heading)\s+"
+    r"(?:to|at)\s+([A-Z]{2,8}|[A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*){0,4})"
+    r"(?=\s+(?:in|at|near)\b|[,.!?]|$)",
+)
+
+_KNOWN_EDUCATION_ALIASES = {
+    "uw": "University of Washington",
+}
+
 _FILLER = re.compile(
     r"^(?:the|a|an|that|it|this|so|well|and|but|um|uh)\b\s*", re.IGNORECASE,
 )
@@ -152,6 +168,15 @@ def read_background(text: str) -> dict[str, str]:
 def points_at_something_known(text: str) -> bool:
     """Whether the turn is a pointer rather than a subject of its own."""
     return bool(_DEICTIC_ONLY.match(" ".join(str(text or "").split())))
+
+
+def read_education_anchor(text: str) -> str:
+    """An explicitly named school, ahead of a generic router topic."""
+    match = _EDUCATION_ANCHOR.search(str(text or ""))
+    if not match:
+        return ""
+    value = _clean(match.group(1))
+    return _KNOWN_EDUCATION_ALIASES.get(value.casefold(), value)
 
 
 @dataclass(frozen=True)
@@ -228,6 +253,26 @@ def update(
     background.update(read_background(text))
 
     corrected = read_correction(text)
+    explicit_anchor = read_education_anchor(text)
+    if explicit_anchor and not corrected:
+        return replace(
+            focus,
+            subject=explicit_anchor,
+            background=background,
+            corrected_to="",
+            expires_at=now + ttl,
+        )
+
+    # A relational request names a new task while pointing back to the
+    # current entity. Preserve that entity as the task's anchor before the
+    # generic subject ("rent near my school") replaces it.
+    if (
+        _RELATIONAL_REFERENCE.search(str(text or ""))
+        and focus.subject
+        and "about" not in background
+    ):
+        background["about"] = focus.subject
+
     if corrected:
         superseded = focus.superseded
         if focus.subject and focus.subject.casefold() != corrected.casefold():

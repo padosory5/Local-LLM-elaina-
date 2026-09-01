@@ -118,6 +118,8 @@ class TaskSessionStore:
         *,
         subject: str = "",
         topic_shift: bool = False,
+        location: str = "",
+        anchor: str = "",
     ) -> "RecommendationProblem":
         """Fold this turn into the open recommendation, or open a new one.
 
@@ -127,18 +129,56 @@ class TaskSessionStore:
         some spots") is never the turn that establishes it.
         """
         problem = self.active_recommendation()
-        if problem is None or not recommendation_state.about_the_same_thing(
-            problem, text, subject=subject, topic_shift=topic_shift,
+        same_problem = bool(
+            problem is not None
+            and recommendation_state.about_the_same_thing(
+                problem, text, subject=subject, topic_shift=topic_shift,
+            )
+        )
+        if (
+            same_problem
+            and problem is not None
+            and not recommendation_state.references_conversation_anchor(text)
         ):
+            # Conversation background is attached when a task explicitly
+            # points at it. It must not seep into an unrelated task on a
+            # later one-word clarification.
+            if not problem.location:
+                location = ""
+            if not problem.anchor:
+                anchor = ""
+        if problem is None or not same_problem:
+            if not recommendation_state.references_conversation_anchor(text):
+                location = ""
+                anchor = ""
             problem = recommendation_state.start(
                 subject or text,
                 domain=recommendation_state.domain_for(text),
                 now=time.monotonic(),
             )
         self._problem = recommendation_state.update(
-            problem, text, subject=subject, now=time.monotonic(),
+            problem,
+            text,
+            subject=subject,
+            location=location,
+            anchor=anchor,
+            now=time.monotonic(),
         )
         return self._problem
+
+    def answer_recommendation_dimension(
+        self, problem_id: str, dimension: str, reply: str,
+    ) -> "RecommendationProblem | None":
+        """Resolve a clarification only against the problem that owns it."""
+        problem = self.active_recommendation()
+        if problem is None or not problem_id or problem.id != problem_id:
+            return None
+        resolved = recommendation_state.apply_dimension_answer(
+            problem, dimension, reply, now=time.monotonic(),
+        )
+        if resolved is not None:
+            self._problem = resolved
+        return resolved
 
     def active_recommendation(self) -> "RecommendationProblem | None":
         problem = self._problem

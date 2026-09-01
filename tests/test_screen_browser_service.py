@@ -208,6 +208,20 @@ class TabIndexTests(unittest.TestCase):
         self.assertEqual(chosen.url, "https://second.example")
         self.assertEqual(continued.url, "https://second.example")
 
+    def test_prefer_page_binds_the_window_opened_by_desktop_control(self):
+        self.finder._windows = [
+            _window(100, active=False), _window(200, active=True),
+        ]
+
+        self.adapter.prefer_page("https://www.zillow.com/homes/for_rent/")
+        page = self.adapter.describe_page()
+
+        self.assertEqual(page.url, "https://second.example")
+        self.assertEqual(
+            self.adapter._preferred_page_url,
+            "https://www.zillow.com/homes/for_rent/",
+        )
+
 
 class PlannerElementLookupTests(unittest.TestCase):
     """The planner must trust the element id over a model-invented tab."""

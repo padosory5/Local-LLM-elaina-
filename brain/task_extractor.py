@@ -96,6 +96,66 @@ class TaskExtractor:
             return ()
         return self._parse_items(payload, source_type=source_type, source=source)
 
+    def extract_candidates(
+        self,
+        text: str,
+        *,
+        shape: str = "item",
+        source_type: str = "browser_observed",
+        source: str = "",
+    ) -> tuple[ExtractedItem, ...]:
+        """Extract concrete named entities from one rendered result page.
+
+        Unlike ``extract``, this path does not require numeric attributes: a
+        map result list can expose several restaurant names before exposing
+        ratings or addresses.  The caller still validates every returned name
+        verbatim against the observed page text and applies its own shape and
+        source-surface guards.
+        """
+        text = str(text).strip()
+        if not text:
+            return ()
+        housing_rule = ""
+        if "apartment listing" in str(shape).casefold():
+            housing_rule = (
+                " For apartment listings, return only an individual named "
+                "building or street address that explicitly shows the "
+                "requested unit type and rent. Exclude rooms, schools, "
+                "neighborhoods, and plural search/category pages."
+            )
+        try:
+            response = self.client.chat(
+                model=self.model,
+                messages=[{"role": "system", "content": (
+                    f"Extract concrete individual {shape} candidates named in "
+                    "the rendered source text below. Exclude the source/site "
+                    "itself, navigation labels, search controls, categories, "
+                    "collections, promotions, articles, and unnamed entries. "
+                    f"{housing_rule} "
+                    "Keep names verbatim. Capture only attributes explicitly "
+                    "stated beside each name; an empty attributes object is "
+                    "allowed. Return at most five items. Never invent a name "
+                    "or attribute. Return JSON only: "
+                    '{"items": [{"name": "<verbatim name>", '
+                    '"attributes": {"<attribute>": "<value>"}}]}\n'
+                    f"Text: {text}"
+                )}],
+                stream=False,
+                format="json",
+                options={"temperature": 0, "num_predict": 600},
+                keep_alive=self.keep_alive,
+                think=False,
+            )
+            message = self._value(response, "message", {})
+            payload = json.loads(str(self._value(message, "content", "")))
+        except Exception as error:
+            print(
+                "[Task Extractor] Candidate extraction failed safely: "
+                f"{type(error).__name__}: {error}"
+            )
+            return ()
+        return self._parse_items(payload, source_type=source_type, source=source)
+
     @staticmethod
     def _looks_extractable(text: str) -> bool:
         if text.count(",") < _MIN_COMMA_SEGMENTS:

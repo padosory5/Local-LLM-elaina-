@@ -67,6 +67,7 @@ from brain import conversation_focus
 from brain import preferences
 from brain import candidate_fit
 from brain import semantic_fit
+from brain.media_target import classify_media_request
 from brain.user_locale import UserLocale
 from brain.capabilities import CapabilityRegistry
 from brain.action_commitment import ActionCommitmentGuard
@@ -82,6 +83,7 @@ from brain.action_status import (
     action_for_intent,
     is_continuation,
 )
+from brain.social_lines import SocialLineSelector
 from brain.answer_condenser import AnswerCondenser
 from brain.grounded_values import GroundedValueGuard
 from brain import grounded_values
@@ -106,6 +108,7 @@ from agents.coordinator import AgentCoordinator
 from agents.research_agent import ResearchAgent, ResearchResult
 from agents.consent import (
     AgentConsentGate,
+    SemanticConsentDecision,
     SemanticConsentClassifier,
     apply_agent_permission,
 )
@@ -140,6 +143,28 @@ def _sentence_case(text: str) -> str:
     """
     text = str(text).strip()
     return text[:1].upper() + text[1:] if text else text
+
+
+def _drop_unfinished_sentence(text: str) -> str:
+    """Cut back to the last finished sentence after a budget cut-off.
+
+    Only ever called when Ollama reported ``done_reason == "length"`` --
+    generation stopped because it ran out of tokens, not because the answer
+    was over. Measured live, a reply went out as:
+
+        "Seattle's a cool place to live -- just don't forget the rain. Need"
+
+    The dangling fragment is spoken aloud by TTS, so it is worse in voice
+    than on screen. A truncated *first* sentence is kept rather than
+    returning nothing: half an answer still beats silence.
+    """
+    stripped = str(text or "").rstrip()
+    if not stripped or stripped[-1] in ".!?\"')]}…":
+        return stripped
+    finished = re.search(
+        r"^.*[.!?][\"')\]]*(?=\s)", stripped, flags=re.DOTALL,
+    )
+    return finished.group(0).rstrip() if finished else stripped
 
 
 # A request that names what it is about ("open youtube.com", "check the
@@ -183,6 +208,15 @@ _ABILITY_INVENTORY_QUESTION = re.compile(
 # hotel search the person has plainly finished discussing.
 _CLOSING_ACKNOWLEDGEMENT = re.compile(
     r"^\s*(?:ok(?:ay)?\s*,?\s*)?(?:thanks?|thank you|thx|고마워(?:요)?|감사(?:합니다|해요)?)\s*[.!?]*\s*$",
+    flags=re.IGNORECASE,
+)
+
+# A bare greeting needs no model, locale, capability inventory, or service
+# pitch. Full-match-only means "hello, can you check Zillow?" still reaches
+# the request behind the greeting.
+_SIMPLE_GREETING = re.compile(
+    r"^\s*(?:hi|hey|hello|hiya|good\s+(?:morning|afternoon|evening))"
+    r"(?:\s+elaina)?\s*[!.?]*\s*$",
     flags=re.IGNORECASE,
 )
 
@@ -772,6 +806,12 @@ class ChatEngine:
         self.action_status = ActionStatusSelector(
             language=self.response_language,
         )
+        # Greetings, for the same reason and with the same lifetime: a
+        # greeting must not wait on the model, and "the same words every
+        # time" is only visible across turns.
+        self.social_lines = SocialLineSelector(
+            language=self.response_language,
+        )
         # Whether to offer something nobody asked for, and how often not to.
         # 4E.2 worked out that an action would help and was not requested;
         # this is what finally reads that.
@@ -796,6 +836,7 @@ class ChatEngine:
         # profile: "use Google Maps for this one" must not erase a
         # standing preference for Naver Maps.
         self._source_override = ""
+        self._tool_override = ""
         self.answer_condenser = AnswerCondenser(
             self.client,
             self.model,
@@ -1122,33 +1163,66 @@ class ChatEngine:
         answer can repeat itself just as easily, and did.
         """
         text = str(reply or "").strip()
-        if not text or forced:
+        if not text:
             return reply
+        if forced:
+            # A forced reply is hand-written -- a greeting from the social
+            # bank, a consent question, a capability note -- not the model
+            # reaching for the nearest words. Both checks below exist to
+            # catch the model, and running the echo strip over curated text
+            # only damaged it: "hey" was answered "Hey! What's up?" and went
+            # out as "What's up?", because the guard read the deliberate
+            # mirroring in a greeting as parroting.
+            return reply
+        without_echo = ResponseQualityGuard.strip_current_turn_echo(
+            text, user_input,
+        )
+        if without_echo != text:
+            print(
+                "\n[Response Guard] Removed a restatement of the current "
+                "message."
+            )
+            text = without_echo
+            reply = without_echo
         try:
             history = self.conversation.get_history()
         except Exception:
             return reply
-        if not ResponseQualityGuard.should_retry(text, user_input, history):
+        echoed = ResponseQualityGuard.is_pure_echo(text, user_input)
+        if not echoed and not ResponseQualityGuard.should_retry(
+            text, user_input, history
+        ):
             return reply
 
-        print(
-            "\n[Response Guard] The final text repeated the previous answer "
-            "after a new or corrected message; regenerating once."
-        )
+        if echoed:
+            # Nothing to strip: the echo is the whole reply, so the only
+            # repair is to answer again. Live, "I see" was answered "I see."
+            print(
+                "\n[Response Guard] The final text only repeated the current "
+                "message back; regenerating once."
+            )
+            complaint = (
+                "You just said my own words back to me and added nothing. "
+                "Reply to what I said instead, in one or two short "
+                f"sentences, without restating it: {user_input}"
+            )
+        else:
+            print(
+                "\n[Response Guard] The final text repeated the previous "
+                "answer after a new or corrected message; regenerating once."
+            )
+            complaint = (
+                "That is the same answer you just gave, and it does not "
+                "address what I actually said. Answer this, and only "
+                f"this: {user_input}"
+            )
         try:
             response = self.client.chat(
                 model=model,
                 messages=[
                     *messages,
                     {"role": "assistant", "content": text},
-                    {
-                        "role": "user",
-                        "content": (
-                            "That is the same answer you just gave, and it "
-                            "does not address what I actually said. Answer "
-                            f"this, and only this: {user_input}"
-                        ),
-                    },
+                    {"role": "user", "content": complaint},
                 ],
                 stream=False,
                 options={
@@ -1167,7 +1241,16 @@ class ChatEngine:
             return reply
         if not fresh.strip():
             return reply
-        if ResponseQualityGuard.should_retry(fresh, user_input, history):
+        # The regenerated text is model output like any other, and was going
+        # straight out unexamined. Live, the retry for "I see" came back "I
+        # see. What's on your mind?" -- an echo the draft path would have
+        # stripped, released only because it arrived on this path instead.
+        fresh = ResponseQualityGuard.strip_current_turn_echo(
+            fresh, user_input,
+        )
+        if ResponseQualityGuard.is_pure_echo(
+            fresh, user_input
+        ) or ResponseQualityGuard.should_retry(fresh, user_input, history):
             # Twice is enough. Saying so is better than saying the same
             # wrong thing a third time.
             print("[Response Guard] The retry repeated it too; saying so.")
@@ -1208,6 +1291,11 @@ class ChatEngine:
         state = self._capability_state()
         if CapabilityRegistry.is_available("browser_control", state):
             offer = "I haven't actually checked that -- want me to look it up?"
+            task_sessions = getattr(self, "task_sessions", None)
+            active_problem = (
+                task_sessions.active_recommendation()
+                if task_sessions is not None else None
+            )
             self.capability_offer.offer(
                 capability_id="browser_control",
                 goal=(
@@ -1215,6 +1303,11 @@ class ChatEngine:
                     f"{self._grounded_context.get('subject', '') or user_input}"
                 ),
                 offer_text=offer,
+                task_id=(active_problem.id if active_problem is not None else ""),
+                task_query=(
+                    active_problem.search_query()
+                    if active_problem is not None else ""
+                ),
             )
         else:
             offer = "I haven't actually checked that, so I'd rather not guess."
@@ -1457,10 +1550,20 @@ class ChatEngine:
             return honest
 
         offer_text = CapabilityRegistry.recommendation_for(capability.id, state)
+        task_sessions = getattr(self, "task_sessions", None)
+        active_problem = (
+            task_sessions.active_recommendation()
+            if task_sessions is not None else None
+        )
         self.capability_offer.offer(
             capability_id=capability.id,
             goal=goal_text,
             offer_text=offer_text,
+            task_id=(active_problem.id if active_problem is not None else ""),
+            task_query=(
+                active_problem.search_query()
+                if active_problem is not None else ""
+            ),
         )
         print(
             f"[Commitment Guard] Promise turned into an offer for "
@@ -1490,7 +1593,6 @@ class ChatEngine:
                 "the user's own to enter. A request about 'this page' stays "
                 "locked to the captured foreground surface."
             ),
-            self.user_locale.context_text(self.response_language),
         ) if part)
 
     def _followup_subject(self, request: str) -> str:
@@ -1803,7 +1905,28 @@ class ChatEngine:
         # and cost a whole query before the plain one ran. What does work
         # is asking for the shape of thing wanted -- a price or a review is
         # what listings have and articles about listings do not.
-        if shape == candidate_fit.PRODUCT:
+        if str(getattr(problem, "category", "") or "") == "realestate":
+            # Rental search indexes respond much better to listing-shaped
+            # terms than to currency punctuation and conversational order.
+            # Keep every established value, just place the concrete market,
+            # unit type and rent evidence first.
+            location = str(getattr(problem, "location", "") or "").strip()
+            housing_type = " ".join(
+                problem.values(recommendation_state.HOUSING_TYPE)
+            ).strip()
+            budget = " ".join(
+                problem.values(recommendation_state.BUDGET)
+            ).replace("$", "").strip()
+            anchor = str(getattr(problem, "anchor", "") or "").strip()
+            return " ".join(part for part in (
+                location,
+                housing_type,
+                "apartment",
+                budget,
+                "monthly rent address available",
+                f"near {anchor}" if anchor else "",
+            ) if part)
+        elif shape == candidate_fit.PRODUCT:
             extra = "price buy"
         elif shape == candidate_fit.PLACE:
             extra = "reviews address"
@@ -1823,6 +1946,7 @@ class ChatEngine:
         is plainly about the future reaches the profile at all.
         """
         self._source_override = ""
+        self._tool_override = ""
         try:
             statement = preferences.read(user_input)
         except Exception as error:
@@ -1832,32 +1956,63 @@ class ChatEngine:
         if statement is None:
             return ""
         if statement.action == "override":
-            self._source_override = statement.value
+            if statement.kind == profile_module.TOOL_FOR:
+                self._tool_override = statement.value
+            elif statement.kind == profile_module.SOURCE_FOR:
+                self._source_override = statement.value
             # Scoped to the open task where there is one, so a clarifying
             # question in the middle of it does not drop back to the saved
             # default. A new task opens a new problem and drops it.
-            held = self.task_sessions.note_source_override(statement.value)
-            print("[Preference Resolution]")
-            print(f"  Domain: {statement.domain or '(this turn)'}")
-            print(f"  Current override: {statement.value}")
-            print(
-                f"  Applied: {statement.value} for "
-                + ("this task" if held else "this turn")
+            held = (
+                self.task_sessions.note_source_override(statement.value)
+                if statement.kind == profile_module.SOURCE_FOR else False
             )
+            resolution = preferences.resolve(
+                self.user_profile, statement.kind, statement.domain,
+                context=statement.context, override=statement.value,
+            )
+            print(resolution.log_block())
+            print(f"  Scope: {'this task' if held else 'this turn'}")
             return ""
         return preferences.apply(self.user_profile, statement)
 
-    def _sources_for(self, problem, query: str) -> tuple[str, ...]:
-        """The surfaces this market uses to find this kind of thing.
+    def _tool_preference_for(self, request: str, *, goal: Goal | None = None):
+        """Resolve TOOL_FOR only for a request that reads as music playback."""
+        provider_from_goal = goal.value("provider") if goal is not None else ""
+        base = preferences.resolve(
+            self.user_profile,
+            profile_module.TOOL_FOR,
+            "music",
+            override=self._tool_override,
+            default="Spotify",
+        )
+        provider = provider_from_goal or base.choice
+        if not provider:
+            return preferences.Resolution(
+                kind=profile_module.TOOL_FOR, domain="music", applied=False,
+                why="no provider is saved or named for this playback task",
+            )
+        media = classify_media_request(
+            request,
+            application=provider,
+            preferred_provider=True,
+        )
+        if goal is None and media.kind == "none":
+            return preferences.Resolution(
+                kind=profile_module.TOOL_FOR, domain="music", applied=False,
+                why="this turn is not a music playback request",
+            )
+        if provider_from_goal and provider_from_goal.casefold() != base.choice.casefold():
+            return preferences.resolve(
+                self.user_profile, profile_module.TOOL_FOR, "music",
+                override=provider_from_goal,
+            )
+        return base
 
-        Asked for by category, so the judgement stays in the locale layer:
-        a Korean restaurant search reaches for the Korean restaurant
-        surfaces for the same reason a hotel search reaches for the hotel
-        ones, and an unserved market reaches for none.
-        """
+    def _source_resolution(self, problem, query: str):
         domain = str(getattr(problem, "category", "") or "")
         ranked = acquisition.surface_names(self.user_locale, domain, query)
-        resolution = preferences.resolve(
+        return preferences.resolve(
             self.user_profile,
             profile_module.SOURCE_FOR,
             domain or str(getattr(problem, "subject", "") or ""),
@@ -1868,9 +2023,20 @@ class ChatEngine:
             ),
             default=ranked[0] if ranked else "",
         )
+
+    def _sources_for(self, problem, query: str, *, resolution=None) -> tuple[str, ...]:
+        """The surfaces this market uses to find this kind of thing.
+
+        Asked for by category, so the judgement stays in the locale layer:
+        a Korean restaurant search reaches for the Korean restaurant
+        surfaces for the same reason a hotel search reaches for the hotel
+        ones, and an unserved market reaches for none.
+        """
+        domain = str(getattr(problem, "category", "") or "")
+        ranked = acquisition.surface_names(self.user_locale, domain, query)
+        resolution = resolution or self._source_resolution(problem, query)
         if not resolution.applied or not resolution.choice:
             return ranked
-        print(resolution.log_block())
         # Preferred, not mandated: it goes to the front of the market's own
         # ranking rather than replacing it, so a task the surface cannot
         # serve can still be served by the next one down.
@@ -1887,7 +2053,7 @@ class ChatEngine:
             query,
         )
 
-    def _research_for_recommendation(self, query: str):
+    def _research_for_recommendation(self, query: str, *, resolution=None):
         """Find candidates, check them, and only then call any of them good.
 
         The cascade, in order, stopping as soon as the answer is settled:
@@ -1906,7 +2072,8 @@ class ChatEngine:
 
         shape = candidate_fit.expected_shape(problem)
         first = self._shaped_query(query, problem)
-        preferred = self._sources_for(problem, query)
+        resolution = resolution or self._source_resolution(problem, query)
+        preferred = self._sources_for(problem, query, resolution=resolution)
         if preferred:
             # The surface they asked for, named in the query itself. This is
             # what makes a saved preference change the result rather than
@@ -1916,8 +2083,18 @@ class ChatEngine:
             print("[Acquisition]")
             print(f"  Candidate shape: {shape}")
             print(f"  Source: {preferred[0]}")
-        fits = self._candidates_for(first, problem, shape)
+        fits = self._candidates_for(
+            first, problem, shape,
+            preferred_source=(preferred[0] if preferred else ""),
+        )
         queries = [first]
+        if preferred and not fits:
+            # The preference was consulted and attempted, but no returned page
+            # could be attributed to that surface.  Fall back honestly rather
+            # than claiming the preferred source supplied generic results.
+            first = self._shaped_query(query, problem)
+            fits = self._candidates_for(first, problem, shape)
+            queries.append(first)
 
         # A scoped search can come back thin, and an unscoped one can come
         # back full of articles. Either way a second attempt is worth one
@@ -1938,7 +2115,7 @@ class ChatEngine:
                 print(f"  Why: {reached[0][:48]} indexes these; it is not one")
             retry = self._retry_query(
                 query, problem, unresolved, shape,
-                self._sources_for(problem, query),
+                preferred,
             )
             if retry and retry.casefold() != first.casefold():
                 print("[Recommendation Reasoning]")
@@ -1951,7 +2128,10 @@ class ChatEngine:
                         else "too few candidates of the right kind"
                     )
                 )
-                more = self._candidates_for(retry, problem, shape)
+                more = self._candidates_for(
+                    retry, problem, shape,
+                    preferred_source=(preferred[0] if preferred else ""),
+                )
                 if more:
                     queries.append(retry)
                     fits = candidate_fit.evaluate(
@@ -1967,6 +2147,77 @@ class ChatEngine:
                         surface_hosts=self._surface_hosts_for(
                             problem, query,
                         ),
+                    )
+
+        if preferred and not candidate_fit.confident(fits, problem):
+            # Reaching a map/search page is proof of the surface, not proof of
+            # any restaurant/product/job.  If two source-directed attempts
+            # still produced no confirmed fit, use ordinary acquisition.
+            # A concrete-looking room or school is not enough to suppress
+            # fallback when the task asks specifically for a studio.
+            print("[Execution Selection]")
+            print("  Required capability: web_search")
+            print(f"  Preferred provider/source: {preferred[0]}")
+            print("  Selected: (none)")
+            print("  Fallback: ordinary acquisition")
+            print("  Why: preferred source yielded no confirmed fit")
+            generic_query = self._shaped_query(query, problem)
+            generic = self._candidates_for(generic_query, problem, shape)
+            if generic:
+                queries.append(generic_query)
+                fits = candidate_fit.evaluate(
+                    [
+                        {"title": fit.name, "url": fit.url, "summary": fit.summary}
+                        for fit in tuple(fits) + tuple(generic)
+                    ],
+                    problem,
+                    shape=shape,
+                    surface_hosts=self._surface_hosts_for(problem, query),
+                )
+
+        # A listing index often names an individual property but omits its
+        # rent from that first snippet. Verify one surviving named lead with
+        # one ordinary search before giving up; this is the existing bounded
+        # second search, aimed at the missing evidence rather than a new
+        # acquisition path.
+        if (
+            str(getattr(problem, "category", "") or "") == "realestate"
+            and not candidate_fit.confident(fits, problem)
+        ):
+            lead = next((
+                fit for fit in candidate_fit.viable(fits)
+                if not self._generic_source_label(fit.name)
+            ), None)
+            if lead is not None:
+                housing_type = " ".join(
+                    problem.values(recommendation_state.HOUSING_TYPE)
+                ).strip()
+                location = str(
+                    getattr(problem, "location", "") or ""
+                ).strip()
+                verification_query = " ".join(part for part in (
+                    lead.name, location, housing_type, "rent price",
+                ) if part)
+                print("[Recommendation Reasoning]")
+                print("  Decision: verify named rental")
+                print(f"  Why: {lead.name[:48]} has no confirmed rent yet")
+                verified = self._candidates_for(
+                    verification_query, problem, shape,
+                )
+                if verified:
+                    queries.append(verification_query)
+                    fits = candidate_fit.evaluate(
+                        [
+                            {
+                                "title": fit.name,
+                                "url": fit.url,
+                                "summary": fit.summary,
+                            }
+                            for fit in tuple(verified) + tuple(fits)
+                        ],
+                        problem,
+                        shape=shape,
+                        surface_hosts=self._surface_hosts_for(problem, query),
                     )
 
         if not fits:
@@ -2033,7 +2284,9 @@ class ChatEngine:
             queries=tuple(queries),
         )
 
-    def _candidates_for(self, query: str, problem, shape: str):
+    def _candidates_for(
+        self, query: str, problem, shape: str, *, preferred_source: str = "",
+    ):
         """One structured search, read as candidates, surfaces or neither."""
         try:
             found = self.research_agent.research_structured(
@@ -2045,10 +2298,415 @@ class ChatEngine:
                 f"\n  Why: structured results unavailable ({error})"
             )
             return ()
-        return candidate_fit.evaluate(
-            found, problem, shape=shape,
-            surface_hosts=self._surface_hosts_for(problem, query),
+        surface_hosts = self._surface_hosts_for(problem, query)
+        if preferred_source:
+            selection = acquisition.select_surface_results(
+                found, preferred_source, known_hosts=surface_hosts,
+            )
+            print(selection.log_block())
+            if not selection.applied:
+                preferred_hosts = acquisition.hosts_for_source(
+                    preferred_source, surface_hosts,
+                )
+                if preferred_hosts:
+                    try:
+                        targeted = self.research_agent.research_structured(
+                            search_query=f"{query} site:{preferred_hosts[0]}",
+                            max_results=6,
+                        )
+                    except Exception:
+                        targeted = ()
+                    selection = acquisition.select_surface_results(
+                        targeted, preferred_source, known_hosts=preferred_hosts,
+                    )
+                    print(selection.log_block())
+                if selection.applied:
+                    found = selection.results
+                    surface_hosts = selection.hosts
+                else:
+                    observed = self._candidates_from_preferred_surface(
+                        query, problem, shape,
+                        preferred_source=preferred_source,
+                        allowed_hosts=preferred_hosts,
+                    )
+                    if observed:
+                        return observed
+                    return ()
+            else:
+                found = selection.results
+                surface_hosts = selection.hosts
+        fits = candidate_fit.evaluate(
+            found, problem, shape=shape, surface_hosts=surface_hosts,
         )
+        if preferred_source and not self._usable_named_candidates(fits, shape):
+            # A search index can prove that the requested surface exists yet
+            # expose only its list page, or concrete record URLs whose titles
+            # are merely the URLs themselves.  In that case use the existing
+            # live browser capability against the selected host and extract
+            # names from what the rendered source actually shows.  This is a
+            # generic source escalation: the locale supplies the hosts and
+            # BrowserActionPlanner enforces them; no site-specific workflow
+            # lives here.
+            observed = self._candidates_from_preferred_surface(
+                query, problem, shape,
+                preferred_source=preferred_source,
+                allowed_hosts=surface_hosts,
+                seed_urls=tuple(
+                    str(item.get("url", "") or "")
+                    for item in sorted(
+                        found,
+                        key=lambda candidate: (
+                            0 if acquisition.classify(
+                                str(candidate.get("url", "") or ""),
+                                surface_hosts=surface_hosts,
+                            ) == acquisition.SOURCE_SURFACE else 1
+                        ),
+                    )
+                    if str(item.get("url", "") or "")
+                ),
+            )
+            if observed:
+                return observed
+        return fits
+
+    @staticmethod
+    def _usable_named_candidates(fits, shape: str) -> tuple:
+        """Concrete candidates with a human name and evidence of their shape."""
+        return tuple(
+            fit for fit in candidate_fit.viable(fits)
+            if not re.match(r"^https?://", str(fit.name or ""), re.IGNORECASE)
+            and not ChatEngine._generic_source_label(fit.name)
+            and not (
+                acquisition.host_of(fit.url)
+                and acquisition.host_of(fit.url) in fit.name.casefold()
+            )
+            and candidate_fit.looks_like(
+                fit.name, fit.url, fit.summary, shape,
+            )
+        )
+
+    def _candidates_from_preferred_surface(
+        self,
+        query: str,
+        problem,
+        shape: str,
+        *,
+        preferred_source: str,
+        allowed_hosts: tuple[str, ...],
+        seed_urls: tuple[str, ...] = (),
+    ):
+        """Read concrete entities from one selected live source surface.
+
+        The browser planner performs and verifies the navigation/search.  A
+        candidate is accepted only when TaskExtractor found its name in the
+        text read back from that live page; planner prose alone is never
+        enough to manufacture an entity.
+        """
+        try:
+            available = CapabilityRegistry.is_available(
+                "browser_control", self._capability_state(),
+            )
+        except Exception:
+            available = False
+        if not available or not allowed_hosts:
+            print("[Execution Selection]")
+            print("  Required capability: browser_control")
+            print(f"  Preferred provider/source: {preferred_source}")
+            print("  Selected: (none)")
+            print("  Fallback: ordinary acquisition")
+            print(
+                "  Why: selected source needs a live page read, but browser "
+                "control is unavailable"
+            )
+            return ()
+
+        print("[Execution Selection]")
+        print("  Required capability: browser_control")
+        print(f"  Preferred provider/source: {preferred_source}")
+        print(f"  Selected: {preferred_source}")
+        print("  Fallback: (none)")
+        print("  Why: indexed results exposed a source surface, not named entities")
+        goal = (
+            f"On {preferred_source}, search for {query}. Read the live result "
+            f"list and report at least three concrete {shape} names with any "
+            "visible rating, review, address, price, or availability evidence. "
+            f"Do not present {preferred_source} itself as an option. This is "
+            "a read-only lookup."
+        )
+        screen_run = getattr(self, "browser_driver", "") == "screen"
+        plan_result = None
+        page_texts = []
+        if screen_run:
+            self.cursor_driver.begin_run()
+        try:
+            if seed_urls:
+                unique_urls = tuple(dict.fromkeys(seed_urls))
+                surfaces = tuple(
+                    url for url in unique_urls
+                    if acquisition.classify(
+                        url, surface_hosts=allowed_hosts,
+                    ) == acquisition.SOURCE_SURFACE
+                )
+                if surfaces:
+                    surface_url = min(surfaces, key=len)
+                    self.browser_service.open_url(surface_url)
+                    if screen_run:
+                        time.sleep(2.0)
+                    # Preserve the indexed, already-filtered result page
+                    # before trying its location field. Marketplace search
+                    # boxes commonly accept a city, not a full semantic
+                    # query; rewriting the field can discard the studio and
+                    # budget filters encoded by the result URL.
+                    initial_page = self.browser_observer.read_text(None)
+                    if getattr(initial_page, "status", "") == "observed":
+                        page_texts.append(initial_page)
+                    direct_search = False
+                    observation = self.browser_observer.describe_page(None)
+                    field = next((
+                        element for element in getattr(observation, "elements", ())
+                        if str(getattr(element, "role", "") or "").casefold()
+                        in {"textbox", "searchbox", "combobox"}
+                    ), None)
+                    submit = getattr(self.browser_control, "submit", None)
+                    if field is not None and callable(submit):
+                        filled = self.browser_control.fill(
+                            getattr(observation, "tab_index", None),
+                            field.id,
+                            query,
+                            expected_label=field.label,
+                            expected_url=getattr(observation, "url", ""),
+                            expected_scan_id=getattr(observation, "scan_id", ""),
+                            expected_href=getattr(field, "href", ""),
+                        )
+                        if getattr(filled, "status", "") == "filled":
+                            submitted = submit(
+                                getattr(observation, "tab_index", None),
+                            )
+                            direct_search = getattr(
+                                submitted, "status", "",
+                            ) == "clicked"
+                            if direct_search and screen_run:
+                                time.sleep(2.0)
+                    if not direct_search:
+                        plan_result = self.browser_action_planner.act(
+                            (
+                                f"Use the search field on the currently open "
+                                f"{preferred_source} page to search for {query}. "
+                                f"Read the result list and report concrete {shape} "
+                                "names with visible rating, review, address, hours, "
+                                "or category evidence. This is a read-only lookup."
+                            ),
+                            allow_direct_navigation=False,
+                            allowed_hosts=tuple(allowed_hosts),
+                            source_names=(preferred_source,),
+                        )
+                    observed = self.browser_observer.read_text(None)
+                    if getattr(observed, "status", "") == "observed":
+                        page_texts.append(observed)
+                detail_urls = tuple(
+                    url for url in unique_urls if url not in surfaces
+                )
+                for url in detail_urls[:4]:
+                    host = acquisition.host_of(url)
+                    if not any(
+                        host == allowed or host.endswith(f".{allowed}")
+                        for allowed in allowed_hosts
+                    ):
+                        continue
+                    self.browser_service.open_url(url)
+                    if screen_run:
+                        # Map/directory surfaces populate their result lists
+                        # after DOMContentLoaded. Give the accessible tree one
+                        # short bounded render window before reading it.
+                        time.sleep(2.0)
+                    observed = self.browser_observer.read_text(None)
+                    if getattr(observed, "status", "") == "observed":
+                        page_texts.append(observed)
+            else:
+                plan_result = self.browser_action_planner.act(
+                    goal,
+                    allow_direct_navigation=False,
+                    allowed_hosts=tuple(allowed_hosts),
+                    source_names=(preferred_source,),
+                )
+                # A bounded planner may stop after reaching and observing the
+                # right surface (for example, a later optional click went stale).
+                # The live page is still valid evidence, so read and validate it
+                # before deciding that the source execution failed.
+                page_texts.append(self.browser_observer.read_text(None))
+        except Exception as error:
+            print("[Execution Selection]")
+            print("  Required capability: browser_control")
+            print(f"  Preferred provider/source: {preferred_source}")
+            print("  Selected: (none)")
+            print("  Fallback: ordinary acquisition")
+            print(
+                "  Why: live source read failed safely "
+                f"({type(error).__name__}: {error})"
+            )
+            return ()
+        finally:
+            if screen_run:
+                reclaimed = (
+                    plan_result is not None
+                    and getattr(plan_result, "failure_code", "") == "user_took_over"
+                )
+                self.cursor_driver.end_run(restore=not reclaimed)
+
+        page_texts = [
+            page for page in page_texts
+            if getattr(page, "status", "") == "observed"
+        ]
+        if not page_texts:
+            print("[Execution Selection]")
+            print("  Required capability: browser_control")
+            print(f"  Preferred provider/source: {preferred_source}")
+            print("  Selected: (none)")
+            print("  Fallback: ordinary acquisition")
+            print("  Why: the live source page exposed no readable text")
+            return ()
+        page_texts = [
+            page for page in page_texts
+            if (
+                (page_host := acquisition.host_of(
+                    str(getattr(page, "url", "") or "")
+                ))
+                and any(
+                    acquisition.same_site_host(page_host, host)
+                    for host in allowed_hosts
+                )
+            )
+        ]
+        if not page_texts:
+            print("[Execution Selection]")
+            print("  Required capability: browser_control")
+            print(f"  Preferred provider/source: {preferred_source}")
+            print("  Selected: (none)")
+            print("  Fallback: ordinary acquisition")
+            print("  Why: the rendered page was not on the selected source host")
+            return ()
+        texts = tuple(
+            str(getattr(page, "text", "") or "").strip()
+            for page in page_texts
+            if str(getattr(page, "text", "") or "").strip()
+        )
+        text = "\n".join(texts).strip()
+        if not text:
+            return ()
+        candidate_extractor = getattr(
+            self.task_extractor, "extract_candidates", None,
+        )
+        used_candidate_extractor = callable(candidate_extractor)
+        extractor_shape = shape
+        if str(getattr(problem, "category", "") or "") == "realestate":
+            housing_type = " ".join(
+                problem.values(recommendation_state.HOUSING_TYPE)
+            ).strip()
+            extractor_shape = (
+                f"{housing_type} apartment listing".strip()
+            )
+        items = tuple(
+            item
+            for page_body in texts
+            for item in (
+                candidate_extractor(
+                    page_body,
+                    shape=extractor_shape,
+                    source_type="browser_observed",
+                    source=preferred_source,
+                )
+                if used_candidate_extractor else self.task_extractor.extract(
+                    page_body,
+                    source_type="browser_observed",
+                    source=preferred_source,
+                )
+            )
+        )
+        print("[Acquisition]")
+        print(f"  Live source pages read: {len(page_texts)}")
+        print(f"  Live source text chars: {len(text)}")
+        print(f"  Extracted named items: {len(items)}")
+        if items:
+            print(
+                "  Extracted: "
+                + "; ".join(
+                    str(getattr(item, "name", "") or "")[:48]
+                    for item in items[:5]
+                )
+            )
+        lowered = text.casefold()
+        found = []
+        for item in items:
+            name = str(getattr(item, "name", "") or "").strip()
+            if not name or name.casefold() not in lowered:
+                continue
+            if self._generic_source_label(name):
+                continue
+            attributes = getattr(item, "attributes", {}) or {}
+            if (
+                not used_candidate_extractor
+                and not self._extracted_item_has_shape(attributes, shape)
+            ):
+                continue
+            detail = "; ".join(
+                f"{key}: {value}" for key, value in attributes.items()
+            )
+            found.append({
+                "title": name,
+                "url": "",
+                "summary": " ".join(
+                    part for part in (
+                        detail, f"Observed on {preferred_source}."
+                    ) if part
+                ),
+            })
+        if not found:
+            print("[Execution Selection]")
+            print("  Required capability: browser_control")
+            print(f"  Preferred provider/source: {preferred_source}")
+            print("  Selected: (none)")
+            print("  Fallback: ordinary acquisition")
+            print(
+                "  Why: selected live source yielded no concrete named entities"
+                + (
+                    f" ({getattr(plan_result, 'failure_code', '')})"
+                    if getattr(plan_result, "failure_code", "") else ""
+                )
+            )
+            print(f"  Source text excerpt: {' '.join(text.split())[:240]}")
+            return ()
+        return candidate_fit.evaluate(
+            found, problem, shape=shape, surface_hosts=allowed_hosts,
+        )
+
+    @staticmethod
+    def _extracted_item_has_shape(attributes, shape: str) -> bool:
+        """Require live extraction to carry evidence of the requested kind."""
+        keys = " ".join(str(key).casefold() for key in attributes)
+        if shape == candidate_fit.PLACE:
+            return any(token in keys for token in (
+                "rating", "review", "address", "hours", "category",
+                "평점", "리뷰", "주소", "영업", "업종",
+            ))
+        if shape == candidate_fit.PRODUCT:
+            return any(token in keys for token in (
+                "price", "cost", "model", "seller", "stock", "availability",
+                "가격", "모델", "판매", "재고",
+            ))
+        return bool(attributes)
+
+    @staticmethod
+    def _generic_source_label(name: str) -> bool:
+        """Whether a short name denotes a source UI, not an entity."""
+        text = " ".join(str(name or "").split()).strip()
+        if not text or len(text.split()) > 4:
+            return False
+        return bool(re.search(
+            r"(?:\b(?:maps?|places?|booking|search|results?|marketplace)"
+            r"|지도|플레이스|예약|검색)\s*$",
+            text,
+            re.IGNORECASE,
+        ))
 
     @staticmethod
     def _retry_query(query, problem, unresolved, shape, sources=()) -> str:
@@ -2080,9 +2738,11 @@ class ChatEngine:
         is now known -- never a search on its own, because answering a
         question is not the same as asking for results.
         """
-        problem = self.task_sessions.note_recommendation_turn(
-            reply, subject=pending.goal.utterance,
+        problem = self.task_sessions.answer_recommendation_dimension(
+            pending.task_id, pending.slot, reply,
         )
+        if problem is None:
+            return None, pending.question
         print("[Recommendation Reasoning]")
         print(f"  Decision: record {pending.slot}")
         print(f"  Why: the turn answers the question she just asked")
@@ -2095,14 +2755,35 @@ class ChatEngine:
                 goal=Goal(kind="recommendation", utterance=problem.subject),
                 slot=nxt,
                 question=question,
+                task_id=problem.id,
             )
             self.task_sessions.note_dimension_asked(nxt)
             spoken = f"Got it. {question}"
         else:
-            spoken = (
-                f"Got it -- {problem.search_query()}. Want me to pull "
-                "some up?"
-            )
+            if problem.lookup_requested:
+                query = problem.search_query()
+                print("[Clarification]")
+                print(f"  task_id: {problem.id}")
+                print(f"  dimension: {pending.slot}")
+                print(f"  answer accepted: {reply}")
+                print("  cleared: yes")
+                return IntentDecision(
+                    intent="web_search",
+                    confidence=1.0,
+                    normalized_request=query,
+                    reason=(
+                        "The original lookup request resumes after its "
+                        "last clarification was answered."
+                    ),
+                    is_follow_up=True,
+                    speech_act="action_request",
+                    action_requested=True,
+                    action_target=query,
+                    requires_external_evidence=True,
+                    recommendation_needed=True,
+                    search_query=query,
+                ), ""
+            spoken = f"Got it -- {problem.search_query()}."
         return IntentDecision(
             intent="conversation",
             confidence=1.0,
@@ -2141,6 +2822,7 @@ class ChatEngine:
             goal=Goal(kind="recommendation", utterance=problem.subject),
             slot=dimension,
             question=question,
+            task_id=problem.id,
         )
         self.task_sessions.note_dimension_asked(dimension)
         print("[Recommendation Reasoning]")
@@ -2171,7 +2853,9 @@ class ChatEngine:
         )
         return decision, capability
 
-    def _track_recommendation(self, route, goal, decision, user_input=""):
+    def _track_recommendation(
+        self, route, goal, decision, user_input="", *, resume_problem_id="",
+    ):
         """Keep the open recommendation current, and say why in the log.
 
         A recommendation is a problem the conversation works on across
@@ -2181,6 +2865,15 @@ class ChatEngine:
         so this runs whether or not the current turn acts.
         """
         active = self.task_sessions.active_recommendation()
+        if (
+            active is not None
+            and resume_problem_id
+            and active.id == resume_problem_id
+        ):
+            print("[Recommendation Reasoning]")
+            print(f"  Decision: {decision.mode}")
+            print("  Why: the existing task payload resumed")
+            return active
         wants_one = bool(
             getattr(goal, "recommendation", False)
             or goal.intent in {goal_intent.RECOMMEND, goal_intent.COMPARE}
@@ -2209,6 +2902,14 @@ class ChatEngine:
             request,
             subject=subject,
             topic_shift=bool(getattr(route, "topic_shift", False)),
+            location=(
+                self.task_sessions.focus().background.get("location", "")
+                if self.task_sessions.focus() is not None else ""
+            ),
+            anchor=(
+                self.task_sessions.focus().background.get("about", "")
+                if self.task_sessions.focus() is not None else ""
+            ),
         )
 
         self._recommendation_restarted = (
@@ -2247,26 +2948,31 @@ class ChatEngine:
         request = str(getattr(route, "normalized_request", "") or "").strip()
         problem = self.task_sessions.active_recommendation()
         focus = self.task_sessions.focus()
-        if problem is not None and problem.constraints:
+        if problem is not None and (
+            problem.constraints or problem.lookup_requested
+        ):
             resolved = problem.search_query(request or router_query)
             if resolved:
-                # A real-world recommendation is answered in the market the
-                # person can actually buy or eat in. The locale layer already
-                # knows which that is, and leaves a query that names its own
-                # destination alone.
+                # Strong task and conversation context comes first. Locale is
+                # only a fallback, so it cannot suppress a known destination.
+                resolved = self._with_focus(
+                    resolved, focus, include_subject=False,
+                )
                 resolved = self.user_locale.localize_query(
                     resolved,
                     category=problem.category,
                     assume_local=problem.real_world,
                 )
             if resolved and resolved.casefold() != router_query.casefold():
-                print(f"[Recommendation Context] Query: {resolved}")
-                return self._with_focus(resolved, focus)
+                print("[Query]")
+                print("  source: active_task")
+                print(f"  text: {resolved}")
+                return resolved
         return self._with_focus(
             router_query or self._search_subject(route, goal), focus,
         )
 
-    def _with_focus(self, query: str, focus) -> str:
+    def _with_focus(self, query: str, focus, *, include_subject: bool = True) -> str:
         """Add what the conversation has established to the search.
 
         Measured live: three turns had settled Seattle and UW, and "which
@@ -2287,7 +2993,10 @@ class ChatEngine:
         except Exception:
             already_placed = False
         location = focus.background.get("location", "")
-        for part in focus.query_context():
+        context = focus.query_context()
+        if not include_subject and context:
+            context = context[1:]
+        for part in context:
             words = part.split()
             if any(word.casefold() in seen for word in words):
                 continue
@@ -2420,11 +3129,17 @@ class ChatEngine:
         if offer is None:
             return quiet("the cooldown is still running")
 
+        active_problem = self.task_sessions.active_recommendation()
         self.capability_offer.offer(
             capability_id=capability_id,
             goal=offer.goal,
             offer_text=offer.text,
             proactive=True,
+            task_id=(active_problem.id if active_problem is not None else ""),
+            task_query=(
+                active_problem.search_query()
+                if active_problem is not None else ""
+            ),
         )
         print(f"[Recommendation] Offered {capability_id}: {offer.text}")
         separator = " " if text.endswith((".", "!", "?")) else ". "
@@ -2673,6 +3388,14 @@ class ChatEngine:
             ), None
 
         if not self.computer_control_mode.enabled:
+            provider = clarified_goal.value("provider") if clarified_goal else ""
+            if provider:
+                print("[Execution Selection]")
+                print("  Required capability: ui_control")
+                print(f"  Preferred provider/source: {provider}")
+                print("  Selected: (none)")
+                print("  Fallback: (none)")
+                print("  Why: Desktop Control Mode is off")
             return self.brief_responses.generate(
                 "control_mode_off",
                 subject=route.action_target,
@@ -2839,11 +3562,22 @@ class ChatEngine:
         through brief_responses' "ui_action_offer" kind for the same varied,
         natural phrasing already used for force-quit/delete offers.
         """
+        selected_provider = (
+            clarified_goal.value("provider")
+            if clarified_goal is not None else ""
+        )
         # _handle_computer_action normally enforces this first. Keep the
         # boundary here as well because task continuations and integration
         # callers can reach this helper directly; mode-off must never become
         # a back door into the native UI planner.
         if not self.computer_control_mode.enabled:
+            if selected_provider:
+                print("[Execution Selection]")
+                print("  Required capability: ui_control")
+                print(f"  Preferred provider/source: {selected_provider}")
+                print("  Selected: (none)")
+                print("  Fallback: (none)")
+                print("  Why: Desktop Control Mode is off")
             return self.brief_responses.generate(
                 "control_mode_off",
                 subject=route.action_target,
@@ -2868,6 +3602,15 @@ class ChatEngine:
             normalized_goal = str(route.normalized_request or "").strip()
             original_goal = str(original_request or "").strip()
             planner_goal = normalized_goal or original_goal
+            malformed = re.match(
+                r"^([a-z]+)\s+\1\b", planner_goal, re.IGNORECASE,
+            )
+            if malformed and original_goal:
+                # Router paraphrases are advisory.  A duplicated leading verb
+                # ("Play Play some music") is malformed and can change what a
+                # downstream parser/types.  The raw request is the safer input;
+                # typed Goal slots remain authoritative when available.
+                planner_goal = original_goal
             if (
                 original_goal
                 and original_goal.casefold() != planner_goal.casefold()
@@ -2882,6 +3625,13 @@ class ChatEngine:
             # scoped to this one task, so input from ten minutes ago cannot
             # abort a run that has only just started.
             self.cursor_driver.begin_run()
+            if selected_provider:
+                print("[Execution Selection]")
+                print("  Required capability: ui_control")
+                print(f"  Preferred provider/source: {selected_provider}")
+                print(f"  Selected: {selected_provider}")
+                print("  Fallback: general desktop planner")
+                print("  Why: resolved actionable user preference")
             plan_result = None
             try:
                 plan_result = self.desktop_action_planner.act(
@@ -2919,6 +3669,13 @@ class ChatEngine:
             f"recovery={plan_result.recovery_used} "
             f"failure={plan_result.failure_code or '(none)'}"
         )
+        if selected_provider and plan_result.status not in {"done", "needs_clarification"}:
+            print("[Execution Selection]")
+            print("  Required capability: ui_control")
+            print(f"  Preferred provider/source: {selected_provider}")
+            print("  Selected: (failed)")
+            print("  Fallback: general desktop planner exhausted")
+            print(f"  Why: {plan_result.failure_code or plan_result.status}")
 
         resolved_surface = plan_result.surface_context.to_public_snapshot()
         if resolved_surface:
@@ -3438,6 +4195,7 @@ class ChatEngine:
         # the ones the user is actually choosing between.
         if (
             not use_screen_vision
+            and not locked_response
             and decision.acts
             and capability.capability == capability_selection.WEB_SEARCH
         ):
@@ -3448,6 +4206,7 @@ class ChatEngine:
                 )
                 research_result = self._research_for_recommendation(
                     resolved_query,
+                    resolution=getattr(capability, "execution_preference", None),
                 ) or self.research_agent.research(
                     request=route.normalized_request,
                     search_query=resolved_query,
@@ -4062,8 +4821,15 @@ class ChatEngine:
             calculation=calculation_needs_own_math,
         )
 
+        # Whether generation stopped because it ran out of budget rather than
+        # because the answer was finished. Ollama reports this on the final
+        # chunk and it was being dropped on the floor, so a sentence cut in
+        # half went out as speech.
+        ran_out_of_budget = False
+
         def collect_answer() -> str:
             """Collect locally streamed tokens before publishing clean speech."""
+            nonlocal ran_out_of_budget
             parts: list[str] = []
             response_stream = self.client.chat(
                 model=active_model,
@@ -4082,6 +4848,8 @@ class ChatEngine:
                 message = chunk.get("message")
                 if message:
                     parts.append(str(message.get("content", "")))
+                if chunk.get("done") and chunk.get("done_reason") == "length":
+                    ran_out_of_budget = True
             return "".join(parts)
 
         generation_started = time.perf_counter()
@@ -4092,6 +4860,14 @@ class ChatEngine:
                 raw_reply = effective_forced_response
             else:
                 raw_reply = collect_answer()
+                if ran_out_of_budget:
+                    finished = _drop_unfinished_sentence(raw_reply)
+                    if finished != raw_reply.rstrip():
+                        print(
+                            "\n[Response Guard] Generation hit the length "
+                            "budget; dropped the unfinished sentence."
+                        )
+                        raw_reply = finished
 
             # Some Ollama/Qwen3-VL combinations return an empty streamed
             # content field. Retry once with Ollama's documented non-streaming
@@ -4962,6 +5738,15 @@ class ChatEngine:
             "\n\nCURRENTLY AVAILABLE AI AGENTS\n"
             f"{self._capability_context()}"
         )
+        if routing.problem is not None and routing.problem.real_world:
+            # Market context belongs to concrete acquisition and discovery,
+            # not to every conversation. This preserves local fallbacks for
+            # real recommendations without priming greetings or life advice
+            # to mention the user's home country.
+            context_prompt += (
+                "\n\n"
+                f"{self.user_locale.context_text(self.response_language)}"
+            )
         if agent_permission_context:
             context_prompt += (
                 "\n\nAGENT PERMISSION STATE\n"
@@ -5033,6 +5818,89 @@ class ChatEngine:
             if hasattr(self, "clarification")
             else None
         )
+        active_problem = self.task_sessions.active_recommendation()
+        if (
+            pending_clarification is not None
+            and pending_clarification.goal.kind == "recommendation"
+            and pending_clarification.task_id
+            and (
+                active_problem is None
+                or pending_clarification.task_id != active_problem.id
+            )
+        ):
+            print(
+                "[Clarification] stale question cleared: owning task is "
+                "no longer active"
+            )
+            self.clarification.clear()
+            pending_clarification = None
+        if (
+            _SIMPLE_GREETING.fullmatch(user_input)
+            and not any((
+                pending_offer,
+                pending_computer,
+                pending_task,
+                pending_strategy,
+                pending_capability,
+                pending_clarification,
+            ))
+            and not has_explicit_attachment
+            and not continuing_agent_flow
+        ):
+            # A greeting is social glue, not an opening to advertise tools or
+            # the user's home market. Keep it out of the general model prompt
+            # -- but not by pinning it to one sentence, which made every
+            # greeting of the session identical. SocialLineSelector keeps the
+            # model out of it and still varies the words.
+            timings["route"] = time.perf_counter() - route_started
+            return TurnRouting(
+                route=IntentDecision(
+                    intent="conversation",
+                    confidence=1.0,
+                    normalized_request=user_input,
+                    reason="The user offered a simple greeting.",
+                    speech_act="greeting",
+                ),
+                user_input=user_input,
+                locked_response=self.social_lines.greeting(user_input),
+            )
+        if (
+            active_problem is not None
+            and active_problem.evidence
+            and recommendation_state.is_acknowledgement(user_input)
+            and not any((
+                pending_offer,
+                pending_computer,
+                pending_task,
+                pending_strategy,
+                pending_capability,
+                pending_clarification,
+            ))
+            and not has_explicit_attachment
+            and not continuing_agent_flow
+        ):
+            # A reaction to delivered results is conversational closure, not
+            # a new recommendation value and not a reason to regenerate the
+            # same results through the model. Closure still has to vary,
+            # though: this was pinned to "Got it." and said it every time.
+            # The acknowledgement bank already exists and already tracks what
+            # was said recently, so it is reused rather than copied.
+            timings["route"] = time.perf_counter() - route_started
+            acknowledgement = self.action_status.select(StatusContext(
+                action="checking", phase="acknowledgement", force=True,
+            ))
+            return TurnRouting(
+                route=IntentDecision(
+                    intent="conversation",
+                    confidence=1.0,
+                    normalized_request=user_input,
+                    reason="The user acknowledged the delivered task results.",
+                    is_follow_up=True,
+                ),
+                user_input=user_input,
+                locked_response=acknowledgement or "Got it.",
+                problem=active_problem,
+            )
         if (
             _CLOSING_ACKNOWLEDGEMENT.fullmatch(user_input)
             and not has_explicit_attachment
@@ -5067,6 +5935,7 @@ class ChatEngine:
         # offer except an answer to a question she just asked -- found by
         # the turn suite: an unanswered "want me to use it now?" swallowed
         # every following request and re-offered itself instead.
+        tool_preference = self._tool_preference_for(user_input)
         understood = (
             None if has_explicit_attachment or continuing_agent_flow
             else front_door.read(
@@ -5077,6 +5946,9 @@ class ChatEngine:
                     else ""
                 ),
                 profile=getattr(self, "user_profile", None),
+                media_application=(
+                    tool_preference.choice if tool_preference.applied else ""
+                ),
             )
         )
         locked_response = ""
@@ -5084,6 +5956,8 @@ class ChatEngine:
         approved_task_action: PendingTaskAction | None = None
         approved_strategy_task_state: TaskState | None = None
         declined_strategy_task_state: TaskState | None = None
+        resumed_problem_id = ""
+        answered_recommendation = False
 
         def route_current(
             transcript: str,
@@ -5139,6 +6013,9 @@ class ChatEngine:
             and not continuing_agent_flow
             and not reads_as_new_request(user_input)
             and len(user_input.split()) <= 12
+            and recommendation_state.answer_for_dimension(
+                pending_clarification.slot, user_input,
+            ) is not None
         ):
             # She asked which kind, and this is the answer. It belongs to
             # the open recommendation before any general reading of it gets
@@ -5149,15 +6026,46 @@ class ChatEngine:
             route, locked_response = self._answered_dimension(
                 pending_clarification, user_input,
             )
+            if locked_response:
+                timings["route"] = time.perf_counter() - route_started
+                return TurnRouting(
+                    route=route,
+                    user_input=user_input,
+                    locked_response=locked_response,
+                    problem=self.task_sessions.active_recommendation(),
+                )
+            answered_recommendation = True
+            resumed_problem_id = pending_clarification.task_id
+            pending_clarification = None
+
+        elif (
+            pending_clarification is not None
+            and pending_clarification.goal.kind == "recommendation"
+            and not has_explicit_attachment
+            and not continuing_agent_flow
+            and not reads_as_new_request(user_input)
+            and len(user_input.split()) <= 12
+        ):
+            # An acknowledgement contains no value for the asked dimension.
+            # Keep the owned question pending; never turn "yeah" into a
+            # typed recommendation constraint.
             timings["route"] = time.perf_counter() - route_started
             return TurnRouting(
-                route=route,
+                route=IntentDecision(
+                    intent="clarification",
+                    confidence=1.0,
+                    normalized_request=user_input,
+                    reason="The reply did not contain a value for the pending dimension.",
+                    is_follow_up=True,
+                ),
                 user_input=user_input,
-                locked_response=locked_response,
+                locked_response=pending_clarification.question,
                 problem=self.task_sessions.active_recommendation(),
             )
 
-        if (
+        if answered_recommendation:
+            pass
+        elif (
             pending_clarification is not None
             and not has_explicit_attachment
             and not continuing_agent_flow
@@ -5513,10 +6421,21 @@ class ChatEngine:
             # branch the user's "ok" routed as a brand-new, contextless
             # turn -- observed live re-emitting the identical offer while
             # nothing ever opened.
-            consent = self.consent_classifier.classify(
-                user_input,
-                pending_capability,
-                recent_turns=list(self._router_history),
+            consent = (
+                SemanticConsentDecision(
+                    decision="accept",
+                    confidence=1.0,
+                    reason="Clear acceptance of the owned active-task action.",
+                )
+                if (
+                    pending_capability.task_id
+                    and reads_as_clear_acceptance(user_input)
+                )
+                else self.consent_classifier.classify(
+                    user_input,
+                    pending_capability,
+                    recent_turns=list(self._router_history),
+                )
             )
             accepted_proactively = (
                 consent.decision == "accept"
@@ -5542,12 +6461,35 @@ class ChatEngine:
                     if consent.decision == "modify"
                     else ""
                 ) or pending_capability.goal
-                operation = {
-                    "browser_control": "browser_action",
-                    "ui_control": "ui_action",
-                }.get(pending_capability.capability_id, "")
+                active_problem = self.task_sessions.active_recommendation()
+                reuses_task = bool(
+                    pending_capability.task_id
+                    and active_problem is not None
+                    and pending_capability.task_id == active_problem.id
+                )
+                if reuses_task:
+                    goal = (
+                        active_problem.search_query()
+                        or pending_capability.task_query
+                        or goal
+                    )
+                    operation = ""
+                    resumed_problem_id = active_problem.id
+                    print("[Consent Resume]")
+                    print(f"  task_id: {active_problem.id}")
+                    print("  capability: web_search")
+                    print("  reused payload: yes")
+                    print("  rerouted from acknowledgement: no")
+                else:
+                    operation = {
+                        "browser_control": "browser_action",
+                        "ui_control": "ui_action",
+                    }.get(pending_capability.capability_id, "")
                 route = IntentDecision(
-                    intent="computer_action" if operation else "task_action",
+                    intent=(
+                        "web_search" if reuses_task
+                        else "computer_action" if operation else "task_action"
+                    ),
                     confidence=consent.confidence,
                     normalized_request=goal,
                     reason="The user accepted the offered ability.",
@@ -5556,8 +6498,12 @@ class ChatEngine:
                     action_requested=True,
                     action_target=goal,
                     computer_operation=operation,
+                    requires_external_evidence=reuses_task,
+                    recommendation_needed=reuses_task,
+                    search_query=goal if reuses_task else "",
                 )
-                user_input = goal or user_input
+                if not reuses_task:
+                    user_input = goal or user_input
             elif consent.decision == "reject":
                 self.capability_offer.clear()
                 # A refusal is information. Backing off further than an
@@ -5642,6 +6588,49 @@ class ChatEngine:
                 )
             if capability_note:
                 locked_response = capability_note
+        active_problem = self.task_sessions.active_recommendation()
+        if (
+            not locked_response
+            and active_problem is not None
+            and active_problem.lookup_requested
+            and not active_problem.missing_dimension()
+            and recommendation_state.complains_about_missing_results(user_input)
+            and not has_explicit_attachment
+            and not continuing_agent_flow
+        ):
+            # A complaint about work not arriving is control flow for the
+            # task already in progress, not a new information request.  The
+            # model may label it as conversation (observed live), which used
+            # to let capability selection escalate to browser control and
+            # hand the literal complaint to the browser.  Resume the owned,
+            # already-authorised lookup before goal and capability selection
+            # so every downstream layer sees the canonical task payload.
+            query = active_problem.search_query()
+            route = replace(
+                route,
+                intent="web_search",
+                computer_operation="",
+                normalized_request=query,
+                topic=active_problem.subject,
+                reason=(
+                    "The user is asking the active lookup to deliver its "
+                    "missing results."
+                ),
+                is_follow_up=True,
+                speech_act="action_request",
+                action_requested=True,
+                action_target=query,
+                requires_external_evidence=True,
+                recommendation_needed=True,
+                search_query=query,
+            )
+            resumed_problem_id = active_problem.id
+            self.capability_offer.clear()
+            print("[Task Resume]")
+            print(f"  task_id: {active_problem.id}")
+            print("  reason: missing results complaint")
+            print("  capability: web_search")
+            print("  reused payload: yes")
         # One decision for the whole turn, made from signals that already
         # exist. No model call: this is the last thing routing does, and it
         # only reads what routing already worked out.
@@ -5670,11 +6659,35 @@ class ChatEngine:
             goal=goal,
             has_usable_context=has_context,
         )
+        problem = self._track_recommendation(
+            route,
+            goal,
+            decision,
+            user_input,
+            resume_problem_id=resumed_problem_id,
+        )
+        if problem is not None and self._source_override:
+            # The override is read before a new recommendation problem exists.
+            # Attach it after opening the problem so a clarification answer
+            # stays on the selected surface for the rest of this task.
+            self.task_sessions.note_source_override(self._source_override)
+            problem = self.task_sessions.active_recommendation()
+        if clarified_goal is not None and clarified_goal.value("provider"):
+            tool_preference = self._tool_preference_for(
+                clarified_goal.utterance, goal=clarified_goal,
+            )
+        source_preference = (
+            self._source_resolution(problem, problem.search_query(user_input))
+            if problem is not None and problem.category else None
+        )
+        execution_preference = (
+            tool_preference if tool_preference.applied else source_preference
+        )
+        if execution_preference is not None and execution_preference.applied:
+            print(execution_preference.log_block())
         capability = capability_selection.select(
             goal, decision, route=route, failures=self._capability_failures,
-        )
-        problem = self._track_recommendation(
-            route, goal, decision, user_input,
+            execution_preference=execution_preference,
         )
         if problem is not None and not locked_response:
             question = self._ask_missing_dimension(problem, user_input)

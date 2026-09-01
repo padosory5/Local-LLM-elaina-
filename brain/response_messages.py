@@ -89,7 +89,9 @@ def build_personality_messages(
         f"{user_input.strip()}\n"
         "Answer this current message. Use older turns only when they are "
         "actually relevant. Do not repeat the previous answer merely because "
-        "it appears in history."
+        "it appears in history. Do not open by restating or paraphrasing the "
+        "current message; start with your reaction, answer, or next useful "
+        "point instead."
     )
 
     return [
