@@ -10,7 +10,8 @@ Measured with the real model against `tests/feature_matrix.json`:
 |---|---|---|---|---|---|
 | 2026-09-01 | `qwen3:8b` | 118 | 108 | 91.5% | 0 |
 | 2026-09-01 | `qwen3:8b` | 134 | 123 | 91.8% | 0 |
-| 2026-09-01 | `qwen3:8b` | 134 | **130** | **97.0%** | **0** |
+| 2026-09-01 | `qwen3:8b` | 134 | 130 | 97.0% | 0 |
+| 2026-09-01 | `qwen3:8b` | 134 | **131** | **97.8%** | **0** |
 
 The 97.0% run is the current state, reproduced three times consecutively with
 the identical four failures. **4E-B exit criteria met:** >=95% accuracy, zero

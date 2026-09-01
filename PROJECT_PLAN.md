@@ -14,10 +14,11 @@ sometimes.
 |---|---|
 | **Branch** | `phase4e-stabilization` |
 | **Last checkpoint** | `v0.4e-baseline` — 851c8bd5 |
-| **Tests green** | **1841** / 106 modules (regression floor — must never drop) |
+| **Tests green** | **1857** / 107 modules (regression floor — must never drop) |
 | **Model** | `qwen3:8b` via Ollama · vision `qwen3-vl:8b` |
-| **Phase** | 4E-B complete → next: 4E-C agency & recommendation |
-| **Router accuracy** | **97.0%** (130/134) · 0 dangerous false positives · target ≥95% ✅ |
+| **Phase** | 4E-C complete → next: 4E-D tool selection |
+| **Router accuracy** | **97.8%** (131/134) · 0 dangerous false positives · target ≥95% ✅ |
+| **Agency accuracy** | **100%** (35/35) · 0 unrequested actions · 15/15 consent · target ≥90% ✅ |
 
 **Rollback at any time:**
 
@@ -47,8 +48,8 @@ report ~46 phantom import failures):
 | 1 | Baseline & intent benchmark | `[x]` | tag exists, router baseline recorded, ≥50 routing cases |
 | 2 | 4E-A natural status messages | `[~]` | 20 tool interactions, no repetition or spam |
 | 3 | 4E-B intent understanding | `[x]` | ≥95% routing, **zero** dangerous false-positive actions |
-| 4 | 4E-C agency & recommendation | `[~]` | 30 scenarios, offers resolve, rejections stop |
-| 5 | 4E-D tool selection | `[ ]` | 40 scenarios, 90–95% first-choice correct |
+| 4 | 4E-C agency & recommendation | `[x]` | 30 scenarios, offers resolve, rejections stop |
+| 5 | 4E-D tool selection | `[~]` | 40 scenarios, 90–95% first-choice correct |
 | 6 | 4E-E execution & verification | `[ ]` | 20 multi-step tasks verified by final state |
 | 7 | 4E-F memory & continuity | `[ ]` | 20 conversations, ≥90% reference accuracy |
 | 8 | Startup & shutdown | `[ ]` | clean start, clean stop, mic released |
@@ -113,8 +114,8 @@ The negative class now exists (16 cases) and passed 16/16 on the safety property
       raise-a-window vs list-windows.
 - [x] **C.** Settings-UI changes are **out of scope for v1**. Matrix expectation
       corrected to `unsupported`; the model already answered that way unaided.
-- [ ] **D.** "Spotify won't play anything today." acts on a remark → **4E-C**.
-      Deliberately left failing; do not relax.
+- [x] **D.** "Spotify won't play anything today." — **fixed in 4E-C** at the
+      correct layer; the case now passes legitimately.
 - [ ] **E.** Two judgment calls (`health_advice_3`, `offer_3`) + `screen_3`.
       Low value, deferred.
 
@@ -128,20 +129,38 @@ needing a live model.
 **Exit:** ≥95% correct routing. Any dangerous false-positive machine action is a
 critical failure regardless of the percentage.
 
-### 4. 4E-C agency & recommendation `[~]`
+### 4. 4E-C agency & recommendation `[x]`
 
-**Already built:** `PendingCapabilityOffer` (`security/capability_offer.py`) carries
-`intent`, `capability_id`, `goal`, `task_id`, `task_query`, `expires_at` — so
-"Yeah" resolves to *find restaurants nearby*, not to "yeah".
-`brain/deliberation/pending.py` refuses replies that are actually new requests.
+**100%** (35/35 scenarios) · **0 unrequested actions** · **15/15** consent replies ·
+stable over 3 runs. Full analysis: [docs/AGENCY_BASELINE.md](docs/AGENCY_BASELINE.md)
 
-- [ ] Accept forms: yes / yeah / sure / okay / sounds good / do it / go ahead / why not
-- [ ] Reject forms: no / nah / not now / never mind
-- [ ] Ambiguous: maybe / I don't know / depends
-- [ ] "I'm hungry" asks what they want — it does not open a restaurant search
-- [ ] Cooldown preserved: no repeated offers
+- [x] Accept forms: yes / yeah / sure / okay / sounds good / do it / go ahead / why not
+- [x] Reject forms: no / nah / not now / never mind — nothing executes
+- [x] Ambiguous: maybe / I don't know / depends — never accept
+- [x] Every acceptance resolves to the **stored goal**, never to "yeah"
+- [x] "I'm hungry" answers conversationally; it does not open a restaurant search
+- [x] Cooldowns preserved: refusal buys silence, no back-to-back offers
 
-### 5. 4E-D tool selection `[ ]`
+**The remark fix.** The router promoted research intents to `action_requested`
+without ever asking whether anything had been requested, and the interaction
+layer's `NEED_FRESH` branch then executed unconditionally — while the
+`NEED_MACHINE` branch beside it had always applied that test. Three separate
+rules did the promoting, so the question is now settled once, last, in
+`_withhold_unrequested_research`.
+
+`request_explicitness` already existed for this and the model answers `direct`
+to **everything**, so `_REQUEST_SHAPE` reads sentence shape deterministically
+instead. It is a grammatical test — question mark, wh-opener, auxiliary
+inversion, request frame, indirect question, bare imperative — and nothing in
+it may ever name a product, app or topic.
+
+> **Also fixed:** `"why not"` was answered `unclear` by the consent classifier
+> and the offer silently dropped. The strict local acceptance test already
+> knew better but was consulted only for offers carrying a `task_id`; it now
+> short-circuits any unambiguous yes, removing a model round-trip from the
+> most common path in the flow.
+
+### 5. 4E-D tool selection `[~]`
 
 | Tool | Primary use |
 |---|---|
@@ -306,3 +325,11 @@ Newest first. One line per meaningful step.
 - Settings-UI changes ruled **out of scope for v1**; matrix corrected.
 - Reverted a router *prompt* edit that cost two unrelated cases — isolated by
   stashing only the router change and re-running, which restored both.
+- **4E-C complete.** Fixed "acting on a remark": **35/35** agency scenarios,
+  **0** unrequested actions, **15/15** consent replies, stable over 3 runs.
+  Router held at **97.8%** (131/134) with 0 dangerous false positives —
+  `lookalike_not_playing` now passes legitimately rather than being excused.
+  Suite 1841 → **1857**.
+- New: `tests/agency_matrix.json` (35 scenarios),
+  `scripts/live_agency_check.py`, `tests/test_agency_offers.py` (16 offline
+  offer-lifecycle tests).

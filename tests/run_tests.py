@@ -143,6 +143,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_preferences",
             "test_recommendation_policy",
             "test_recommendation_state",
+            "test_agency_offers",
             "test_task_consent",
             "test_task_strategy_consent",
         ),
@@ -259,6 +260,10 @@ LIVE_CHECKS: tuple[LiveCheck, ...] = (
     LiveCheck(
         "router", "live_router_check.py", "model",
         "the feature matrix, routed by the real model",
+    ),
+    LiveCheck(
+        "agency", "live_agency_check.py", "model",
+        "answer/offer/ask/act, and what a reply to an offer resolves to",
     ),
     LiveCheck(
         "desktop-planner", "live_desktop_planner_check.py", "model",

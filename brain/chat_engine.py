@@ -6421,16 +6421,21 @@ class ChatEngine:
             # branch the user's "ok" routed as a brand-new, contextless
             # turn -- observed live re-emitting the identical offer while
             # nothing ever opened.
+            # The local test is strict by construction -- it rejects approval
+            # of the subject ("sounds good", "yeah they're expensive") and
+            # only passes a bare affirmative or a direct instruction. When it
+            # says yes, asking the model adds a round-trip and can disagree:
+            # measured, "why not" came back "unclear" from the classifier and
+            # the offer was silently dropped. It used to be consulted only for
+            # an offer carrying a task_id, which is why every other offer paid
+            # for a model call to be told what "yes" means.
             consent = (
                 SemanticConsentDecision(
                     decision="accept",
                     confidence=1.0,
-                    reason="Clear acceptance of the owned active-task action.",
+                    reason="Clear, unambiguous acceptance of the offer.",
                 )
-                if (
-                    pending_capability.task_id
-                    and reads_as_clear_acceptance(user_input)
-                )
+                if reads_as_clear_acceptance(user_input)
                 else self.consent_classifier.classify(
                     user_input,
                     pending_capability,

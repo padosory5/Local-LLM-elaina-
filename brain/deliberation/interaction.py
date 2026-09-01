@@ -296,6 +296,18 @@ def _need_for(
     return NEED_NONE
 
 
+def _reads_as_statement(route: Any) -> bool:
+    """Whether the turn was a remark rather than a request.
+
+    Set by the router's deterministic request-shape test, which exists
+    because the model's own ``request_explicitness`` answers "direct" for
+    every input. Absent (the default), the turn is treated as a request --
+    so a caller that supplies no explicitness, including every existing
+    test, keeps the old execute-without-asking behaviour.
+    """
+    return str(_value(route, "request_explicitness", "")) == "statement"
+
+
 def _worth_offering(route: Any) -> bool:
     """Whether raising a capability unprompted would help rather than nag."""
     try:
@@ -394,11 +406,31 @@ def decide(
         return built(EXECUTE, "the user asked for this outright")
 
     if need in {NEED_FRESH, NEED_VERIFIED}:
+        subject = str(getattr(goal, "subject", "")) if goal is not None else ""
+        about = f" about {subject}" if subject else ""
+        # The same test the machine branch above already applies, which this
+        # branch was missing: did the person ask for anything?
+        #
+        # "Looking it up costs nothing" is a good reason not to ask
+        # *permission* for a search. It is not a reason to search on a remark.
+        # Measured live: "Spotify won't play anything today." produced a web
+        # search, because nothing between the complaint and the search ever
+        # asked whether it had been requested.
+        #
+        # Keyed on the router's statement reading rather than on
+        # ``action_requested`` alone, so a plain question -- which arrives
+        # here with no explicitness field set at all -- still executes
+        # without being asked "shall I search?", which the brief calls out
+        # by name.
+        if not requested and _reads_as_statement(route):
+            return built(
+                RECOMMEND,
+                f"current information{about} would help, but this was a "
+                "remark rather than a request",
+            )
         # Level 1 by definition: looking something up has no visible side
         # effect, so asking "shall I search?" is friction with no purpose.
         # This is the "what's the weather tomorrow" case from the brief.
-        subject = str(getattr(goal, "subject", "")) if goal is not None else ""
-        about = f" about {subject}" if subject else ""
         return built(
             EXECUTE,
             f"current information{about} is needed, and looking it up "

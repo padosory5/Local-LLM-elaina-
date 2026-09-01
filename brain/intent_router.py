@@ -142,6 +142,72 @@ _UNAMBIGUOUS_BROWSER_PAGE_ACTION = re.compile(
     r"compare|book|reserve|buy|purchase|order)\b|예약|구매|주문",
     flags=re.IGNORECASE,
 )
+# Whether the sentence is shaped like a request at all.
+#
+# This is a grammatical test and is meant to be one -- English marks a
+# request in a small closed set of ways, and a sentence showing none of them
+# is a remark about the world. It is not a topic list and must not grow into
+# one: nothing here mentions Spotify, restaurants, or any other subject.
+#
+# It exists because the model's own ``request_explicitness`` field, which was
+# added for exactly this, comes back "direct" for every input measured --
+# statements and questions alike -- so it carries no information. The shape
+# of the sentence does.
+#
+# The failure it prevents: "Spotify won't play anything today." was answered
+# with a web search. Nobody asked for anything; a complaint was read as a
+# request for help. Getting this wrong in the other direction merely offers
+# ("want me to look that up?") instead of searching silently, so the bias is
+# deliberately toward asking.
+_REQUEST_SHAPE = re.compile(
+    # An actual question.
+    r"\?\s*$"
+    # A wh-question, or an elliptical one ("any good ramen nearby").
+    r"|^\s*(?:what|when|where|which|who|whom|whose|why|how|any|anyone|"
+    r"anything|anywhere)\b"
+    # Subject-auxiliary inversion, which is how English opens a yes/no
+    # question.
+    r"|^\s*(?:is|are|was|were|am|do|does|did|can|could|would|will|shall|"
+    r"should|have|has|had|may|might)\b"
+    # A request aimed at the listener.
+    r"|\b(?:can|could|would|will)\s+you\b|\bplease\b"
+    # First-person want/need frames.
+    r"|\b(?:i|we)\s+(?:need|want|would\s+like|'d\s+like)\b"
+    r"|\b(?:help|tell|show|find|give|get|remind)\s+me\b|\blet\s+me\s+know\b"
+    # Indirect questions. "I wonder what Nvidia is trading at" is a request
+    # for a fact wearing the clothes of a statement, and answering it is
+    # what a person would do. This is the line between it and a complaint:
+    # an indirect question names something unknown that it wants known.
+    r"|\b(?:i\s+wonder|wondering|i(?:'m| am)\s+curious|"
+    r"i(?:'d| would)\s+(?:love|like)\s+to\s+know|"
+    r"i\s+(?:do\s+not|don't)\s+know\s+(?:what|how|when|where|why|which|if|"
+    r"whether)|no\s+idea\s+(?:what|how|when|where|why|which))\b"
+    # A bare imperative. English imperatives drop the subject, so a sentence
+    # opening on a base-form verb is an instruction rather than a report.
+    # An inventory of verbs rather than a parser, deliberately: it is the
+    # imperative mood this is testing for, and the list stays closed to
+    # verbs -- no subject, product or site name may ever be added to it.
+    r"|^\s*(?:please\s+|just\s+|now\s+|then\s+)*(?:find|show|tell|give|look|"
+    r"search|check|open|play|get|fetch|pull|bring|recommend|suggest|compare|"
+    r"list|read|explain|describe|remind|send|make|create|write|run|start|"
+    r"stop|close|click|type|fill|browse|visit|navigate|verify|confirm|use|"
+    r"go|inspect|review|count|calculate|"
+    r"translate|define|name|walk|take|analy[sz]\w*|summari[sz]\w*)\b"
+    # Korean request endings, the same closed grammatical class.
+    r"|찾아|알려|해\s*줘|보여|추천",
+    flags=re.IGNORECASE,
+)
+
+# Intents whose whole job is to fetch evidence. Acting on one is cheap and
+# reversible, which is why they never ask permission -- and exactly why the
+# only thing standing between a passing remark and an unrequested lookup is
+# whether the turn was a request at all. project_question and
+# screen_analysis are deliberately absent: both are asked about the thing in
+# front of the user, and neither was ever observed firing on a remark.
+_RESEARCH_INTENTS_WITHHELD = frozenset({
+    "web_search", "fact_check", "entity_correction",
+})
+
 _EXPLICIT_NATIVE_APP_REFERENCE = re.compile(
     r"\b(?:spotify|notepad|calculator|discord|slack|steam|settings|"
     r"visual\s+studio\s+code|vs\s*code)\b",
@@ -522,6 +588,12 @@ class SemanticIntentRouter:
                     # semantic router determines that the user directly needs
                     # them, do not require magic words or a duplicate consent
                     # turn before doing the read-only work.
+                    #
+                    # Whether the person asked at all is settled once, at the
+                    # end of this method, by _withhold_unrequested_research --
+                    # there are three separate places that promote a research
+                    # intent to action_requested, and guarding them one at a
+                    # time left the other two to undo it.
                     decision = replace(
                         decision,
                         action_requested=True,
@@ -583,6 +655,10 @@ class SemanticIntentRouter:
                     medium_confidence_threshold=self.medium_confidence_threshold,
                     clarification_enabled=self.clarification_enabled,
                     print_confidence_log=self.print_confidence_log,
+                )
+                # Last, so nothing can promote it back afterwards.
+                decision = self._withhold_unrequested_research(
+                    decision, original_input=user_input,
                 )
                 return decision
         except Exception as error:
@@ -1058,6 +1134,47 @@ class SemanticIntentRouter:
             decision,
             action_requested=True,
             action_target=target,
+        )
+
+    @staticmethod
+    def _withhold_unrequested_research(
+        decision: IntentDecision,
+        *,
+        original_input: str,
+    ) -> IntentDecision:
+        """Keep the intent, withhold the authority to act, on a remark.
+
+        Three separate rules promote a research intent to
+        ``action_requested`` -- the read-only block in ``route``, the
+        recommendation escalation, and the knowledge_question escalation --
+        and none of them asked whether the person had requested anything.
+        Measured live, that turned a complaint into a web search:
+
+            "Spotify won't play anything today."  ->  web search
+
+        Guarding the three sites individually left whichever ran last to
+        undo the others, so the question is settled once, here, after every
+        one of them has finished.
+
+        The intent is deliberately left alone. Looking it up is still the
+        kind of thing that would help; what the turn lacks is a request. The
+        interaction layer reads ``request_explicitness`` and offers instead
+        of searching, so this produces an offer rather than silence.
+        """
+        if decision.intent not in _RESEARCH_INTENTS_WITHHELD:
+            return decision
+        if not decision.action_requested:
+            return decision
+        if _REQUEST_SHAPE.search(str(original_input or "")):
+            return decision
+        return replace(
+            decision,
+            action_requested=False,
+            request_explicitness="statement",
+            reason=(
+                "The turn is a remark rather than a request, so looking it "
+                "up is worth offering but not worth doing unasked."
+            ),
         )
 
     @staticmethod
