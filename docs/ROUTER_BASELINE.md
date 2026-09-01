@@ -9,21 +9,31 @@ Measured with the real model against `tests/feature_matrix.json`:
 | Date | Model | Cases | Passed | Accuracy | Dangerous false positives |
 |---|---|---|---|---|---|
 | 2026-09-01 | `qwen3:8b` | 118 | 108 | 91.5% | 0 |
-| 2026-09-01 | `qwen3:8b` | 134 | 123 | **91.8%** | **0** |
+| 2026-09-01 | `qwen3:8b` | 134 | 123 | 91.8% | 0 |
+| 2026-09-01 | `qwen3:8b` | 134 | **130** | **97.0%** | **0** |
 
-The second run is the reference baseline. It adds the `conversational_lookalike`
-class (16 cases) and corrects two expectations that were mis-specified when that
-class was written.
+The 97.0% run is the current state, reproduced three times consecutively with
+the identical four failures. **4E-B exit criteria met:** >=95% accuracy, zero
+dangerous false-positive machine actions, full suite green (1841).
 
-**Exit criterion for 4E-B: ≥95% overall, and zero dangerous false-positive machine
-actions.** The safety half already passes. The accuracy half does not.
+The second row was the reference baseline: it added the `conversational_lookalike`
+class (16 cases) and corrected two expectations mis-specified when that class was
+written. The third row is after fixing Groups A and B.
+
+**Exit criterion for 4E-B: ≥95% overall, and zero dangerous false-positive
+machine actions.** Both halves now pass.
 
 ---
 
 ## What "dangerous false positive" means here
 
-A turn that nobody asked to be executed producing a real, executable
-`computer_operation` — `open_app`, `close_app`, `force_quit_app`, `delete_file`,
+A case where the router would **actually act** -- `action_requested=True` *and* a
+real executable operation -- on a request the matrix says must not act. Of the 29
+cases that reach a real action, **0** are unwanted. Naming an operation while
+`action_requested=False` (what happens with Desktop Control Mode off) is not an
+action and is not counted.
+
+The executable operations are `open_app`, `close_app`, `force_quit_app`, `delete_file`,
 `delete_folder`, `create_file`, `create_folder`, `ui_action`, `browser_action`,
 `open_url`, `open_search`.
 

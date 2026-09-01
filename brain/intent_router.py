@@ -85,7 +85,40 @@ _IRREVERSIBLE_DELETE_REQUEST = re.compile(
 # model doesn't have to guess at -- correct the operation deterministically
 # rather than hoping the prompt alone lands it every time.
 _DEICTIC_SURFACE_REFERENCE = re.compile(
-    r"\bthis\s+(?:page|window|screen)\b|\bhere\b|\bin\s+it\b",
+    # "this page" was required to be adjacent, so "this hotel page" and
+    # "this GitHub page" -- the way anyone actually refers to the page they
+    # are looking at -- did not match at all, and the request fell through
+    # to unsupported. Up to two intervening words covers the natural forms
+    # without letting the reference drift to another sentence.
+    r"\bthis\s+(?:[\w-]+\s+){0,2}(?:page|window|screen|tab|site|article)\b"
+    r"|\bthese\s+(?:[\w-]+\s+){0,2}(?:listings|results|items)\b"
+    r"|\bhere\b|\bin\s+it\b",
+    flags=re.IGNORECASE,
+)
+
+# Which *kind* of surface the deictic names. The correction below used to
+# ask only whether a deictic was present and then default to the native
+# desktop when no live surface was known -- so "compare the prices in these
+# hotel listings on this page" became a ui_action against whatever desktop
+# app happened to be in front. A reference to a page is evidence about the
+# surface in its own right, independent of what is currently focused.
+_DEICTIC_PAGE_REFERENCE = re.compile(
+    r"\bthis\s+(?:[\w-]+\s+){0,2}(?:page|tab|site|article)\b"
+    r"|\bthese\s+(?:[\w-]+\s+){0,2}(?:listings|results|items)\b"
+    r"|\bon\s+(?:this|the)\s+page\b",
+    flags=re.IGNORECASE,
+)
+
+# A command to raise a named window, as opposed to a question about which
+# windows exist. list_windows legitimately owns "which window is in front
+# right now"; it was also swallowing "bring VS Code to the front", which is
+# an instruction to change focus and belongs to the verified UI planner.
+# Command verbs only -- a question never opens with "bring"/"switch".
+_FOCUS_WINDOW_COMMAND = re.compile(
+    r"\b(?:bring|switch|move|put|pull|raise)\b[^.?!]*?"
+    r"\b(?:to\s+the\s+(?:front|foreground|top)|into\s+focus|up\s+front)\b"
+    r"|\bswitch\s+to\s+(?:the\s+)?[\w.+-]+"
+    r"|\bfocus\s+(?:on\s+)?(?:the\s+)?[\w.+-]+\s+window\b",
     flags=re.IGNORECASE,
 )
 
@@ -162,7 +195,11 @@ _SPOKEN_URL = re.compile(
 )
 _SPOKEN_SEARCH = re.compile(
     r"\b(?:search|look\s+up|find)\s+(?:for\s+)?(?P<query>.+?)"
-    r"(?:\s+(?:in|on|using)\s+(?:my\s+|the\s+)?"
+    # The article was missing "a"/"an", so "in a new browser tab" never
+    # matched this trailing group and the surface ended up inside the
+    # query: "wireless keyboards in a new browser tab" was searched for
+    # verbatim. The destination is never part of what to search for.
+    r"(?:\s+(?:in|on|using)\s+(?:(?:my|the|a|an)\s+)?"
     r"(?:new\s+)?(?:browser|tab).*)?[.?!]*$",
     flags=re.IGNORECASE,
 )
@@ -796,6 +833,7 @@ class SemanticIntentRouter:
             )
             target = decision.action_target.strip()
             operation = decision.computer_operation
+        page_reference = bool(_DEICTIC_PAGE_REFERENCE.search(original_input))
         if (
             operation in {"ui_action", "browser_action"}
             and (
@@ -807,10 +845,91 @@ class SemanticIntentRouter:
                 )
             )
         ):
-            corrected = "browser_action" if surface_kind == "browser" else "ui_action"
+            # A named page beats an unknown surface. Falling back to
+            # ui_action whenever no live surface was known sent every
+            # "...on this page" request at the desktop instead.
+            #
+            # A page reference outranks an app-sounding word, because the
+            # sentence says outright which surface it means: "Click Settings
+            # on this GitHub page" is a link named Settings on a webpage,
+            # not the Windows Settings app.
+            if surface_kind == "browser" or page_reference:
+                corrected = "browser_action"
+            else:
+                corrected = "ui_action"
             if corrected != operation:
                 decision = replace(decision, computer_operation=corrected)
                 operation = corrected
+        elif (
+            operation == "browser_action"
+            and explicit_native_app
+            and not page_reference
+            and surface_kind != "browser"
+        ):
+            # The mirror of the rule above, and the direction that had no
+            # guard at all: "Can you search for Laufey in Spotify?" names an
+            # installed app, names no page, and has no browser in front, yet
+            # came back browser_action. Nothing corrected it, so the answer
+            # depended on which label the model happened to pick that run.
+            decision = replace(
+                decision,
+                reason=(
+                    "The request names an installed desktop application and "
+                    "no web page, so it belongs to the native UI planner."
+                ),
+                computer_operation="ui_action",
+            )
+            operation = decision.computer_operation
+        elif (
+            operation == "unsupported"
+            and page_reference
+            and unambiguous_browser_page_action
+            and not explicit_native_app
+        ):
+            # Acting on the page in front of you is supported, and the model
+            # sometimes says otherwise: "fill the search box on this hotel
+            # page" came back unsupported. Narrow on purpose -- it needs an
+            # explicit page reference *and* a committed page verb, and it
+            # only ever refines a decision already routed to computer_action,
+            # so a conversational remark can never reach it. The browser
+            # planner still verifies the live DOM before touching anything.
+            decision = replace(
+                decision,
+                normalized_request=original_input.strip(),
+                reason=(
+                    "The request names a page and a page action, which the "
+                    "browser page driver supports."
+                ),
+                computer_operation="browser_action",
+            )
+            operation = decision.computer_operation
+        elif (
+            operation == "list_windows"
+            and _FOCUS_WINDOW_COMMAND.search(original_input)
+        ):
+            # "Bring VS Code to the front" is an instruction to change which
+            # window is focused, not a question about which windows exist.
+            decision = replace(
+                decision,
+                normalized_request=original_input.strip(),
+                reason=(
+                    "Raising a named window is a UI action, not a question "
+                    "about which windows are open."
+                ),
+                computer_operation="ui_action",
+            )
+            operation = decision.computer_operation
+
+        # The prompt states this contract for both page and app actions --
+        # "action_target is the complete request verbatim" -- and the model
+        # honours it unevenly, dropping the qualifier that says *where*:
+        # "search for Laufey in Spotify" came back as "search for Laufey".
+        # The planner reads normalized_request rather than this field, so
+        # nothing downstream broke; enforcing it here simply makes the value
+        # match its documented meaning instead of varying per turn.
+        if operation in {"ui_action", "browser_action"}:
+            decision = replace(decision, action_target=original_input.strip())
+            target = decision.action_target.strip()
         if (
             operation == "open_app"
             and target
@@ -1298,6 +1417,21 @@ class SemanticIntentRouter:
             "action_target is the named window or empty for the active "
             "one. Whenever computer_operation is describe_window, intent "
             "must be computer_action, never screen_analysis.\n"
+            # Deliberately unchanged. Adding a Windows-settings scope note
+            # and a focus-vs-list_windows note here was measured against the
+            # matrix and cost two unrelated cases -- "Force close VSCode
+            # completely" started copying the whole sentence into
+            # action_target, and the compound "create notes.txt ... and write
+            # hello inside it" stopped being refused. Both passed before the
+            # edit and failed consistently after it, three runs each.
+            #
+            # A small model reads this prompt as one weighted whole, so text
+            # added for one operation shifts calibration for the others. The
+            # settings-scope decision is enforced where it cannot regress
+            # anything: in policy and in the matrix expectation. Both
+            # behaviours this text described are handled deterministically
+            # below instead (_FOCUS_WINDOW_COMMAND, and the model already
+            # answers "unsupported" for a settings change unaided).
             "  * ui_action: click/type/focus/select/scroll inside a native, "
             "installed desktop application's own window -- desktop Spotify, "
             "Notepad, Settings, VS Code, and similar apps, never a "

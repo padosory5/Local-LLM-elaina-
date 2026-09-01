@@ -14,10 +14,10 @@ sometimes.
 |---|---|
 | **Branch** | `phase4e-stabilization` |
 | **Last checkpoint** | `v0.4e-baseline` — 851c8bd5 |
-| **Tests green** | **1827** / 105 modules (regression floor — must never drop) |
+| **Tests green** | **1841** / 106 modules (regression floor — must never drop) |
 | **Model** | `qwen3:8b` via Ollama · vision `qwen3-vl:8b` |
-| **Phase** | Task 1 complete → next: 4E-B intent routing |
-| **Router accuracy** | **91.8%** (123/134) · 0 dangerous false positives · target ≥95% |
+| **Phase** | 4E-B complete → next: 4E-C agency & recommendation |
+| **Router accuracy** | **97.0%** (130/134) · 0 dangerous false positives · target ≥95% ✅ |
 
 **Rollback at any time:**
 
@@ -46,8 +46,8 @@ report ~46 phantom import failures):
 |---|---|---|---|
 | 1 | Baseline & intent benchmark | `[x]` | tag exists, router baseline recorded, ≥50 routing cases |
 | 2 | 4E-A natural status messages | `[~]` | 20 tool interactions, no repetition or spam |
-| 3 | 4E-B intent understanding | `[~]` | ≥95% routing, **zero** dangerous false-positive actions |
-| 4 | 4E-C agency & recommendation | `[ ]` | 30 scenarios, offers resolve, rejections stop |
+| 3 | 4E-B intent understanding | `[x]` | ≥95% routing, **zero** dangerous false-positive actions |
+| 4 | 4E-C agency & recommendation | `[~]` | 30 scenarios, offers resolve, rejections stop |
 | 5 | 4E-D tool selection | `[ ]` | 40 scenarios, 90–95% first-choice correct |
 | 6 | 4E-E execution & verification | `[ ]` | 20 multi-step tasks verified by final state |
 | 7 | 4E-F memory & continuity | `[ ]` | 20 conversations, ≥90% reference accuracy |
@@ -87,13 +87,13 @@ outcome-locked lines that name a subject and are validated against real status.
 - [ ] Run 20 consecutive tool interactions, confirm no repetition or spam
 - [ ] Confirm no status message on casual conversation
 
-### 3. 4E-B intent understanding `[~]`
+### 3. 4E-B intent understanding `[x]`
 
 Must distinguish: conversation · information · recommendation · research · computer
 action · browser task · coding · memory · follow-up · correction · cancellation.
 
-**Baseline: 91.8%** (123/134) · **0 dangerous false positives**. The safety half of
-the exit criterion already passes; the accuracy half does not.
+**97.0%** (130/134) · **0 dangerous false positives** · reproduced 3 consecutive
+runs with identical failures. **Both exit criteria met** (baseline was 91.8%).
 Full analysis: [docs/ROUTER_BASELINE.md](docs/ROUTER_BASELINE.md)
 
 The negative class now exists (16 cases) and passed 16/16 on the safety property —
@@ -105,25 +105,30 @@ The negative class now exists (16 cases) and passed 16/16 on the safety property
 
 **Remaining work — 8 of 11 failures are prompt/metadata, not model capability:**
 
-- [ ] **A.** Define what `action_target` must contain per operation (4 cases).
-      `ui_action` must keep the app qualifier ("in Spotify"); `browser_search`
-      must drop the surface qualifier ("in a new browser tab"). Opposite rules,
-      neither stated.
-- [ ] **B.** Sharpen boundaries between adjacent capabilities (4 cases):
-      `ui_action` vs `list_windows`, `browser_action` vs `ui_action`,
-      `screen_analysis` vs `list_windows`.
-- [ ] **C.** Decide: are Settings-UI changes in scope? Matrix expects `ui_action`,
-      model says `unsupported`, README says Phase 4A excludes settings. **Needs you.**
-- [ ] **D.** "Spotify won't play anything today." acts on a remark → defer to 4E-C.
-      Left deliberately failing.
-- [ ] **E.** Two judgment calls, low priority.
+- [x] **A.** `action_target` contract enforced deterministically; `_SPOKEN_SEARCH`
+      now strips "in **a** new browser tab".
+- [x] **B.** Capability boundaries sharpened in the existing correction layer —
+      page deictics with modifiers ("this **hotel** page"), a named page beating
+      an unknown surface, the previously-unguarded reverse direction, and
+      raise-a-window vs list-windows.
+- [x] **C.** Settings-UI changes are **out of scope for v1**. Matrix expectation
+      corrected to `unsupported`; the model already answered that way unaided.
+- [ ] **D.** "Spotify won't play anything today." acts on a remark → **4E-C**.
+      Deliberately left failing; do not relax.
+- [ ] **E.** Two judgment calls (`health_advice_3`, `offer_3`) + `screen_3`.
+      Low value, deferred.
 
-Fixing A and B alone clears 95%.
+14 offline tests in `tests/test_router_surface_policy.py` hold these fixed without
+needing a live model.
+
+> **Lesson recorded:** a note added to the router prompt for this phase cost two
+> *unrelated* cases and was reverted. A small model reads the prompt as one
+> weighted whole — prefer the deterministic correction layer over prompt text.
 
 **Exit:** ≥95% correct routing. Any dangerous false-positive machine action is a
 critical failure regardless of the percentage.
 
-### 4. 4E-C agency & recommendation `[ ]`
+### 4. 4E-C agency & recommendation `[~]`
 
 **Already built:** `PendingCapabilityOffer` (`security/capability_offer.py`) carries
 `intent`, `capability_id`, `goal`, `task_id`, `task_query`, `expires_at` — so
@@ -295,3 +300,9 @@ Newest first. One line per meaningful step.
   on a remark is a real finding for 4E-C.
 - Classified all 11 failures by root cause: **8 are prompt/metadata, not model
   capability.** See [docs/ROUTER_BASELINE.md](docs/ROUTER_BASELINE.md).
+- **4E-B complete.** Fixed Groups A and B in the router's deterministic
+  correction layer: **91.8% → 97.0%** (130/134), 0 dangerous false positives,
+  stable across 3 consecutive runs. Suite 1827 → **1841**.
+- Settings-UI changes ruled **out of scope for v1**; matrix corrected.
+- Reverted a router *prompt* edit that cost two unrelated cases — isolated by
+  stashing only the router change and re-running, which restored both.

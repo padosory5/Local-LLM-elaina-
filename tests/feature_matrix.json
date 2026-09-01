@@ -672,9 +672,8 @@
       },
       "expected": {
         "intent": "computer_action",
-        "action_requested": true,
-        "action_target": "Change my default microphone to the headset.",
-        "computer_operation": "ui_action"
+        "action_requested": false,
+        "computer_operation": "unsupported"
       }
     },
     {
