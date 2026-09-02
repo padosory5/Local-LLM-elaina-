@@ -14,15 +14,16 @@ sometimes.
 |---|---|
 | **Branch** | `phase4e-stabilization` |
 | **Last checkpoint** | `v0.4e-baseline` — 851c8bd5 |
-| **Tests green** | **1920** / 112 modules (regression floor — must never drop) |
+| **Tests green** | **1946** / 113 modules (regression floor — must never drop) |
 | **Model** | `qwen3:8b` via Ollama · vision `qwen3-vl:8b` |
-| **Phase** | 4E-G complete → next: failure & recovery |
+| **Phase** | 4E-H complete → next: latency |
 | **Router accuracy** | **97.0–97.8%** (130–131/134) · 0 dangerous false positives · target ≥95% ✅ |
 | **Agency accuracy** | **100%** (35/35) · 0 unrequested actions · 15/15 consent · target ≥90% ✅ |
 | **Tool selection** | **95.6–97.8%** (43–44/45) · 0 research→browser · 0 UI false positives · target ≥90% ✅ |
 | **Execution** | **22/22** scenarios · verified vs unverified reported separately · target ≥20 ✅ |
 | **Continuity** | **59/59** checks over 22 conversations · target ≥90% ✅ |
 | **Runtime lifecycle** | **17/17** automated cases · 10-item manual checklist ✅ |
+| **Failure & recovery** | **26/26** scenarios · 0 unbounded waits · cancellation stops the plan ✅ |
 
 **Rollback at any time:**
 
@@ -57,8 +58,8 @@ report ~46 phantom import failures):
 | 6 | 4E-E execution & verification | `[x]` | 20 multi-step tasks verified by final state |
 | 7 | 4E-F memory & continuity | `[x]` | 20 conversations, ≥90% reference accuracy |
 | 8 | Startup & shutdown | `[x]` | clean start, clean stop, mic released |
-| 9 | Failure & recovery | `[~]` | every failure ends in one of 5 terminal states |
-| 10 | Latency | `[ ]` | ~2–3s conversation, fast interrupt |
+| 9 | Failure & recovery | `[x]` | every failure ends in one of 5 terminal states |
+| 10 | Latency | `[~]` | ~2–3s conversation, fast interrupt |
 | 11 | Long-session soak | `[ ]` | zero crashes, bugs triaged |
 | 12 | Freeze & release | `[ ]` | full suite, release report, tag |
 | — | 27B/35B model experiment | `[-]` | **deferred** — see Risks |
@@ -313,20 +314,41 @@ taskkill. The mic is now paused first to unblock the read.
 > environmental (repeated force-kills leaving audio device state). A hang is
 > neither a clean degrade nor a clean abort.
 
-### 9. Failure & recovery `[~]`
+### 9. Failure & recovery `[x]`
 
 Every failure must terminate as exactly one of:
 `SUCCESS` · `SAFE RETRY` · `NEEDS USER INPUT` · `CLEAR FAILURE` · `CANCELLED`
 
 Never: infinite retry · silent failure · random machine actions · crash loops.
 
-- [ ] no internet · browser closes mid-task · app missing · wrong window focused
-- [ ] permission rejected · UI element missing · STT timeout · silence
-- [ ] interruption · cancellation · tool exception · LLM timeout
-- [ ] "Open Chrome — actually never mind."
-- [ ] Regression test added for every discovered failure
+**26/26** scenarios, all deterministic and in the ordinary suite.
+Full analysis: [docs/FAILURE_RECOVERY_BASELINE.md](docs/FAILURE_RECOVERY_BASELINE.md)
 
-### 10. Latency `[ ]`
+**Three real defects found and fixed:**
+
+- **`TaskPlanner` had no notion of cancellation at all** — `grep -c cancel`
+  returned **0**. A cancelled multi-step task carried on dispatching browser
+  and UI actions to the end. The engine's cancel token is now asked at the
+  three moments a new action can begin: before planning a step, before
+  dispatching it, and before a retry. A cancelled 3-step plan now dispatches
+  **zero** tool calls and reports `CANCELLED`, not a bare `stopped`.
+- **An unbounded `_ready.wait()`** in browser-service startup — the call path
+  above it already had a timeout for exactly this reason; startup was missed.
+  A test now asserts **no bare `.wait()`/`.join()`** remains anywhere.
+- **A raw tool exception reached the retry with nothing attached** — no
+  failure code, no `info`, so the replanner could not see what went wrong and
+  the retry was the same attempt again.
+
+**Startup hang containment.** `build_within()` bounds `ChatEngine()` (240s,
+`ELAINA_ENGINE_TIMEOUT`). Python cannot interrupt a thread blocked in C, so it
+does not try: it bounds how long the *caller* waits and leaves the stuck work
+on a daemon thread the interpreter abandons at exit. Honest limitation — a
+constructor abandoned midway may hold things nobody references; **the root
+cause remains unknown**, contained rather than fixed.
+
+**Mid-task correction:** cancel-and-replace, the simpler reliable option.
+
+### 10. Latency `[~]`
 
 **Gap:** `timings{}` covers route, memory retrieval, generation, web search, project
 tools, visual pipeline, total. **No TTFT, STT, TTS or VAD timing** — so today the LLM
@@ -486,5 +508,12 @@ Newest first. One line per meaningful step.
   false positives. Suite 1903 → **1920**.
 - New: `core/lifecycle.py`, `tests/test_runtime_lifecycle.py`,
   `docs/RUNTIME_BASELINE.md` (incl. a 10-item manual checklist).
-- Open: `ChatEngine()` can hang at import, outside the lifecycle — isolated as
-  pre-existing, carried to the failure-and-recovery phase.
+- Open: `ChatEngine()` can hang at import — now **contained** by a bounded
+  build; root cause still unknown.
+- **4E-H complete.** Failure/recovery: **26/26** scenarios. Found and fixed
+  three real defects — the planner ignoring cancellation entirely, an
+  unbounded wait in browser startup, and tool exceptions reaching retries with
+  no reason attached. Regressions held — tool 44/45, agency 35/35, router
+  131/134, 0 dangerous false positives. Suite 1920 → **1946**.
+- New: `tests/test_failure_recovery.py`, `core.lifecycle.build_within`,
+  `docs/FAILURE_RECOVERY_BASELINE.md` (incl. 6 manual cases).

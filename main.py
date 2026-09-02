@@ -27,15 +27,41 @@ ensure_per_monitor_dpi_aware()
 load_dotenv()
 
 from brain.chat_engine import ChatEngine
-from core.lifecycle import Lifecycle
+from core.lifecycle import Lifecycle, StartupTimeout, build_within
 from core.websocket_server import WebSocketServer
 from voice.stt import SpeechToText
 
 
-engine = ChatEngine()
 # Owns every handle and child process Elaina opens, and the order to release
 # them in. Nothing is registered until it has actually started.
 lifecycle = Lifecycle()
+
+# The engine is built with a deadline. It wires ~45 collaborators, several of
+# which reach outside the process -- Ollama, an MCP subprocess, the audio
+# device -- and it had no bound at all: measured in 4E-G it sometimes reached
+# ready in ~90s and sometimes not in 300s, with nothing to report either way.
+# The cap is generous because a cold model load is legitimately slow; what it
+# rules out is waiting forever.
+ENGINE_STARTUP_TIMEOUT = float(os.getenv("ELAINA_ENGINE_TIMEOUT", "240"))
+
+try:
+    engine = build_within(
+        "chat engine", ChatEngine, timeout=ENGINE_STARTUP_TIMEOUT,
+    )
+except StartupTimeout as error:
+    # Nothing is registered with the lifecycle yet, so there is nothing to
+    # unwind -- but say so in the same words the rest of startup uses, and
+    # leave with a failing status rather than a traceback.
+    print(f"[Lifecycle] NOT READY -- {error}")
+    print(
+        "[Lifecycle] Nothing had been registered yet, so there is nothing to "
+        "release. Check that Ollama is running and no previous backend is "
+        "still holding the microphone."
+    )
+    raise SystemExit(1) from None
+except Exception as error:
+    print(f"[Lifecycle] NOT READY -- chat engine: {type(error).__name__}: {error}")
+    raise SystemExit(1) from None
 response_thread = None
 response_thread_lock = threading.Lock()
 electron_process = None

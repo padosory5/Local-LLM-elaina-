@@ -767,6 +767,10 @@ class ChatEngine:
             task_extractor=self.task_extractor,
             discovery_policy=self.task_discovery_policy,
             user_locale=self.user_locale,
+            # The same token generation and speech already honour. Without
+            # it a cancelled multi-step task kept dispatching browser and UI
+            # actions to the end.
+            is_cancelled=self._turn_is_cancelled,
         )
         self.task_intent_gate = TaskIntentGate(
             client=self.client, model=self.model, keep_alive=self.keep_alive,

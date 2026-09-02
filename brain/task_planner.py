@@ -361,6 +361,7 @@ class TaskPlanner:
         browser_control_enabled: bool = True,
         web_search_enabled: bool = True,
         max_steps: int = _MAX_STEPS_DEFAULT,
+        is_cancelled: Any = None,
         response_language: str = "en",
         task_extractor: Any = None,
         preview_enabled: bool = True,
@@ -381,6 +382,12 @@ class TaskPlanner:
         if web_search_action_planner is not None:
             self.executors["web_search"] = web_search_action_planner
         self.max_steps = int(max_steps)
+        # Asked before every step, and again before each retry. The planner
+        # had no notion of cancellation at all: cancel_active_turn() stopped
+        # generation and speech, and a multi-step task carried on dispatching
+        # browser and UI actions to the end. "Never mind" mid-task left the
+        # remaining steps running.
+        self._is_cancelled = is_cancelled
         self.response_language = response_language
         self._precondition_context = {
             "computer_control_mode": computer_control_mode,
@@ -819,8 +826,42 @@ class TaskPlanner:
             )
             return None
 
+    def _cancelled(self) -> bool:
+        """Whether the person has taken this turn back."""
+        if self._is_cancelled is None:
+            return False
+        try:
+            return bool(self._is_cancelled())
+        except Exception:
+            # A broken predicate must not strand the task; carry on rather
+            # than treating an error as a cancellation.
+            return False
+
+    @staticmethod
+    def _cancelled_result(task_state: TaskState) -> TaskRunResult:
+        task_state.status = "stopped"
+        task_state.errors.append("cancelled: user_took_over")
+        result = TaskRunResult(
+            "stopped", "Stopped -- you cancelled that.", task_state,
+        )
+        # Recorded as a step so TaskRunResult.outcome() reads CANCELLED
+        # rather than a bare "stopped", which is indistinguishable from
+        # giving up.
+        task_state.completed_steps.append(TaskStepResult(
+            TaskStep(capability="", sub_goal="cancelled"),
+            "failed", summary="You cancelled that.",
+            failure_code="user_took_over",
+        ))
+        return result
+
     def _advance(self, task_state: TaskState) -> TaskRunResult:
         while task_state.step_count < self.max_steps:
+            # Before planning the next step, and so before anything is
+            # dispatched. A cancellation between two steps must not be
+            # discovered only after the next one has already run.
+            if self._cancelled():
+                print("[Task Planner] Cancelled; no further steps will run.")
+                return self._cancelled_result(task_state)
             decision = self._plan_next(task_state)
             if decision is None:
                 task_state.status = "failed"
@@ -931,6 +972,11 @@ class TaskPlanner:
                 f"[Task Planner] step={task_state.step_count} "
                 f"capability={capability} risk={risk_level} sub_goal={sub_goal!r}"
             )
+            if self._cancelled():
+                # Planning a step is a model call; the person may have
+                # cancelled while it ran.
+                print("[Task Planner] Cancelled before dispatching the step.")
+                return self._cancelled_result(task_state)
             step_result, prepared = self._run_step(
                 step, self.executors[capability], task_state=task_state,
             )
@@ -1000,6 +1046,11 @@ class TaskPlanner:
                         self._truncated(step_result.summary, _MAX_SUMMARY_LENGTH),
                         task_state,
                     )
+                if self._cancelled():
+                    # A retry is a new action. Cancelling during a failure
+                    # must stop the recovery too, not just the step.
+                    print("[Task Planner] Cancelled; not retrying.")
+                    return self._cancelled_result(task_state)
                 # Otherwise loop back to _plan_next: the failure is now part
                 # of the history it's given, so the model can retry with a
                 # different sub_goal, switch capability, or stop on its own.
@@ -1039,8 +1090,15 @@ class TaskPlanner:
             else:
                 plan_result = executor.act(step.sub_goal)
         except Exception as error:
+            # A raw exception used to carry neither a failure code nor any
+            # info, so it reached the retry with nothing attached: it was
+            # absent from task_state.errors and from collected_information,
+            # and the next planning call could not see what had gone wrong.
+            # A retry needs a reason, or it is the same attempt again.
+            detail = f"That step failed: {type(error).__name__}: {error}"
             return TaskStepResult(
-                step, "failed", summary=f"That step failed: {error}",
+                step, "failed", summary=detail, info=detail,
+                failure_code="tool_exception",
             ), None
         adapter = self._result_adapters.get(step.capability, self._from_browser_result)
         return adapter(step, plan_result)

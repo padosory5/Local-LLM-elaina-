@@ -36,6 +36,7 @@ cleanup that was handed to it alongside them.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -177,3 +178,69 @@ class Lifecycle:
     @property
     def is_shut_down(self) -> bool:
         return self._shut_down
+
+
+# --------------------------------------------------------------- watchdog
+
+
+class StartupTimeout(RuntimeError):
+    """A startup stage did not finish inside its budget."""
+
+
+def build_within(
+    name: str,
+    factory: Callable[[], Any],
+    *,
+    timeout: float,
+    log: Callable[[str], None] = print,
+) -> Any:
+    """Run a constructor with a deadline, on a thread that cannot block exit.
+
+    Python cannot interrupt a thread that is blocked in C -- there is no safe
+    way to abort a constructor part-way and be left with a usable process. So
+    this does not try to. It bounds how long the *caller* waits, and leaves
+    the stuck work on a daemon thread, which the interpreter abandons at exit
+    rather than joining.
+
+    That distinction is the whole design. The failure this contains is a
+    startup that never finishes and never fails: measured in 4E-G, engine
+    construction sometimes reached ready in ~90s and sometimes not in 300s,
+    with no timeout anywhere and nothing to report. Reproduced on the
+    original code with these changes stashed, so it is pre-existing.
+
+    What this guarantees: the caller always gets an answer, so the lifecycle
+    can report a required failure and release what it already holds.
+
+    What it cannot guarantee, stated plainly: a constructor abandoned midway
+    may have opened things nobody holds a reference to. Its own children get
+    their own bounds -- the MCP client already times out at 15s -- and the
+    process exits immediately afterwards, which returns handles to the OS.
+    A partially-built object is never handed back and never used.
+    """
+    result: dict[str, Any] = {}
+
+    def build() -> None:
+        try:
+            result["value"] = factory()
+        except BaseException as error:  # noqa: BLE001 - reported, not swallowed
+            result["error"] = error
+
+    worker = threading.Thread(
+        target=build, name=f"elaina-build-{name}", daemon=True,
+    )
+    started = time.monotonic()
+    worker.start()
+    worker.join(timeout)
+
+    if worker.is_alive():
+        log(
+            f"[Lifecycle] {name} did not finish within {timeout:.0f}s and was "
+            "abandoned; startup cannot continue."
+        )
+        raise StartupTimeout(f"{name} timed out after {timeout:.0f}s")
+    if "error" in result:
+        raise result["error"]
+    log(
+        f"[Lifecycle] {name} built in {time.monotonic() - started:.1f}s."
+    )
+    return result["value"]

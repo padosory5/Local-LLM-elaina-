@@ -46,6 +46,8 @@ class BrowserServiceTimeoutError(TimeoutError):
 # can block on a browser that accepted a connection and then stopped
 # answering, and an unbounded wait turns that into a turn that never ends.
 _CALL_TIMEOUT_SECONDS = 60.0
+# Attaching to a browser is slower than a single call but must still end.
+_STARTUP_TIMEOUT_SECONDS = 90.0
 
 
 @dataclass
@@ -255,7 +257,17 @@ class BrowserService:
                     daemon=True,
                 )
                 self._thread.start()
-        self._ready.wait()
+        # Bounded, like every call below it. This was a bare wait() with no
+        # timeout: if the worker never reached the point of setting _ready --
+        # a driver that hangs while attaching rather than failing -- the
+        # caller blocked here forever. The call path a few lines up already
+        # had _CALL_TIMEOUT_SECONDS for exactly this reason ("loads forever");
+        # startup was simply missed.
+        if not self._ready.wait(timeout=_STARTUP_TIMEOUT_SECONDS):
+            raise BrowserServiceTimeoutError(
+                "Browser control did not finish starting, so I stopped "
+                "waiting on it."
+            )
         if self._startup_error is not None:
             raise self._startup_error
 

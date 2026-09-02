@@ -95,6 +95,11 @@ _RETRYABLE = frozenset({
     "shuffle_failed",
     "model_reported_failure",
     "planner_reported_failure",
+    # A tool raised rather than returning a result. Retryable because the
+    # planner can legitimately recover by choosing a different capability or
+    # sub-goal, and the exception text now travels with it so the retry has
+    # something to go on.
+    "tool_exception",
     # "this particular target was not found" -- not "the goal is
     # impossible". A different sub-goal can still reach it, and the planner
     # already recovers this way: a page that would not load is followed by
