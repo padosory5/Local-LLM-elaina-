@@ -14,9 +14,9 @@ sometimes.
 |---|---|
 | **Branch** | `phase4e-stabilization` |
 | **Last checkpoint** | `v0.4e-baseline` — 851c8bd5 |
-| **Tests green** | **1949** / 113 modules (regression floor — must never drop) |
+| **Tests green** | **1957** / 114 modules (regression floor — must never drop) |
 | **Model** | `qwen3:8b` via Ollama · vision `qwen3-vl:8b` |
-| **Phase** | 4E-I complete → next: long-session soak |
+| **Phase** | 4E-I.1 complete → next: long-session dogfooding |
 | **Router accuracy** | **97.0–97.8%** (130–131/134) · 0 dangerous false positives · target ≥95% ✅ |
 | **Agency accuracy** | **100%** (35/35) · 0 unrequested actions · 15/15 consent · target ≥90% ✅ |
 | **Tool selection** | **95.6–97.8%** (43–44/45) · 0 research→browser · 0 UI false positives · target ≥90% ✅ |
@@ -24,7 +24,7 @@ sometimes.
 | **Continuity** | **59/59** checks over 22 conversations · target ≥90% ✅ |
 | **Runtime lifecycle** | **17/17** automated cases · 10-item manual checklist ✅ |
 | **Failure & recovery** | **26/26** scenarios · 0 unbounded waits · cancellation stops the plan ✅ |
-| **Latency** | instrumented end to end · **router is the bottleneck, not the model** ✅ |
+| **Latency** | instrumented · **router is decode-bound, not prompt-bound** · fast paths bypass it entirely ✅ |
 
 **Rollback at any time:**
 
@@ -374,13 +374,47 @@ Perceived (transcript → first token) is 3.41s median, of which routing is ~88%
 - [x] VAD trailing silence (**0.9s fixed**), STT, TTFT, TTS start, interrupt — all instrumented
 - [x] Cold (engine build **8.64s**) reported separately from warm
 - [x] Top-3 bottlenecks identified **from measurement**: `route_model`, `web_search`, `tts_start`
-- [ ] Optimization — **deliberately not rushed**; the fix touches the router,
-      which carries 97.8% accuracy and 0 dangerous false positives
+- [x] Optimization done as its own measured phase (4E-I.1) — see below
 
 > **Also fixed:** the regression run surfaced **1 dangerous false positive**
 > (`computer_safety_5`, compound "create and write"). Isolated to the
 > committed 4E-H tree — *not* this phase — and fixed with a deterministic
 > guard. Second silent drift on unchanged code; the per-phase run caught both.
+
+### 10.1 Router latency optimization `[x]`
+
+Full analysis: [docs/ROUTER_LATENCY_OPTIMIZATION.md](docs/ROUTER_LATENCY_OPTIMIZATION.md)
+
+**The plan's main assumption was wrong, and measuring it first saved the work.**
+The prompt is 15.4k chars (~3,854 tokens) and looked like the obvious target.
+Splitting the call says otherwise:
+
+```
+prefill  0.06s   <- the entire 3,235-token prompt
+decode   5.31s   <- 268 tokens of JSON at ~52 tok/s
+```
+
+**Prefill is 1% of the call.** Shrinking the prompt would have bought nothing
+and risked the accuracy 4E-B showed is prompt-sensitive. `format="json"` is
+also free (52.5 vs 52.1 tok/s). The cost is *output volume*, full stop.
+
+- [x] **Fast paths — KEPT.** Bare acknowledgements ("ok", "I see", "got it")
+      and cancellations ("never mind", "stop") bypass the router entirely:
+      **~4.8s → ~0.00s** on those turns. Guarded by *nothing outstanding*, and
+      every path paired with a negative test — `"ok open spotify"` and
+      `"stop the music"` still route.
+- [x] **Prompt reduction — NOT ATTEMPTED.** Cancelled by the measurement.
+- [x] **Schema trimming — NOT KEPT.** `request_explicitness` is provably dead
+      (~8 tokens, 3%, 0.15s); trimming `reason` too reaches ~16%. Neither
+      approaches 1.5s, and `reason` is the diagnostic that made four phases of
+      router debugging tractable.
+
+**≤1.5s is not safely reachable, and the reason is arithmetic:** decode-bound
+at 52 tok/s, 1.5s buys ~78 output tokens, the schema emits 268 across 31
+load-bearing fields. That is a redesign, not a trim. Remaining options —
+staged classification (likely a wash: most intents need the full schema
+anyway) or a smaller router model (out of scope without a benchmark proving
+equivalence) — each need their own phase. **Stopped here deliberately.**
 
 ### 11. Long-session soak `[~]`
 
@@ -549,3 +583,10 @@ Newest first. One line per meaningful step.
   since 4E-H (compound "create file and write content" → now refused).
 - New: `core/timing.py`, `scripts/latency_benchmark.py`,
   `docs/LATENCY_BASELINE.md`. Suite 1946 → **1949**.
+- **4E-I.1 complete.** Router latency: measured prefill (0.06s) vs decode
+  (5.31s) and **disproved the prompt-size assumption before changing any
+  code**. Kept deterministic fast paths (~4.8s → ~0.00s for acknowledgements
+  and cancellations); declined prompt and schema cuts as unable to reach the
+  target without risking 97.8% accuracy. Suite 1949 → **1957**.
+- New: `scripts/router_latency_check.py`, `tests/test_router_fast_paths.py`,
+  `docs/ROUTER_LATENCY_OPTIMIZATION.md`.

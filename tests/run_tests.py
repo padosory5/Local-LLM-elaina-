@@ -80,6 +80,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_intent_router",
             "test_korean_requests",
             "test_personality_routing",
+            "test_router_fast_paths",
             "test_router_surface_policy",
             "test_polite_requests",
             "test_task_intent_gate",

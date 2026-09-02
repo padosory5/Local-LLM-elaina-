@@ -212,6 +212,31 @@ _CLOSING_ACKNOWLEDGEMENT = re.compile(
     flags=re.IGNORECASE,
 )
 
+# A bare acknowledgement with nothing outstanding. It authorises nothing,
+# asks nothing, and names no subject -- there is no classification for the
+# router to make, and routing it costs the full prompt (~3,850 tokens,
+# measured at ~4.8s) to be told it was conversation. Guarded exactly like
+# the greeting path: any pending offer, consent, clarification or active
+# recommendation makes these meaningful, and those branches run first.
+_BARE_ACKNOWLEDGEMENT = re.compile(
+    r"^\s*(?:i see|ok(?:ay)?|got it|gotcha|right|sure|alright|"
+    r"mm-?hm+|uh-?huh|yeah|yep|yup|fair enough|makes sense|noted|"
+    r"understood|cool|nice|아 그렇구나|알겠어(?:요)?|그렇구나)"
+    r"\s*[.!?]*\s*$",
+    flags=re.IGNORECASE,
+)
+
+# Calling it off. A closed class, and the right response is to stop and
+# say so -- not to ask a model what kind of request it was.
+_CANCELLATION = re.compile(
+    r"^\s*(?:(?:no|nah|actually|wait)[,! ]+)?"
+    r"(?:never ?mind|forget it|forget that|cancel(?: that| it)?|"
+    r"stop(?: that| it)?|drop it|leave it|don't bother|no need|"
+    r"취소|됐어(?:요)?|그만)"
+    r"\s*[.!?]*\s*$",
+    flags=re.IGNORECASE,
+)
+
 # A bare greeting needs no model, locale, capability inventory, or service
 # pitch. Full-match-only means "hello, can you check Zillow?" still reaches
 # the request behind the greeting.
@@ -5943,6 +5968,65 @@ class ChatEngine:
                 ),
                 user_input=user_input,
                 locked_response="You're welcome.",
+            )
+        if (
+            _CANCELLATION.fullmatch(user_input)
+            and not has_explicit_attachment
+            and not continuing_agent_flow
+        ):
+            # Calling it off. Everything outstanding is dropped and the turn
+            # ends -- there is nothing here for a model to classify, and the
+            # cancellation should not wait ~4.8s to take effect.
+            self.cancel_active_turn()
+            self.clarification.clear()
+            self.computer_consent.clear()
+            self.task_consent.clear()
+            self.task_strategy_consent.clear()
+            self.capability_offer.clear()
+            self.task_sessions.clear()
+            self.recommendations.note_declined()
+            self._grounded_context = {}
+            timings["route"] = time.perf_counter() - route_started
+            return TurnRouting(
+                route=IntentDecision(
+                    intent="conversation",
+                    confidence=1.0,
+                    normalized_request=user_input,
+                    reason="The user called it off.",
+                ),
+                user_input=user_input,
+                locked_response=self.action_status.select(StatusContext(
+                    action="checking", phase="acknowledgement", force=True,
+                )) or "Okay, dropped it.",
+            )
+        if (
+            _BARE_ACKNOWLEDGEMENT.fullmatch(user_input)
+            and not any((
+                pending_offer,
+                pending_computer,
+                pending_task,
+                pending_strategy,
+                pending_capability,
+                pending_clarification,
+            ))
+            and active_problem is None
+            and not has_explicit_attachment
+            and not continuing_agent_flow
+        ):
+            # Nothing is outstanding, so this authorises nothing and asks
+            # nothing. Every branch that would give it meaning -- a pending
+            # offer, a consent question, an open recommendation -- is checked
+            # above and returns before this point.
+            timings["route"] = time.perf_counter() - route_started
+            return TurnRouting(
+                route=IntentDecision(
+                    intent="conversation",
+                    confidence=1.0,
+                    normalized_request=user_input,
+                    reason="A bare acknowledgement with nothing outstanding.",
+                    speech_act="social",
+                ),
+                user_input=user_input,
             )
         clarified_goal: Goal | None = None
         # What she filled in herself for this turn, to be said out loud with
