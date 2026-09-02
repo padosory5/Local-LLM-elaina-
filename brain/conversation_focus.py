@@ -52,8 +52,24 @@ _CORRECTIONS = (
     re.compile(
         r"\bnot\s+[\w' -]{2,30},\s*(?:i\s+mean\s+)?(.+)$", re.IGNORECASE,
     ),
+    # Bare "No, X" is the one form here with no correction marker in it, so
+    # it has to earn the reading from X's own shape. A correction names a
+    # thing -- "No, the blue one", "No, Zillow" -- and what follows it is a
+    # noun phrase. A clause with its own subject is a contradiction of what
+    # she just said, not a new topic.
+    #
+    # Measured live: "No, I can see the images. Thank you." was read as a
+    # correction, so the subject became that sentence, packing peanuts was
+    # retired, and two turns later the search ran on "I can see the images.
+    # Thank you University in South Korea".
     re.compile(
-        r"^\s*(?:no|nope|nah)[,!.]\s+(.+)$", re.IGNORECASE,
+        r"^\s*(?:no|nope|nah)[,!.]\s+"
+        r"(?!(?:i|you|we|they|he|she|it|that|this|there)\b"
+        r"(?:'|’|\s+(?:am|is|are|was|were|do|does|did|don|doesn|didn|"
+        r"can|could|will|would|have|has|had|isn|aren|wasn|weren|"
+        r"[a-z]+\s+(?:the|a|an|it|that|you|me)\b)))"
+        r"(.+)$",
+        re.IGNORECASE,
     ),
     re.compile(r"\bactually[,]?\s+(.+)$", re.IGNORECASE),
 )
@@ -64,11 +80,27 @@ _CORRECTIONS = (
 # Only verbs that actually mean "this is where I will be". "Going to" was
 # in here and matched "I'm going to UW", so a correction about which school
 # replaced the city -- and every query after it lost Seattle.
+# A proper name does not end at its first lowercase word, and the place it
+# sits in is often the comma after it. Measured live: "I'm moving to
+# University of Washington, Seattle" stopped at "University", because every
+# word had to be capitalised -- so "of" ended the name and Seattle, the
+# part that was actually a place, was dropped. Every rental query for the
+# rest of that session read "University in South Korea".
+#
+# The internal lowercase words are a closed set of name particles, and the
+# comma tail is taken only when a capitalised word follows it, so a name
+# cannot run on into the rest of the sentence.
+_NAME = (
+    r"[A-Z][\w.'-]*"
+    r"(?:\s+(?:of|the|and|de|del|da|von|van|der|di|du|la|le)\s+[A-Z][\w.'-]*"
+    r"|\s+[A-Z][\w.'-]*){0,4}"
+    r"(?:,\s+[A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*){0,2})?"
+)
 _LOCATION = re.compile(
     r"\b(?:moving|move|relocating|relocate)\s+to\s+"
-    r"([A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*){0,2})"
+    rf"({_NAME})"
     r"|\bi(?:'m| am)\s+(?:in|at|based\s+in|living\s+in)\s+"
-    r"([A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*){0,2})"
+    rf"({_NAME})"
     r"|\b(?:in|near|around)\s+([A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*){0,2})"
     r"\s*(?:[,.]|$)",
 )

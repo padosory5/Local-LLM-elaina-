@@ -101,13 +101,27 @@ _SITUATIONS = (
 # What was asked for, and in what shape. "something soft" is a quality;
 # "Korean BBQ" is a thing. The difference decides whether a later "actually"
 # retires it.
+#
+# The thing may sit inside an infinitive -- "I want to get a guitar" -- so
+# the marker and its verb are skipped rather than captured. Measured live,
+# capturing them made "I just want to talk about you, my rents and stuff"
+# into preference="to talk about you", which then became the subject of an
+# apartment search and the phrase she read back to the user.
+#
+# Two guards keep that from simply moving the problem: the thing may not
+# begin with a preposition, so "to talk *about you*" contributes nothing
+# at all; and a preposition also ends it, so "to get an internship *in*
+# summer 2027" leaves "internship" -- a phrase that can go in a search box.
 _WANTED = re.compile(
     r"\b(?:want|wanted|looking for|prefer|feel like|craving|"
     r"in the mood for|fancy|after)\s+"
+    r"(?:to\s+[a-z]+\s+)?"
     r"(?:some\s+|a\s+|an\s+|the\s+)?"
+    r"(?!(?:in|on|at|about|for|with|from|to|of|near|around|under)\b)"
     r"(something\s+[a-z][a-z ]{1,30}?|anything\s+[a-z][a-z ]{1,30}?"
     r"|[a-z][a-z' -]{1,30}?)"
     r"(?=[,.;!?]|$|\s+(?:and|but|or|because|since|so|that|which|"
+    r"in|on|at|about|for|with|from|near|around|under|"
     r"to\s+(?:eat|buy|get|play|drink|wear|use)))",
     re.IGNORECASE,
 )
@@ -247,13 +261,46 @@ _BARE_MONEY = re.compile(
     re.IGNORECASE,
 )
 
+# A range is two numbers, and only two. Measured live: "the phone
+# number is 206-221-7857" was read as budget=206-221, and that went on
+# into a rental search as "studio apartments September 13th 206-221 in
+# South Korea". The lookaround says a link of a longer chain is not a
+# price -- which separates a phone number, a date and a serial from an
+# amount without needing to know what any of those words mean.
 _MONEY_RANGE = re.compile(
+    r"(?<![\d.,–—-])"
     r"((?:[$₩€£¥]\s?)?\d[\d,]*(?:\.\d+)?\s*"
     r"(?:-|\u2013|\u2014|to|through)\s*"
-    r"(?:[$₩€£¥]\s?)?\d[\d,]*(?:\.\d+)?\s*"
-    r"(?:won|krw|usd|eur|gbp|jpy|dollars?|euros?|pounds?|yen|원|만원)?)",
+    r"(?:[$₩€£¥]\s?)?\d[\d,]*(?:\.\d+)?(?![\d,])\s*"
+    r"(?:won|krw|usd|eur|gbp|jpy|dollars?|euros?|pounds?|yen|원|만원)?)"
+    r"(?!\s*[–—-]\s*\d)",
     re.IGNORECASE,
 )
+
+# The closed classes -- determiners, pronouns, prepositions, conjunctions,
+# auxiliaries and the handful of discourse particles speech puts in front
+# of everything. Not a list of phrases to watch for: it is the complement
+# of "content word", used to ask whether a turn says anything of its own
+# beyond the constraint it states. English adds no new members to these
+# classes, which is what makes the set safe to fix in code.
+_FUNCTION_WORDS = frozenset({
+    "a", "an", "the", "this", "that", "these", "those", "my", "your", "our",
+    "their", "his", "her", "its", "some", "any", "no", "all", "both", "each",
+    "i", "you", "he", "she", "it", "we", "they", "me", "him", "us", "them",
+    "myself", "yourself", "itself",
+    "am", "is", "are", "was", "were", "be", "been", "being", "do", "does",
+    "did", "have", "has", "had", "will", "would", "can", "could", "shall",
+    "should", "may", "might", "must", "let", "let's",
+    "in", "on", "at", "to", "of", "for", "with", "from", "by", "about",
+    "into", "onto", "over", "under", "up", "down", "out", "off", "as",
+    "than", "then", "there", "here", "near", "around", "like", "just",
+    "and", "or", "but", "so", "if", "because", "when", "while", "though",
+    "not", "very", "really", "too", "also", "still", "yet", "again",
+    "okay", "ok", "yeah", "yes", "well", "oh", "ah", "um", "uh", "please",
+    "thanks", "thank", "hey", "hi", "actually", "maybe", "kinda", "sort",
+    "kind", "lot", "bit", "much", "many", "more", "most", "now", "today",
+    "what", "which", "who", "whom", "whose", "how", "why", "where",
+})
 
 # Words that are grammar, not content, once the specifics are stripped out.
 _EMPTY_SUBJECTS = frozenset({
@@ -1093,6 +1140,12 @@ def about_the_same_thing(
         for slot in tuple(problem.constraints) + tuple(problem.superseded)
         for word in re.findall(r"[a-z0-9가-힣]+", slot.value.casefold())
     }
+    # Grammar is not evidence of being about the same thing. A budget of
+    # "$1000 to $1500" put "to" into what this problem is known by, and
+    # "shipping it *to* Seattle" then matched it -- so a turn about posting
+    # a PC home continued an apartment search on the strength of one
+    # preposition.
+    known -= _FUNCTION_WORDS
 
     named = [slot for slot in incoming if slot.name == PREFERENCE]
     if named:
@@ -1103,8 +1156,30 @@ def about_the_same_thing(
             for slot in named
         )
     if incoming:
-        # Qualities, situations and budgets refine; they never redirect.
-        return True
+        # Qualities, situations and budgets refine -- but only when the
+        # constraint is essentially all the turn says.
+        #
+        # This was an unconditional "return True", and it is the single
+        # line that kept a rental problem alive across the whole of the
+        # first dogfooding session. "Okay, I searched it up and the phone
+        # number is 206-221-7857. You are wrong." carries digits, so it
+        # refined an apartment search; "I want to get an internship in
+        # summer 2027" carries a date, so it did too. Four turns later the
+        # query was "studio apartments September 13th 206-221 in South
+        # Korea", built to answer a question about a phone number.
+        #
+        # What separates the two is what is left over. Take the turn's
+        # content words away from the constraint's own words: a genuine
+        # refinement has nothing left ("from $1000 to $1500", "just like a
+        # studio"), while a sentence about something else still has its
+        # subject in hand.
+        stated = {
+            word
+            for slot in incoming
+            for word in re.findall(r"[a-z0-9가-힣]+", slot.value.casefold())
+        }
+        residual = bare - stated - _FUNCTION_WORDS
+        return not residual or bool(residual & known)
 
     # Nothing was stated at all. A bare follow-up ("show me some places")
     # continues; a whole unrelated sentence does not.

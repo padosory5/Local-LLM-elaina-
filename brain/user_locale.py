@@ -444,6 +444,24 @@ class UserLocale:
         -- which keeps somewhere unlisted ("in Nha Trang") respected while
         an infinitive is not.
         """
+        # A place does not need a preposition in front of it to be one.
+        # Conversation context is appended bare -- "studio apartments $1000
+        # to $1500 University of Washington, Seattle" -- so requiring the
+        # hint meant this read as placeless and the market was added anyway:
+        # every rental query in the first dogfooding session ended "in South
+        # Korea" while naming a university in Seattle. Only names this
+        # module already knows count here; an unlisted capitalised phrase
+        # still needs its preposition, which is what keeps "easy to eat"
+        # from reading as a destination.
+        words = [
+            word.strip(",.;:!?").casefold()
+            for word in str(text or "").split()
+        ]
+        for size in (3, 2, 1):
+            for index in range(len(words) - size + 1):
+                if " ".join(words[index:index + size]) in _PLACE_COUNTRIES:
+                    return True
+
         for match in _DESTINATION_HINT.finditer(str(text or "")):
             phrase = " ".join(match.group(1).split()).strip()
             place = phrase.lower()
