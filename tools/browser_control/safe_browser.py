@@ -10,6 +10,27 @@ from urllib.parse import quote_plus, urlparse, urlunparse
 
 _DEFAULT_SEARCH_URL_TEMPLATE = "https://www.google.com/search?q={query}"
 
+# What is left when a request names no subject: pronouns and determiners
+# pointing at something said elsewhere, the prepositions and particles
+# joining them, and the words for the surface itself. A target made only of
+# these has nothing to look up.
+#
+# Measured live, three requests reached here with targets like these and
+# all three reported success: "show it off on my browser" opened a blank
+# tab and said "Sure, new tab opened", and "show me that on my browser"
+# went hunting for a live element called "me that on my browser". Opening
+# something empty is a worse answer than saying the request named nothing.
+_NO_SUBJECT = frozenset({
+    "it", "that", "this", "them", "those", "these", "one", "ones", "some",
+    "me", "us", "him", "her", "there", "here", "thing", "things", "stuff",
+    "a", "an", "the", "my", "your", "our", "their", "his", "its",
+    "in", "on", "at", "to", "of", "for", "with", "from", "up", "off",
+    "out", "over", "and", "or", "new", "another", "please", "now",
+    "browser", "tab", "tabs", "window", "windows", "page", "pages",
+    "screen", "site", "web", "internet", "google", "chrome", "search",
+    "brave", "edge", "firefox",
+})
+
 
 @dataclass(frozen=True)
 class BrowserResolution:
@@ -45,10 +66,25 @@ class SafeBrowserControl:
             return BrowserResolution(
                 "invalid_target", text, message="A search query is required.",
             )
+        if not self._names_a_subject(text):
+            return BrowserResolution(
+                "invalid_target",
+                text,
+                message=(
+                    "That names the browser rather than something to look "
+                    "up. What would you like me to search for?"
+                ),
+            )
         url = self.search_url_template.format(query=quote_plus(text))
         return BrowserResolution(
             "resolved", text, url=url, message=f"Ready to search for {text}.",
         )
+
+    @staticmethod
+    def _names_a_subject(text: str) -> bool:
+        """Whether anything in this target is a thing to look up."""
+        words = re.findall(r"[^\W_]+", str(text or ""), flags=re.UNICODE)
+        return any(word.casefold() not in _NO_SUBJECT for word in words)
 
     def resolve(self, requested_target: str, proposed_url: str = "") -> BrowserResolution:
         target = str(requested_target).strip()

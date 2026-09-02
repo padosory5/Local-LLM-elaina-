@@ -282,7 +282,14 @@ _SPOKEN_URL = re.compile(
     flags=re.IGNORECASE,
 )
 _SPOKEN_SEARCH = re.compile(
-    r"\b(?:search|look\s+up|find)\s+(?:for\s+)?(?P<query>.+?)"
+    r"\b(?:search|look\s+up|find)\s+(?:for\s+)?"
+    # "search it up", "look it up", "find them" -- a phrasal verb with a
+    # pronoun object. What to search for is whatever the pronoun refers to,
+    # which lives in the conversation. Taking the pronoun literally is how
+    # "search it up on Zelo" became a search for the string "it up on Zelo"
+    # and the reply "Got it, it up on Zelo is open."
+    r"(?!(?:it|that|this|them|those|these|one|ones)\b)"
+    r"(?P<query>.+?)"
     # The article was missing "a"/"an", so "in a new browser tab" never
     # matched this trailing group and the surface ended up inside the
     # query: "wireless keyboards in a new browser tab" was searched for
