@@ -4,6 +4,7 @@ import json
 import re
 import time
 
+from brain import world_clock
 from core import timing
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -1239,6 +1240,11 @@ class SemanticIntentRouter:
         if (
             decision.intent == "time_question"
             and decision.requires_external_evidence
+            # A clock somewhere else is arithmetic, not evidence. Measured
+            # live, "Search me the current time of Seattle" went to the web
+            # and came back with a query carrying three unrelated topics;
+            # the offset was knowable the whole time.
+            and not world_clock.read_place(decision.normalized_request)
         ):
             return replace(
                 decision,

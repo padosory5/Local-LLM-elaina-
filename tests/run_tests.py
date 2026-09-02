@@ -103,6 +103,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_task_discovery_policy",
             "test_research_recall",
             "test_task_contamination",
+            "test_world_clock",
             "test_task_extractor",
             "test_execution_matrix",
             "test_task_outcome",

@@ -18,6 +18,7 @@ from brain.deliberation import goal_intent, interaction
 from brain.deliberation.goal_intent import SemanticGoal
 from brain import capability_selection
 from brain import browser_outcome
+from brain import world_clock
 from brain.capability_selection import CapabilityChoice
 from brain.deliberation.interaction import InteractionDecision
 from brain.deliberation import front_door
@@ -4185,7 +4186,7 @@ class ChatEngine:
         elif route.intent == "time_question":
             messages = self._build_factual_messages(
                 route.normalized_request,
-                self.build_time_context(),
+                self.build_time_context(route.normalized_request),
                 reset_history=route.topic_shift,
             )
 
@@ -5768,7 +5769,7 @@ class ChatEngine:
         if route.intent == "time_question":
             context_prompt += (
                 "\n\nCURRENT LOCAL TIME CONTEXT\n"
-                f"{self.build_time_context()}"
+                f"{self.build_time_context(route.normalized_request)}"
             )
         if route.intent == "clarification" and route.reason:
             context_prompt += (
@@ -8230,11 +8231,33 @@ class ChatEngine:
 
         return result
     
-    def build_time_context(self) -> str:
-        now = datetime.now()
+    def build_time_context(self, question: str = "") -> str:
+        """The clock, and -- when the question names somewhere else -- theirs.
 
-        return (
-            f"Today is {now.strftime('%A, %B %d, %Y')}.\n"
-            f"The current local time is {now.strftime('%I:%M %p')}.\n"
-            f"The current year is {now.year}."
-        )
+        Measured live: "Tell me the time in Seattle right now" was answered
+        with the time in Korea, and the correction was answered with an
+        invented one. The only clock in the prompt was an unlabelled local
+        time, so there was nothing to convert from and nothing to convert
+        with. The conversion happens in code now; the model reads out a
+        line it did not have to compute.
+        """
+        now = datetime.now().astimezone()
+
+        lines = [
+            f"Today is {now.strftime('%A, %B %d, %Y')}.",
+            f"The current local time is {now.strftime('%I:%M %p')} "
+            f"({now.strftime('%Z')}, UTC{now.strftime('%z')}).",
+            f"The current year is {now.year}.",
+        ]
+
+        place = world_clock.read_place(question)
+        elsewhere = world_clock.describe(place) if place else ""
+        if elsewhere:
+            lines.append("")
+            lines.append(elsewhere)
+            lines.append(
+                "That line is already correct for the place the question "
+                "names. State it as it stands -- do not convert it again, "
+                "and do not substitute the local time above."
+            )
+        return "\n".join(lines)
