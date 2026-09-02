@@ -736,6 +736,8 @@ ever allows one.
 ---
 
 ### [B-29] Recommendation clarification system still asks irrelevant questions
+- **Status:** FIXED (9f50f41f)
+- **Root cause / note:** `missing_dimension()` gated on `purchase`, and `_PURCHASE` contains "get" -- the most general verb in English. Getting an internship is an acquisition, not a purchase with a budget. The thing now has to have a shape worth asking about: two obvious kinds, or a discovery category with a market. Guitars still split electric/acoustic; housing still asks type then budget.
 
 - **When:** I-20 contact discussion, internship discussion, international-driving-permit discussion
 - **Severity:** P1
@@ -789,6 +791,8 @@ ever allows one.
 ---
 
 ### [B-30] Natural numeric answers are rejected unless formatting exactly matches expected form
+- **Status:** FIXED (9f50f41f)
+- **Root cause / note:** The constraint reader is right to refuse a bare `1500` in open conversation -- reading loose digits as money is how half a phone number became a rental budget. But the question supplies what the words do not, so a bare amount answering "what sort of budget" is a budget. Scoped to that dimension only.
 
 - **When:** apartment budget clarification
 - **Severity:** P2
@@ -814,6 +818,8 @@ ever allows one.
 ---
 
 ### [B-31] "Same as I said" cannot reuse a previously supplied preference
+- **Status:** FIXED (9f50f41f)
+- **Root cause / note:** A restarted problem drops its constraints; the person's memory of having said it does not. Answered dimensions are now kept for the session. Verified across a restart: "same as I said" recovers `studio`.
 
 - **When:** repeated Zillow rental search
 - **Severity:** P2
@@ -869,6 +875,8 @@ ever allows one.
 ---
 
 ### [B-33] Explicit browser-control request was converted back into web search
+- **Status:** FIXED (684d6f03)
+- **Root cause / note:** `reads_as_clear_acceptance` matched on "search"/"open", so a fully specified instruction read as consent to an older offer -- and consent *replaces* the turn with the offer's stored goal. A turn that names its own errand is an instruction; the offer is cleared and it routes on its own terms.
 
 - **When:** Zillow task
 - **Severity:** P1
@@ -896,6 +904,8 @@ ever allows one.
 ---
 
 ### [B-34] "I'm ready to start" did not resume Elaina's own browser-control offer
+- **Status:** FIXED (684d6f03)
+- **Root cause / note:** "I'm ready to start" was not recognised as acceptance, one turn after she said "let me know when you're ready to start".
 
 - **When:** Zillow task
 - **Severity:** P1
@@ -919,6 +929,8 @@ ever allows one.
 ---
 
 ### [B-35] Assistant promises browser action without actually dispatching it
+- **Status:** FIXED (684d6f03)
+- **Root cause / note:** This was B-33 wearing different words: the browser-control request was swallowed by a pending web-search offer, so the search ran on the offer's goal and no browser action was ever dispatched. "Yeah, do that" was also not an acceptance, because `_ASKS_HER_TO_ACT` knew "do it" but not "do that".
 
 - **When:** sturdy-box image task
 - **Severity:** P1
@@ -1149,6 +1161,8 @@ ever allows one.
 ---
 
 ### [B-45] "Yeah" after a grounding offer is treated as acknowledgement, not consent
+- **Status:** FIXED (684d6f03)
+- **Root cause / note:** The entity guard wrote a question into the reply and parked nothing to accept it, so "Yeah." took the bare-acknowledgement fast path -- which only fires when nothing is outstanding. It now parks what answers it. Long-standing gap; the session-1 work made the guard fire often enough to expose it.
 
 - **When:** Washington State travel discussion
 - **Severity:** P1
@@ -1211,6 +1225,8 @@ ever allows one.
 ---
 
 ### [B-48] "Stop the music" is interpreted as force-quitting an app named Music instead of stopping Spotify playback
+- **Status:** OPEN -- needs a capability, not a fix
+- **Root cause / note:** "Stop the music" has no correct destination: there is no pause or stop operation in COMPUTER_OPERATIONS. Routing it properly means adding a media control, which is a feature rather than a bug fix, so it is deliberately not in the dogfooding work.
 
 - **When:** Spotify task
 - **Severity:** P1
@@ -1234,6 +1250,8 @@ ever allows one.
 ---
 
 ### [B-49] Compound "stop the music and Spotify" becomes one nonexistent application name
+- **Status:** OPEN -- same as B-48
+- **Root cause / note:** Compound "stop the music and Spotify" is the same missing capability, plus compound target parsing.
 
 - **When:** Spotify task
 - **Severity:** P1
@@ -1255,6 +1273,8 @@ ever allows one.
 ---
 
 ### [B-50] Generic "close my browser" cannot resolve the actual active browser
+- **Status:** FIXED (b44e858a)
+- **Root cause / note:** "Default Browser" is a synthetic catalogue entry for *opening* the default handler -- no process, no window, so it can never be found running. A role word is now resolved against what is actually open, for close/force-quit only. A named app is left alone.
 
 - **When:** browser-control cleanup
 - **Severity:** P2
