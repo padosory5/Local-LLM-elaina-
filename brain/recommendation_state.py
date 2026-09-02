@@ -1028,7 +1028,17 @@ def update(
     named = next(
         (slot.value for slot in constraints if slot.name == PREFERENCE), "",
     )
-    if named and named.casefold() not in resolved.casefold():
+    # A subject is a phrase, not a paragraph. Containing the named thing
+    # was enough to keep a whole utterance as the subject, and speech
+    # arrives in whole utterances: "Okay, thank you. Also, I want to get an
+    # internship in summer 2027. When should I start applying?" stayed
+    # entire. ``_thing()`` then took its last word, so she asked "What kind
+    # of open did you have in mind?", and the same paragraph went into the
+    # search box. When the turn named a thing, that thing is the subject.
+    if named and (
+        named.casefold() not in resolved.casefold()
+        or len(resolved.split()) > 6
+    ):
         resolved = named
     domain = problem.domain or domain_for(text) or domain_for(problem.subject)
     category = problem.category or category_for(text) or category_for(

@@ -295,3 +295,54 @@ class ASentenceIsNotAThingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ASubjectIsAPhraseNotAParagraphTests(unittest.TestCase):
+    """B-13, B-14. "What kind of open did you have in mind?"
+
+    ``_thing()`` takes the last word of the subject, and the subject was
+    the whole utterance -- so the word it asked about was whatever the
+    sentence happened to end on. The same paragraph then went into the
+    search box.
+    """
+
+    def _opened(self, said: str):
+        problem = state.start(said, domain=state.domain_for(said))
+        return state.update(problem, said)
+
+    def test_the_named_thing_beats_the_sentence_it_was_said_in(self):
+        problem = self._opened(
+            "Okay, thank you. Also, I want to get an internship in summer "
+            "2027. When should I start applying?"
+        )
+
+        self.assertEqual(problem.subject, "internship")
+
+    def test_the_question_it_asks_is_about_that_thing(self):
+        problem = self._opened(
+            "Okay, thank you. Also, I want to get an internship in summer "
+            "2027. When should I start applying?"
+        )
+
+        question = problem.question_for(problem.missing_dimension())
+
+        self.assertNotIn("open", question)
+        self.assertNotIn("applying", question)
+
+    def test_the_query_is_searchable(self):
+        problem = self._opened(
+            "Okay, thank you. Also, I want to get an internship in summer "
+            "2027. When should I start applying?"
+        )
+        query = problem.search_query()
+
+        self.assertNotIn("thank you", query.casefold())
+        self.assertIn("internship", query.casefold())
+
+    def test_a_one_sentence_request_is_untouched(self):
+        said = (
+            "What kind of jobs are offered for interns in like Microsoft "
+            "and Amazon Big Tech in Seattle?"
+        )
+
+        self.assertIn("jobs", self._opened(said).subject)
