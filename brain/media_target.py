@@ -158,6 +158,41 @@ _COMPOUND_REQUEST = re.compile(
     r"(?:open|play|put\s+on|start)\b)",
     re.I,
 )
+# Who the play verb belongs to. An instruction is addressed to her and has
+# no subject of its own ("play Attention"), or names her ("can you play
+# Attention"). A clause with any other subject is a statement about
+# someone -- "I want to listen to music later", "when should I start
+# applying" -- and reading those as requests is how a question about a
+# 2027 internship reached ui_action with a standing Spotify preference and
+# a ten-word "title", without the router ever being consulted.
+#
+# Read as the nearest preceding subject rather than as the presence of a
+# word: "I'd like you to play Attention" contains both pronouns, and the
+# one that governs the verb is the last one before it.
+_SUBJECT_PRONOUN = re.compile(r"\b(i|we|they|he|she|it|you)\b", re.I)
+_ADDRESSEE = frozenset({"you"})
+
+# A title is a phrase; what follows a sentence boundary is another
+# request. "?" and "!" always end one. A full stop is trusted only when at
+# least two words follow it, because "Mr. Brightside" is one title and
+# "Bang Bang. What is the weather?" is two sentences.
+_SENTENCE_BREAK = re.compile(r"[?!]\s+\S|\.\s+\S+\s+\S")
+
+
+def _addressed_to_her(text: str, verb_start: int) -> bool:
+    """Whether the verb at ``verb_start`` is an instruction to her."""
+    subjects = _SUBJECT_PRONOUN.findall(text[:verb_start])
+    if not subjects:
+        return True
+    return subjects[-1].casefold() in _ADDRESSEE
+
+
+def _first_sentence(subject: str) -> str:
+    """The subject, cut where the sentence it sits in ends."""
+    match = _SENTENCE_BREAK.search(subject)
+    return subject if match is None else subject[:match.start()]
+
+
 _ARTIST_SEPARATOR = re.compile(r"\s+(?:by|from)\s+", re.I)
 
 # Korean puts the verb last and the app in a locative, so none of the
@@ -321,7 +356,13 @@ def classify_media_request(
     )
     if match is None:
         return MediaRequest("none")
-    subject = _TRAILING_POLITENESS.sub("", match.group("subject")).strip(" ,.!?")
+    if match is not korean and not _addressed_to_her(text, match.start()):
+        # Someone else's verb. Korean marks the request on the verb itself
+        # and drops the subject, so the English subject test cannot read it
+        # and is not applied to it.
+        return MediaRequest("none")
+    subject = _first_sentence(match.group("subject"))
+    subject = _TRAILING_POLITENESS.sub("", subject).strip(" ,.!?")
     subject = _without_application(subject, application)
     if korean is not None and match is korean:
         # The app is where, not what.

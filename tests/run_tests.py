@@ -98,6 +98,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_desktop_resume",
             "test_interaction_decision",
             "test_media_target",
+            "test_play_request_scope",
             "test_task_discovery_locale",
             "test_task_discovery_policy",
             "test_research_recall",
