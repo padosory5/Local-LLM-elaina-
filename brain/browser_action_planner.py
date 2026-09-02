@@ -27,6 +27,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from brain import references
 from brain.deliberation import Decision, Goal, decide, interpret
 from tools.browser_control.browser_connection import BrowserConnectionResult
 from tools.browser_control.browser_control import (
@@ -528,20 +529,13 @@ _RESULT_TAIL_PATTERN = re.compile(
     r"(?:\s+(?:on|in)\s+(?:this\s+)?(?:page|screen|window|here))?\s*$",
     flags=re.IGNORECASE,
 )
-_ORDINAL_RESULT_INDEX = {
-    "first": 0, "1st": 0,
-    "second": 1, "2nd": 1,
-    "third": 2, "3rd": 2,
-    "fourth": 3, "4th": 3,
-    "fifth": 4, "5th": 4,
-}
-_ORDINAL_RESULT_WORD = {
-    0: "first",
-    1: "second",
-    2: "third",
-    3: "fourth",
-    4: "fifth",
-}
+# The counting vocabulary is shared with brain/references.py, which resolves
+# the same ordinals against a spoken result set rather than a live page.
+# Two tables for one closed grammatical class is exactly the kind of pair
+# that drifts, so there is one. The *pattern* above stays narrower on
+# purpose: this path only ever counts into visible page results.
+_ORDINAL_RESULT_INDEX = references.ORDINAL_INDEX
+_ORDINAL_RESULT_WORD = references.ORDINAL_WORD
 
 
 @dataclass

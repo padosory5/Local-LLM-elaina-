@@ -14,13 +14,14 @@ sometimes.
 |---|---|
 | **Branch** | `phase4e-stabilization` |
 | **Last checkpoint** | `v0.4e-baseline` — 851c8bd5 |
-| **Tests green** | **1892** / 110 modules (regression floor — must never drop) |
+| **Tests green** | **1903** / 111 modules (regression floor — must never drop) |
 | **Model** | `qwen3:8b` via Ollama · vision `qwen3-vl:8b` |
-| **Phase** | 4E-E complete → next: 4E-F memory & continuity |
+| **Phase** | 4E-F complete → next: startup & shutdown |
 | **Router accuracy** | **97.0–97.8%** (130–131/134) · 0 dangerous false positives · target ≥95% ✅ |
 | **Agency accuracy** | **100%** (35/35) · 0 unrequested actions · 15/15 consent · target ≥90% ✅ |
 | **Tool selection** | **95.6–97.8%** (43–44/45) · 0 research→browser · 0 UI false positives · target ≥90% ✅ |
 | **Execution** | **22/22** scenarios · verified vs unverified reported separately · target ≥20 ✅ |
+| **Continuity** | **59/59** checks over 22 conversations · target ≥90% ✅ |
 
 **Rollback at any time:**
 
@@ -53,8 +54,8 @@ report ~46 phantom import failures):
 | 4 | 4E-C agency & recommendation | `[x]` | 30 scenarios, offers resolve, rejections stop |
 | 5 | 4E-D tool selection | `[x]` | 40 scenarios, 90–95% first-choice correct |
 | 6 | 4E-E execution & verification | `[x]` | 20 multi-step tasks verified by final state |
-| 7 | 4E-F memory & continuity | `[~]` | 20 conversations, ≥90% reference accuracy |
-| 8 | Startup & shutdown | `[ ]` | clean start, clean stop, mic released |
+| 7 | 4E-F memory & continuity | `[x]` | 20 conversations, ≥90% reference accuracy |
+| 8 | Startup & shutdown | `[~]` | clean start, clean stop, mic released |
 | 9 | Failure & recovery | `[ ]` | every failure ends in one of 5 terminal states |
 | 10 | Latency | `[ ]` | ~2–3s conversation, fast interrupt |
 | 11 | Long-session soak | `[ ]` | zero crashes, bugs triaged |
@@ -242,17 +243,45 @@ appeared*. Three things were missing:
 state change, whether a search *answer* is true, and anything past the process
 boundary (audio reaching speakers, a form accepted server-side).
 
-### 7. 4E-F memory & continuity `[~]`
+### 7. 4E-F memory & continuity `[x]`
 
-Do not rebuild memory. Do not solve continuity by sending the whole transcript.
+**59/59 checks** across **22 conversations / 57 turns**, asserted on every suite
+run. Full analysis: [docs/MEMORY_CONTINUITY_BASELINE.md](docs/MEMORY_CONTINUITY_BASELINE.md)
 
-- [ ] "My major is ECE." → later → "What major did I tell you?"
-- [ ] "I'm looking at keyboards." → later → "Find me something cheaper."
-- [ ] "I meant Seattle, not Seoul."
-- [ ] "Open the second one." / "Do the same for monitors."
-- [ ] 20 conversations, 5–10 turns, ≥90% reference accuracy
+| Measure | Result |
+|---|---|
+| reference resolution | 5/5 |
+| correction accuracy | 3/3 |
+| goal continuity | 47/47 |
+| stale-context errors | 1/1 |
+| ambiguity handling | 3/3 |
 
-### 8. Startup & shutdown `[ ]`
+**Context minimisation already held** — the prompt carries a bounded 20-message
+window, the router 6 turns, and a follow-up's whole continuity payload is a
+subject, a little background and ≤8 candidate names. A test now pins that so
+"just send the transcript" cannot creep back in.
+
+**Two real gaps, both fixed:**
+
+- **Result references resolved against nothing** *(referent-resolution failure)*.
+  `RecommendationProblem.candidates` was stored, logged and **never read back**,
+  so "open the second one" resolved against nothing. `brain/references.py` now
+  owns the counting vocabulary — the browser planner imports the same tables
+  instead of keeping its own. An index past the end is **deliberately not
+  clamped**: handing back the last one is how the wrong thing gets opened.
+- **Similarity counted for nothing in ranking** *(ranking failure)*.
+  `MemoryRanker` weights similarity at **0.50**, its largest term, and
+  `MemoryManager.search` discarded the FAISS distances — so every memory scored
+  an identical 1.0 and ranking was decided purely by importance, recency and
+  access count. Distances now flow through.
+
+**Known limitations, stated rather than hidden:** an analogical follow-up
+("do the same for keyboards") inherits the target but **not** the criteria;
+long-term recall is verified by hand rather than in the suite (it needs the
+embedding model); a deleted memory leaves an orphaned FAISS vector, which the
+search loop skips.
+
+### 8. Startup & shutdown `[~]`
 
 - [ ] Backend, Electron, LLM, STT, TTS, VAD, memory, tools, browser, UI, screen, event bus all initialize
 - [ ] Shutdown closes Electron, terminates backend, **releases the microphone**, stops audio, cleans owned subprocesses
@@ -414,3 +443,13 @@ Newest first. One line per meaningful step.
   `scripts/execution_report.py`, `docs/EXECUTION_BASELINE.md`.
 - Repaired `docs/ROUTER_BASELINE.md`: an earlier `str.replace` silently
   no-op'd, leaving the doc describing the pre-fix state as current.
+- **4E-F complete.** Continuity **59/59** across 22 conversations. Fixed two
+  real gaps: ordinal references never read the stored candidate list, and
+  memory ranking discarded FAISS distances so its largest weight was a
+  constant. Regressions held — tool 44/45, agency 35/35, router 131/134,
+  0 dangerous false positives. Suite 1892 → **1903**.
+- New: `brain/references.py`, `tests/continuity_matrix.json` (22 conversations),
+  `tests/test_continuity_matrix.py`, `scripts/continuity_report.py`,
+  `docs/MEMORY_CONTINUITY_BASELINE.md`.
+- Reverted an alias-consistency change to `conversation_focus` after **eight
+  existing tests** showed a correction is deliberately taken verbatim.

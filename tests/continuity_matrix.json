@@ -1,0 +1,456 @@
+{
+  "description": "Multi-turn conversations exercising continuity state.",
+  "measures": [
+    "reference resolution",
+    "correction accuracy",
+    "active-goal continuity",
+    "stale-context errors"
+  ],
+  "note": "Drives the real conversation_focus, TaskSessionStore and CapabilityOfferGate. The subject offered per turn is what the routing layer would supply; blank means the turn named nothing of its own, which is the case continuity has to cover.",
+  "conversations": [
+    {
+      "id": "c01_cheaper",
+      "kind": "short_term",
+      "turns": [
+        {
+          "said": "I'm looking at keyboards.",
+          "offered_subject": "keyboards",
+          "subject": "keyboards"
+        },
+        {
+          "said": "They're pricier than I expected.",
+          "subject": "keyboards"
+        },
+        {
+          "said": "Find me something cheaper.",
+          "subject": "keyboards"
+        }
+      ],
+      "note": "'something' inherits the standing subject"
+    },
+    {
+      "id": "c02_pronoun_it",
+      "kind": "short_term",
+      "turns": [
+        {
+          "said": "I've been reading about the Framework laptop.",
+          "offered_subject": "Framework laptop",
+          "subject": "Framework laptop"
+        },
+        {
+          "said": "Is it repairable?",
+          "subject": "Framework laptop"
+        },
+        {
+          "said": "How much does it cost?",
+          "subject": "Framework laptop"
+        }
+      ]
+    },
+    {
+      "id": "c03_deictic_there",
+      "kind": "short_term",
+      "turns": [
+        {
+          "said": "I'm moving to Seattle.",
+          "offered_subject": "Seattle",
+          "subject": "Seattle"
+        },
+        {
+          "said": "Yep, I'm going there.",
+          "subject": "Seattle"
+        },
+        {
+          "said": "What's the rent like?",
+          "subject": "Seattle"
+        }
+      ],
+      "note": "a bare pointer names nothing; the focus stands"
+    },
+    {
+      "id": "c04_correction_city",
+      "kind": "correction",
+      "turns": [
+        {
+          "said": "Find restaurants in Seoul.",
+          "offered_subject": "restaurants in Seoul",
+          "subject": "restaurants in Seoul"
+        },
+        {
+          "said": "Actually, I meant Seattle.",
+          "subject": "Seattle",
+          "superseded": "restaurants in Seoul"
+        },
+        {
+          "said": "Anything good near downtown?",
+          "subject": "Seattle"
+        }
+      ],
+      "note": "the corrected location replaces the stale one"
+    },
+    {
+      "id": "c05_correction_no_i_mean",
+      "kind": "correction",
+      "turns": [
+        {
+          "said": "I'm moving to Seattle on the 18th.",
+          "offered_subject": "Seattle",
+          "subject": "Seattle"
+        },
+        {
+          "said": "Do you know which university is there?",
+          "offered_subject": "University of Washington",
+          "subject": "University of Washington"
+        },
+        {
+          "said": "Yep, I'm going there.",
+          "subject": "University of Washington"
+        },
+        {
+          "said": "No, I mean I'm going to UW.",
+          "subject": "UW",
+          "superseded": "University of Washington"
+        }
+      ],
+      "note": "an explicit correction outranks the router's topic, and is taken VERBATIM -- the education alias table normalises an anchor ('I'm going to UW'), not a correction, because a correction is the most precise thing the person has said"
+    },
+    {
+      "id": "c06_correction_not_x",
+      "kind": "correction",
+      "turns": [
+        {
+          "said": "Look up flights to Portland.",
+          "offered_subject": "flights to Portland",
+          "subject": "flights to Portland"
+        },
+        {
+          "said": "Not Portland, I mean Seattle.",
+          "subject": "Seattle",
+          "superseded": "flights to Portland"
+        }
+      ]
+    },
+    {
+      "id": "c07_second_one",
+      "kind": "result_reference",
+      "turns": [
+        {
+          "said": "Find me some monitors.",
+          "offered_subject": "monitors",
+          "subject": "monitors",
+          "candidates": [
+            "Dell U2723",
+            "LG 27GP850",
+            "Samsung M8"
+          ]
+        },
+        {
+          "said": "Open the second one.",
+          "resolves_to": "LG 27GP850"
+        }
+      ]
+    },
+    {
+      "id": "c08_third_better",
+      "kind": "result_reference",
+      "turns": [
+        {
+          "said": "Show me mechanical keyboards.",
+          "offered_subject": "keyboards",
+          "subject": "keyboards",
+          "candidates": [
+            "Keychron K2",
+            "HHKB Pro",
+            "Realforce R3"
+          ]
+        },
+        {
+          "said": "The third one looks better.",
+          "resolves_to": "Realforce R3"
+        }
+      ]
+    },
+    {
+      "id": "c09_first_two",
+      "kind": "result_reference",
+      "turns": [
+        {
+          "said": "Find hotels in Seoul.",
+          "offered_subject": "hotels in Seoul",
+          "subject": "hotels in Seoul",
+          "candidates": [
+            "The Peninsula",
+            "Lotte Hotel",
+            "Signiel"
+          ]
+        },
+        {
+          "said": "Compare the first two.",
+          "resolves_to": "The Peninsula"
+        }
+      ]
+    },
+    {
+      "id": "c10_last_one",
+      "kind": "result_reference",
+      "turns": [
+        {
+          "said": "Find me some cafes nearby.",
+          "offered_subject": "cafes",
+          "subject": "cafes",
+          "candidates": [
+            "Blue Bottle",
+            "Anchorhead",
+            "Victrola"
+          ]
+        },
+        {
+          "said": "Tell me about the last one.",
+          "resolves_to": "Victrola"
+        }
+      ]
+    },
+    {
+      "id": "c11_no_result_set",
+      "kind": "ambiguous_reference",
+      "turns": [
+        {
+          "said": "I'm thinking about a new monitor.",
+          "offered_subject": "monitors",
+          "subject": "monitors"
+        },
+        {
+          "said": "Open the second one.",
+          "unresolved": true
+        }
+      ],
+      "note": "a position named against no result set must never become an action"
+    },
+    {
+      "id": "c12_past_the_end",
+      "kind": "ambiguous_reference",
+      "turns": [
+        {
+          "said": "Find me some monitors.",
+          "offered_subject": "monitors",
+          "subject": "monitors",
+          "candidates": [
+            "Dell U2723",
+            "LG 27GP850"
+          ]
+        },
+        {
+          "said": "Open the fifth one.",
+          "unresolved": true
+        }
+      ],
+      "note": "not clamped -- handing back the last one opens the wrong thing"
+    },
+    {
+      "id": "c13_bare_pointer_many",
+      "kind": "ambiguous_reference",
+      "turns": [
+        {
+          "said": "Find me some monitors.",
+          "offered_subject": "monitors",
+          "subject": "monitors",
+          "candidates": [
+            "Dell U2723",
+            "LG 27GP850",
+            "Samsung M8"
+          ]
+        },
+        {
+          "said": "Open that one.",
+          "unresolved": true
+        }
+      ],
+      "note": "a bare pointer with three in hand is genuinely ambiguous"
+    },
+    {
+      "id": "c14_filter_then_pick",
+      "kind": "task_continuation",
+      "turns": [
+        {
+          "said": "Find me some monitors.",
+          "offered_subject": "monitors",
+          "subject": "monitors"
+        },
+        {
+          "said": "Only show me ones under $300.",
+          "subject": "monitors",
+          "candidates": [
+            "Dell S2721",
+            "AOC 24G2",
+            "ViewSonic VX2758"
+          ]
+        },
+        {
+          "said": "Open the second one.",
+          "subject": "monitors",
+          "resolves_to": "AOC 24G2"
+        }
+      ],
+      "note": "the goal survives a filter and an index reference"
+    },
+    {
+      "id": "c15_multi_filter",
+      "kind": "task_continuation",
+      "turns": [
+        {
+          "said": "Find hotels in Seoul.",
+          "offered_subject": "hotels in Seoul",
+          "subject": "hotels in Seoul"
+        },
+        {
+          "said": "Near the station.",
+          "subject": "hotels in Seoul"
+        },
+        {
+          "said": "Under 200 a night.",
+          "subject": "hotels in Seoul"
+        },
+        {
+          "said": "Which would you pick?",
+          "subject": "hotels in Seoul"
+        }
+      ]
+    },
+    {
+      "id": "c16_topic_change",
+      "kind": "topic_change",
+      "turns": [
+        {
+          "said": "Find me monitors.",
+          "offered_subject": "monitors",
+          "subject": "monitors"
+        },
+        {
+          "said": "What's the weather in Seattle?",
+          "offered_subject": "weather in Seattle",
+          "subject": "weather in Seattle"
+        },
+        {
+          "said": "Is it going to rain tomorrow?",
+          "subject": "weather in Seattle"
+        }
+      ],
+      "note": "a clearly new goal replaces the stale one"
+    },
+    {
+      "id": "c17_stale_ones",
+      "kind": "stale_context",
+      "turns": [
+        {
+          "said": "Find me monitors.",
+          "offered_subject": "monitors",
+          "subject": "monitors"
+        },
+        {
+          "said": "What's the weather in Seattle?",
+          "offered_subject": "weather in Seattle",
+          "subject": "weather in Seattle"
+        },
+        {
+          "said": "Show me cheaper ones.",
+          "not_subject": "monitors"
+        }
+      ],
+      "note": "'ones' must not silently reach back past a topic change"
+    },
+    {
+      "id": "c18_new_goal_after_task",
+      "kind": "topic_change",
+      "turns": [
+        {
+          "said": "Find hotels in Guam.",
+          "offered_subject": "hotels in Guam",
+          "subject": "hotels in Guam"
+        },
+        {
+          "said": "Never mind.",
+          "subject": "hotels in Guam"
+        },
+        {
+          "said": "What time is it in Seoul?",
+          "offered_subject": "time in Seoul",
+          "subject": "time in Seoul"
+        }
+      ]
+    },
+    {
+      "id": "c19_same_for_keyboards",
+      "kind": "analogical",
+      "turns": [
+        {
+          "said": "Find me some monitors under $300.",
+          "offered_subject": "monitors",
+          "subject": "monitors"
+        },
+        {
+          "said": "Do the same thing for keyboards.",
+          "offered_subject": "keyboards",
+          "subject": "keyboards"
+        }
+      ],
+      "note": "the target category changes; see the baseline doc on criteria inheritance"
+    },
+    {
+      "id": "c20_offer_then_other_topic",
+      "kind": "pending_offer",
+      "turns": [
+        {
+          "said": "I'm getting hungry.",
+          "offered_subject": "food",
+          "subject": "food",
+          "offer": "open"
+        },
+        {
+          "said": "Anyway, how's the weather?",
+          "offered_subject": "weather",
+          "subject": "weather",
+          "offer": "cleared"
+        }
+      ],
+      "note": "a suggestion must not consume a later unrelated turn"
+    },
+    {
+      "id": "c21_offer_expires",
+      "kind": "pending_offer",
+      "turns": [
+        {
+          "said": "I'm thinking about dinner.",
+          "offered_subject": "dinner",
+          "subject": "dinner",
+          "offer": "open"
+        },
+        {
+          "said": "(two minutes pass)",
+          "offer_expired": true
+        }
+      ],
+      "note": "an unanswered offer is not what a later sentence is replying to"
+    },
+    {
+      "id": "c22_major_recall",
+      "kind": "long_term",
+      "turns": [
+        {
+          "said": "My major is ECE.",
+          "offered_subject": "ECE",
+          "subject": "ECE",
+          "remember": "My major is ECE"
+        },
+        {
+          "said": "I've got three classes this term.",
+          "subject": "ECE"
+        },
+        {
+          "said": "What major did I tell you?",
+          "recall": "ECE"
+        }
+      ],
+      "note": "retrieval is exercised live; see the baseline doc"
+    }
+  ]
+}

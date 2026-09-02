@@ -102,7 +102,13 @@ class MemoryManager:
         """
         vector = self.embedder.encode(query)
 
-        _, indices = self.faiss.search(vector, k)
+        # The distances were being discarded. MemoryRanker weights similarity
+        # at 0.50 -- its largest term by far -- and read it with
+        # getattr(memory, "similarity", 1.0), so with nothing ever setting the
+        # attribute every memory scored an identical 1.0 there. Ranking was
+        # decided entirely by importance, recency and access count, and how
+        # well a memory actually matched the question counted for nothing.
+        distances, indices = self.faiss.search(vector, k)
 
         cutoff = None
         if newer_than_seconds is not None:
@@ -110,7 +116,7 @@ class MemoryManager:
 
         results = []
 
-        for idx in indices:
+        for distance, idx in zip(distances, indices):
 
             if idx == -1:
                 continue
@@ -144,6 +150,13 @@ class MemoryManager:
                 continue
             if cutoff is not None and (memory.created_at or cutoff) < cutoff:
                 continue
+
+            # A bounded, monotonically decreasing function of L2 distance.
+            # Deliberately not 1 - d/2 (the cosine identity), because that
+            # assumes normalised embeddings and would go negative when they
+            # are not. This only has to order correctly, which it does for
+            # any non-negative distance.
+            memory.similarity = 1.0 / (1.0 + float(distance))
 
             memory.last_accessed = datetime.utcnow()
             memory.access_count += 1

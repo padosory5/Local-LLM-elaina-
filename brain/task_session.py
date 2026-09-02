@@ -15,6 +15,7 @@ from typing import Any
 
 from brain import conversation_focus
 from brain import recommendation_state
+from brain import references
 from brain.recommendation_state import RecommendationProblem
 
 
@@ -209,6 +210,21 @@ class TaskSessionStore:
                 or problem.evidence
             ),
         )
+
+    def resolve_reference(self, text: str):
+        """Which listed candidate the turn points at, or why none.
+
+        The candidates were already being stored and only ever logged, so
+        "open the second one" resolved against nothing. This reads them back.
+        An empty list never resolves -- the right answer to a position named
+        against no result set is a question, not a guess.
+        """
+        problem = self.active_recommendation()
+        candidates = tuple(getattr(problem, "candidates", ()) or ())
+        reference = references.resolve(text, candidates)
+        if reference.ambiguous or reference.resolved:
+            print(f"[Reference] {reference.log_line()}")
+        return reference
 
     def note_source_override(self, value: str) -> bool:
         """Hold a named source for the length of the open task.
