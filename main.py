@@ -1,4 +1,5 @@
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -26,11 +27,15 @@ ensure_per_monitor_dpi_aware()
 load_dotenv()
 
 from brain.chat_engine import ChatEngine
+from core.lifecycle import Lifecycle
 from core.websocket_server import WebSocketServer
 from voice.stt import SpeechToText
 
 
 engine = ChatEngine()
+# Owns every handle and child process Elaina opens, and the order to release
+# them in. Nothing is registered until it has actually started.
+lifecycle = Lifecycle()
 response_thread = None
 response_thread_lock = threading.Lock()
 electron_process = None
@@ -88,9 +93,7 @@ def launch_electron_if_requested():
         assert electron_process is not None
         exit_code = electron_process.wait()
         print(f"[Desktop] Electron exited with code {exit_code}.")
-        electron_closed.set()
-        engine.cancel_active_turn()
-        _thread.interrupt_main()
+        _begin_stop()
 
     threading.Thread(
         target=watch_electron,
@@ -142,6 +145,16 @@ def handle_desktop_command(message):
     """Handle actions sent by the Electron interface."""
     command = message.get("command")
 
+    if command == "shutdown":
+        # The graceful counterpart to Electron's taskkill. Asking first lets
+        # the backend release what it owns -- the browser service, the MCP
+        # subprocess, the microphone -- instead of being force-killed with
+        # its children still holding handles. The caller may still escalate
+        # if this does not land.
+        print("[Lifecycle] Shutdown requested by the desktop window.")
+        _begin_stop()
+        return
+
     if command == "get_computer_control_mode":
         engine.publish_computer_control_mode()
         return
@@ -170,8 +183,14 @@ def handle_desktop_command(message):
 
         if mode == "text":
             voice_mode_enabled.clear()
-            speech_to_text.pause_listening()
+            if speech_to_text is not None:
+                speech_to_text.pause_listening()
         elif mode == "voice":
+            if speech_to_text is None:
+                # Degraded start: there is no microphone to resume.
+                print("[Input Mode] No microphone is available; staying in text mode.")
+                engine.events.emit("input_mode_changed", mode="text")
+                return
             speech_to_text.resume_listening()
             voice_mode_enabled.set()
         else:
@@ -263,22 +282,128 @@ def handle_desktop_command(message):
         )
 
 
-websocket_server = WebSocketServer(
-    event_bus=engine.events,
-    host="127.0.0.1",
-    port=8765,
-    command_handler=handle_desktop_command,
+def _start_websocket_server():
+    server = WebSocketServer(
+        event_bus=engine.events,
+        host="127.0.0.1",
+        port=8765,
+        command_handler=handle_desktop_command,
+    )
+    server.start()
+    return server
+
+
+def _stop_electron(timeout: float = 5.0) -> None:
+    """Close the window Elaina opened -- and only that one.
+
+    Escalates to kill if it does not go, which ``.terminate()`` alone never
+    did: an Electron that ignored the request simply stayed running. Scoped
+    to the single process handle this backend spawned; nothing here matches
+    by process name, so a window the user opened themselves is untouched.
+    """
+    if electron_process is None or electron_process.poll() is not None:
+        return
+    electron_process.terminate()
+    try:
+        electron_process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        print("[Desktop] Electron did not exit; killing the process we spawned.")
+        electron_process.kill()
+        try:
+            electron_process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            print("[Desktop] Electron could not be stopped.")
+
+
+def _begin_stop() -> None:
+    """Ask the main loop to leave, from any thread.
+
+    ``_thread.interrupt_main()`` on its own was not enough, and that is why
+    Electron reaches for taskkill: the loop spends nearly all of its time
+    blocked inside ``listen_and_transcribe``, waiting on the microphone down
+    in C, where a pending KeyboardInterrupt is not seen. Measured -- a
+    shutdown request sat unanswered for minutes while the process stayed up.
+
+    The stream has to be closed for that call to return. So the flag the loop
+    checks is set first, the microphone is paused to unblock the read, and
+    the interrupt follows.
+    """
+    electron_closed.set()
+    voice_mode_enabled.clear()
+    engine.cancel_active_turn()
+    if speech_to_text is not None:
+        try:
+            speech_to_text.pause_listening()
+        except Exception as error:
+            print(f"[Lifecycle] Could not pause the microphone: {error}")
+    _thread.interrupt_main()
+
+
+def _request_stop(signum, _frame) -> None:
+    """A stop signal must reach the same cleanup a Ctrl+C does."""
+    print(f"\n[Lifecycle] Stop signal {signum} received.")
+    _begin_stop()
+
+
+for _signal_name in ("SIGTERM", "SIGINT", "SIGBREAK"):
+    _signal = getattr(signal, _signal_name, None)
+    if _signal is None:
+        continue
+    try:
+        signal.signal(_signal, _request_stop)
+    except (ValueError, OSError):
+        # Not the main thread, or unsupported on this platform.
+        pass
+
+
+# Everything from here on registers its own cleanup the moment it starts, so
+# a failure part-way through unwinds exactly what came up. This block used to
+# run outside the try/finally below: a missing microphone exited on a
+# traceback with port 8765 still bound and an Electron window still open, and
+# the next launch met a port collision and a second window.
+lifecycle.start(
+    "chat engine", lambda: engine, cleanup=lambda value: value.close(),
 )
 
-websocket_server.start()
-launch_electron_if_requested()
-
-speech_to_text = SpeechToText(
-    config=engine.config,
+websocket_server = lifecycle.start(
+    "websocket server",
+    lambda: _start_websocket_server(),
+    cleanup=lambda server: server.stop(),
 )
 
-print("\nElaina is ready.")
-print("Microphone mode active.")
+# Optional on purpose: the backend runs headless for the live checks, and
+# ELAINA_OPEN_DESKTOP=0 is a supported way to start it.
+lifecycle.start(
+    "desktop window",
+    launch_electron_if_requested,
+    required=False,
+    cleanup=lambda _: _stop_electron(),
+)
+
+# Also optional. Without a microphone she is still fully usable by text, and
+# crashing the whole process over an unavailable input device was the harsher
+# of the two failures.
+speech_to_text = lifecycle.start(
+    "speech to text",
+    lambda: SpeechToText(config=engine.config),
+    required=False,
+    cleanup=lambda stt: stt.close(),
+)
+if speech_to_text is None:
+    # Park the microphone loop rather than calling into something that is
+    # not there.
+    voice_mode_enabled.clear()
+
+if not lifecycle.ready():
+    lifecycle.report_ready()
+    lifecycle.shutdown("a required subsystem did not start")
+    raise SystemExit(1)
+
+lifecycle.report_ready()
+print(
+    "Microphone mode active." if speech_to_text is not None
+    else "Text mode only -- no microphone available."
+)
 print("Say 'goodbye Elaina' to quit.")
 print("Press Ctrl+C to stop manually.")
 
@@ -288,7 +413,7 @@ try:
         if electron_closed.is_set():
             break
 
-        if not voice_mode_enabled.is_set():
+        if speech_to_text is None or not voice_mode_enabled.is_set():
             # Text mode: leave the microphone untouched until voice mode is
             # selected again from Electron.
             voice_mode_enabled.wait(timeout=1.0)
@@ -321,11 +446,14 @@ except KeyboardInterrupt:
     print("\nStopping Elaina...")
 
 finally:
+    # Stop the turn in flight before releasing what it is using, then let the
+    # lifecycle unwind the rest in reverse order. Each handler is guarded, so
+    # one that hangs or raises cannot leave the microphone open behind it.
     engine.cancel_active_turn()
-    speech_to_text.close()
     if response_thread is not None:
         response_thread.join(timeout=5)
-    if electron_process is not None and electron_process.poll() is None:
-        electron_process.terminate()
-    engine.close()
+    lifecycle.shutdown(
+        "the desktop window closed" if electron_closed.is_set()
+        else "the backend was asked to stop"
+    )
     print("Goodbye!")

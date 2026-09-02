@@ -28,6 +28,7 @@ class WebSocketServer:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._started = threading.Event()
+        self._stopping_async: asyncio.Event | None = None
 
         self._event_names = (
             "tts_started",
@@ -89,8 +90,29 @@ class WebSocketServer:
     def _run_server(self) -> None:
         asyncio.run(self._serve())
 
+    def stop(self, timeout: float = 5.0) -> None:
+        """Release the port and stop serving. Safe to call more than once.
+
+        Called from the shutdown path rather than relying on the daemon
+        thread dying with the process, so a failed startup unwinds the
+        listener it already opened instead of leaving it bound.
+        """
+        thread, loop = self._thread, self._loop
+        self._thread = None
+        if thread is None:
+            return
+        if loop is not None and self._stopping_async is not None:
+            try:
+                loop.call_soon_threadsafe(self._stopping_async.set)
+            except RuntimeError:
+                # The loop is already closed; the listener is gone with it.
+                pass
+        thread.join(timeout=timeout)
+        self._started.clear()
+
     async def _serve(self) -> None:
         self._loop = asyncio.get_running_loop()
+        self._stopping_async = asyncio.Event()
 
         async with websockets.serve(
             self._handle_client,
@@ -104,7 +126,14 @@ class WebSocketServer:
 
             self._started.set()
 
-            await asyncio.Future()
+            # Runs until stop() sets this from another thread. This used to
+            # be a bare Future that nothing ever resolved, so the port was
+            # only ever released by the process dying -- which meant a
+            # failed startup, or a restart in the same process, met the
+            # address still bound.
+            await self._stopping_async.wait()
+
+        print("[WebSocket] Stopped listening.")
 
     async def _handle_client(self, websocket) -> None:
         self._clients.add(websocket)

@@ -14,14 +14,15 @@ sometimes.
 |---|---|
 | **Branch** | `phase4e-stabilization` |
 | **Last checkpoint** | `v0.4e-baseline` — 851c8bd5 |
-| **Tests green** | **1903** / 111 modules (regression floor — must never drop) |
+| **Tests green** | **1920** / 112 modules (regression floor — must never drop) |
 | **Model** | `qwen3:8b` via Ollama · vision `qwen3-vl:8b` |
-| **Phase** | 4E-F complete → next: startup & shutdown |
+| **Phase** | 4E-G complete → next: failure & recovery |
 | **Router accuracy** | **97.0–97.8%** (130–131/134) · 0 dangerous false positives · target ≥95% ✅ |
 | **Agency accuracy** | **100%** (35/35) · 0 unrequested actions · 15/15 consent · target ≥90% ✅ |
 | **Tool selection** | **95.6–97.8%** (43–44/45) · 0 research→browser · 0 UI false positives · target ≥90% ✅ |
 | **Execution** | **22/22** scenarios · verified vs unverified reported separately · target ≥20 ✅ |
 | **Continuity** | **59/59** checks over 22 conversations · target ≥90% ✅ |
+| **Runtime lifecycle** | **17/17** automated cases · 10-item manual checklist ✅ |
 
 **Rollback at any time:**
 
@@ -55,8 +56,8 @@ report ~46 phantom import failures):
 | 5 | 4E-D tool selection | `[x]` | 40 scenarios, 90–95% first-choice correct |
 | 6 | 4E-E execution & verification | `[x]` | 20 multi-step tasks verified by final state |
 | 7 | 4E-F memory & continuity | `[x]` | 20 conversations, ≥90% reference accuracy |
-| 8 | Startup & shutdown | `[~]` | clean start, clean stop, mic released |
-| 9 | Failure & recovery | `[ ]` | every failure ends in one of 5 terminal states |
+| 8 | Startup & shutdown | `[x]` | clean start, clean stop, mic released |
+| 9 | Failure & recovery | `[~]` | every failure ends in one of 5 terminal states |
 | 10 | Latency | `[ ]` | ~2–3s conversation, fast interrupt |
 | 11 | Long-session soak | `[ ]` | zero crashes, bugs triaged |
 | 12 | Freeze & release | `[ ]` | full suite, release report, tag |
@@ -281,13 +282,38 @@ long-term recall is verified by hand rather than in the suite (it needs the
 embedding model); a deleted memory leaves an orphaned FAISS vector, which the
 search loop skips.
 
-### 8. Startup & shutdown `[~]`
+### 8. Startup & shutdown `[x]`
 
-- [ ] Backend, Electron, LLM, STT, TTS, VAD, memory, tools, browser, UI, screen, event bus all initialize
-- [ ] Shutdown closes Electron, terminates backend, **releases the microphone**, stops audio, cleans owned subprocesses
-- [ ] Never kills unrelated system processes
+**17/17** automated lifecycle cases, plus a 10-item manual checklist for what
+needs real hardware. Full analysis: [docs/RUNTIME_BASELINE.md](docs/RUNTIME_BASELINE.md)
 
-### 9. Failure & recovery `[ ]`
+- [x] Startup reaches an explicit READY, never reported before required parts are up
+- [x] **Partial startup unwinds what already came up** — the central fix
+- [x] Optional subsystems degrade (no mic → text mode); required ones abort
+- [x] `WebSocketServer.stop()` added — it had none; 3 bind/release cycles asserted
+- [x] Signal handlers (SIGTERM/SIGINT/SIGBREAK) reach the same cleanup as Ctrl+C
+- [x] Electron termination escalates `.terminate()` → `.kill()`
+- [x] **No broad kill logic** — asserted by test; Electron kills by `/pid … /T`, never `/IM`
+
+**The defect.** Startup ran as module-level statements with the `try/finally`
+beginning *after* them, so any failure exited on a traceback with port 8765
+bound, an Electron window open, and the browser service and MCP subprocess
+still running. `core/lifecycle.py` registers each subsystem's cleanup the
+instant it starts — demonstrated live twice when a `NameError` and a bound
+port both produced a clean abort with nothing orphaned.
+
+**Also found:** `_thread.interrupt_main()` could not stop the loop while it
+was blocked on the microphone in C — which is *why* Electron resorts to
+taskkill. The mic is now paused first to unblock the read.
+
+> **Known limitation, carried to the next phase:** `ChatEngine()` is built at
+> module import, outside the lifecycle, and nothing bounds it. It
+> intermittently hung after the MCP handshake. **Isolated by stashing my
+> changes and reproducing on the original code** — pre-existing, and
+> environmental (repeated force-kills leaving audio device state). A hang is
+> neither a clean degrade nor a clean abort.
+
+### 9. Failure & recovery `[~]`
 
 Every failure must terminate as exactly one of:
 `SUCCESS` · `SAFE RETRY` · `NEEDS USER INPUT` · `CLEAR FAILURE` · `CANCELLED`
@@ -453,3 +479,12 @@ Newest first. One line per meaningful step.
   `docs/MEMORY_CONTINUITY_BASELINE.md`.
 - Reverted an alias-consistency change to `conversation_focus` after **eight
   existing tests** showed a correction is deliberately taken verbatim.
+- **4E-G complete.** Startup/shutdown given an explicit owner:
+  `core/lifecycle.py`, **17/17** automated cases, plus `WebSocketServer.stop()`,
+  signal handlers, a graceful `shutdown` command, and Electron kill escalation.
+  Regressions held — tool 44/45, agency 35/35, router 131/134, 0 dangerous
+  false positives. Suite 1903 → **1920**.
+- New: `core/lifecycle.py`, `tests/test_runtime_lifecycle.py`,
+  `docs/RUNTIME_BASELINE.md` (incl. a 10-item manual checklist).
+- Open: `ChatEngine()` can hang at import, outside the lifecycle — isolated as
+  pre-existing, carried to the failure-and-recovery phase.
