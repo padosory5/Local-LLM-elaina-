@@ -264,6 +264,43 @@ def start(subject: str = "", *, now: float | None = None,
     return Focus(subject=_clean(subject), expires_at=now + ttl)
 
 
+# A turn that points back at what is already held: a relational reference
+# ("near my school"), a deictic ("there", "it"), or a correction.
+_POINTS_BACK = re.compile(
+    r"\b(?:there|here|that|this|those|these|them|it|its|the\s+same)\b"
+    r"|\b(?:my|the)\s+(?:school|university|campus|work|office|home|place)\b",
+    re.IGNORECASE,
+)
+
+# An anchor is what the conversation is about, not the request that
+# mentioned it. Measured live, a correction taken whole made the anchor
+# "look at Zillow for rental options near University of Washington" --
+# thirteen words of task description, appended to every later query.
+_ANCHOR_WORDS = 8
+
+
+def _points_back(text: str) -> bool:
+    return bool(_POINTS_BACK.search(str(text or "")))
+
+
+def _introduces_a_new_subject(
+    text: str, subject: str, anchor: str,
+) -> bool:
+    """Whether this turn is about something the anchor has no part in."""
+    said = f"{text} {subject}".casefold()
+    words = set(re.findall(r"[a-z0-9가-힣]{3,}", said))
+    held = set(re.findall(r"[a-z0-9가-힣]{3,}", str(anchor or "").casefold()))
+    if not words or not held:
+        return False
+    return not (words & held)
+
+
+def _shortened(anchor: str) -> str:
+    """The anchor as a phrase, cut at the point it stops being one."""
+    words = " ".join(str(anchor or "").split()).split()
+    return " ".join(words[:_ANCHOR_WORDS])
+
+
 def update(
     focus: Focus,
     text: str,
@@ -284,6 +321,27 @@ def update(
     background = dict(focus.background)
     background.update(read_background(text))
 
+    # The anchor is context for the subject it was set with, and nothing
+    # retired it. Measured live: a correction set
+    #
+    #   about: look at Zillow for rental options near University of
+    #          Washington
+    #
+    # and it was still riding into every query an hour later -- an
+    # international driving permit search, an AI internship search, a
+    # secondhand-selling search. It deliberately outlives the turn that set
+    # it, because "rent near my school" three turns later still means near
+    # UW. What it had no way to do was stop.
+    #
+    # It stops here: a turn that establishes a new subject while pointing
+    # at nothing has moved on, and the anchor moves with it.
+    if (
+        background.get("about")
+        and not _points_back(text)
+        and _introduces_a_new_subject(text, subject, background["about"])
+    ):
+        background.pop("about", None)
+
     corrected = read_correction(text)
     explicit_anchor = read_education_anchor(text)
     if explicit_anchor and not corrected:
@@ -303,7 +361,7 @@ def update(
         and focus.subject
         and "about" not in background
     ):
-        background["about"] = focus.subject
+        background["about"] = _shortened(focus.subject)
 
     if corrected:
         superseded = focus.superseded
@@ -312,7 +370,7 @@ def update(
         # A correction is the most explicit thing a person says about what
         # they meant, so it outlives the turn that made it: "rent near my
         # school" three turns later still means near UW.
-        background["about"] = corrected
+        background["about"] = _shortened(corrected)
         return replace(
             focus,
             subject=corrected,
