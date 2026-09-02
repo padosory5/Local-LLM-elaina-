@@ -85,6 +85,7 @@ from brain.action_status import (
     action_for_intent,
     is_continuation,
 )
+from brain import social_lines
 from brain.social_lines import SocialLineSelector
 from brain.answer_condenser import AnswerCondenser
 from brain.grounded_values import GroundedValueGuard
@@ -5999,6 +6000,27 @@ class ChatEngine:
                 locked_response=self.action_status.select(StatusContext(
                     action="checking", phase="acknowledgement", force=True,
                 )) or "Okay, dropped it.",
+            )
+        if social_lines.reads_as_frustration(user_input) and not any((
+            pending_computer,
+            pending_task,
+            pending_clarification,
+        )):
+            # She just got something wrong and is being told so, and the
+            # turn asks for nothing else. Answering from a bank rather than
+            # from the model is the same call the greeting path makes, and
+            # for a stronger reason: measured live, the model argued back.
+            timings["route"] = time.perf_counter() - route_started
+            return TurnRouting(
+                route=IntentDecision(
+                    intent="conversation",
+                    confidence=1.0,
+                    normalized_request=user_input,
+                    reason="The user is fed up, and asked for nothing else.",
+                    speech_act="social",
+                ),
+                user_input=user_input,
+                locked_response=self.social_lines.frustration(),
             )
         if (
             _BARE_ACKNOWLEDGEMENT.fullmatch(user_input)

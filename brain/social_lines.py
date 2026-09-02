@@ -129,6 +129,103 @@ _BANKS: dict[str, dict[str, tuple[str, ...]]] = {
 }
 
 
+# Being told off is social too, and it had no policy at all. Measured live,
+# two insults in one session got two answers from whatever the model
+# happened to produce -- "I'm sorry you're feeling that way" once, and once
+#
+#   "You're being rude. I'm here to help, but I can't keep up with your
+#    attitude. Let's talk about something real."
+#
+# which is her arguing with the person she is meant to be helping. The
+# brief for this project is that she should feel like a friend, and a
+# friend who has just got something wrong does not open with your tone.
+#
+# So: take it, do not moralise, and ask for the thing again. Short, because
+# a long apology is its own kind of demand.
+_FRUSTRATION_BANKS: dict[str, tuple[str, ...]] = {
+    "en": (
+        "Sorry -- that one's on me.",
+        "Fair enough. Let me try that again.",
+        "You're right, I got that wrong.",
+        "My fault. Say it once more and I'll get it right.",
+        "Yeah, that wasn't good enough. What did you actually want?",
+        "Sorry about that. Let's start over.",
+        "I messed that up. What were you after?",
+        "That's fair. Tell me again and I'll do better.",
+    ),
+    "ko": (
+        "미안해, 내가 잘못했어.",
+        "그러네. 다시 해볼게.",
+        "내 실수야. 다시 말해줄래?",
+        "미안. 뭐가 필요했는지 다시 알려줘.",
+        "맞는 말이야. 이번엔 제대로 할게.",
+    ),
+}
+
+# Hostility aimed at her, as a shape rather than as a list of insults: a
+# second-person subject with a negative predicate, or a bare profanity with
+# nothing else in the turn.
+_AIMED_AT_HER = re.compile(
+    r"\byou(?:'?re|\s+are|\s+r)?\s+(?:so\s+|such\s+a\s+|really\s+|"
+    r"pretty\s+|kind\s+of\s+)?"
+    r"(?:stupid|dumb|useless|terrible|awful|garbage|trash|"
+    r"worthless|pathetic|broken|wrong|bad|annoying|the\s+worst)\b"
+    r"|\bfuck\s+(?:you|off)\b"
+    r"|\bshut\s+up\b"
+    r"|\byou\s+suck\b"
+    r"|짜증|답답해|바보",
+    re.IGNORECASE,
+)
+
+# Anything that makes the turn a request as well as a complaint. When one
+# of these is present the turn has to be answered, not soothed: "just
+# answer my fucking question" is asking for the answer, and a sympathetic
+# line is the complaint happening once more.
+_CARRIES_A_REQUEST = re.compile(
+    r"\?|\b(?:answer|tell|show|find|search|look|open|close|play|give|"
+    r"send|make|do|try|again|explain|what|when|where|which|who|how|why)\b"
+    r"|해줘|알려|보여",
+    re.IGNORECASE,
+)
+
+
+# What is left over in a turn that is only being cross: discourse
+# particles, the grammar holding them together, and more of the same
+# judgement. Anything else -- a noun, a number, a place -- means the turn
+# is also telling her something, and "you're wrong, the number is
+# 206-221-7857" has to be acted on rather than apologised at.
+_JUST_UPSET = frozenset({
+    "okay", "ok", "yeah", "yes", "no", "nope", "well", "so", "oh", "ah",
+    "um", "uh", "man", "god", "jeez", "wow", "seriously", "honestly",
+    "just", "like", "really", "very", "such", "too", "again", "still",
+    "i", "you", "your", "it", "its", "this", "that", "these", "those",
+    "the", "a", "an", "my", "is", "are", "am", "was", "were", "be",
+    "and", "but", "at", "in", "on", "of", "to", "with", "right", "now",
+    # More of the same judgement, once the trigger itself is removed.
+    "stupid", "dumb", "useless", "terrible", "awful", "bad", "worst",
+    "garbage", "trash", "annoying", "wrong", "sucks", "pathetic",
+    "worthless", "broken", "rubbish", "crap", "hopeless",
+})
+
+
+def reads_as_frustration(text: str) -> bool:
+    """Whether this turn is hostility at her and nothing else."""
+    said = " ".join(str(text or "").split())
+    if not said or not _AIMED_AT_HER.search(said):
+        return False
+
+    # Take the hostility out and look at what is still standing. A turn
+    # that only vents has nothing left; one that also asks or corrects
+    # does, and that half is the part she owes an answer to.
+    remainder = _AIMED_AT_HER.sub(" ", said)
+    if _CARRIES_A_REQUEST.search(remainder):
+        return False
+    tokens = [word.casefold() for word in re.findall(r"[^\W_]+", remainder)]
+    if len(tokens) <= 1:
+        return True
+    return all(token in _JUST_UPSET for token in tokens)
+
+
 class SocialLineSelector:
     """Answer a greeting without a model call and without a fixed sentence.
 
@@ -161,6 +258,12 @@ class SocialLineSelector:
         banks = _BANKS[self.language]
         options = tuple(banks.get(part, ())) + banks["neutral"]
         chosen = self._choose(options)
+        self._remember(chosen)
+        return chosen
+
+    def frustration(self) -> str:
+        """A short, non-defensive answer to being told off."""
+        chosen = self._choose(_FRUSTRATION_BANKS[self.language])
         self._remember(chosen)
         return chosen
 
