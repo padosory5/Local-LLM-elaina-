@@ -180,6 +180,72 @@ class Lifecycle:
         return self._shut_down
 
 
+# ------------------------------------------------------------ stop signal
+
+
+class StopRequest:
+    """Ask the process to leave, once, from any thread.
+
+    Measured live, ending a session printed this 1,926 times before the
+    process died:
+
+        [Lifecycle] Stop signal 2 received.
+        [Event Bus Error] lip_sync: Event loop is closed
+
+    A signal handler was installed for SIGINT, and the way it asked the
+    main loop to leave was ``_thread.interrupt_main()``. That does not
+    raise ``KeyboardInterrupt`` when a handler is installed -- it delivers
+    SIGINT, which calls the handler, which asked again. The loop fed
+    itself, and every pass emitted another event into an event loop that
+    shutdown had already closed.
+
+    So the request is made at most once. ``notify`` runs the caller's
+    cleanup on the first call and never again; the interrupt is skipped
+    when the request already arrived *as* a signal, because a handler
+    running is proof the main thread is reachable without one.
+
+    The interrupt is a fallback, not the mechanism. The loop leaves on the
+    flag its own cleanup sets; the interrupt only unblocks it when it is
+    waiting somewhere that a flag cannot reach.
+    """
+
+    def __init__(
+        self,
+        cleanup: Callable[[], None],
+        *,
+        interrupt: Callable[[], None] | None = None,
+        log: Callable[[str], None] = print,
+    ) -> None:
+        self._cleanup = cleanup
+        self._interrupt = interrupt
+        self._log = log
+        self._lock = threading.Lock()
+        self._requested = False
+
+    @property
+    def requested(self) -> bool:
+        return self._requested
+
+    def notify(self, *, from_signal: bool = False) -> bool:
+        """Begin stopping. Returns whether this call was the one that did."""
+        with self._lock:
+            if self._requested:
+                return False
+            self._requested = True
+
+        try:
+            self._cleanup()
+        except Exception as error:
+            self._log(f"[Lifecycle] Stop cleanup raised: {error}")
+
+        if not from_signal and self._interrupt is not None:
+            try:
+                self._interrupt()
+            except Exception as error:
+                self._log(f"[Lifecycle] Could not interrupt the loop: {error}")
+        return True
+
+
 # --------------------------------------------------------------- watchdog
 
 

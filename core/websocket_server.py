@@ -99,6 +99,17 @@ class WebSocketServer:
         """
         thread, loop = self._thread, self._loop
         self._thread = None
+        # Forget the loop before anything is joined. Events keep arriving
+        # during shutdown -- the turn being cancelled emits lip_sync -- and
+        # this object is still subscribed to the bus. Left set, every one of
+        # them scheduled a coroutine on a loop that was about to close:
+        #
+        #   [Event Bus Error] lip_sync: Event loop is closed
+        #   RuntimeWarning: coroutine '_broadcast' was never awaited
+        #
+        # ``_on_event`` already declines to send when there is no loop, so
+        # clearing it is the whole fix.
+        self._loop = None
         if thread is None:
             return
         if loop is not None and self._stopping_async is not None:

@@ -227,6 +227,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_phase3a_controls",
             "test_failure_recovery",
             "test_runtime_lifecycle",
+            "test_stop_request",
         ),
     ),
     "integration": (

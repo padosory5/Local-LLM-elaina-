@@ -28,7 +28,12 @@ load_dotenv()
 
 from brain.chat_engine import ChatEngine
 from core import timing
-from core.lifecycle import Lifecycle, StartupTimeout, build_within
+from core.lifecycle import (
+    Lifecycle,
+    StartupTimeout,
+    StopRequest,
+    build_within,
+)
 from core.websocket_server import WebSocketServer
 from voice.stt import SpeechToText
 
@@ -346,8 +351,8 @@ def _stop_electron(timeout: float = 5.0) -> None:
             print("[Desktop] Electron could not be stopped.")
 
 
-def _begin_stop() -> None:
-    """Ask the main loop to leave, from any thread.
+def _release_for_stop() -> None:
+    """Let go of everything the main loop is waiting on.
 
     ``_thread.interrupt_main()`` on its own was not enough, and that is why
     Electron reaches for taskkill: the loop spends nearly all of its time
@@ -356,8 +361,7 @@ def _begin_stop() -> None:
     shutdown request sat unanswered for minutes while the process stayed up.
 
     The stream has to be closed for that call to return. So the flag the loop
-    checks is set first, the microphone is paused to unblock the read, and
-    the interrupt follows.
+    checks is set first, and the microphone is paused to unblock the read.
     """
     electron_closed.set()
     voice_mode_enabled.clear()
@@ -367,13 +371,30 @@ def _begin_stop() -> None:
             speech_to_text.pause_listening()
         except Exception as error:
             print(f"[Lifecycle] Could not pause the microphone: {error}")
-    _thread.interrupt_main()
+
+
+_stop_request = StopRequest(
+    _release_for_stop, interrupt=lambda: _thread.interrupt_main(),
+)
+
+
+def _begin_stop() -> None:
+    """Ask the main loop to leave, from any thread. At most once."""
+    _stop_request.notify()
 
 
 def _request_stop(signum, _frame) -> None:
-    """A stop signal must reach the same cleanup a Ctrl+C does."""
+    """A stop signal must reach the same cleanup a Ctrl+C does.
+
+    ``from_signal`` is what stops the 1,926-line shutdown measured in the
+    first dogfooding session: ``interrupt_main()`` delivers SIGINT rather
+    than raising ``KeyboardInterrupt`` while this handler is installed, so
+    asking for one from inside the handler asks the handler to run again.
+    """
+    if _stop_request.requested:
+        return
     print(f"\n[Lifecycle] Stop signal {signum} received.")
-    _begin_stop()
+    _stop_request.notify(from_signal=True)
 
 
 for _signal_name in ("SIGTERM", "SIGINT", "SIGBREAK"):
