@@ -281,6 +281,11 @@ _SPOKEN_URL = re.compile(
     r"(?:\.[a-z0-9][a-z0-9-]*)+)(?:/[^\s]*)?",
     flags=re.IGNORECASE,
 )
+# How many tokens the router is allowed to emit. Not a target -- decode
+# stops at the stop token -- so headroom above the measured median is
+# free, and running out of it truncates the JSON irrecoverably.
+ROUTER_OUTPUT_CAP = 512
+
 _SPOKEN_SEARCH = re.compile(
     r"\b(?:search|look\s+up|find)\s+(?:for\s+)?"
     # "search it up", "look it up", "find them" -- a phrasal verb with a
@@ -498,7 +503,18 @@ class SemanticIntentRouter:
                 format="json",
                 options={
                     "temperature": 0,
-                    "num_predict": 320,
+                    # Measured in 4E-I: this schema emits a median of 268
+                    # output tokens across 31 fields. A 320 cap left 52
+                    # tokens of headroom, and a turn whose free-text
+                    # "reason" ran long was truncated mid-JSON -- which is
+                    # not a parse failure the repair pass can fix, because
+                    # the missing half was never generated. Seen once in 55
+                    # turns of the first dogfooding session, and a router
+                    # failure puts every layer after it on a fallback.
+                    #
+                    # The cap costs nothing when it is not reached: decode
+                    # stops at the stop token either way.
+                    "num_predict": ROUTER_OUTPUT_CAP,
                 },
                 keep_alive=self.keep_alive,
                 think=False,
@@ -555,7 +571,10 @@ class SemanticIntentRouter:
                     ],
                     stream=False,
                     format="json",
-                    options={"temperature": 0, "num_predict": 320},
+                    options={
+                        "temperature": 0,
+                        "num_predict": ROUTER_OUTPUT_CAP,
+                    },
                     keep_alive=self.keep_alive,
                     think=False,
                 )
