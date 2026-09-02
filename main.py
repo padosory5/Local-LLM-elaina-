@@ -3,6 +3,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import _thread
 from pathlib import Path
 
@@ -26,6 +27,7 @@ ensure_per_monitor_dpi_aware()
 # Load local API keys and credential paths before creating ChatEngine.
 load_dotenv()
 
+from brain import social_lines
 from brain.chat_engine import ChatEngine
 from core import timing
 from core.lifecycle import (
@@ -351,6 +353,35 @@ def _stop_electron(timeout: float = 5.0) -> None:
             print("[Desktop] Electron could not be stopped.")
 
 
+GOODBYE_TIMEOUT = 6.0
+
+
+def _say_goodbye() -> None:
+    """One line out loud, and wait for it before pulling the floor away.
+
+    ``AudioManager.speak`` queues rather than blocks, and the stop path
+    cancels the turn in flight -- which bumps the generation the queue
+    checks, so a goodbye queued and not waited for is discarded before it
+    is ever heard. Bounded, because a wedged audio device must not be able
+    to stop her leaving.
+    """
+    try:
+        engine.audio.speak(engine.social_lines.farewell())
+    except Exception as error:
+        print(f"[Lifecycle] Could not say goodbye: {error}")
+        return
+
+    deadline = time.monotonic() + GOODBYE_TIMEOUT
+    try:
+        while time.monotonic() < deadline and not engine.audio.is_speaking():
+            time.sleep(0.05)
+        while time.monotonic() < deadline and engine.audio.is_speaking():
+            time.sleep(0.05)
+    except Exception:
+        # Saying goodbye is a courtesy; it may never hold up the exit.
+        pass
+
+
 def _release_for_stop() -> None:
     """Let go of everything the main loop is waiting on.
 
@@ -485,15 +516,19 @@ try:
         if not user_input:
             continue
 
-        command = user_input.lower().strip()
-
-        if command in {
-            "quit",
-            "exit",
-            "goodbye",
-            "goodbye elaina",
-            "stop elaina",
-        }:
+        if social_lines.reads_as_farewell(user_input):
+            # Read as a closed grammatical class rather than matched against
+            # a set of literal transcripts. Measured live, the transcript
+            # was "quit." -- Whisper punctuates, "quit." is not "quit", and
+            # she said goodbye and carried on listening until a second
+            # command closed her.
+            #
+            # She says one goodbye out loud before leaving, and then the
+            # same stop path everything else uses, so the microphone is
+            # released and the loop is not left waiting on it.
+            print("[Lifecycle] Asked to quit.")
+            _say_goodbye()
+            _begin_stop()
             break
 
         selected_screen = engine.consume_pending_screen_snapshot()

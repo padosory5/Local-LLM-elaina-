@@ -208,6 +208,54 @@ _JUST_UPSET = frozenset({
 })
 
 
+# Leaving. Measured live, this was a set membership on the raw transcript:
+#
+#     command = user_input.lower().strip()
+#     if command in {"quit", "exit", "goodbye", ...}
+#
+# and the transcript was "quit." -- Whisper punctuates, and a full stop is
+# not something a person can hear themselves say. She answered "Okay, I'll
+# quit. See you later." and went on listening; it took a second command to
+# actually close her. Session 1 happened to transcribe a bare "quit", which
+# is why a whole shutdown phase went past this.
+#
+# Read as a closed class, like the acknowledgement and cancellation fast
+# paths: an exit command is the whole turn and takes no object. "Quit" ends
+# the session; "quit Spotify" and "I want to quit my job" do not.
+_FAREWELL = re.compile(
+    r"^\s*(?:(?:ok(?:ay)?|alright|right|well|now|so|and)\s*[,.!]?\s*)*"
+    r"(?:quit|exit|shut\s?down|log\s+(?:out|off)|sign\s+(?:out|off)|"
+    r"good\s?bye|bye(?:\s?bye)?|see\s+(?:you|ya)(?:\s+later)?|"
+    r"stop\s+elaina|종료(?:해|하자)?|끝내(?:자|줘)?|잘\s*있어)"
+    r"(?:\s+elaina)?"
+    r"(?:\s*[,.!]?\s*(?:please|now|for\s+now|then))*"
+    r"\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+
+_FAREWELL_BANKS: dict[str, tuple[str, ...]] = {
+    "en": (
+        "Bye, see you later.",
+        "See you. Take care.",
+        "Alright, talk soon.",
+        "Bye for now.",
+        "See you around.",
+        "Take care. Bye.",
+    ),
+    "ko": (
+        "잘 있어, 나중에 봐.",
+        "안녕, 또 보자.",
+        "그럼 이만. 잘 지내.",
+        "다음에 봐.",
+    ),
+}
+
+
+def reads_as_farewell(text: str) -> bool:
+    """Whether this turn is an instruction to end the session, and nothing else."""
+    return bool(_FAREWELL.match(" ".join(str(text or "").split())))
+
+
 def reads_as_frustration(text: str) -> bool:
     """Whether this turn is hostility at her and nothing else."""
     said = " ".join(str(text or "").split())
@@ -264,6 +312,12 @@ class SocialLineSelector:
     def frustration(self) -> str:
         """A short, non-defensive answer to being told off."""
         chosen = self._choose(_FRUSTRATION_BANKS[self.language])
+        self._remember(chosen)
+        return chosen
+
+    def farewell(self) -> str:
+        """One short goodbye on the way out."""
+        chosen = self._choose(_FAREWELL_BANKS[self.language])
         self._remember(chosen)
         return chosen
 
