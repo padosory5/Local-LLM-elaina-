@@ -90,6 +90,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agents.preconditions import check_precondition
+from brain import task_outcome
 from brain.decision_log import log_information_need
 from brain.task_discovery_policy import TaskDiscoveryPolicy
 from tools.browser_control.browser_control import (
@@ -221,6 +222,11 @@ class TaskStepResult:
     # on (DesktopSurfaceContext.app_name) -- empty for browser_control
     # steps, which have no equivalent single "current application".
     application: str = ""
+    # Whether anything observed the end state. True means an observation
+    # confirmed it; None means the step ran and nothing checked. Kept
+    # separate from status on purpose: "it worked" and "we watched it work"
+    # are different claims, and only the second one earns VERIFIED_SUCCESS.
+    verified: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -307,6 +313,35 @@ class TaskRunResult:
     pending_step: TaskStep | None = None
     pending_capability: str = ""
     pending_prepared: PreparedComputerAction | None = None
+
+    def outcome(self) -> "task_outcome.TaskOutcome":
+        """Which of the five terminal states this run reached.
+
+        Read from the run's own status and its last step, rather than stored,
+        so it cannot disagree with what actually happened. A "done" run only
+        earns VERIFIED when a step actually observed the end state, and a run
+        whose last step failed verification never reports success at all --
+        which is the rule this phase exists to enforce.
+        """
+        last = (
+            self.task_state.completed_steps[-1]
+            if self.task_state.completed_steps else None
+        )
+        code = getattr(last, "failure_code", "") if last is not None else ""
+        if self.status == "done":
+            if code and code in task_outcome.KNOWN_FAILURE_CODES:
+                # A completed run whose final step never confirmed its end
+                # state is not a success, whatever the summary says.
+                classified = task_outcome.classify("failed", code)
+                if not classified.succeeded:
+                    return classified
+            observed = bool(
+                last is not None and getattr(last, "verified", None) is True
+            )
+            return task_outcome.classify("done", observed=observed)
+        if self.status in {"stopped", "failed"} and code:
+            return task_outcome.classify("failed", code)
+        return task_outcome.classify(self.status, code)
 
 
 class TaskPlanner:
@@ -925,10 +960,38 @@ class TaskPlanner:
                     task_state,
                 )
             if step_result.status == "failed":
-                if step_result.failure_code == "user_took_over":
+                outcome = task_outcome.classify(
+                    step_result.status, step_result.failure_code,
+                )
+                print(f"[Task Outcome] step -> {outcome.log_line()}")
+                if outcome.outcome == task_outcome.CANCELLED:
                     task_state.status = "stopped"
                     return TaskRunResult(
                         "stopped", "You took control, so I stopped.", task_state,
+                    )
+                if outcome.outcome == task_outcome.NEEDS_USER_INPUT:
+                    # Missing information is not a failure to retry around.
+                    # "Send this to John" with three Johns must ask, not pick.
+                    task_state.status = "stopped"
+                    return TaskRunResult(
+                        "stopped",
+                        self._truncated(
+                            step_result.summary, _MAX_SUMMARY_LENGTH,
+                        ),
+                        task_state,
+                    )
+                if outcome.outcome == task_outcome.TERMINAL_FAILURE:
+                    # Retrying cannot change this: a budget is spent, the
+                    # thing is not there, or policy forbids it. Every failure
+                    # used to get the same two attempts, so a scope violation
+                    # was retried exactly like a transient stall.
+                    task_state.status = "failed"
+                    return TaskRunResult(
+                        "failed",
+                        self._truncated(
+                            step_result.summary, _MAX_SUMMARY_LENGTH,
+                        ),
+                        task_state,
                     )
                 if task_state.consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                     task_state.status = "failed"
@@ -1027,6 +1090,9 @@ class TaskPlanner:
         return TaskStepResult(
             step, status, summary=plan_result.summary, info=plan_result.summary,
             failure_code=plan_result.failure_code, application=application,
+            # The foreground application was read back off the real UI tree
+            # after the run, so a step that landed on one was observed.
+            verified=True if application else None,
         ), None
 
     @staticmethod
@@ -1053,6 +1119,7 @@ class TaskPlanner:
         return TaskStepResult(
             step, status, summary=plan_result.summary, info=plan_result.summary,
             failure_code=plan_result.failure_code,
+            verified=getattr(plan_result, "verified", None),
         ), None
 
     @staticmethod

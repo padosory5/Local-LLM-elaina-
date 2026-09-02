@@ -66,6 +66,12 @@ class ActionPlanResult:
     steps_taken: tuple[str, ...] = ()
     model_rounds: int = 0
     failure_code: str = ""
+    # Whether anything actually observed the end state: True confirmed it,
+    # False contradicted it, None means nothing checked. BrowserActionResult
+    # has carried this tri-state all along and it was dropped here, so a
+    # caller could not tell a verified success from an unverified one --
+    # only the False case survived, as a "verification_failed" code.
+    verified: bool | None = None
     # Set only when status == "needs_clarification": what was asked, and
     # what answering it would complete.
     clarification: Decision | None = None
@@ -1672,6 +1678,7 @@ class BrowserActionPlanner:
         if result.succeeded and result.verified is not False:
             return ActionPlanResult(
                 "done", result.message, steps_taken=(result.message,),
+                verified=result.verified,
             )
         failure_code = (
             "verification_failed"
@@ -1834,6 +1841,7 @@ class BrowserActionPlanner:
             return ActionPlanResult(
                 "done", success_summary or result.message,
                 steps_taken=(result.message,),
+                verified=result.verified,
             )
         failure_code = (
             "verification_failed"

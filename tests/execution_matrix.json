@@ -1,0 +1,740 @@
+{
+  "description": "Multi-step tasks driven through the real TaskPlanner loop.",
+  "outcomes": [
+    "success",
+    "retryable_failure",
+    "needs_user_input",
+    "cancelled",
+    "terminal_failure"
+  ],
+  "note": "Scripted tool results, deliberately: half of these cannot be produced reliably against a live machine. What is under test is the pipeline's response to them, not the browser's.",
+  "cases": [
+    {
+      "id": "ex01_browser_success",
+      "kind": "success_browser",
+      "goal": "Open the hotel page and read the rates.",
+      "plan": [
+        {
+          "capability": "browser_control",
+          "sub_goal": "Open the hotel page."
+        },
+        {
+          "capability": "browser_control",
+          "sub_goal": "Read the nightly rates."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "browser_control",
+          "status": "done",
+          "summary": "Opened the hotel page.",
+          "expected_state": "hotel page is the active tab",
+          "verified": true
+        },
+        {
+          "tool": "browser_control",
+          "status": "done",
+          "summary": "Rates are $180 a night.",
+          "expected_state": "rate text is visible",
+          "verified": true
+        }
+      ],
+      "expected_outcome": "success",
+      "expected_verification": "verified"
+    },
+    {
+      "id": "ex02_browser_unverified",
+      "kind": "success_browser",
+      "goal": "Click the reviews tab.",
+      "plan": [
+        {
+          "capability": "browser_control",
+          "sub_goal": "Click the reviews tab."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "browser_control",
+          "status": "done",
+          "summary": "Clicked Reviews.",
+          "expected_state": "reviews panel is shown"
+        }
+      ],
+      "expected_outcome": "success",
+      "expected_verification": "executed_but_unverified",
+      "note": "the click succeeded and nothing read the page back; reported honestly as unverified"
+    },
+    {
+      "id": "ex03_multi_nav",
+      "kind": "multi_step",
+      "goal": "Find the Peninsula and open its rooms page.",
+      "plan": [
+        {
+          "capability": "browser_control",
+          "sub_goal": "Search for the Peninsula."
+        },
+        {
+          "capability": "browser_control",
+          "sub_goal": "Open the hotel result."
+        },
+        {
+          "capability": "browser_control",
+          "sub_goal": "Open the rooms page."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "browser_control",
+          "status": "done",
+          "summary": "Search results listed.",
+          "expected_state": "results page is shown",
+          "verified": true
+        },
+        {
+          "tool": "browser_control",
+          "status": "done",
+          "summary": "Opened the Peninsula page.",
+          "expected_state": "hotel page is active",
+          "verified": true
+        },
+        {
+          "tool": "browser_control",
+          "status": "done",
+          "summary": "Rooms page open.",
+          "expected_state": "rooms list is visible",
+          "verified": true
+        }
+      ],
+      "expected_outcome": "success",
+      "expected_verification": "verified"
+    },
+    {
+      "id": "ex04_local_success",
+      "kind": "success_local",
+      "goal": "Open Notepad.",
+      "plan": [
+        {
+          "capability": "ui_control",
+          "sub_goal": "Open Notepad."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "ui_control",
+          "status": "done",
+          "summary": "Notepad is open.",
+          "expected_state": "Notepad is the foreground window",
+          "observed_app": "Notepad"
+        }
+      ],
+      "expected_outcome": "success",
+      "expected_verification": "verified",
+      "note": "the desktop planner reads the foreground application back off the real UI tree"
+    },
+    {
+      "id": "ex05_local_multi",
+      "kind": "multi_step",
+      "goal": "Open Spotify and play Liked Songs.",
+      "plan": [
+        {
+          "capability": "ui_control",
+          "sub_goal": "Open Spotify."
+        },
+        {
+          "capability": "ui_control",
+          "sub_goal": "Open Liked Songs."
+        },
+        {
+          "capability": "ui_control",
+          "sub_goal": "Press play."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "ui_control",
+          "status": "done",
+          "summary": "Spotify is open.",
+          "expected_state": "Spotify is foreground",
+          "observed_app": "Spotify"
+        },
+        {
+          "tool": "ui_control",
+          "status": "done",
+          "summary": "Liked Songs is open.",
+          "expected_state": "Liked Songs view is active",
+          "observed_app": "Spotify"
+        },
+        {
+          "tool": "ui_control",
+          "status": "done",
+          "summary": "Playback started.",
+          "expected_state": "playback is active",
+          "observed_app": "Spotify"
+        }
+      ],
+      "expected_outcome": "success",
+      "expected_verification": "verified"
+    },
+    {
+      "id": "ex06_playback_unverified",
+      "kind": "verification_failed",
+      "goal": "Play my liked songs.",
+      "plan": [
+        {
+          "capability": "ui_control",
+          "sub_goal": "Press play on Liked Songs."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "ui_control",
+          "status": "failed",
+          "summary": "Pressed play; nothing started.",
+          "expected_state": "playback is active",
+          "failure_code": "playback_unverified"
+        }
+      ],
+      "expected_outcome": "retryable_failure",
+      "note": "the click landed and playback never started -- must never report SUCCESS"
+    },
+    {
+      "id": "ex07_verification_failed",
+      "kind": "verification_failed",
+      "goal": "Open the checkout page.",
+      "plan": [
+        {
+          "capability": "browser_control",
+          "sub_goal": "Click Checkout."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "browser_control",
+          "status": "failed",
+          "summary": "Clicked Checkout; the page did not change.",
+          "expected_state": "checkout page is shown",
+          "failure_code": "verification_failed",
+          "verified": false
+        }
+      ],
+      "expected_outcome": "retryable_failure"
+    },
+    {
+      "id": "ex08_unchanged_state",
+      "kind": "verification_failed",
+      "goal": "Turn on shuffle.",
+      "plan": [
+        {
+          "capability": "ui_control",
+          "sub_goal": "Press shuffle."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "ui_control",
+          "status": "failed",
+          "summary": "Pressed shuffle; state unchanged.",
+          "expected_state": "shuffle is on",
+          "failure_code": "unchanged_state"
+        }
+      ],
+      "expected_outcome": "retryable_failure"
+    },
+    {
+      "id": "ex09_collection_not_observed",
+      "kind": "verification_failed",
+      "goal": "Open my Discover Weekly.",
+      "plan": [
+        {
+          "capability": "ui_control",
+          "sub_goal": "Open Discover Weekly."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "ui_control",
+          "status": "failed",
+          "summary": "Opened a view; the collection is not there.",
+          "expected_state": "Discover Weekly is displayed",
+          "failure_code": "collection_not_observed"
+        }
+      ],
+      "expected_outcome": "retryable_failure"
+    },
+    {
+      "id": "ex10_retry_succeeds",
+      "kind": "retry_succeeds",
+      "goal": "Find a hotel in Guam.",
+      "plan": [
+        {
+          "capability": "browser_control",
+          "sub_goal": "Search hotels."
+        },
+        {
+          "capability": "browser_control",
+          "sub_goal": "Try a different site."
+        },
+        {
+          "done": true,
+          "summary": "Found one after retrying."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "browser_control",
+          "status": "failed",
+          "summary": "The page would not load.",
+          "expected_state": "results page is shown",
+          "failure_code": "direct_target_not_found"
+        },
+        {
+          "tool": "browser_control",
+          "status": "done",
+          "summary": "Opened search results.",
+          "expected_state": "results page is shown",
+          "verified": true
+        }
+      ],
+      "expected_outcome": "success",
+      "expected_verification": "verified",
+      "note": "a first-attempt miss recovers by changing approach"
+    },
+    {
+      "id": "ex11_transient_planner",
+      "kind": "recoverable",
+      "goal": "Look up the exchange rate.",
+      "plan": [
+        {
+          "capability": "browser_control",
+          "sub_goal": "Search the rate."
+        },
+        {
+          "capability": "browser_control",
+          "sub_goal": "Search again."
+        },
+        {
+          "done": true,
+          "summary": "Rate found."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "browser_control",
+          "status": "failed",
+          "summary": "The planner was unreachable.",
+          "expected_state": "rate is shown",
+          "failure_code": "planner_unavailable"
+        },
+        {
+          "tool": "browser_control",
+          "status": "done",
+          "summary": "Rate is 1,320 KRW.",
+          "expected_state": "rate is shown",
+          "verified": true
+        }
+      ],
+      "expected_outcome": "success",
+      "expected_verification": "verified"
+    },
+    {
+      "id": "ex12_search_failed_then_ok",
+      "kind": "recoverable",
+      "goal": "What is the weather in Seattle?",
+      "plan": [
+        {
+          "capability": "browser_control",
+          "sub_goal": "Search the forecast."
+        },
+        {
+          "capability": "browser_control",
+          "sub_goal": "Search once more."
+        },
+        {
+          "done": true,
+          "summary": "Rain tomorrow."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "browser_control",
+          "status": "failed",
+          "summary": "Search failed.",
+          "expected_state": "forecast is shown",
+          "failure_code": "web_search_failed"
+        },
+        {
+          "tool": "browser_control",
+          "status": "done",
+          "summary": "Forecast retrieved.",
+          "expected_state": "forecast is shown",
+          "verified": true
+        }
+      ],
+      "expected_outcome": "success",
+      "expected_verification": "verified"
+    },
+    {
+      "id": "ex13_app_missing",
+      "kind": "non_recoverable",
+      "goal": "Open Spotify and play something.",
+      "plan": [
+        {
+          "capability": "ui_control",
+          "sub_goal": "Open Spotify."
+        },
+        {
+          "capability": "ui_control",
+          "sub_goal": "Press play."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "ui_control",
+          "status": "failed",
+          "summary": "Spotify is not installed.",
+          "expected_state": "Spotify is foreground",
+          "failure_code": "spotify_not_found"
+        }
+      ],
+      "expected_outcome": "terminal_failure",
+      "note": "retrying cannot install an application"
+    },
+    {
+      "id": "ex14_scope_violation",
+      "kind": "non_recoverable",
+      "goal": "Book it on that other site.",
+      "plan": [
+        {
+          "capability": "browser_control",
+          "sub_goal": "Navigate to the other site."
+        },
+        {
+          "capability": "browser_control",
+          "sub_goal": "Book the room."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "browser_control",
+          "status": "failed",
+          "summary": "That host is outside the allowed sources.",
+          "expected_state": "booking page is shown",
+          "failure_code": "source_scope_violation"
+        }
+      ],
+      "expected_outcome": "terminal_failure",
+      "note": "policy: doing it again does the same thing"
+    },
+    {
+      "id": "ex15_repeated_not_found",
+      "kind": "non_recoverable",
+      "goal": "Open the Trip folder.",
+      "plan": [
+        {
+          "capability": "ui_control",
+          "sub_goal": "Open the Trip folder."
+        },
+        {
+          "capability": "ui_control",
+          "sub_goal": "Try again."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "ui_control",
+          "status": "failed",
+          "summary": "Still not found after retrying.",
+          "expected_state": "Trip folder is open",
+          "failure_code": "repeated_not_found"
+        }
+      ],
+      "expected_outcome": "terminal_failure"
+    },
+    {
+      "id": "ex16_ambiguous_target",
+      "kind": "needs_user_input",
+      "goal": "Send this to John.",
+      "plan": [
+        {
+          "capability": "ui_control",
+          "sub_goal": "Send the message to John."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "ui_control",
+          "status": "failed",
+          "summary": "There are three Johns.",
+          "expected_state": "message sent to the intended John",
+          "failure_code": "direct_target_ambiguous"
+        }
+      ],
+      "expected_outcome": "needs_user_input",
+      "note": "must ask, never pick one"
+    },
+    {
+      "id": "ex17_needs_clarification",
+      "kind": "needs_user_input",
+      "goal": "Play that song again.",
+      "plan": [
+        {
+          "capability": "ui_control",
+          "sub_goal": "Play the song."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "ui_control",
+          "status": "failed",
+          "summary": "Which song did you mean?",
+          "expected_state": "the named track is playing",
+          "failure_code": "needs_clarification"
+        }
+      ],
+      "expected_outcome": "needs_user_input"
+    },
+    {
+      "id": "ex18_cancel_midway",
+      "kind": "cancelled",
+      "goal": "Open Spotify and play Liked Songs.",
+      "plan": [
+        {
+          "capability": "ui_control",
+          "sub_goal": "Open Spotify."
+        },
+        {
+          "capability": "ui_control",
+          "sub_goal": "Open Liked Songs."
+        },
+        {
+          "capability": "ui_control",
+          "sub_goal": "Press play."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "ui_control",
+          "status": "done",
+          "summary": "Spotify is open.",
+          "expected_state": "Spotify is foreground",
+          "observed_app": "Spotify"
+        },
+        {
+          "tool": "ui_control",
+          "status": "failed",
+          "summary": "You took the mouse back.",
+          "expected_state": "Liked Songs is open",
+          "failure_code": "user_took_over"
+        }
+      ],
+      "expected_outcome": "cancelled",
+      "note": "the third step must never run"
+    },
+    {
+      "id": "ex19_cancel_first_step",
+      "kind": "cancelled",
+      "goal": "Open the booking page and fill the form.",
+      "plan": [
+        {
+          "capability": "browser_control",
+          "sub_goal": "Open the booking page."
+        },
+        {
+          "capability": "browser_control",
+          "sub_goal": "Fill the form."
+        },
+        {
+          "capability": "browser_control",
+          "sub_goal": "Submit."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "browser_control",
+          "status": "failed",
+          "summary": "You took control.",
+          "expected_state": "booking page is shown",
+          "failure_code": "user_took_over"
+        }
+      ],
+      "expected_outcome": "cancelled"
+    },
+    {
+      "id": "ex20_retry_exhausted",
+      "kind": "retry_exhausted",
+      "goal": "Open the reviews page.",
+      "plan": [
+        {
+          "capability": "browser_control",
+          "sub_goal": "Open reviews."
+        },
+        {
+          "capability": "browser_control",
+          "sub_goal": "Open reviews another way."
+        },
+        {
+          "capability": "browser_control",
+          "sub_goal": "Open reviews once more."
+        },
+        {
+          "done": true,
+          "summary": "never reached"
+        }
+      ],
+      "steps": [
+        {
+          "tool": "browser_control",
+          "status": "failed",
+          "summary": "Could not load.",
+          "expected_state": "reviews page is shown",
+          "failure_code": "model_reported_failure"
+        },
+        {
+          "tool": "browser_control",
+          "status": "failed",
+          "summary": "Could not load.",
+          "expected_state": "reviews page is shown",
+          "failure_code": "model_reported_failure"
+        },
+        {
+          "tool": "browser_control",
+          "status": "failed",
+          "summary": "Could not load.",
+          "expected_state": "reviews page is shown",
+          "failure_code": "model_reported_failure"
+        }
+      ],
+      "expected_outcome": "retryable_failure",
+      "max_tool_calls": 3,
+      "note": "bounded by _MAX_CONSECUTIVE_FAILURES; stops rather than looping"
+    },
+    {
+      "id": "ex21_stalled",
+      "kind": "retry_exhausted",
+      "goal": "Compare every listing on the page.",
+      "plan": [
+        {
+          "capability": "browser_control",
+          "sub_goal": "Compare the listings."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "browser_control",
+          "status": "failed",
+          "summary": "No further progress.",
+          "expected_state": "a comparison is produced",
+          "failure_code": "planner_stalled"
+        }
+      ],
+      "expected_outcome": "terminal_failure",
+      "max_tool_calls": 1
+    },
+    {
+      "id": "ex22_compound",
+      "kind": "compound",
+      "goal": "Find a hotel in Seoul and check it has rooms on the 18th.",
+      "plan": [
+        {
+          "capability": "browser_control",
+          "sub_goal": "Search hotels in Seoul."
+        },
+        {
+          "capability": "browser_control",
+          "sub_goal": "Open the best result and check the 18th."
+        },
+        {
+          "done": true,
+          "summary": "The Peninsula has rooms on the 18th."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "browser_control",
+          "status": "done",
+          "summary": "Three hotels listed.",
+          "expected_state": "results page is shown",
+          "verified": true
+        },
+        {
+          "tool": "browser_control",
+          "status": "done",
+          "summary": "Rooms available on the 18th.",
+          "expected_state": "availability is visible on the page",
+          "verified": true
+        }
+      ],
+      "expected_outcome": "success",
+      "expected_verification": "verified",
+      "note": "search discovers, the page verifies -- the compound strategy from 4E-D"
+    }
+  ]
+}

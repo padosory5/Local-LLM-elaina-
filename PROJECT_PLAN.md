@@ -14,12 +14,13 @@ sometimes.
 |---|---|
 | **Branch** | `phase4e-stabilization` |
 | **Last checkpoint** | `v0.4e-baseline` — 851c8bd5 |
-| **Tests green** | **1872** / 108 modules (regression floor — must never drop) |
+| **Tests green** | **1892** / 110 modules (regression floor — must never drop) |
 | **Model** | `qwen3:8b` via Ollama · vision `qwen3-vl:8b` |
-| **Phase** | 4E-D complete → next: 4E-E execution & verification |
+| **Phase** | 4E-E complete → next: 4E-F memory & continuity |
 | **Router accuracy** | **97.0–97.8%** (130–131/134) · 0 dangerous false positives · target ≥95% ✅ |
 | **Agency accuracy** | **100%** (35/35) · 0 unrequested actions · 15/15 consent · target ≥90% ✅ |
-| **Tool selection** | **95.6%** (43/45) · 0 research→browser · 0 UI false positives · target ≥90% ✅ |
+| **Tool selection** | **95.6–97.8%** (43–44/45) · 0 research→browser · 0 UI false positives · target ≥90% ✅ |
+| **Execution** | **22/22** scenarios · verified vs unverified reported separately · target ≥20 ✅ |
 
 **Rollback at any time:**
 
@@ -51,8 +52,8 @@ report ~46 phantom import failures):
 | 3 | 4E-B intent understanding | `[x]` | ≥95% routing, **zero** dangerous false-positive actions |
 | 4 | 4E-C agency & recommendation | `[x]` | 30 scenarios, offers resolve, rejections stop |
 | 5 | 4E-D tool selection | `[x]` | 40 scenarios, 90–95% first-choice correct |
-| 6 | 4E-E execution & verification | `[~]` | 20 multi-step tasks verified by final state |
-| 7 | 4E-F memory & continuity | `[ ]` | 20 conversations, ≥90% reference accuracy |
+| 6 | 4E-E execution & verification | `[x]` | 20 multi-step tasks verified by final state |
+| 7 | 4E-F memory & continuity | `[~]` | 20 conversations, ≥90% reference accuracy |
 | 8 | Startup & shutdown | `[ ]` | clean start, clean stop, mic released |
 | 9 | Failure & recovery | `[ ]` | every failure ends in one of 5 terminal states |
 | 10 | Latency | `[ ]` | ~2–3s conversation, fast interrupt |
@@ -198,19 +199,50 @@ for one site.
 as naming a page to drive — the brief's rule encoded backwards. Removed; a
 domain with an actual verb still matches, on the verb.
 
-### 6. 4E-E execution & verification `[~]`
+### 6. 4E-E execution & verification `[x]`
 
 **Already built:** `TaskStep` / `TaskStepResult` / `TaskState` / `TaskRunResult`,
 a `discover` vs `verify` split, provenance on every fact
 (`web_search_snippet` | `browser_observed` | `model_knowledge`), and bounded retries
 (`_MAX_CONSECUTIVE_FAILURES = 2`).
 
-**Gap:** outcomes are strings, and `RETRYABLE` vs `TERMINAL` failure is not explicit.
+**22/22** scenarios reached their expected outcome, asserted on every suite run
+(not a live check that can stop being run).
+Full analysis: [docs/EXECUTION_BASELINE.md](docs/EXECUTION_BASELINE.md)
 
-- [ ] 20 multi-step tasks; a task passes only when the **final expected state** is verified
-- [ ] Tool success is never treated as goal success
+- [x] 22 multi-step scenarios covering every case in the brief
+- [x] Tool success + failed verification **never** reports SUCCESS
+- [x] Retries bounded, and only spent on plausibly-recoverable failures
+- [x] Missing information returns NEEDS_USER_INPUT rather than guessing
+- [x] Cancellation stops before the remaining steps
+- [x] VERIFIED vs EXECUTED_BUT_UNVERIFIED reported separately
 
-### 7. 4E-F memory & continuity `[ ]`
+**Most of this was surfacing, not building.** Bounded retries already existed;
+the sub-planners already verified (`BrowserActionResult.verified` is a
+tri-state, and `False` already forced a failure); the failure vocabulary was
+already honest, including a whole family meaning *ran but the state never
+appeared*. Three things were missing:
+
+- **Nothing classified any of it.** `brain/task_outcome.py` maps every emitted
+  code to one of the five states; a drift test scans the source for
+  `failure_code=` literals and fails if one is unclassified.
+- **Every failure got the same retry budget.** A scope violation was retried
+  exactly like a transient stall. Terminal failures now stop without spending
+  an attempt; only retryable ones reach the budget.
+- **The verification signal was discarded going up.** `ActionPlanResult` had
+  no `verified` field, so only the `False` case survived and *verified* vs
+  *unchecked* successes were indistinguishable. The tri-state now propagates.
+
+> **A test caught me:** my first classification put `direct_target_not_found`
+> in the terminal set. An existing planner test proved the planner legitimately
+> recovers from it by trying a different site — the `repeated_` prefix is what
+> marks the already-retried case.
+
+**Unverifiable, and documented as such:** a click on an SPA that exposes no
+state change, whether a search *answer* is true, and anything past the process
+boundary (audio reaching speakers, a form accepted server-side).
+
+### 7. 4E-F memory & continuity `[~]`
 
 Do not rebuild memory. Do not solve continuity by sending the whole transcript.
 
@@ -372,3 +404,13 @@ Newest first. One line per meaningful step.
   `docs/TOOL_BASELINE.md`.
 - Two failures reported unweakened: `nt_worldcup` (router prefers a checked
   source for a 2018 fact) and `sc_display` (known `describe_window` gap).
+- **4E-E complete.** Execution outcomes made explicit: **22/22** multi-step
+  scenarios, verified vs unverified reported separately, terminal failures no
+  longer spend the retry budget. Regressions all held — tool 44/45 (97.8%),
+  agency 35/35, router 131/134 (97.8%), 0 dangerous false positives.
+  Suite 1872 → **1892**.
+- New: `brain/task_outcome.py`, `tests/execution_matrix.json` (22 scenarios),
+  `tests/test_execution_matrix.py`, `tests/test_task_outcome.py`,
+  `scripts/execution_report.py`, `docs/EXECUTION_BASELINE.md`.
+- Repaired `docs/ROUTER_BASELINE.md`: an earlier `str.replace` silently
+  no-op'd, leaving the doc describing the pre-fix state as current.

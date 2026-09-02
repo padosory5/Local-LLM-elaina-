@@ -54,7 +54,9 @@ monitor", "I deleted that folder last week" — produced `computer_operation` of
 
 ---
 
-## The 11 failures, by root cause
+## The 11 failures at baseline, by root cause
+
+*Historical: this is the 123/134 run. What was done about each is below.*
 
 ### A. `action_target` contract is undefined — 4 cases · *tool metadata*
 
@@ -126,11 +128,45 @@ behaviour. It is the benchmark's job to keep showing this until it is fixed.
 
 ---
 
-## Where the work actually is
+## What was fixed
 
-Eight of eleven failures (groups A and B) are **prompt and metadata**, not model
-capability — the router is never told what `action_target` should hold, nor where
-one capability stops and the next begins. That is the cheapest, highest-yield fix
-available before September 13, and it needs no architectural change.
+Eight of the eleven (groups A and B) were **prompt and metadata**, not model
+capability. All were fixed in the router's existing deterministic correction
+layer — no architectural change, no new module:
 
-Reaching 95% requires fixing 4 of the 11. Groups A and B alone would clear it.
+| Fix | Cause it removed |
+|---|---|
+| `_SPOKEN_SEARCH` accepts the article "a" | "in **a** new browser tab" stayed inside the search query |
+| `_DEICTIC_SURFACE_REFERENCE` allows words between "this" and the noun | "this **hotel** page" matched nothing, so the request fell to `unsupported` |
+| New `_DEICTIC_PAGE_REFERENCE`; a named page beats an unknown surface | every "...on this page" request was aimed at the desktop |
+| A page reference outranks an app-sounding word | "Click **Settings** on this GitHub page" is a link, not the Windows app |
+| New: named app + no page + no browser surface → `ui_action` | the reverse direction had **no guard at all** |
+| New: `unsupported` + page reference + page verb → `browser_action` | acting on the page in front of you is supported |
+| New `_FOCUS_WINDOW_COMMAND` | `list_windows` was swallowing "bring VS Code to the front" |
+| `action_target` = the whole request for page/app actions | the model dropped the qualifier saying *where* |
+
+Held by 14 offline tests in `tests/test_router_surface_policy.py`.
+
+**Group C** (Windows Settings changes) was a scope decision: settings changes
+are **out of scope for v1**, so the matrix expectation was corrected to
+`unsupported`, which the model already answered unaided.
+
+**Group D** (`lookalike_not_playing`) was fixed in 4E-C at the agency layer —
+see [AGENCY_BASELINE.md](AGENCY_BASELINE.md). It passes legitimately now.
+
+**Group E** remains: `health_advice_3`, `offer_3` and `screen_3` are borderline
+judgment calls, low value, deferred.
+
+### The prompt edit that was reverted
+
+A note added to the `ui_action` bullet describing the settings scope and the
+focus rule **cost two unrelated cases**: "Force close VSCode completely" began
+copying the whole sentence into `action_target`, and the compound "create
+notes.txt … and write hello inside it" stopped being refused. Both passed
+before the edit and failed consistently after it — three runs each, then
+confirmed by stashing only the router change and re-running, which restored
+both.
+
+A small model reads this prompt as one weighted whole: text added for one
+operation shifts calibration for the others. Both behaviours are handled in
+code instead, where they cannot leak.
