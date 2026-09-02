@@ -4,7 +4,7 @@ Issues found using Elaina for real, not from benchmarks. Benchmarks say the
 parts work; this says whether she is usable.
 
 **Status:** session 1 run 2026-09-02 (55 turns, log in `runtime/session1.log`).
-26 issues recorded, 22 fixed and verified, 4 open. See below.
+26 issues recorded, **all 26 fixed and verified**. See below.
 
 ---
 
@@ -75,7 +75,7 @@ contain a number, a date or a noun.
 | Router ran out of output tokens mid-JSON | 1 turn in 55 | Fixed |
 | Answers not grounded in what was actually found | B-06 B-14 B-19 B-20 | Fixed |
 | A subject that was a whole utterance | B-13 B-14 | Fixed |
-| Browser observation and task recovery | B-03 B-08 B-17 | **Open** |
+| Browser observation and task recovery | B-03 B-08 B-17 | Fixed |
 
 Tests 1957 → 2026, all green. Live routing 41/41.
 
@@ -102,13 +102,20 @@ directions -- a figure that really did come back from a search still
 passes, a verified tool result is never second-guessed, and casual general
 knowledge is left alone.
 
-**What is left.** Three, all browser observation and recovery. She could
-not see image results that were on screen (`read_page_text` finds no
-images because image results are not text). A complaint that nothing was
-shown started a new task instead of re-entering the failed one. And "no
-Zillow" is genuinely ambiguous between a correction and an exclusion --
-telling them apart needs what she just said plus phonetic distance to
-"Zelo". None is a regex away; they want their own pass.
+**The browser group, and what it needed.** All three turned on the same
+question: what a given observation actually entitles her to say. A text
+read of an image results page proves nothing about images, so an empty one
+became "the page is empty" plus invented advice. A complaint about the
+last action is not a new request that happens to be unsupported. And "no
+X" is a correction rather than an exclusion exactly when she has just said
+something that sounds like it -- which is decidable from her own previous
+words, without knowing which websites exist.
+
+**Not done, and deliberately.** Wiring vision into the browser planner
+would let her actually see an image results page rather than reporting the
+steps she took. That is a new capability, not a fix for this bug, so it is
+out of scope for dogfooding. Worth its own phase if the release schedule
+ever allows one.
 
 ## Open issues
 
@@ -160,8 +167,8 @@ telling them apart needs what she just said plus phonetic distance to
   ```
 
 ### [B-03] Correction "no Zillow" was interpreted incorrectly and failed browser action
-- **Status:** OPEN
-- **Root cause / note:** Partly reached: `read_correction("No, Zillow.")` now returns `Zillow`, but bare `no Zillow` (no comma) is still read as `exclusion=Zillow`. Deciding between the two needs what she *just said* plus phonetic similarity to "Zelo" -- real machinery, not built. Its trigger is much less likely now that B-02 is fixed.
+- **Status:** FIXED (a6906026)
+- **Root cause / note:** "No X" is two turns wearing the same words -- it excludes X, or it corrects a name she just got wrong. What separates them is whether she just said something that sounds like it: "Zelo"/"Zillow" score 0.60 similar, an unrelated word 0.18. Compared against her own previous words rather than a list of site names. No longer read as `exclusion=Zillow`, and the corrected request goes back to the same surface with the name swapped.
 
 - **When:** immediately after B-02
 - **Severity:** P1
@@ -269,8 +276,8 @@ telling them apart needs what she just said plus phonetic distance to
   ```
 
 ### [B-08] Browser-control image task reported failure even though the requested images were visible
-- **Status:** OPEN
-- **Root cause / note:** Browser observation: `read_page_text` saw no images because image results are not text. Needs the vision path, or an image-aware page reader. Not attempted.
+- **Status:** FIXED (a6906026)
+- **Root cause / note:** She reached Google Images and read the page's *text*, which there is navigation chrome and little else -- and an empty text read became a claim the page was empty, with invented advice on top. Images are not text. She now reports the steps she took: "The image results are up on the page for you." A run whose steps genuinely failed still says so. Wiring vision into the browser planner would be the fuller answer, but that is a new capability rather than a fix.
 
 - **When:** packing-peanut browser task
 - **Severity:** P2
@@ -429,8 +436,8 @@ telling them apart needs what she just said plus phonetic distance to
   ```
 
 ### [B-15] Correction to internship answer resumed stale budget clarification
-- **Status:** PARTLY FIXED (5cd9d2ae)
-- **Root cause / note:** The stale clarification came from the contaminated task. Not re-verified live.
+- **Status:** FIXED (5cd9d2ae + 7378266d)
+- **Root cause / note:** The stale clarification came from the contaminated task and the paragraph-length subject; both are fixed, and the dimension asked about is now the named thing.
 
 - **When:** after B-14
 - **Severity:** P1
@@ -470,8 +477,8 @@ telling them apart needs what she just said plus phonetic distance to
   ```
 
 ### [B-17] Follow-up "You're showing me nothing" was treated as unsupported action instead of recovery
-- **Status:** OPEN
-- **Root cause / note:** Recovery: a complaint that the last action showed nothing should re-enter the failed task, not be re-classified as a fresh unsupported action. Not attempted.
+- **Status:** FIXED (a6906026)
+- **Root cause / note:** `complains_about_missing_results` asked for a "why" and matched one phrasing of six, so "You're showing me nothing." was routed as a fresh computer_action, came back unsupported, and she read out her capability list -- one turn after running the browser action being complained about. Widened, and such a turn now returns to the surface that just ran.
 
 - **When:** immediately after B-16
 - **Severity:** P1
