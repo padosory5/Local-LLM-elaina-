@@ -667,7 +667,780 @@ ever allows one.
   ...repeats many times...
   ```
 - **Desired behavior:** one user-facing goodbye such as "Bye, see you later.", then a single graceful shutdown with no repeated lifecycle/event-bus output.
+## Session 2 issues
 
+### [B-27] "Forget about..." still triggers broken standing-preference path
+- **Status:** FIXED (956fb371)
+- **Root cause / note:** The session-1 fix was in `recommendation_state._WANTED`; the preference reader had its own copy of the same greedy `(.+)$`. "Forget X" names a default she has been using; "forget *about* X" is the idiom for dropping a subject. Excluded, bounded to one sentence, and a bare pronoun names nothing.
+
+- **When:** rental → I-20 topic change, and later Washington travel → driver's license topic change
+- **Severity:** P1
+- **I said:** "Okay, forget about my rent. I recently submitted my I-20..."
+- **Expected:** close the rental task and answer the new I-20 question.
+- **Actual:** the entire remainder of the sentence was interpreted as a preference and repeated back.
+- **Reproduced:** yes, twice in session 2
+- **Suspected area:** cancellation/topic transition / preference extraction / front-door fast path
+- **Log:**
+  ```text
+  [Preference Resolution]
+  Domain: (nothing saved)
+  Choice: about my rent. I recently submitted my I-20 ...
+  Applied: no
+
+  [Router] conversation (1.00): The user stated a standing preference.
+
+  Elaina: I wasn't using about my rent. I recently submitted my I-20 ... by default anyway.
+  ```
+
+  Reproduced later with:
+
+  ```text
+  User: forget about it since we're talking about cars do you think I can rent a car...
+
+  [Router] conversation (1.00): The user stated a standing preference.
+
+  Elaina: I wasn't using about it since we're talking about cars...
+  ```
+
+---
+
+### [B-28] Old Zillow/rental context still leaks into unrelated web-search queries
+- **Status:** FIXED (e3abce11)
+- **Root cause / note:** `Focus.background['about']` is an anchor set by a correction and deliberately outliving its turn -- but nothing ever retired it, and `query_context()` appends it to every query. It now stops when a turn establishes a new subject while pointing at nothing, and is bounded to a phrase.
+
+- **When:** internship, international-driving-permit, and secondhand-item searches
+- **Severity:** P1
+- **Expected:** new-topic web searches should use only relevant current context.
+- **Actual:** old rental text such as `look at Zillow for rental options near University of Washington` was still appended to unrelated searches.
+- **Reproduced:** repeatedly
+- **Suspected area:** query construction / background context / topic supersession
+- **Log:**
+  ```text
+  [Query]
+  text: AI like software companies look at Zillow for rental options near University of Washington Seattle
+  ```
+
+  ```text
+  [Tool] Searching web for:
+  Where can I get an international driving permit?
+  look at Zillow for rental options near University of Washington Seattle
+  ```
+
+  ```text
+  [Tool] Searching web for:
+  Where to sell second-handed stuff online in Korea
+  Selling Second-Hand Items
+  look at Zillow for rental options near University of Washington
+  ```
+
+---
+
+### [B-29] Recommendation clarification system still asks irrelevant questions
+
+- **When:** I-20 contact discussion, internship discussion, international-driving-permit discussion
+- **Severity:** P1
+- **Expected:** clarification dimensions should match the domain.
+- **Actual:** Elaina repeatedly asked about `type`, `time`, or `budget` where those dimensions made no sense.
+- **Reproduced:** several times
+- **Suspected area:** recommendation clarification / domain schema
+- **Log:**
+  ```text
+  User: Do you have their contact information...
+
+  Elaina: What kind of time did you have in mind?
+  ```
+
+  Then:
+
+  ```text
+  User: Yep, do that for me.
+
+  Elaina: What kind of time did you have in mind?
+
+  User: anytime.
+
+  Elaina: Got it. What sort of budget are you thinking?
+  ```
+
+  Internship flow:
+
+  ```text
+  User: Also, I'm trying to get some internships in 2027 summer...
+
+  Elaina: What kind of preparation did you have in mind?
+
+  User: just like a software engineering job.
+
+  Elaina: What kind of preparation did you have in mind?
+
+  User: I don't know.
+
+  Elaina: Got it. What sort of budget are you thinking?
+  ```
+
+  International Driving Permit flow:
+
+  ```text
+  User: we can get that international driving permit.
+
+  Elaina: What sort of budget are you thinking?
+  ```
+
+---
+
+### [B-30] Natural numeric answers are rejected unless formatting exactly matches expected form
+
+- **When:** apartment budget clarification
+- **Severity:** P2
+- **I said:** "1500"
+- **Expected:** accept `1500` as a $1500 budget from the active rental context.
+- **Actual:** clarification rejected it and asked for the budget again. `$1500` was accepted.
+- **Reproduced:** no
+- **Suspected area:** clarification parser / money normalization
+- **Log:**
+  ```text
+  User: 1500
+
+  [Router] clarification (1.00): The reply did not contain a value for the pending dimension.
+
+  Elaina: What sort of budget are you thinking?
+
+  User: $1500
+
+  [Recommendation Reasoning]
+  Decision: record budget
+  ```
+
+---
+
+### [B-31] "Same as I said" cannot reuse a previously supplied preference
+
+- **When:** repeated Zillow rental search
+- **Severity:** P2
+- **I said:** "same as I said."
+- **Context before:** studio and budget had already been discussed earlier in the same session.
+- **Expected:** resolve the previous housing type, or at minimum recognize this as a reference to earlier criteria.
+- **Actual:** asked the same housing-type question again.
+- **Reproduced:** no
+- **Suspected area:** conversational references / task memory / clarification
+- **Log:**
+  ```text
+  Elaina: What type of housing did you have in mind?
+
+  User: same as I said.
+
+  [Router] clarification (1.00): The reply did not contain a value for the pending dimension.
+
+  Elaina: What type of housing did you have in mind?
+  ```
+
+---
+
+### [B-32] Search says matching Zillow listings exist but cannot provide any actual names
+
+- **When:** apartment search
+- **Severity:** P1
+- **I said:** "Can you give me the names?"
+- **Expected:** provide concrete listing/building names that were actually found, or clearly say none were verified.
+- **Actual:** repeatedly claimed studio apartments were found but returned no names, then restarted clarification for housing type and budget.
+- **Reproduced:** yes
+- **Suspected area:** search grounding / result extraction / recommendation candidate state
+- **Log:**
+  ```text
+  Elaina: I found studio apartments in Seattle on Zillow that fit your $1500 budget.
+  ```
+
+  Then:
+
+  ```text
+  User: Can you give me the names?
+
+  Elaina: I found studio apartments in Seattle under $1500 on Zillow.
+  ```
+
+  Then:
+
+  ```text
+  User: Yeah, what's the apartment name?
+
+  Elaina: What type of housing did you have in mind?
+  ```
+
+---
+
+### [B-33] Explicit browser-control request was converted back into web search
+
+- **When:** Zillow task
+- **Severity:** P1
+- **I said:** "So use my browser control, go to Zelo.com, search up apartments near University of Washington."
+- **Expected:** use browser control on the requested site.
+- **Actual:** a pending web-search offer resumed and overrode the explicit browser-control request.
+- **Reproduced:** no
+- **Suspected area:** consent resume / capability priority / explicit-current-turn authority
+- **Log:**
+  ```text
+  [Consent Resume]
+  task_id: 65311604ee26
+  capability: web_search
+  reused payload: yes
+
+  [Router] web_search (1.00): The user accepted the offered ability.
+  ```
+
+  Despite:
+
+  ```text
+  User: So use my browser control, go to Zelo.com...
+  ```
+
+---
+
+### [B-34] "I'm ready to start" did not resume Elaina's own browser-control offer
+
+- **When:** Zillow task
+- **Severity:** P1
+- **Context before:** Elaina said she could search Zillow directly in the browser and told me to let her know when I was ready.
+- **I said:** "I'm ready to start."
+- **Expected:** resume the browser-control task she had just offered.
+- **Actual:** routed as unsupported machine action and returned a capability list.
+- **Reproduced:** no
+- **Suspected area:** pending offer / consent resume / capability handoff
+- **Log:**
+  ```text
+  Elaina: I can help you search Zillow directly in your browser. Let me know when you're ready to start.
+
+  User: I'm ready to start.
+
+  [Rescue] computer_action/unsupported -> computer_action/unsupported
+
+  Elaina: I can't do that one. Right now I can use browser control...
+  ```
+
+---
+
+### [B-35] Assistant promises browser action without actually dispatching it
+
+- **When:** sturdy-box image task
+- **Severity:** P1
+- **I said:** "Use browser control and then show me a sturdy box."
+- **Expected:** browser action actually begins.
+- **Actual:** Elaina said she would use browser control, but the task had been converted to web search and no browser action followed. "Yeah, do that" was treated as acknowledgement of already-delivered results.
+- **Reproduced:** no
+- **Suspected area:** commitment guard / pending task status / capability execution
+- **Log:**
+  ```text
+  Elaina: I'll use browser control to show you a sturdy box. Let me open a search...
+  ```
+
+  Then:
+
+  ```text
+  User: Yeah, do that.
+
+  [Router] conversation (1.00): The user acknowledged the delivered task results.
+
+  Elaina: Mm-hm.
+  ```
+
+  Then:
+
+  ```text
+  User: Are you doing it?
+
+  Elaina: I'm here and ready to help!
+  ```
+
+---
+
+### [B-36] "Open one of those websites" opens a literal phrase instead of resolving one of the candidates
+
+- **When:** secondhand-market discussion
+- **Severity:** P1
+- **I said:** "open one of those websites for me."
+- **Context before:** Elaina had listed Karrot, Bunjang, Joonggonara, Hello Market, and Danawa Jangteo.
+- **Expected:** choose one of the previously named websites and open it.
+- **Actual:** browser target became the literal phrase `one of those websites`.
+- **Reproduced:** no
+- **Suspected area:** candidate reference resolution / browser target extraction
+- **Log:**
+  ```text
+  [Router] Interpreted transcript as: open one of those websites for me
+
+  [Computer Control]
+  action=open_search
+  target=one of those websites
+  status=url_opened
+
+  Elaina: Got it, one of those websites is open.
+  ```
+
+---
+
+### [B-37] Browser failure complaint still falls into unsupported-action path
+
+- **When:** immediately after B-36
+- **Severity:** P1
+- **I said:** "No it's not."
+- **Expected:** recognize that the previous browser action failed and recover/retry.
+- **Actual:** classified as unsupported machine action and read out capability list.
+- **Reproduced:** no
+- **Suspected area:** browser recovery / complaint detection
+- **Log:**
+  ```text
+  User: No it's not.
+
+  [Rescue] computer_action/unsupported -> computer_action/unsupported
+
+  Elaina: I can't do that one. Right now I can use browser control...
+  ```
+
+---
+
+### [B-38] Browser planner repeatedly exhausts its 12-round limit on simple navigation
+
+- **When:** Zillow search and ISS contact-page navigation
+- **Severity:** P1
+- **Expected:** complete straightforward page navigation within the planning budget, or fail earlier with useful recovery.
+- **Actual:** repeated describe/click loops until `model_round_budget_exhausted`.
+- **Reproduced:** multiple times
+- **Suspected area:** browser planner / observation / click verification
+- **Log:**
+  ```text
+  [Browser Planner] round=1 ...
+  ...
+  [Browser Planner] round=12 ...
+
+  failure=model_round_budget_exhausted
+  ```
+
+  ISS task took:
+
+  ```text
+  [Timing] total=71.27s
+  ```
+
+---
+
+### [B-39] Public contact information is incorrectly blocked as private information
+
+- **When:** ISS contact-page navigation
+- **Severity:** P1
+- **I said:** "Can you read their email and phone?"
+- **Expected:** read publicly displayed institutional contact information from the current webpage.
+- **Actual:** refused on privacy/security grounds.
+- **Reproduced:** immediate rephrasing followed a different path
+- **Suspected area:** browser planner safety policy / PII classification
+- **Log:**
+  ```text
+  Elaina: I cannot access personal information such as emails or phone numbers without explicit permission. Please respect privacy and legal boundaries.
+  ```
+
+---
+
+### [B-40] Browser successfully reads page text but cannot return the requested public contact values
+
+- **When:** ISS About page
+- **Severity:** P1
+- **Expected:** after scrolling and reading the page text, extract the visible phone/email values.
+- **Actual:** browser returned `not_verified` and said it could not get the answer off the page.
+- **Reproduced:** yes
+- **Suspected area:** browser extraction / verification / page text parsing
+- **Log:**
+  ```text
+  [Browser Planner] round=4 tool=read_page_text status=observed
+
+  [Browser Result] state=not_verified
+
+  Elaina: I had the page up, but couldn't read a straight answer out of it.
+  ```
+
+---
+
+### [B-41] Internship intent is still being misclassified as project/codebase inspection
+
+- **When:** internship discussion
+- **Severity:** P1
+- **I said:** "I'm interested in like AI software companies."
+- **Expected:** continue the internship/career conversation or search current AI internship companies.
+- **Actual:** routed to `project_question`, invoked the Coding Agent, and searched the Elaina source tree.
+- **Reproduced:** no
+- **Suspected area:** router / project_question boundary
+- **Log:**
+  ```text
+  [Goal]
+  Intent: inspect
+
+  Candidates:
+  project_question: 1.00
+
+  [Router] project_question (0.95)
+
+  [Agent] Coding Agent accepted task...
+
+  [Project MCP] Researching: I'm interested in AI Software Engineering Internship Applications companies.
+  ```
+
+---
+
+### [B-42] Internship web-search query was contaminated by old Zillow context
+- **Status:** FIXED (e3abce11)
+- **Root cause / note:** Same anchor. Same fix.
+
+- **When:** AI internship search
+- **Severity:** P1
+- **I said:** "Can you check what kind of companies are looking for AI software internships?"
+- **Expected:** search for companies currently offering AI/software internships.
+- **Actual:** query became:
+  `AI like software companies look at Zillow for rental options near University of Washington Seattle`
+- **Reproduced:** yes, related follow-up also used rental context
+- **Suspected area:** query builder / conversation background contamination
+- **Log:**
+  ```text
+  [Query]
+  source: active_task
+  text: AI like software companies look at Zillow for rental options near University of Washington Seattle
+  ```
+
+---
+
+### [B-43] Travel recommendation search answers with van-rental advice instead of destinations
+
+- **When:** Washington State travel discussion
+- **Severity:** P1
+- **I said:** "What if you have a car? Like, give me some good places to travel along Washington State."
+- **Expected:** examples of destinations/road trips such as Mount Rainier, Olympic National Park, etc.
+- **Actual:** web query became `Washington State cars Seattle` and Elaina answered:
+  "Book a van rental in Seattle early for the best rates!"
+- **Reproduced:** no
+- **Suspected area:** query construction / recommendation intent representation
+- **Log:**
+  ```text
+  [Query]
+  text: Washington State cars Seattle
+
+  Elaina: Book a van rental in Seattle early for the best rates!
+  ```
+
+---
+
+### [B-44] Grounding guard became too strict for ordinary well-known destination recommendations
+- **Status:** FIXED (4524944b) -- my regression
+- **Root cause / note:** Introduced by the session-1 grounding work: adding "place" to `_NAMES_A_PLACE_TO_GO` so "the best places to sell" would be checked also caught "places to travel", and the business-name guard rejected five Washington landmarks. A landform is not a business; the distinction is the name's own head noun.
+
+- **When:** Washington State travel discussion
+- **Severity:** P2
+- **I said:** "I mean there's places like Pacific Coast Highway, Mount Rainier National Park... Why not giving me examples like that?"
+- **Expected:** verify or provide reasonable Washington travel destinations.
+- **Actual:** grounding guard rejected Mount Rainier, Olympic National Park, San Juan Islands, Columbia River Gorge, etc. as unverified and asked permission to search again even though a web search had just run.
+- **Reproduced:** no
+- **Suspected area:** grounding evidence alignment / recommendation source extraction
+- **Log:**
+  ```text
+  [Grounding Guard] Unverified place(s):
+  Pacific Coast Highway,
+  Mount Rainier National Park,
+  Olympic National Park,
+  San Juan Islands,
+  Columbia River Gorge.
+
+  Elaina: I don't want to send you somewhere I haven't checked -- want me to look up real ones?
+  ```
+
+---
+
+### [B-45] "Yeah" after a grounding offer is treated as acknowledgement, not consent
+
+- **When:** Washington State travel discussion
+- **Severity:** P1
+- **Context before:** Elaina explicitly asked "want me to look up real ones?"
+- **I said:** "Yeah."
+- **Expected:** perform the offered lookup.
+- **Actual:** treated as acknowledgement of delivered results and did nothing.
+- **Reproduced:** no
+- **Suspected area:** consent/offer state / response classification
+- **Log:**
+  ```text
+  Elaina: ...want me to look up real ones?
+
+  User: Yeah.
+
+  [Router] conversation (1.00): The user acknowledged the delivered task results.
+
+  Elaina: Got it.
+  ```
+
+---
+
+### [B-46] "Why is it taking so long?" loses awareness of the pending task
+
+- **When:** immediately after B-45
+- **Severity:** P2
+- **Expected:** explain whether a lookup is running, failed, or never started.
+- **Actual:** generic response: "What would you like me to do next?"
+- **Reproduced:** no
+- **Suspected area:** task-status awareness / conversational continuity
+- **Log:**
+  ```text
+  User: Why is it taking so long?
+
+  Elaina: What would you like me to do next?
+  ```
+
+---
+
+### [B-47] User dissatisfaction is incorrectly treated as a factual dispute and triggers unnecessary re-search
+- **Status:** FIXED (4524944b) -- my regression
+- **Root cause / note:** Introduced by the session-1 grounding work: `_DISPUTES` matched any "that's not ...". "That's not much" judges the size of a number and agrees with it; "that's not right" says it is wrong. What follows the negation decides it.
+
+- **When:** iPad resale discussion
+- **Severity:** P2
+- **I said:** "Okay, that's not that much. Thank you, though."
+- **Expected:** understand this as dissatisfaction/acknowledgement and respond conversationally.
+- **Actual:** Grounding Guard interpreted it as a disputed claim and performed another full web search, then repeated the same price range.
+- **Reproduced:** no
+- **Suspected area:** grounding dispute detection / sentiment-vs-correction classification
+- **Log:**
+  ```text
+  [Grounding Guard] Disputed claim: verifying rather than repeating.
+
+  [Agent] Research Agent accepted task...
+
+  Elaina: A used iPad Air (5th generation) is typically valued between KRW 200,000 and KRW 400,000.
+  ```
+
+---
+
+### [B-48] "Stop the music" is interpreted as force-quitting an app named Music instead of stopping Spotify playback
+
+- **When:** Spotify task
+- **Severity:** P1
+- **I said:** "Stop the music."
+- **Expected:** pause/stop currently playing Spotify media.
+- **Actual:** interpreted as `force_quit_app target=Music`, then reported that Music was not installed.
+- **Reproduced:** yes with "stop the music and Spotify"
+- **Suspected area:** media intent / active application context / ui_control
+- **Log:**
+  ```text
+  [Router] Interpreted transcript as: Stop the music
+
+  [Computer Control]
+  action=force_quit_app
+  target=Music
+  status=not_found
+
+  Elaina: Quit Music, it's not installed.
+  ```
+
+---
+
+### [B-49] Compound "stop the music and Spotify" becomes one nonexistent application name
+
+- **When:** Spotify task
+- **Severity:** P1
+- **I said:** "stop the music and Spotify."
+- **Expected:** stop Spotify playback, or close Spotify if that is clearly what was intended.
+- **Actual:** searched for an app literally named `Music and Spotify`.
+- **Reproduced:** no
+- **Suspected area:** compound target parsing / media intent
+- **Log:**
+  ```text
+  [Computer Control]
+  action=force_quit_app
+  target=Music and Spotify
+  status=not_found
+
+  Elaina: Music and Spotify isn't registered here.
+  ```
+
+---
+
+### [B-50] Generic "close my browser" cannot resolve the actual active browser
+
+- **When:** browser-control cleanup
+- **Severity:** P2
+- **I said:** "close my browser for me."
+- **Expected:** resolve the currently active/default browser window (Whale) and close it.
+- **Actual:** looked for `Default Browser` and said it was not running.
+- **Reproduced:** corrected by saying "close whale"
+- **Suspected area:** app alias resolution / current-window context
+- **Log:**
+  ```text
+  [Computer Control]
+  action=close_app
+  target=browser
+  status=not_running
+
+  Elaina: I can't find Default Browser running.
+
+  User: close whale
+
+  [Computer Control]
+  target=Whale
+  status=closed
+  ```
+
+---
+
+### [B-51] Gambling-age question was misheard as "agent" and assistant failed to infer the likely intended meaning
+
+- **When:** gambling discussion
+- **Severity:** P2
+- **I said:** "What agent do I have to be to be able to gamble?"
+- **Likely intended:** "What age do I have to be to gamble?"
+- **Expected:** use context to recognize likely STT error or ask a concise clarification.
+- **Actual:** interpreted it as a licensing/agent question and answered that I needed a state gambling license.
+- **Reproduced:** no
+- **Suspected area:** STT correction / semantic repair
+- **Log:**
+  ```text
+  [Router] Interpreted transcript as:
+  What agent do I have to be to be able to gamble in Seattle?
+
+  Elaina: To gamble in Seattle, you need a state gambling license...
+  ```
+
+---
+
+### [B-52] Casino information appears incorrectly grounded and resists user correction
+
+- **When:** Seattle/Bainbridge casino discussion
+- **Severity:** P1
+- **Expected:** verify whether casinos exist in/near Seattle and Bainbridge Island, especially after the user says they remember visiting one.
+- **Actual:** repeatedly asserted there are no legal gambling venues in Seattle/Bainbridge and suggested the user may be mixing up locations.
+- **Reproduced:** yes across several turns
+- **Suspected area:** web search quality / geographic interpretation / grounding / correction handling
+- **Log:**
+  ```text
+  Elaina: There are no legal gambling venues in Seattle, Washington.
+  ```
+
+  Later:
+
+  ```text
+  Elaina: No, there are no casinos in Bainbridge Island.
+  ```
+
+  And after challenge:
+
+  ```text
+  Elaina: It's possible you're mixing up locations...
+  ```
+
+---
+
+### [B-53] International Driving Permit guidance likely used wrong jurisdiction
+
+- **When:** International Driving Permit discussion
+- **Severity:** P1
+- **I said:** "Where can I get an international driving permit?"
+- **Context:** I am currently in Korea and preparing to move to Seattle.
+- **Expected:** infer I need to obtain an IDP based on my Korean driver's license, or ask which country I am applying from.
+- **Actual:** answered with AAA / U.S. government options, then recommended a Seattle-area physical location.
+- **Reproduced:** no
+- **Suspected area:** location/context use / legal-information grounding
+- **Log:**
+  ```text
+  Elaina: You can get an international driving permit through AAA or the official U.S. government website.
+  ```
+
+  Then:
+
+  ```text
+  Elaina: You can get an International Driving Permit in Seattle at the Bellevue Travel Services Kiosk...
+  ```
+
+---
+
+### [B-54] PC flight-packing advice is incomplete and potentially unsafe for a desktop PC
+
+- **When:** moving-PC discussion
+- **Severity:** P2
+- **I said:** "I'm going to bring it with me within the flight. Can you give me the safest way to do that?"
+- **Expected:** account for desktop-PC-specific risks such as GPU/heavy component removal, tempered glass, original case box/foam, carry-on vs checked-baggage constraints, and airline rules.
+- **Actual:** generic advice: anti-static bag, bubble wrap, sturdy box, "keep it with you during the flight."
+- **Reproduced:** no
+- **Suspected area:** response quality / domain-specific advice
+- **Log:**
+  ```text
+  Elaina: Pack your PC in an anti-static bag, secure it with bubble wrap, and place it in a sturdy box. Label it clearly and keep it with you during the flight...
+  ```
+
+---
+
+### [B-55] "Quit" says goodbye but does not actually terminate the application
+- **Status:** FIXED (5db7c384)
+- **Root cause / note:** The exit check was set membership on the raw transcript, and Whisper punctuates: `"quit."` is not `"quit"`. Session 1 transcribed a bare `quit`, which is how this survived a shutdown phase. Read as a closed grammatical class now -- an exit command is the whole turn and takes no object, so "quit Spotify" and "I want to quit my job" still route. She says one goodbye out loud (waited for, since `speak()` queues and the stop path cancels the queue) and then takes the normal stop path.
+
+- **When:** end of session 2
+- **Severity:** P1
+- **I said:** "quit."
+- **Expected:** say goodbye and begin lifecycle shutdown immediately.
+- **Actual:** Elaina said "Okay, I'll quit. See you later." but continued listening and required a second command, "disconnect," before Electron closed and lifecycle shutdown began.
+- **Reproduced:** no
+- **Suspected area:** voice exit command / lifecycle trigger
+- **Log:**
+  ```text
+  User: quit.
+
+  Elaina: Okay, I'll quit. See you later.
+
+  Listening...
+
+  User: disconnect
+  ```
+
+  Only after Electron disconnected:
+
+  ```text
+  [Lifecycle] Shutting down: the desktop window closed
+  ...
+  [Lifecycle] Shutdown complete.
+  Goodbye!
+  ```
+
+- **Positive note:** the old repeated SIGINT / `event loop is closed` shutdown storm did **not** occur in session 2. Once shutdown actually started, cleanup was clean.
+
+---
+
+## Session 2 positive confirmations
+
+These Session 1 fixes appeared to hold during Session 2:
+
+- **Shutdown cleanup loop fixed:** once shutdown started, it completed once with no repeated `Stop signal 2` / `lip_sync: Event loop is closed` spam.
+- **Seattle time handling improved:** returned `07:30 AM ... PDT` rather than Korea-local time.
+- **Topic changes generally clear the immediately active recommendation task better than Session 1.**
+- **Public factual grounding is more cautious than Session 1.**
+- **Direct app close works when the app name is explicit:** `close whale` succeeded.
+- **Browser planner correctly reports bounded failure instead of hanging forever.**
+- **"Never mind" correctly ended the active conversation path without continuing the previous task.**
+
+## Session 2 overall pattern
+
+The largest remaining clusters appear to be:
+
+1. **Generic clarification state is still domain-blind**
+   - B-29, B-30, B-31
+
+2. **Old background/query context still survives too long**
+   - B-28, B-42
+
+3. **Offer/consent/task-resume state is unreliable**
+   - B-33, B-34, B-35, B-45, B-46
+
+4. **Browser target resolution and recovery remain weak**
+   - B-36, B-37, B-38, B-39, B-40
+
+5. **Search result grounding/extraction does not reliably produce concrete requested entities**
+   - B-32, B-43, B-44, B-52, B-53
+
+6. **Media/app semantics are still too literal**
+   - B-48, B-49, B-50
+
+7. **The "forget about..." preference bug is still present despite the Session 1 fix**
+   - B-27
+
+8. **Exit intent and spoken lifecycle command are not wired together**
+   - B-55
 ## Fixed
 
 _None yet._
