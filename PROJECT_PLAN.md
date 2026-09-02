@@ -14,9 +14,9 @@ sometimes.
 |---|---|
 | **Branch** | `phase4e-stabilization` |
 | **Last checkpoint** | `v0.4e-baseline` — 851c8bd5 |
-| **Tests green** | **1946** / 113 modules (regression floor — must never drop) |
+| **Tests green** | **1949** / 113 modules (regression floor — must never drop) |
 | **Model** | `qwen3:8b` via Ollama · vision `qwen3-vl:8b` |
-| **Phase** | 4E-H complete → next: latency |
+| **Phase** | 4E-I complete → next: long-session soak |
 | **Router accuracy** | **97.0–97.8%** (130–131/134) · 0 dangerous false positives · target ≥95% ✅ |
 | **Agency accuracy** | **100%** (35/35) · 0 unrequested actions · 15/15 consent · target ≥90% ✅ |
 | **Tool selection** | **95.6–97.8%** (43–44/45) · 0 research→browser · 0 UI false positives · target ≥90% ✅ |
@@ -24,6 +24,7 @@ sometimes.
 | **Continuity** | **59/59** checks over 22 conversations · target ≥90% ✅ |
 | **Runtime lifecycle** | **17/17** automated cases · 10-item manual checklist ✅ |
 | **Failure & recovery** | **26/26** scenarios · 0 unbounded waits · cancellation stops the plan ✅ |
+| **Latency** | instrumented end to end · **router is the bottleneck, not the model** ✅ |
 
 **Rollback at any time:**
 
@@ -59,8 +60,8 @@ report ~46 phantom import failures):
 | 7 | 4E-F memory & continuity | `[x]` | 20 conversations, ≥90% reference accuracy |
 | 8 | Startup & shutdown | `[x]` | clean start, clean stop, mic released |
 | 9 | Failure & recovery | `[x]` | every failure ends in one of 5 terminal states |
-| 10 | Latency | `[~]` | ~2–3s conversation, fast interrupt |
-| 11 | Long-session soak | `[ ]` | zero crashes, bugs triaged |
+| 10 | Latency | `[x]` | ~2–3s conversation, fast interrupt |
+| 11 | Long-session soak | `[~]` | zero crashes, bugs triaged |
 | 12 | Freeze & release | `[ ]` | full suite, release report, tag |
 | — | 27B/35B model experiment | `[-]` | **deferred** — see Risks |
 
@@ -348,17 +349,40 @@ cause remains unknown**, contained rather than fixed.
 
 **Mid-task correction:** cancel-and-replace, the simpler reliable option.
 
-### 10. Latency `[~]`
+### 10. Latency `[x]`
 
 **Gap:** `timings{}` covers route, memory retrieval, generation, web search, project
 tools, visual pipeline, total. **No TTFT, STT, TTS or VAD timing** — so today the LLM
 is the only thing that *can* be blamed.
 
-- [ ] Instrument VAD end-detect, STT, LLM TTFT, tool startup, TTS startup
-- [ ] Conversation ~2–3s perceived; local action begins ≤2s; TTS stops fast on interrupt
-- [ ] Do not trade reliability for benchmark gains
+Fully instrumented. Full analysis: [docs/LATENCY_BASELINE.md](docs/LATENCY_BASELINE.md)
 
-### 11. Long-session soak `[ ]`
+**The headline finding contradicts the assumption:**
+
+| Stage | Median | On which turns |
+|---|---|---|
+| **`route`** | **3.02s** | **every turn** |
+| ↳ `route_model` | ~89% of `route` | the router's own LLM call |
+| `ttft` | **0.35s** | every generating turn |
+| `generation` | 0.64s | every generating turn |
+| `memory_retrieval` | 0.00s | every turn |
+
+**The model answers in 0.35s. Deciding what the turn *was* costs 3.02s.**
+Perceived (transcript → first token) is 3.41s median, of which routing is ~88%.
+`memory_retrieval` was on the suspect list and is not a factor.
+
+- [x] VAD trailing silence (**0.9s fixed**), STT, TTFT, TTS start, interrupt — all instrumented
+- [x] Cold (engine build **8.64s**) reported separately from warm
+- [x] Top-3 bottlenecks identified **from measurement**: `route_model`, `web_search`, `tts_start`
+- [ ] Optimization — **deliberately not rushed**; the fix touches the router,
+      which carries 97.8% accuracy and 0 dangerous false positives
+
+> **Also fixed:** the regression run surfaced **1 dangerous false positive**
+> (`computer_safety_5`, compound "create and write"). Isolated to the
+> committed 4E-H tree — *not* this phase — and fixed with a deterministic
+> guard. Second silent drift on unchanged code; the per-phase run caught both.
+
+### 11. Long-session soak `[~]`
 
 Real use, not just unit tests. Triage into `bugs.md` as P0/P1/P2/P3.
 Fix P0 → P1 → important P2. **Do not spend the final days on P3 polish.**
@@ -517,3 +541,11 @@ Newest first. One line per meaningful step.
   131/134, 0 dangerous false positives. Suite 1920 → **1946**.
 - New: `tests/test_failure_recovery.py`, `core.lifecycle.build_within`,
   `docs/FAILURE_RECOVERY_BASELINE.md` (incl. 6 manual cases).
+- **4E-I complete.** Latency instrumented end to end. **The model is not the
+  bottleneck** — TTFT 0.35s, generation 0.64s, while the router's own model
+  call costs ~3s on every turn. Optimization deliberately deferred rather
+  than risk 97.8% routing accuracy without room to validate.
+- Fixed a dangerous false positive that had drifted in on unchanged code
+  since 4E-H (compound "create file and write content" → now refused).
+- New: `core/timing.py`, `scripts/latency_benchmark.py`,
+  `docs/LATENCY_BASELINE.md`. Suite 1946 → **1949**.

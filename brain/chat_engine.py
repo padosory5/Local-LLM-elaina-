@@ -31,6 +31,7 @@ from brain.conversation_manager import ConversationManager
 from brain.memory_ranker import MemoryRanker
 from voice.audio_manager import AudioManager
 from brain.emotion_engine import EmotionEngine
+from core import timing
 from core.event_bus import EventBus
 from brain.text_filter import TextFilter
 from tools.web_search import WebSearchTool
@@ -4846,12 +4847,22 @@ class ChatEngine:
                 keep_alive=active_keep_alive,
                 think=False,
             )
+            first_token_at = None
             for chunk in response_stream:
                 if turn_cancel.is_set():
                     break
                 message = chunk.get("message")
                 if message:
-                    parts.append(str(message.get("content", "")))
+                    content = str(message.get("content", ""))
+                    if content and first_token_at is None:
+                        # Time to first token, not total generation. They are
+                        # different numbers and only this one describes how
+                        # long the person waits before anything appears.
+                        first_token_at = time.perf_counter()
+                        timing.mark(
+                            "ttft", first_token_at - generation_started,
+                        )
+                    parts.append(content)
                 if chunk.get("done") and chunk.get("done_reason") == "length":
                     ran_out_of_budget = True
             return "".join(parts)
@@ -5404,14 +5415,17 @@ class ChatEngine:
             timings["memory_queue"] = 0.0
 
         timings["total"] = time.perf_counter() - turn_started
+        # The voice loop opened this timeline before the microphone even
+        # returned, so VAD and STT are already on it; the engine's own dict
+        # is folded in here rather than printed separately. One turn, one
+        # record, one line.
+        timeline = timing.current()
+        if timeline is None:
+            timeline = timing.begin(label="text")
+        timeline.merge(timings)
+        timing.finish()
         if self._print_timings:
-            print(
-                "[Timing] "
-                + " ".join(
-                    f"{name}={duration:.2f}s"
-                    for name, duration in timings.items()
-                )
-            )
+            print(timeline.summary())
 
         current_task = self.agent_tasks.get(agent_task_id)
         if (

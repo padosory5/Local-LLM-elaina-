@@ -27,6 +27,7 @@ ensure_per_monitor_dpi_aware()
 load_dotenv()
 
 from brain.chat_engine import ChatEngine
+from core import timing
 from core.lifecycle import Lifecycle, StartupTimeout, build_within
 from core.websocket_server import WebSocketServer
 from voice.stt import SpeechToText
@@ -72,6 +73,10 @@ electron_closed = threading.Event()
 # closed in handle_desktop_command so it truly stops, not just gets ignored.
 voice_mode_enabled = threading.Event()
 voice_mode_enabled.set()
+
+# The first turn pays for model loading no later turn does. Kept apart in the
+# report rather than averaged together, which would describe neither.
+_first_turn = True
 
 
 def launch_electron_if_requested():
@@ -445,6 +450,11 @@ try:
             voice_mode_enabled.wait(timeout=1.0)
             continue
 
+        # A turn begins when the microphone starts listening, not when the
+        # transcript arrives -- the VAD wait and transcription are part of
+        # what the person experiences as the response time.
+        timing.begin(label="voice", cold=_first_turn)
+        _first_turn = False
         user_input = speech_to_text.listen_and_transcribe(
             on_speech_start=engine.on_speech_start,
             is_tts_speaking=engine.audio.is_speaking,

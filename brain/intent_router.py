@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import time
+
+from core import timing
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
@@ -68,6 +71,24 @@ ADVICE_DOMAINS = {
     "technical",
     "safety",
 }
+
+# Creating a file and *putting something in it* are two requests, and only
+# the first is in scope: the Phase 4A command set creates an empty file and
+# has no way to write content. The model drops the second half and reports
+# create_file, which produces an empty notes.txt for someone who asked for
+# one with "hello" in it -- a wrong outcome reported as success.
+#
+# Measured: "Create notes.txt in Documents and write hello inside it."
+# returned create_file with action_requested=True on five consecutive runs,
+# and identically at the previous checkpoint, so this is behaviour rather
+# than variance. Grammar, not a keyword list: a second verb applied to the
+# same object is what puts the request out of scope.
+_COMPOUND_FILE_CONTENT_REQUEST = re.compile(
+    r"\b(?:create|make|add|new)\b.{0,60}?"
+    r"\b(?:and|then)\s+(?:also\s+)?"
+    r"(?:write|type|put|insert|save)\b",
+    flags=re.IGNORECASE,
+)
 
 _IRREVERSIBLE_DELETE_REQUEST = re.compile(
     r"(?:"
@@ -452,6 +473,7 @@ class SemanticIntentRouter:
         )
 
         try:
+            _route_call_started = time.perf_counter()
             response = self.client.chat(
                 model=self.model,
                 messages=[
@@ -472,6 +494,9 @@ class SemanticIntentRouter:
                 },
                 keep_alive=self.keep_alive,
                 think=False,
+            )
+            timing.mark(
+                "route_model", time.perf_counter() - _route_call_started,
             )
             raw_content = self._value(
                 self._value(response, "message", {}),
@@ -1024,6 +1049,20 @@ class SemanticIntentRouter:
             )
             target = decision.action_target.strip()
             operation = decision.computer_operation
+        if (
+            operation in {"create_file", "create_folder"}
+            and _COMPOUND_FILE_CONTENT_REQUEST.search(original_input)
+        ):
+            return replace(
+                decision,
+                normalized_request=original_input.strip(),
+                reason=(
+                    "Creating the file is supported; writing content into it "
+                    "is not, so the request is refused rather than half done."
+                ),
+                action_requested=False,
+                computer_operation="unsupported",
+            )
         if (
             operation in {"delete_file", "delete_folder"}
             and _IRREVERSIBLE_DELETE_REQUEST.search(original_input)

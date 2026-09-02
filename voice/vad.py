@@ -4,6 +4,8 @@ import math
 import queue
 import threading
 import time
+
+from core import timing
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
@@ -275,6 +277,7 @@ class VoiceActivityDetector:
         speech_started = False
         consecutive_speech_ms = 0.0
         consecutive_silence_ms = 0.0
+        last_speech_at = None
 
         waiting_started_at = time.monotonic()
         recording_started_at: float | None = None
@@ -457,6 +460,7 @@ class VoiceActivityDetector:
 
                     if is_speech:
                         consecutive_silence_ms = 0.0
+                        last_speech_at = time.monotonic()
                     else:
                         consecutive_silence_ms += (
                             self.chunk_ms
@@ -469,6 +473,16 @@ class VoiceActivityDetector:
                         print(
                             "Finished listening."
                         )
+                        # The wait between the person actually stopping and
+                        # this loop agreeing they stopped. It is a fixed cost
+                        # on every single turn, it happens before anything
+                        # else can start, and it was previously invisible --
+                        # which is how it gets mistaken for a slow model.
+                        if last_speech_at is not None:
+                            timing.mark(
+                                "vad_trailing_silence",
+                                time.monotonic() - last_speech_at,
+                            )
                         break
 
                     if (

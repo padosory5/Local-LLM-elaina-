@@ -4,6 +4,8 @@ import queue
 import threading
 import time
 
+from core import timing
+
 from voice.manager import VoiceManager
 from core.event_bus import EventBus
 from config.loader import Config
@@ -47,6 +49,9 @@ class AudioManager:
         self._lock = threading.Lock()
         self._generation = 0
         self._speaking = False
+        # When this turn's first sentence was handed to the voice, so the
+        # gap until sound actually starts can be measured.
+        self._spoke_this_turn_at = None
         self._current_text = ""
         self._recent_text = ""
         self._recent_text_expires_at = 0.0
@@ -69,6 +74,8 @@ class AudioManager:
         with self._lock:
             generation = self._generation
 
+        if self._spoke_this_turn_at is None:
+            self._spoke_this_turn_at = time.perf_counter()
         self._queue.put((generation, text))
 
     def _worker_loop(self) -> None:
@@ -85,6 +92,15 @@ class AudioManager:
 
                 with self._lock:
                     self._speaking = True
+                    if self._spoke_this_turn_at is not None:
+                        # Text ready -> first audible audio. Synthesis total
+                        # is a different number and a less useful one: what
+                        # the person notices is the silence before she starts.
+                        timing.mark(
+                            "tts_start",
+                            time.perf_counter() - self._spoke_this_turn_at,
+                        )
+                        self._spoke_this_turn_at = None
                     self._current_text = text
                     self._recent_text = text
 
@@ -116,6 +132,7 @@ class AudioManager:
                 self._queue.task_done()
 
     def stop(self) -> None:
+        interrupt_started = time.perf_counter()
         was_speaking = self.is_speaking()
         # Invalidates all sentences queued before this interruption.
         with self._lock:
@@ -132,6 +149,12 @@ class AudioManager:
             except queue.Empty:
                 break
         
+        if was_speaking:
+            # How long it takes for sound to actually stop once she is
+            # interrupted. "Feels immediate" is the requirement, and it is
+            # not the same thing as the request being accepted immediately.
+            timing.mark("interrupt_stop", time.perf_counter() - interrupt_started)
+        self._spoke_this_turn_at = None
         if was_speaking and self.events is not None:
             self.events.emit("tts_interrupted")
 

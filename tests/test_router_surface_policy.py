@@ -200,5 +200,47 @@ class SpokenSearchTests(unittest.TestCase):
                 )
 
 
+class CompoundFileRequestTests(unittest.TestCase):
+    """Creating a file and putting something in it are two requests.
+
+    Only the first is in scope: the Phase 4A command set creates an empty
+    file and has no way to write content. The model dropped the second half
+    and reported create_file, so "create notes.txt and write hello inside it"
+    produced an empty notes.txt -- a wrong outcome reported as success, and
+    the one dangerous false positive standing between this phase and zero.
+
+    Measured five consecutive times before the guard, and identically at the
+    previous checkpoint, so it was behaviour rather than variance.
+    """
+
+    def test_a_compound_create_and_write_is_refused(self):
+        for text in (
+            "Create notes.txt in Documents and write hello inside it.",
+            "Make a file called log.txt and put today in it",
+            "Create notes.txt then write hello into it",
+        ):
+            with self.subTest(text=text):
+                result = route(text, "create_file")
+                self.assertEqual(result.computer_operation, "unsupported")
+                self.assertFalse(result.action_requested)
+
+    def test_a_plain_create_is_still_supported(self):
+        for text, operation in (
+            ("Create an empty file named notes.txt in Documents.",
+             "create_file"),
+            ("Create a folder named Trip in Documents.", "create_folder"),
+            ("Make a folder called Trip in Documents", "create_folder"),
+        ):
+            with self.subTest(text=text):
+                result = route(text, operation)
+                self.assertEqual(result.computer_operation, operation)
+
+    def test_the_guard_does_not_reach_other_operations(self):
+        # "and write" in a delete or open request is not this case.
+        result = route("Delete notes.txt from Documents", "delete_file")
+
+        self.assertEqual(result.computer_operation, "delete_file")
+
+
 if __name__ == "__main__":
     unittest.main()

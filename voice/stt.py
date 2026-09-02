@@ -5,6 +5,8 @@ import os
 import sysconfig
 import tempfile
 import wave
+
+from core import timing
 from collections.abc import Callable
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -390,7 +392,11 @@ class SpeechToText:
                 wav_file.setframerate(self.sample_rate)
                 wav_file.writeframes(audio.tobytes())
 
-            transcript = self.transcribe(wav_path)
+            # Audio finalised -> transcript ready. Measured separately from
+            # the VAD wait above it, because they are fixed by completely
+            # different things: one by a silence threshold, one by model size.
+            with timing.stage("stt"):
+                transcript = self.transcribe(wav_path)
             if (
                 transcript
                 and echo_text_provider is not None
