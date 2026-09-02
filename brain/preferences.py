@@ -68,12 +68,31 @@ _ONE_OFF = re.compile(
     re.IGNORECASE,
 )
 
+# "Forget X" names something she has been defaulting to. "Forget *about*
+# X" is the idiom for dropping a subject, and the two were the same branch
+# -- greedy to the end of the utterance, so a topic change plus everything
+# said after it became the name of a preference:
+#
+#   "Okay, forget about my rent. I recently submitted my I-20..."
+#   -> Choice: about my rent. I recently submitted my I-20 ...
+#   -> "I wasn't using about my rent. I recently submitted my I-20 ...
+#      by default anyway."
+#
+# Reported in both dogfooding sessions. So: "about" is excluded, and a
+# preference name is a phrase that ends where its sentence does.
 _STOP = re.compile(
     r"\b(?:stop|don't|do not|no longer|quit)\s+(?:using|use)\s+(.+?)"
     r"(?:\s+(?:by default|any ?more|for .+))?$"
-    r"|\bforget\s+(?:my\s+)?(.+)$",
+    r"|\bforget\s+(?!about\b)(?:my\s+)?([^.!?,]{1,40}?)\s*(?:[.!?,]|$)",
     re.IGNORECASE,
 )
+
+# Said instead of the name, so it names nothing to forget. "Forget it" is
+# calling something off; the cancellation path owns that turn.
+_NAMES_NOTHING = frozenset({
+    "it", "that", "this", "them", "those", "these", "everything", "all",
+    "all that", "all of it", "the whole thing",
+})
 
 # The thing to use. The verb is matched case-insensitively and the name is
 # not: capitalisation is most of what marks a product name, and a blanket
@@ -256,7 +275,7 @@ def read(text: str) -> Statement | None:
     stop = _STOP.search(text)
     if stop:
         target = _tidy(stop.group(1) or stop.group(2) or "")
-        if target:
+        if target and target.casefold() not in _NAMES_NOTHING:
             return Statement(action="forget", value=target)
 
     used = _USE.search(text)
