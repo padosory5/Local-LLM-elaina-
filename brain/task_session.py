@@ -63,6 +63,10 @@ class TaskSessionStore:
         # The one answer to "what are we talking about", so the layers
         # downstream read it instead of each deriving their own.
         self._focus: conversation_focus.Focus | None = None
+        # What the person has already answered, by dimension, for as long
+        # as this session lasts. A restarted problem drops its constraints;
+        # the person's memory of having said it does not.
+        self._answered: dict[str, str] = {}
 
     def remember(self, task_state: Any) -> None:
         raw_items = tuple(getattr(task_state, "collected_items", ()) or ())
@@ -176,11 +180,24 @@ class TaskSessionStore:
         problem = self.active_recommendation()
         if problem is None or not problem_id or problem.id != problem_id:
             return None
+        # "Same as I said." The answer is one they already gave, and a new
+        # problem does not carry the old one's constraints -- so the
+        # question came round again, word for word. Answered dimensions
+        # are kept for the session rather than for the problem, because
+        # that is the span over which a person remembers saying it.
+        if recommendation_state.points_at_an_earlier_answer(reply):
+            remembered = self._answered.get(dimension, "")
+            if not remembered:
+                return None
+            reply = remembered
         resolved = recommendation_state.apply_dimension_answer(
             problem, dimension, reply, now=time.monotonic(),
         )
         if resolved is not None:
             self._problem = resolved
+            for slot in resolved.constraints:
+                if slot.name == dimension:
+                    self._answered[dimension] = slot.value
         return resolved
 
     def active_recommendation(self) -> "RecommendationProblem | None":

@@ -127,3 +127,41 @@ class ThisTurnOutranksAnOlderOfferTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PromisedAndNotDoneTests(unittest.TestCase):
+    """B-35, which turned out to be B-33 wearing different words.
+
+        User:   Use browser control and then show me a sturdy box.
+        [Router] web_search (1.00): The user accepted the offered ability.
+        [Tool] Searching web for: Moving and Shipping look at Zillow for
+               rental options near University of Washington Seattle
+        Elaina: I'll use browser control to show you a sturdy box...
+
+    She said she would use browser control because that is what was asked
+    for, and then a pending web-search offer had already replaced the
+    request with its own stored goal. No browser action was ever
+    dispatched, and the search ran on somebody else's query.
+    """
+
+    def test_the_request_is_not_swallowed_by_the_offer(self):
+        from brain.recommendation import reads_as_clear_acceptance
+
+        self.assertFalse(
+            reads_as_clear_acceptance(
+                "Use browser control and then show me a sturdy box. "
+                "I don't know what that is"
+            )
+        )
+
+    def test_the_follow_up_yes_is_an_acceptance(self):
+        # "Yeah, do that." was read as acknowledging results she had never
+        # produced, and answered "Mm-hm."
+        from brain.recommendation import reads_as_clear_acceptance
+
+        self.assertTrue(reads_as_clear_acceptance("Yeah, do that."))
+
+    def test_asking_whether_she_is_doing_it_is_not_consent(self):
+        from brain.recommendation import reads_as_clear_acceptance
+
+        self.assertFalse(reads_as_clear_acceptance("Are you doing it?"))

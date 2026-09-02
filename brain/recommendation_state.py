@@ -660,6 +660,36 @@ def read_short_reply(text: str) -> tuple[Slot, ...]:
     return (slot,) if slot is not None else ()
 
 
+# A reply that is only an amount, said in answer to a question about one.
+_BARE_AMOUNT = re.compile(
+    r"^\s*(?:around|about|maybe|roughly|up\s+to|under|max|like)?\s*"
+    r"(?P<amount>\d[\d,]*(?:\.\d+)?(?:\s*[kK])?)"
+    r"\s*(?:or\s+so|ish|max|at\s+most)?\s*[.!]?\s*$",
+)
+
+# Said instead of the answer, because they already gave it. Re-asking the
+# identical question after this is the worst available reply: it says the
+# earlier answer was not heard *and* asks for it again. Measured live:
+#
+#     Elaina: What type of housing did you have in mind?
+#     User:   same as I said.
+#     Elaina: What type of housing did you have in mind?
+_POINTS_BACK_AT_AN_ANSWER = re.compile(
+    r"^\s*(?:the\s+)?same(?:\s+(?:as|thing|one))?"
+    r"(?:\s+(?:as\s+)?(?:i|you)\s+said)?"
+    r"(?:\s+(?:as\s+)?(?:before|earlier|last\s+time|previously))?"
+    r"\s*[.!]?\s*$"
+    r"|^\s*(?:like|as)\s+i\s+said(?:\s+(?:before|earlier))?\s*[.!]?\s*$"
+    r"|^\s*아까(?:\s*말한)?(?:\s*거)?(?:랑)?\s*(?:같(?:은|이))?\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def points_at_an_earlier_answer(text: str) -> bool:
+    """Whether this reply defers to something the person already said."""
+    return bool(_POINTS_BACK_AT_AN_ANSWER.match(" ".join(str(text or "").split())))
+
+
 def answer_for_dimension(dimension: str, text: str) -> Slot | None:
     """Return a plausible typed answer to one outstanding dimension.
 
@@ -677,7 +707,22 @@ def answer_for_dimension(dimension: str, text: str) -> Slot | None:
             (slot for slot in constraints if slot.name == HOUSING_TYPE), None,
         )
     if dimension == BUDGET:
-        return next((slot for slot in constraints if slot.name == BUDGET), None)
+        found = next(
+            (slot for slot in constraints if slot.name == BUDGET), None,
+        )
+        if found is not None:
+            return found
+        # A bare number in answer to "what sort of budget are you
+        # thinking?" is a budget. The constraint reader will not say so,
+        # and must not: in open conversation "1500" is a number, and
+        # reading loose digits as money is how half a phone number became
+        # a rental budget. Here the question supplies what the words do
+        # not. Measured live: "1500" was refused and the same question
+        # asked again; "$1500" was accepted.
+        amount = _BARE_AMOUNT.match(said)
+        if amount is not None:
+            return _slot(BUDGET, amount.group("amount"), SOURCE_ASKED)
+        return None
     if dimension == TYPE:
         short = read_short_reply(said)
         return short[0] if short else None
@@ -794,6 +839,27 @@ class RecommendationProblem:
         if not thing or not (self.purchase or thing in _VARIANTS):
             # Advice ("what should I eat tonight") is low-stakes: suggest
             # something rather than interrogate.
+            return ""
+        # And the thing has to have a shape worth asking about. ``purchase``
+        # alone is not enough, because _PURCHASE contains "get" -- the most
+        # general verb in English. Measured live, that produced
+        #
+        #     "What kind of summer did you have in mind?"
+        #     "What kind of permit did you have in mind?"
+        #     "What kind of time did you have in mind?"
+        #     "Got it. What sort of budget are you thinking?"
+        #
+        # for an internship timeline, an international driving permit and a
+        # request for someone's contact details. Getting an internship is
+        # an acquisition; it is not a purchase with a budget.
+        #
+        # This is the rule the docstring above already states -- ask only
+        # when the answer would genuinely change which candidates come
+        # back -- enforced rather than assumed. Either the thing has two
+        # obvious kinds, or it belongs to a discovery category that has a
+        # market. Otherwise a generic "what kind of X" is worse than
+        # silence, because X is whatever word the sentence ended on.
+        if thing not in _VARIANTS and not self.category and not self.domain:
             return ""
         if (
             thing == "housing"
