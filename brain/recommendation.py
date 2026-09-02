@@ -527,7 +527,31 @@ _AFFIRMATIVE = re.compile(
 _ASKS_HER_TO_ACT = re.compile(
     r"\b(?:look|search|check|find|pull up|bring up|open|show|dig|"
     r"google|browse)\b"
-    r"|\b(?:do it|go on|go for it|go ahead|please do)\b",
+    r"|\b(?:do it|do that|go on|go for it|go ahead|please do)\b",
+    re.IGNORECASE,
+)
+
+# A turn that specifies its own errand: it names a capability to use, a
+# destination to go to, or a target to act on. Those are instructions, and
+# an instruction outranks an offer made several turns ago -- accepting it
+# as consent swaps in the offer's stored goal and discards what was said.
+_NAMES_ITS_OWN_ERRAND = re.compile(
+    r"\b(?:use|using)\s+(?:my\s+|the\s+)?"
+    r"(?:browser|computer|desktop|screen)\s*control\b"
+    r"|\bgo\s+to\s+\S+\.\w{2,}"
+    r"|\b(?:open|launch|start)\s+(?!(?:it|that|one|the\s+search)\b)[A-Za-z]"
+    r"|\b(?:instead|rather)\b",
+    re.IGNORECASE,
+)
+
+# "Let me know when you're ready to start." -- so this is the answer, and
+# it asks for nothing new. Measured live it was routed as an unsupported
+# machine action and answered with a capability list.
+_READY = re.compile(
+    r"^\s*(?:i'?m\s+|i\s+am\s+|we'?re\s+)?ready"
+    r"(?:\s+(?:to\s+(?:start|go|begin)|now|when\s+you\s+are))?"
+    r"\s*[.!]?\s*$"
+    r"|^\s*(?:let'?s|lets)\s+(?:start|go|do\s+(?:it|this))\s*[.!]?\s*$",
     re.IGNORECASE,
 )
 
@@ -561,7 +585,27 @@ def reads_as_clear_acceptance(text: str) -> bool:
     if _MERE_APPROVAL.search(said):
         return False
 
+    # A complete instruction is a request, not an acceptance of an older
+    # offer for something else. Measured live:
+    #
+    #   User: So use my browser control, go to Zelo.com, search up
+    #         apartments near University of Washington.
+    #   [Consent Resume] capability: web_search, reused payload: yes
+    #   [Router] web_search: The user accepted the offered ability.
+    #
+    # Reading it as consent meant the offer's stored goal *replaced* what
+    # was just asked for, so an explicit browser-control request became a
+    # web search for something else. Clearing the offer and routing the
+    # turn on its own terms is what it deserves.
+    if _NAMES_ITS_OWN_ERRAND.search(said):
+        return False
+
     if _ASKS_HER_TO_ACT.search(said):
+        return True
+
+    # Said in answer to "let me know when you're ready". It asks for
+    # nothing new and means only yes.
+    if _READY.search(said):
         return True
 
     # "ok, sure, please" is still just yes. Strip affirmatives until none

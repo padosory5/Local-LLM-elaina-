@@ -238,6 +238,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_exit_command",
             "test_forget_topic",
             "test_anchor_expiry",
+            "test_offer_followthrough",
         ),
     ),
     "integration": (

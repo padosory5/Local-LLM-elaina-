@@ -1467,6 +1467,23 @@ class ChatEngine:
             "I don't want to send you somewhere I haven't checked -- "
             "want me to look up real ones?"
         )
+        # Park what answers it. This guard asked a question and left
+        # nothing to accept, so "Yeah." took the bare-acknowledgement fast
+        # path -- which only fires when nothing is outstanding -- and got
+        # "Got it." with no lookup. Its sibling, the value guard, has
+        # always parked a real offer; this one never did, and the
+        # session-1 work made it fire far more often.
+        active_problem = self.task_sessions.active_recommendation()
+        self.capability_offer.offer(
+            capability_id="web_search",
+            goal=f"Find real, checkable options for: {user_input}",
+            offer_text=offer,
+            task_id=(active_problem.id if active_problem is not None else ""),
+            task_query=(
+                active_problem.search_query()
+                if active_problem is not None else ""
+            ),
+        )
         kept = [
             sentence.strip()
             for sentence in _SENTENCE_SPLIT.split(text)
