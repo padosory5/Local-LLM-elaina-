@@ -50,11 +50,37 @@ class UnsupportedAmountTests(unittest.TestCase):
             action_performed=False,
         ))
 
-    def test_a_turn_that_actually_ran_a_capability_is_never_second_guessed(self):
+    def test_a_capability_that_returned_the_figure_is_trusted(self):
+        self.assertFalse(GroundedValueGuard.needs_correction(
+            "Rooms start at 120,000 KRW.",
+            evidence="Harbour Plaza is listed at 120,000 won per night.",
+            action_performed=True,
+        ))
+
+    def test_a_capability_that_found_something_else_grounds_nothing(self):
+        # This assertion used to run the other way: action_performed ended
+        # the check, on the reasoning that a capability having run meant the
+        # answer was grounded. The first dogfooding session disproved it --
+        # a 47-second search came back with rental listings and the answer
+        # to "give me the contact information" was an invented phone number
+        # and email. An action that ran and found something else is exactly
+        # when this guard is needed, not a reason to stand down.
+        self.assertTrue(GroundedValueGuard.needs_correction(
+            "Rooms start at 120,000 KRW.",
+            evidence=EVIDENCE,
+            action_performed=True,
+        ))
+
+    def test_a_verified_tool_result_is_never_second_guessed(self):
+        # What the old assertion was really protecting: a planner or tool
+        # result whose values came from the machine rather than the model.
+        # That is now named directly instead of being inferred from "some
+        # capability ran".
         self.assertFalse(GroundedValueGuard.needs_correction(
             "Rooms start at 120,000 KRW.",
             evidence=EVIDENCE,
             action_performed=True,
+            trusted_result=True,
         ))
 
     def test_ordinary_conversation_with_no_grounded_subject_is_left_alone(self):
@@ -159,10 +185,25 @@ class EngineIntegrationTests(unittest.TestCase):
 
         self.assertEqual(
             engine._enforce_grounded_values(
-                answer, user_input="check the price", action_performed=True,
+                answer,
+                user_input="check the price",
+                action_performed=True,
+                research_evidence="Harbour Plaza: 120,000 won per night.",
             ),
             answer,
         )
+
+    def test_a_turn_whose_search_found_something_else_does_not(self):
+        engine = self._engine()
+
+        corrected = engine._enforce_grounded_values(
+            "Rooms start at 120,000 KRW.",
+            user_input="check the price",
+            action_performed=True,
+            research_evidence=EVIDENCE,
+        )
+
+        self.assertNotIn("120,000", corrected)
 
 
 if __name__ == "__main__":

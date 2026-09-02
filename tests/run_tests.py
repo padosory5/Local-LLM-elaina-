@@ -107,6 +107,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_pointer_targets",
             "test_frustration_reply",
             "test_router_output_cap",
+            "test_grounding_disputes",
             "test_task_extractor",
             "test_execution_matrix",
             "test_task_outcome",

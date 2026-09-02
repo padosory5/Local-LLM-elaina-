@@ -1298,8 +1298,10 @@ class ChatEngine:
         *,
         user_input: str,
         action_performed: bool,
+        research_evidence: str = "",
+        trusted_result: bool = False,
     ) -> str:
-        """Never quote a price that nothing this session actually saw.
+        """Never quote a value that nothing this session actually saw.
 
         Found live on a skeptical follow-up ("for real? that seems
         cheap"), routed as plain conversation with no tool call in it:
@@ -1311,12 +1313,31 @@ class ChatEngine:
         text = str(reply or "").strip()
         if not text:
             return text
+        # A turn that quotes a value in order to say it is wrong must not
+        # thereby ground it. Measured live: "the phone number you gave me,
+        # 206543000, doesn't seem like a right number" put that number into
+        # the evidence, and the answer repeated it.
+        disputed = grounded_values.reads_as_dispute(user_input)
+        looked_something_up = bool(
+            str(self._grounded_context.get("statement", "")).strip()
+            or str(research_evidence or "").strip()
+        )
         evidence = " ".join((
             str(self._grounded_context.get("statement", "")),
-            user_input,
+            str(research_evidence or ""),
+            "" if disputed else user_input,
         ))
         if not GroundedValueGuard.needs_correction(
-            text, evidence=evidence, action_performed=action_performed,
+            text,
+            evidence=evidence,
+            action_performed=action_performed,
+            trusted_result=trusted_result,
+            disputed=disputed,
+            # The user's own words go into the comparison -- a value they
+            # supplied is theirs, not invented -- but they do not make this
+            # a follow-up about something she looked up. Reading them as one
+            # meant every casual number in conversation was second-guessed.
+            grounded_subject=looked_something_up,
         ):
             return text
 
@@ -1331,7 +1352,7 @@ class ChatEngine:
             self.capability_offer.offer(
                 capability_id="browser_control",
                 goal=(
-                    "Check the current price for: "
+                    "Check this and report the real value: "
                     f"{self._grounded_context.get('subject', '') or user_input}"
                 ),
                 offer_text=offer,
@@ -1343,8 +1364,54 @@ class ChatEngine:
             )
         else:
             offer = "I haven't actually checked that, so I'd rather not guess."
-        print("[Grounding Guard] Removed a price nothing had verified.")
-        return GroundedValueGuard.correct(text, evidence=evidence, offer=offer)
+        print(
+            "[Grounding Guard] Removed "
+            f"{'a disputed value' if disputed else 'a value'} "
+            "nothing had verified."
+        )
+        return GroundedValueGuard.correct_values(
+            text, evidence=evidence, offer=offer,
+        )
+
+    def _last_claim(self) -> str:
+        """The last thing she asserted, if it carried anything checkable."""
+        for turn in reversed(list(self._router_history)):
+            if turn.get("role") == "assistant":
+                return str(turn.get("content", "") or "")
+        return ""
+
+    def _escalate_disputed_claim(
+        self, route: IntentDecision, transcript: str,
+    ) -> IntentDecision:
+        """Being told a claim is wrong means checking it, not repeating it.
+
+        Measured live, twice in one session. Told a phone number looked
+        wrong, she gave the same number back. Asked "isn't KakaoTalk a
+        messaging app? How can I sell things there?", the capability layer
+        chose direct_answer -- "she can answer this from what she already
+        knows" -- and she described a marketplace section nobody had
+        checked exists.
+
+        A dispute is the strongest signal a claim needs verifying and it
+        was being read as the weakest. This only escalates when the claim
+        under dispute actually contained something checkable, so
+        disagreeing about an opinion still stays a conversation.
+        """
+        if not grounded_values.reads_as_dispute(transcript):
+            return route
+        claim = self._last_claim()
+        if not claim or not grounded_values.carries_a_checkable_claim(claim):
+            return route
+        if route.intent in {"computer_action", "clarification"}:
+            # An instruction is not a request to go and check.
+            return route
+        print("[Grounding Guard] Disputed claim: verifying rather than repeating.")
+        return replace(
+            route,
+            information_freshness="changing",
+            requires_external_evidence=True,
+            verification_required=True,
+        )
 
     def _enforce_grounded_entities(
         self,
@@ -1353,6 +1420,7 @@ class ChatEngine:
         user_input: str,
         action_performed: bool,
         evidence: str = "",
+        trusted_result: bool = False,
     ) -> str:
         """Never send someone to a shop nothing actually found.
 
@@ -1365,12 +1433,17 @@ class ChatEngine:
         actually sending the person somewhere.
         """
         text = str(reply or "").strip()
-        if not text or action_performed:
+        # An action having run is not evidence that what she named came
+        # back from it. Measured live: a search returned rental listings
+        # and the answer named three Korean marketplaces that were in none
+        # of them. A trusted tool result is still exempt -- its values came
+        # from the machine, not the model.
+        if not text or trusted_result:
             return text
         grounding = " ".join((
             str(evidence or ""),
             str(self._grounded_context.get("statement", "")),
-            user_input,
+            "" if grounded_values.reads_as_dispute(user_input) else user_input,
         ))
         invented = grounded_values.unverified_entities(
             text, evidence=grounding, request=user_input,
@@ -5243,12 +5316,15 @@ class ChatEngine:
                 reply,
                 user_input=user_input,
                 action_performed=action_performed,
+                research_evidence=self._last_research_evidence,
+                trusted_result=bool(effective_forced_response),
             )
             reply = self._enforce_grounded_entities(
                 reply,
                 user_input=user_input,
                 action_performed=action_performed,
                 evidence=self._last_research_evidence,
+                trusted_result=bool(effective_forced_response),
             )
             # Last, so it also catches a footer a rewrite reintroduced. Her
             # personality file bans these outright and the model adds them
@@ -6087,14 +6163,17 @@ class ChatEngine:
         def route_current(
             transcript: str,
         ) -> IntentDecision:
-            return self.intent_router.route(
+            return self._escalate_disputed_claim(
+                self.intent_router.route(
+                    transcript,
+                    recent_turns=list(self._router_history),
+                    has_screen_selection=has_explicit_attachment,
+                    project_tools_available=self.project_mcp is not None,
+                    conversation_state=self._build_conversation_state(),
+                    pending_action=self._pending_action,
+                    computer_control_enabled=self.computer_control_mode.enabled,
+                ),
                 transcript,
-                recent_turns=list(self._router_history),
-                has_screen_selection=has_explicit_attachment,
-                project_tools_available=self.project_mcp is not None,
-                conversation_state=self._build_conversation_state(),
-                pending_action=self._pending_action,
-                computer_control_enabled=self.computer_control_mode.enabled,
             )
 
         def route_fresh(transcript: str) -> IntentDecision:
