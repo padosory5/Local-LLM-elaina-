@@ -387,3 +387,78 @@ class EscalationInTheTurnTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RegressionsFromSessionOneFixesTests(unittest.TestCase):
+    """Two things the session-1 grounding work broke, found in session 2.
+
+    Both are the same mistake in different places: a guard written for one
+    shape was widened until it caught a neighbouring shape it had no
+    business judging.
+    """
+
+    def test_saying_an_amount_is_small_is_not_disputing_it(self):
+        # B-47. "Okay, that's not that much. Thank you, though." tripped
+        # the dispute rule, so she re-ran a full web search and read back
+        # the same price. A dispute says a claim is *wrong*; this says the
+        # number is small, and agrees with it.
+        for said in (
+            "Okay, that's not that much. Thank you, though.",
+            "that's not much",
+            "that's not a lot",
+            "that's not too bad",
+            "it's not that expensive then",
+        ):
+            with self.subTest(said=said):
+                self.assertFalse(grounded_values.reads_as_dispute(said), said)
+
+    def test_saying_a_claim_is_wrong_still_disputes_it(self):
+        for said in (
+            "that's not right",
+            "that's not correct",
+            "that's not true",
+            "that's not what I meant",
+            "that's not it",
+            "That's not the time in Seattle right now.",
+        ):
+            with self.subTest(said=said):
+                self.assertTrue(grounded_values.reads_as_dispute(said), said)
+
+    def test_a_national_park_is_not_a_business_to_verify(self):
+        # B-44. Widening the trigger to catch "the best places to sell"
+        # also caught "places to travel", and the business-name check then
+        # rejected five of the best-known landmarks in Washington State.
+        reply = (
+            "You could visit Mount Rainier National Park, Olympic National "
+            "Park, the San Juan Islands, or drive the Columbia River Gorge "
+            "and the Pacific Coast Highway."
+        )
+
+        self.assertEqual(
+            unverified_entities(
+                reply, evidence="Washington State travel guide", request="",
+            ),
+            (),
+        )
+
+    def test_an_unchecked_shop_is_still_caught(self):
+        # The negative half: the landform exemption may not become a way
+        # for an invented business to pass.
+        reply = (
+            "You could check out local music stores like Melody House or "
+            "Guitar Center Korea."
+        )
+
+        self.assertTrue(
+            unverified_entities(reply, evidence="nothing relevant", request="")
+        )
+
+    def test_the_marketplaces_from_session_one_are_still_caught(self):
+        reply = (
+            "The best places to sell secondhand items in Korea are Coupang "
+            "Auction, Noon, and KakaoTalk marketplace."
+        )
+
+        self.assertTrue(
+            unverified_entities(reply, evidence="nothing relevant", request="")
+        )

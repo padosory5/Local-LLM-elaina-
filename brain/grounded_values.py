@@ -282,8 +282,33 @@ def _grounded_names(*texts: str) -> set[str]:
     return grounded
 
 
+# The head noun of a geographic feature. Session 2: widening the trigger
+# above to catch "the best places to sell" also caught "places to travel",
+# and this guard -- which exists to stop her sending someone to a shop that
+# does not exist -- rejected Mount Rainier National Park, Olympic National
+# Park, the San Juan Islands, the Columbia River Gorge and the Pacific
+# Coast Highway as unverified businesses.
+#
+# A landform is not a business. The distinction is carried by the name's
+# own head noun, which is a closed class, so this needs no list of parks.
+_LANDFORM = frozenset({
+    "park", "parks", "island", "islands", "isle", "mountain", "mountains",
+    "mount", "mt", "lake", "lakes", "river", "gorge", "canyon", "valley",
+    "beach", "beaches", "bay", "cape", "coast", "highway", "trail",
+    "trails", "falls", "peninsula", "forest", "glacier", "volcano",
+    "sound", "strait", "desert", "hill", "hills", "ridge", "peak",
+    "springs", "harbor", "harbour", "reserve", "wilderness",
+})
+
+
 def _is_a_place(name: str) -> bool:
-    """Whether this is a city or country rather than a business."""
+    """Whether this is somewhere on a map rather than a business."""
+    words = [word.casefold().strip(".,") for word in name.split()]
+    if not words:
+        return False
+    # "Mount Rainier National Park", "San Juan Islands", "Mt Baker".
+    if words[-1] in _LANDFORM or words[0] in _LANDFORM:
+        return True
     try:
         from brain.user_locale import _PLACE_COUNTRIES
     except Exception:
@@ -291,7 +316,7 @@ def _is_a_place(name: str) -> bool:
     lowered = name.casefold()
     if lowered in _PLACE_COUNTRIES:
         return True
-    return all(word.casefold() in _PLACE_COUNTRIES for word in name.split())
+    return all(word in _PLACE_COUNTRIES for word in words)
 
 
 # ---------------------------------------------------------------- disputes
@@ -307,8 +332,21 @@ def _is_a_place(name: str) -> bool:
 # Read as a shape rather than a phrase list: the turn either says a prior
 # claim is wrong, asks whether it is, or presupposes it is by challenging
 # what the thing actually is.
+# A dispute says the claim is *wrong*. Session 2 found the first version
+# of this too wide: "Okay, that's not that much. Thank you, though." tripped
+# it, so she re-ran a full web search and read back the same price. "That's
+# not much" is a judgement about the size of a number and agrees with it;
+# "that's not right" says the number is incorrect. Only the second is a
+# dispute, so what follows the negation has to name correctness.
 _DISPUTES = re.compile(
-    r"\b(?:that'?s|this\s+is|it'?s)\s+(?:not|n[o']t)\b"
+    # What follows the negation decides it. A definite reference points at
+    # the claim and contradicts it -- "that's not *the time* in Seattle",
+    # "that's not *what I meant*". A bare quantifier or degree word judges
+    # the size of what she said and agrees with it -- "that's not *much*",
+    # "not *a lot*", "not *that much*".
+    r"\b(?:that'?s|this\s+is|it'?s)\s+(?:not|n[o']t)\s+"
+    r"(?:right|correct|true|it|accurate|quite\s+right|"
+    r"what\s+\w+|the\s+\w+|my\s+\w+)\b"
     r"|\b(?:doesn'?t|does\s+not|don'?t)\s+(?:seem|look|sound)\b"
     r"|\byou(?:'?re|\s+are)\s+wrong\b"
     r"|\bthat'?s\s+wrong\b"
