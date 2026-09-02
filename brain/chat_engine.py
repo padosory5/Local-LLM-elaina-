@@ -861,6 +861,11 @@ class ChatEngine:
         # What the most recent search actually returned, so a named
         # shop in the reply can be checked against it.
         self._last_research_evidence = ""
+        # What she last actually did on the machine, so a complaint about
+        # it ("you're showing me nothing") reaches that surface again
+        # instead of being read as a fresh, unsupported request.
+        self._last_computer_action = ""
+        self._last_computer_goal = ""
         # Set when this turn opened a different recommendation, so the
         # previous one's turns do not stay in the answering prompt.
         self._recommendation_restarted = False
@@ -1374,8 +1379,12 @@ class ChatEngine:
         )
 
     def _last_claim(self) -> str:
-        """The last thing she asserted, if it carried anything checkable."""
-        for turn in reversed(list(self._router_history)):
+        """The last thing she asserted, if it carried anything checkable.
+
+        Read defensively: the rescue path calls this, and rescue runs on
+        turns where something has already gone wrong.
+        """
+        for turn in reversed(list(getattr(self, "_router_history", ()) or ())):
             if turn.get("role") == "assistant":
                 return str(turn.get("content", "") or "")
         return ""
@@ -1529,6 +1538,61 @@ class ChatEngine:
         if not match.matched:
             if not dead_ended:
                 return route, ""
+            meant, mistook = recommendation_state.correction_pair(
+                user_input, said_before=self._last_claim(),
+            )
+            if meant and getattr(self, "_last_computer_action", ""):
+                # A misheard name, corrected. "no Zillow" one turn after
+                # "it up on Zelo is open" is not a new request and not a
+                # ban on Zillow -- it is the same request with the name put
+                # right, so it goes back to the same surface with the name
+                # swapped rather than being dispatched as its own target.
+                goal = getattr(self, "_last_computer_goal", "") or user_input
+                if mistook:
+                    goal = re.sub(
+                        re.escape(mistook), meant, goal, flags=re.IGNORECASE,
+                    )
+                if meant.casefold() not in goal.casefold():
+                    goal = f"{goal} {meant}".strip()
+                print(f"[Rescue] misheard {mistook!r} -> {meant!r}")
+                return replace(
+                    route,
+                    computer_operation=getattr(self, "_last_computer_action", ""),
+                    normalized_request=goal,
+                    action_target=goal,
+                    action_requested=True,
+                    reason=(
+                        f"The user corrected {mistook!r} to {meant!r}; it is "
+                        "the previous request with the name put right."
+                    ),
+                ), ""
+            if recommendation_state.complains_about_missing_results(
+                user_input,
+            ) and getattr(self, "_last_computer_action", ""):
+                # Not a new request at all: it is about the last one.
+                # Measured live, one turn after a browser action opened a
+                # blank tab, "You're showing me nothing." was routed as a
+                # fresh computer_action, came back unsupported, and she read
+                # out her capability list. The complaint is about the thing
+                # she just did, so it goes back to the surface that did it
+                # rather than being answered as if it were new.
+                print(
+                    "[Rescue] complaint about the last action -> "
+                    f"{getattr(self, '_last_computer_action', '')}"
+                )
+                return replace(
+                    route,
+                    computer_operation=getattr(self, "_last_computer_action", ""),
+                    normalized_request=(
+                        getattr(self, "_last_computer_goal", "") or user_input
+                    ),
+                    action_target=getattr(self, "_last_computer_goal", "") or user_input,
+                    action_requested=True,
+                    reason=(
+                        "The user says the last action showed them nothing, "
+                        "so it is that action being complained about."
+                    ),
+                ), ""
             # An action was clearly requested and nothing Elaina has fits.
             # Say what she does have rather than a bare "unsupported".
             return route, (
@@ -3015,6 +3079,10 @@ class ChatEngine:
                 self.task_sessions.focus().background.get("about", "")
                 if self.task_sessions.focus() is not None else ""
             ),
+            # "no Zillow" right after "Zelo is open" is fixing a misheard
+            # name, not banning a site. Only her own previous words can
+            # tell the two apart.
+            said_before=self._last_claim(),
         )
 
         self._recommendation_restarted = (
@@ -3766,6 +3834,8 @@ class ChatEngine:
                 done = ", ".join(plan_result.steps_taken[-2:]) or "nothing yet"
                 return f"You took control, so I stopped. Completed: {done}", None
 
+        self._last_computer_action = "ui_action"
+        self._last_computer_goal = route.action_target or ""
         print(
             "[Computer Control] action=ui_action target="
             f"{route.action_target or '(none)'} status={plan_result.status} "
@@ -3909,6 +3979,8 @@ class ChatEngine:
                 )
                 self.cursor_driver.end_run(restore=not reclaimed)
 
+        self._last_computer_action = "browser_action"
+        self._last_computer_goal = route.action_target or ""
         print(
             "[Computer Control] action=browser_action target="
             f"{route.action_target or '(none)'} status={plan_result.status} "
@@ -3986,6 +4058,20 @@ class ChatEngine:
             or route.normalized_request
             or ""
         )
+        # A text read is evidence about text. Measured live: she searched,
+        # clicked into image results, read the page's text -- which on
+        # Google Images is navigation chrome and little else -- and reported
+        # "the page is empty ... no image results are visible. Please try
+        # refreshing the page or checking your internet connection." Every
+        # step had worked. She cannot see pictures, so she must not report
+        # on their absence; what she can report is what she did.
+        corrected = browser_outcome.correct_visual_claim(
+            message, goal=goal_text, steps_succeeded=succeeded,
+        )
+        if corrected != message:
+            print("[Browser Result] a text read cannot say what is not pictured.")
+            message = corrected
+
         if wants_information(goal_text):
             outcome = browser_outcome.read(
                 message,

@@ -121,6 +121,7 @@ class TaskSessionStore:
         topic_shift: bool = False,
         location: str = "",
         anchor: str = "",
+        said_before: str = "",
     ) -> "RecommendationProblem":
         """Fold this turn into the open recommendation, or open a new one.
 
@@ -163,6 +164,7 @@ class TaskSessionStore:
             subject=subject,
             location=location,
             anchor=anchor,
+            said_before=said_before,
             now=time.monotonic(),
         )
         return self._problem

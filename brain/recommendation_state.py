@@ -208,11 +208,78 @@ def is_acknowledgement(text: str) -> bool:
 
 def complains_about_missing_results(text: str) -> bool:
     return bool(re.search(
+        # This asked for a "why" and matched one phrasing of six. Measured
+        # live, "You're showing me nothing." missed it entirely, was routed
+        # as a fresh computer_action, came back unsupported, and she read
+        # out her capability list -- one turn after running the browser
+        # action being complained about.
         r"\bwhy\b.{0,40}\b(?:show|showing|find|finding|search|results?)\b"
-        r"|\byou\s+said\s+(?:got\s+it|you\s+would)\b",
+        r"|\byou\s+said\s+(?:got\s+it|you\s+would)\b"
+        r"|\b(?:you(?:'?re| are)?|it|that|this)\s+"
+        r"(?:just\s+|only\s+)?"
+        r"(?:show(?:ed|ing|s)?|gave|given|found|display(?:ed|ing|s)?|"
+        r"did\s?n[o']t\s+show)\s+"
+        r"(?:me\s+)?(?:nothing|anything|no\s+\w+)\b"
+        r"|\b(?:nothing|no\s+results?|no\s+images?)\s+"
+        r"(?:is|are|was|were)?\s*"
+        r"(?:showing|shown|there|here|coming\s+up|loaded)\b"
+        r"|\bthere(?:'?s| is| are)\s+nothing\s+(?:there|here|showing)\b"
+        r"|\bi\s+do\s?n[o']t\s+see\s+(?:anything|any\b|it\b|them\b)"
+        r"|아무것도\s*안\s*보여|안\s*보여",
         str(text or ""),
         re.IGNORECASE,
     ))
+
+
+# "No X" is two different turns wearing the same words. It excludes X --
+# "no Zillow", don't use that site -- or it corrects a name she just got
+# wrong. Measured live:
+#
+#   Elaina: Got it, it up on Zelo is open.
+#   User:   no Zillow.
+#   Constraints: ... exclusion=Zillow [utterance]
+#
+# What separates them is whether she just said something that sounds like
+# it. "Zelo" and "Zillow" are one misheard syllable apart; "spicy" and a
+# restaurant name are not. Similarity against her own previous words, not
+# a list of site names.
+_BARE_NEGATION = re.compile(
+    r"^\s*no[,.!]?\s+(?P<name>[A-Za-z][\w'’.-]*(?:\s+[A-Z][\w'’.-]*)?)"
+    r"\s*[.!?]?\s*$",
+    re.IGNORECASE,
+)
+_SOUNDS_THE_SAME = 0.55
+
+
+def correction_pair(text: str, *, said_before: str = "") -> tuple[str, str]:
+    """The name meant and the one she used, when this turn corrects it."""
+    match = _BARE_NEGATION.match(str(text or ""))
+    if match is None:
+        return "", ""
+    name = match.group("name").strip(" .,!?")
+    before = str(said_before or "")
+    if not name or not before:
+        return "", ""
+    import difflib
+
+    lowered = name.casefold()
+    best = ("", 0.0)
+    for word in re.findall(r"[A-Za-z][\w'’.-]{2,}", before):
+        other = word.casefold()
+        if other == lowered:
+            # She already used this exact name, so "no X" is rejecting it.
+            return "", ""
+        score = difflib.SequenceMatcher(None, lowered, other).ratio()
+        if score > best[1]:
+            best = (word, score)
+    if best[1] >= _SOUNDS_THE_SAME:
+        return name, best[0]
+    return "", ""
+
+
+def corrects_a_named_surface(text: str, *, said_before: str = "") -> str:
+    """The name this turn is correcting to, if that is what it is doing."""
+    return correction_pair(text, said_before=said_before)[0]
 
 
 def references_conversation_anchor(text: str) -> bool:
@@ -449,7 +516,7 @@ def revises(text: str) -> bool:
 
 
 def read_constraints(
-    text: str, *, source: str = SOURCE_UTTERANCE,
+    text: str, *, source: str = SOURCE_UTTERANCE, said_before: str = "",
 ) -> tuple[Slot, ...]:
     """Every constraint this utterance states, read from the words alone.
 
@@ -460,6 +527,11 @@ def read_constraints(
     """
     text = " ".join(str(text or "").split())
     if not text:
+        return ()
+    if corrects_a_named_surface(text, said_before=said_before):
+        # "no Zillow" right after "Zelo is open" is fixing the name, not
+        # banning the site. Reading it as an exclusion put Zillow on the
+        # forbidden list of the very task it was meant to point at.
         return ()
     found: list[Slot] = []
 
@@ -977,6 +1049,7 @@ def update(
     source: str = SOURCE_UTTERANCE,
     location: str = "",
     anchor: str = "",
+    said_before: str = "",
     now: float | None = None,
     ttl: int = DEFAULT_TTL_SECONDS,
 ) -> RecommendationProblem:
@@ -987,7 +1060,7 @@ def update(
     changed their mind about barbecue.
     """
     now = now if now is not None else time.monotonic()
-    incoming = read_constraints(text, source=source)
+    incoming = read_constraints(text, source=source, said_before=said_before)
     if not incoming and problem.constraints:
         incoming = read_short_reply(text)
 

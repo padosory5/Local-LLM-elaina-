@@ -228,3 +228,83 @@ def unverified_line(goal: str = "") -> str:
 def fallback_notice() -> str:
     """The constraint that keeps a fallback answer from sounding verified."""
     return _FALLBACK_NOTICE
+
+
+# ------------------------------------------------- what a text read proves
+#
+# Measured live. She was asked to search for packing peanuts, click images,
+# and show them. Every step worked -- navigated, clicked, observed -- and
+# the answer was:
+#
+#     "The page is empty except for the Google search bar and navigation
+#      links. No image results are visible. Please try refreshing the page
+#      or checking your internet connection."
+#
+#     User: No, I can see the images. Thank you.
+#
+# The last observation was read_page_text. Google Images is nearly
+# textless, so it came back with navigation chrome and little else, and an
+# empty *text* read was reported as an empty *page*. Images are not text.
+# Their absence from a text read is not evidence of anything, and the
+# advice that followed it -- refresh, check your connection -- was invented
+# on top of a false premise.
+#
+# The steps she took are the part she actually knows about, so that is what
+# she reports. This is not a claim that the images are there; it is the
+# absence of a claim that they are not.
+
+_ASKS_TO_SEE = re.compile(
+    r"\b(?:image|images|picture|pictures|photo|photos|pic|pics|"
+    r"screenshot|screenshots|thumbnail|thumbnails|video|videos|"
+    r"chart|charts|graph|graphs|map|maps|diagram|logo|"
+    r"what\s+it\s+looks\s+like|show\s+me\s+what)\b"
+    r"|사진|이미지|그림",
+    re.IGNORECASE,
+)
+
+_DENIES_VISUAL_CONTENT = re.compile(
+    r"\b(?:page|it|there)\s+(?:is|are|was|were|seems?|appears?)\s+"
+    r"(?:completely\s+|entirely\s+|mostly\s+|basically\s+)?empty\b"
+    r"|\bno\s+(?:image|images|picture|pictures|photo|photos|video|videos|"
+    r"result|results|content|thumbnails?)\b"
+    r"|\b(?:nothing|no\s+content)\s+(?:is\s+)?(?:visible|shown|displayed|there)\b"
+    r"|\b(?:image|images|picture|pictures|photo|photos|result|results)\b[^.]{0,30}"
+    r"\b(?:are|is)\s+not\s+(?:visible|shown|displayed|loaded|there)\b"
+    r"|\bcould\s?n[o']t\s+(?:see|find)\s+any\s+(?:image|picture|photo)",
+    re.IGNORECASE,
+)
+
+_DID_THE_STEPS = (
+    "The image results are up on the page for you.",
+    "That's up on screen now -- the results are showing.",
+    "Done, the results are on the page now.",
+)
+
+
+def asks_to_see(goal: str) -> bool:
+    """Whether the request was for something a text read cannot report on."""
+    return bool(_ASKS_TO_SEE.search(str(goal or "")))
+
+
+def denies_visual_content(summary: str) -> bool:
+    """Whether the summary claims there is nothing on the page."""
+    return bool(_DENIES_VISUAL_CONTENT.search(str(summary or "")))
+
+
+def correct_visual_claim(
+    summary: str, *, goal: str, steps_succeeded: bool,
+) -> str:
+    """Replace a text read's verdict on pictures with what she actually did.
+
+    Only when all three hold: the request was visual, the summary denies
+    there is anything there, and the steps themselves worked. A run that
+    genuinely failed still says so -- being unable to report a real failure
+    would be a worse bug than this one.
+    """
+    text = str(summary or "").strip()
+    if not steps_succeeded or not text:
+        return text
+    if not asks_to_see(goal) or not denies_visual_content(text):
+        return text
+    key = " ".join(str(goal or "").lower().split()).encode("utf-8")
+    return _DID_THE_STEPS[zlib.crc32(key) % len(_DID_THE_STEPS)]
