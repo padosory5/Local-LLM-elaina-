@@ -263,7 +263,20 @@ class ComputerControl:
             )
 
         if operation in {"open_app", "close_app", "force_quit_app"}:
-            resolution = self.catalog.resolve(request.target)
+            target = request.target
+            if operation in {"close_app", "force_quit_app"}:
+                # A role word names what is running, not what is
+                # installable. "Close my browser" resolved onto the
+                # synthetic "Default Browser" catalogue entry, which has no
+                # window and never can -- so she reported that an
+                # application the person had never heard of was not
+                # running, while their browser sat there open.
+                running = self._running_window_titles()
+                by_role = self.catalog.resolve_running(target, running=running)
+                if by_role:
+                    print(f"[Computer Control] {target!r} is running as {by_role!r}.")
+                    target = by_role
+            resolution = self.catalog.resolve(target)
             if resolution.status != "resolved" or resolution.entry is None:
                 return self._from_app_resolution(resolution, operation)
             entry = resolution.entry
@@ -581,6 +594,25 @@ class ComputerControl:
             "not_found", prepared.target, prepared.display_name,
             "I couldn't find that application anymore.", operation=prepared.operation,
         )
+
+    def _running_window_titles(self) -> tuple[str, ...]:
+        """Titles of what is open now, for resolving a role word.
+
+        Guarded: this only improves a target, so a UI observer that is
+        unavailable must leave the request exactly as it was rather than
+        failing it.
+        """
+        try:
+            windows = self.ui_observer.list_windows() or ()
+        except Exception:
+            return ()
+        titles = []
+        for window in windows:
+            if isinstance(window, dict):
+                titles.append(str(window.get("title", "")))
+            else:
+                titles.append(str(getattr(window, "title", "") or window))
+        return tuple(title for title in titles if title)
 
     @staticmethod
     def _result(

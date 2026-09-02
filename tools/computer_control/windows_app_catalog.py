@@ -146,6 +146,49 @@ class WindowsAppCatalog:
         print(f"[Computer Control] Cataloged {len(self._entries)} apps.")
         return self._entries
 
+    # Words that name a role rather than a program. "Default Browser" is a
+    # synthetic entry that exists so "open a browser" can hand off to the
+    # Windows default handler; it has no process and no window, so a close
+    # request resolving onto it produced
+    #
+    #     "I can't find Default Browser running."
+    #
+    # while the person's actual browser sat there open. Measured live, and
+    # corrected by them saying "close whale" instead.
+    _ROLES = {
+        "browser": (
+            "whale", "chrome", "google chrome", "edge", "microsoft edge",
+            "firefox", "brave", "opera", "vivaldi", "safari", "arc",
+            "chromium", "네이버 웨일", "웨일",
+        ),
+    }
+    _ROLE_WORDS = re.compile(
+        r"^(?:my|the|a)?\s*(browser|web\s+browser)\s*$", re.IGNORECASE,
+    )
+
+    def is_launch_only(self, display_name: str) -> bool:
+        """Whether this entry can be started but never found running."""
+        return normalize_app_name(display_name) == normalize_app_name(
+            "Default Browser",
+        )
+
+    def resolve_running(self, query: str, *, running) -> str:
+        """The running window a role word means, or nothing.
+
+        Only role words resolve this way. A named application is left
+        exactly as it was -- "close whale" already worked, and re-resolving
+        a real name by role would be a way to close the wrong window.
+        """
+        match = self._ROLE_WORDS.match(" ".join(str(query or "").split()))
+        if match is None:
+            return ""
+        known = self._ROLES.get("browser", ())
+        for title in running:
+            lowered = str(title or "").casefold()
+            if any(name in lowered for name in known):
+                return str(title)
+        return ""
+
     def resolve(self, query: str, *, refresh_on_miss: bool = True) -> AppResolution:
         self._ensure_loaded()
         normalized_query = normalize_app_name(query)

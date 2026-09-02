@@ -240,6 +240,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_anchor_expiry",
             "test_offer_followthrough",
             "test_clarification_relevance",
+            "test_generic_app_targets",
         ),
     ),
     "integration": (
