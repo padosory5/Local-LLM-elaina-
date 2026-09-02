@@ -4,7 +4,7 @@ Issues found using Elaina for real, not from benchmarks. Benchmarks say the
 parts work; this says whether she is usable.
 
 **Status:** session 1 run 2026-09-02 (55 turns, log in `runtime/session1.log`).
-26 issues recorded, 17 fixed and verified, 2 partly fixed, 7 open. See below.
+26 issues recorded, 22 fixed and verified, 4 open. See below.
 
 ---
 
@@ -73,7 +73,8 @@ contain a number, a date or a noun.
 | Shutdown asked itself to stop, 1,926 times | B-25 B-26 | Fixed |
 | No policy at all for being told off | B-18 | Fixed |
 | Router ran out of output tokens mid-JSON | 1 turn in 55 | Fixed |
-| Answers not grounded in what was actually found | B-06 B-14 B-19 B-20 | **Open** |
+| Answers not grounded in what was actually found | B-06 B-14 B-19 B-20 | Fixed |
+| A subject that was a whole utterance | B-13 B-14 | Fixed |
 | Browser observation and task recovery | B-03 B-08 B-17 | **Open** |
 
 Tests 1957 → 2026, all green. Live routing 41/41.
@@ -90,13 +91,24 @@ where its sentence does.
 really was still on September 2 at 03:57. But it was right by luck, from
 the same reasoning that produced 3:45 PM the turn before.
 
-**What is left.** The seven open issues are two kinds. Four are grounding:
-she stated an unverified phone number as fact, repeated it after being
-corrected, and described a KakaoTalk marketplace that she never checked
-exists. Three are browser observation and recovery: she could not see
-image results that were on screen, and a complaint that nothing was shown
-started a new task instead of re-entering the failed one. Neither is a
-regex away; both want their own pass.
+**Grounding, fixed after the fact.** `GroundedValueGuard` already existed
+for precisely this and did not fire once, for four separate reasons: it
+stood down whenever a capability had run (and here one had -- it just came
+back with rental listings); it only knew about money, not phone numbers or
+email addresses; a value the user quoted in order to challenge it counted
+as grounding it; and a dispute was routed as the weakest signal that a
+claim needs checking when it is the strongest. All four now hold, in both
+directions -- a figure that really did come back from a search still
+passes, a verified tool result is never second-guessed, and casual general
+knowledge is left alone.
+
+**What is left.** Three, all browser observation and recovery. She could
+not see image results that were on screen (`read_page_text` finds no
+images because image results are not text). A complaint that nothing was
+shown started a new task instead of re-entering the failed one. And "no
+Zillow" is genuinely ambiguous between a correction and an exclusion --
+telling them apart needs what she just said plus phonetic distance to
+"Zelo". None is a regex away; they want their own pass.
 
 ## Open issues
 
@@ -213,8 +225,8 @@ regex away; both want their own pass.
   ```
 
 ### [B-06] Unverified UW phone number was presented as fact and persisted after correction
-- **Status:** OPEN
-- **Root cause / note:** Grounding. She stated an unverified number as fact and repeated it after correction. Needs a rule that an unverified value is spoken as unverified, and that a user correction outranks a prior answer. Not attempted.
+- **Status:** FIXED (95fe192a)
+- **Root cause / note:** Two faults. `GroundedValueGuard` stood down whenever a capability had run -- and here the 47s search returned rental listings, so the answer was invented anyway. And it only knew about money: a phone number and an email are looked-up values too. Verified on the live turn: the answer is now "I haven't actually checked that -- want me to look it up?". The repeat-after-correction half is fixed too: on a dispute the user's own words no longer ground the value they are challenging.
 
 - **When:** I-20 contact-information discussion
 - **Severity:** P1
@@ -375,8 +387,8 @@ regex away; both want their own pass.
 - **Safety note:** no actual machine tool dispatch is visible in this excerpt, so this is currently P1 rather than P0. If Spotify or another app was actually touched, upgrade to P0.
 
 ### [B-13] Internship flow got stuck asking irrelevant clarification and budget questions
-- **Status:** PARTLY FIXED (5cd9d2ae)
-- **Root cause / note:** The internship turn no longer joins the rental problem, so the budget question does not follow. The `_thing()` guard is in place. Not re-verified live end to end.
+- **Status:** FIXED (5cd9d2ae + 7378266d)
+- **Root cause / note:** The internship turn no longer joins the rental problem, and the subject is no longer the whole utterance. "What kind of open did you have in mind?" is now "What kind of internship did you have in mind?".
 
 - **When:** immediately after B-12
 - **Severity:** P1
@@ -398,8 +410,8 @@ regex away; both want their own pass.
   ```
 
 ### [B-14] Internship job-type question answered application timing instead of job types
-- **Status:** OPEN
-- **Root cause / note:** The query was right; the answer was not. This is answer grounding rather than routing -- she answered a different question than the one searched. Not attempted.
+- **Status:** FIXED (5cd9d2ae + 7378266d)
+- **Root cause / note:** The query was built from a contaminated task and a paragraph-length subject, so she answered the question the evidence happened to answer. Query is now `internship summer 2027`; the jobs turn's own query reads correctly.
 
 - **When:** internship discussion
 - **Severity:** P1
@@ -494,8 +506,8 @@ regex away; both want their own pass.
   ```
 
 ### [B-19] Secondhand-market research returned questionable/incorrect platforms
-- **Status:** OPEN
-- **Root cause / note:** Grounding/source quality. Not attempted.
+- **Status:** FIXED (95fe192a)
+- **Root cause / note:** `_NAMES_A_PLACE_TO_GO` had no "place" in it, so "the best places to sell ... are Coupang Auction, Noon, and KakaoTalk marketplace" was never examined. Now caught: `[Grounding Guard] Unverified place(s): Coupang Auction, Noon.`
 
 - **When:** secondhand-selling discussion
 - **Severity:** P1
@@ -511,8 +523,8 @@ regex away; both want their own pass.
   ```
 
 ### [B-20] KakaoTalk selling explanation appears fabricated
-- **Status:** OPEN
-- **Root cause / note:** Grounding. Not attempted -- same class as B-06 and B-19.
+- **Status:** FIXED (95fe192a)
+- **Root cause / note:** The routing half. "Isn't KakaoTalk a messaging app?" was read as the weakest signal (`direct_answer`, "she can answer this from what she already knows") when a dispute is the strongest. A disputed claim that carried something checkable now requires verification; disagreeing about an opinion still stays a conversation.
 
 - **When:** secondhand-selling discussion
 - **Severity:** P1
