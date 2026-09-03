@@ -9,7 +9,11 @@ logs in `runtime/session1.log` and `runtime/session2.log`).
 2 deferred capabilities, 3 accepted limitations, **0 open**.
 Session 3 found five; four are fixed and one is a recorded P3 tone note.
 
-Session 3 is validation, not development: see `docs/SESSION3_PLAN.md`.
+**Code is frozen at `55546ecd` for final release validation.**
+Session 4 is the release gate: see `docs/SESSION4_PLAN.md`. No code
+changes during it -- session 3 was meant to be validation and became
+development the moment fixing started, which is why a fourth session
+is needed.
 
 ---
 
