@@ -5,8 +5,8 @@ parts work; this says whether she is usable.
 
 **Status:** two dogfooding sessions run (2026-09-02, 55 turns and 60 turns;
 logs in `runtime/session1.log` and `runtime/session2.log`).
-**55 issues recorded. 51 fixed and verified, 2 deferred capabilities,
-2 accepted limitations. No open bugs.**
+**60 issues recorded across three sessions.** 51 fixed and verified,
+2 deferred capabilities, 2 accepted limitations, **5 open from session 3**.
 
 Session 3 is validation, not development: see `docs/SESSION3_PLAN.md`.
 
@@ -1507,6 +1507,130 @@ be built that does not exist in Phase 4E scope.
 - **Vision in the browser planner.** Would let her see an image results
   page rather than reporting the steps she took (B-08's fuller answer).
   `qwen3-vl` is loaded; the planner's nine tools are all text.
+
+## Session 3 issues
+
+Validation session, 33 turns, `runtime/session3.log`. Reviewed from the log
+rather than reported, so the wording is mine.
+
+**Confirmed working:** B-55 (quit closed cleanly, once), B-38 (the progress
+watch fired at round 6, switched to `read_page_text` at round 7, and the run
+finished at round 8 instead of exhausting twelve), B-03/corrections
+("No, I meant SEVIS number" -> `Correction applied: SEVIS number`), B-50
+("close Spotify" resolved and closed). No silent turns in the whole session.
+
+---
+
+### [B-56] Two consecutive turns produced the identical sentence
+
+- **Status:** OPEN
+- **When:** early, after the kiwi answer
+- **Severity:** P1
+- **I said:** "nice", then "Are you gonna feed me?"
+- **Expected:** two different replies, each answering its own turn.
+- **Actual:** both turns produced, word for word:
+  "You're welcome! Kiwis are also good for heart health and can help with
+  constipation. Want to try one?" -- and the second one is not an answer to
+  "are you gonna feed me?" at all.
+- **Reproduced:** yes, twice in a row, and the user said so: "you're
+  repeating yourself"
+- **Suspected area:** response rewrite fallback / repetition guard ordering
+- **Log:**
+  ```text
+  You said: nice
+  [Response Rewrite] The first rewrite was not complete; applied the advice
+  fallback when valid.
+  You're welcome! Kiwis are also good for heart health...
+
+  You said: Are you gonna feed me?
+  [Response Rewrite] The first rewrite was not complete; applied the advice
+  fallback when valid.
+  You're welcome! Kiwis are also good for heart health...
+  ```
+- **Note:** this is the founding complaint of the whole project -- "she
+  should feel like a friend, not repeating herself" -- surviving in a path
+  nobody had checked. The same rewrite fallback produced B-18's
+  confrontational reply in session 1.
+
+---
+
+### [B-57] A time question reached the web instead of the clock
+
+- **Status:** OPEN
+- **When:** early
+- **Severity:** P1
+- **I said:** "Can you tell me what time it is right now in Seattle?"
+- **Expected:** 11:58 PM, September 2, PDT -- computed, as B-22's fix does.
+- **Actual:** "It's 2:52 AM in Seattle right now. The time is in Pacific
+  Daylight Time, which is one hour behind UTC." Both wrong: the session
+  started 15:55 KST on September 3, so Seattle was 11:58 PM on the 2nd, and
+  PDT is UTC-7 rather than UTC-1. The user corrected her immediately.
+- **Reproduced:** once, but deterministic
+- **Suspected area:** capability selection vs the router's time policy
+- **Log:**
+  ```text
+  [Router] time_question (1.00): The user is asking for the current time in
+  Seattle
+  [Interaction] Need: fresh_information
+  [Capability] Selected: web_search
+  [Tool] Searching web for: What time is it in Seattle now?
+  ```
+- **Note:** mine, and an incomplete fix rather than a new bug. B-22 stopped
+  the *router* sending a resolvable time question to the web; the
+  interaction layer decides freshness on its own and sent it anyway, so
+  `world_clock` was never consulted. Worse than before in one respect: the
+  answer now carries a confident, wrong UTC offset.
+
+---
+
+### [B-58] A planner instruction leaked into the spoken answer
+
+- **Status:** OPEN
+- **When:** UW academic calendar browser task
+- **Severity:** P2
+- **Expected:** an honest report that the page did not have it.
+- **Actual:** "The page text does not contain the requested information.
+  Stop."
+- **Reproduced:** once
+- **Suspected area:** browser planner nudge wording
+- **Note:** also mine. The loop-breaking nudge added in B-38 ends "say so
+  plainly and stop", and the model read "stop" as part of what to say.
+
+---
+
+### [B-59] A transcription error survived into the next turn's recall
+
+- **Status:** OPEN
+- **When:** memory recall
+- **Severity:** P2
+- **I said:** "Do you remember what kind of universe I'm going to?" (STT for
+  "university"), then, correctly transcribed, "Do you remember what kind of
+  university I'm going to?"
+- **Expected:** the second turn, which says "university", searches memory
+  for the university.
+- **Actual:** the router's paraphrase of the *second* turn still read
+  "universe", and recall ran on that.
+- **Reproduced:** yes, on the corrected turn
+- **Suspected area:** router history / normalized_request carrying the
+  previous turn's error
+- **Log:**
+  ```text
+  You said: Do you remember what kind of university I'm going to?
+  [Router] Interpreted transcript as: Do you remember what kind of universe I'm going to?
+  [Recall] Set aside 5 memory item(s) unrelated to 'Universe'.
+  ```
+
+---
+
+### [B-60] "Spotify's gone, no trace left."
+
+- **Status:** OPEN
+- **When:** closing Spotify
+- **Severity:** P3
+- **Expected:** something like "Closed Spotify."
+- **Actual:** "Spotify's gone, no trace left." -- accurate, and reads as
+  ominous rather than friendly for an ordinary close.
+- **Suspected area:** action status / brief response phrasing
 
 ## Fixed
 
