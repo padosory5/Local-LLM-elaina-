@@ -18,6 +18,7 @@ from brain.deliberation import goal_intent, interaction
 from brain.deliberation.goal_intent import SemanticGoal
 from brain import capability_selection
 from brain import browser_outcome
+from brain import browser_progress
 from brain import world_clock
 from brain.capability_selection import CapabilityChoice
 from brain.deliberation.interaction import InteractionDecision
@@ -1388,6 +1389,40 @@ class ChatEngine:
             if turn.get("role") == "assistant":
                 return str(turn.get("content", "") or "")
         return ""
+
+    def _resolve_named_choice(
+        self, route: IntentDecision, transcript: str,
+    ) -> IntentDecision:
+        """"One of those websites" means one she actually named.
+
+        Measured live, one turn after she read out five Korean secondhand
+        sites:
+
+            [Computer Control] action=open_search
+                               target=one of those websites
+            Elaina: Got it, one of those websites is open.
+
+        The phrase points into her previous turn and nothing looked there.
+        An explicit target is never overridden: a turn that names one of
+        the options resolves to nothing here and keeps what it said.
+        """
+        if route.computer_operation not in {"open_search", "open_url",
+                                            "browser_action"}:
+            return route
+        chosen = browser_progress.resolve_named_choice(
+            transcript, said_before=self._last_claim(),
+        )
+        if not chosen:
+            return route
+        print(f"[Reference] 'one of those' -> {chosen!r}")
+        return replace(
+            route,
+            computer_operation="open_search",
+            action_target=chosen,
+            normalized_request=chosen,
+            search_query=chosen,
+            reason=f"The turn chose {chosen!r} from what she had just listed.",
+        )
 
     def _escalate_disputed_claim(
         self, route: IntentDecision, transcript: str,
@@ -6266,7 +6301,7 @@ class ChatEngine:
         def route_current(
             transcript: str,
         ) -> IntentDecision:
-            return self._escalate_disputed_claim(
+            return self._resolve_named_choice(self._escalate_disputed_claim(
                 self.intent_router.route(
                     transcript,
                     recent_turns=list(self._router_history),
@@ -6277,7 +6312,7 @@ class ChatEngine:
                     computer_control_enabled=self.computer_control_mode.enabled,
                 ),
                 transcript,
-            )
+            ), transcript)
 
         def route_fresh(transcript: str) -> IntentDecision:
             """Route a genuinely new request, task gate included.

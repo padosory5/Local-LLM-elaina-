@@ -225,7 +225,16 @@ def complains_about_missing_results(text: str) -> bool:
         r"(?:showing|shown|there|here|coming\s+up|loaded)\b"
         r"|\bthere(?:'?s| is| are)\s+nothing\s+(?:there|here|showing)\b"
         r"|\bi\s+do\s?n[o']t\s+see\s+(?:anything|any\b|it\b|them\b)"
-        r"|아무것도\s*안\s*보여|안\s*보여",
+        # Contradicting the claim itself. She said "Got it, one of those
+        # websites is open"; the answer was "No it's not." That is about
+        # the thing she just did, and it was routed as a fresh unsupported
+        # request and answered with her capability list.
+        r"|^\s*no,?\s+it(?:'?s|\s+is|\s+was)?\s*n[o']?t\b"
+        r"|\b(?:that'?s|it'?s)\s+not\s+"
+        r"(?:open|opened|showing|there|up|working|loaded)\b"
+        r"|\bit\s+did\s?n[o']t\s+(?:open|load|work|show)\b"
+        r"|\bnothing\s+(?:opened|loaded|happened|came\s+up)\b"
+        r"|아무것도\s*안\s*보여|안\s*보여|안\s*열렸",
         str(text or ""),
         re.IGNORECASE,
     ))

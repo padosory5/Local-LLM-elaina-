@@ -27,6 +27,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from brain import browser_progress
 from brain import references
 from brain.deliberation import Decision, Goal, decide, interpret
 from tools.browser_control.browser_connection import BrowserConnectionResult
@@ -463,6 +464,23 @@ _AUTO_SCAN_ELEMENT_LIMIT = 30
 # have Elaina keep clicking.
 _MAX_PRIVACY_DISMISSALS = 2
 
+# A policy the model invented, about a page the user already has open.
+# Reading text printed on a page opened by request is not accessing
+# anyone's private data, and the refusal was spoken to the person who
+# asked for it. Matched on the refusal *plus* what it is refusing, so an
+# honest "this page does not list a phone number" is untouched.
+_REFUSES_TO_READ = re.compile(
+    r"\b(?:cannot|can\s?not|can'?t|unable\s+to|will\s+not|won'?t)\b"
+    r"[^.]{0,60}?"
+    r"\b(?:access|read|share|provide|give|disclose|retrieve)\b"
+    r"[^.]{0,80}?"
+    r"\b(?:personal|private|sensitive|confidential)\b"
+    r"|\brespect\s+(?:the\s+)?privacy\b"
+    r"|\bprivacy\s+and\s+legal\s+boundaries\b"
+    r"|\bwithout\s+(?:explicit\s+)?permission\b",
+    re.IGNORECASE,
+)
+
 _MAX_ROUNDS = 12
 _MAX_NUDGES = 2
 
@@ -711,6 +729,11 @@ class BrowserActionPlanner:
         # Whether a real result link has been followed off a search-results
         # page yet -- see the signpost guard near the end of this loop.
         clicked_through = False
+        # Whether anything is actually happening. Three live runs spent the
+        # whole twelve-round budget on six identical describe/click cycles
+        # and never read the page they were standing on, so the phone
+        # number they were sent for was never found.
+        progress = browser_progress.ProgressWatch()
 
         for round_index in range(1, _MAX_ROUNDS + 1):
             message = self._ask(messages)
@@ -752,6 +775,31 @@ class BrowserActionPlanner:
                 last_status, last_message = status, step_text
                 messages.append({"role": "tool", "content": step_text})
                 self._log_round(round_index, tool_name, status)
+
+                if progress.repeating(
+                    tool_name, str(arguments.get("text", "")), status,
+                ):
+                    # Not a stop -- the information the loop was missing.
+                    # It says what has already been done and what has not
+                    # been tried, so the next round can do something else
+                    # instead of the same thing a fourth time.
+                    untried = ", ".join(progress.untried()) or "nothing new"
+                    print(
+                        f"[Browser Planner] round={round_index} "
+                        f"repeating {tool_name}; untried: {untried}"
+                    )
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"That is the third time this run has called "
+                            f"{tool_name} the same way, and the page has "
+                            "not changed. Do not call it again. Tools not "
+                            f"used yet this run: {untried}. If the answer "
+                            "is already on the page, call read_page_text "
+                            "and report what it says. If it is not, say so "
+                            "plainly and stop."
+                        ),
+                    })
 
                 if pending is not None:
                     return ActionPlanResult(
@@ -874,6 +922,43 @@ class BrowserActionPlanner:
                             "query for what the goal needs, or open_url if "
                             "the goal names a specific site. Leave the tab "
                             "argument out so a new page is used."
+                        ),
+                    })
+                    continue
+                if (
+                    content
+                    and _REFUSES_TO_READ.search(content)
+                    and "read_page_text" in progress.untried()
+                    and nudges_used < _MAX_NUDGES
+                ):
+                    # Measured live, on a university office page the user
+                    # had asked her to open and was looking at:
+                    #
+                    #   "I cannot access personal information such as
+                    #    emails or phone numbers without explicit
+                    #    permission. Please respect privacy and legal
+                    #    boundaries."
+                    #
+                    # No tool was called; the model wrote a policy it does
+                    # not have and it became the spoken answer. Reading
+                    # text already displayed on a page opened by request is
+                    # not accessing anyone's private data, and lecturing
+                    # the person who asked is the worst available reply.
+                    #
+                    # Narrow on purpose: only when the page has not been
+                    # read yet, so a model that really did look and found
+                    # nothing is still believed.
+                    nudges_used += 1
+                    messages.append(message)
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "This page is already open on the user's own "
+                            "screen and they are looking at it. Reading "
+                            "text that is printed on it is not accessing "
+                            "private data. Call read_page_text and report "
+                            "what the page actually says, or say plainly "
+                            "that the page does not show it."
                         ),
                     })
                     continue
