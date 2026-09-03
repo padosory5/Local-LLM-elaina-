@@ -286,6 +286,20 @@ _SPOKEN_URL = re.compile(
 # free, and running out of it truncates the JSON irrecoverably.
 ROUTER_OUTPUT_CAP = 512
 
+# What makes a turn a question about the local codebase rather than
+# about the world. "Project" alone is not enough: it is an ordinary
+# English word, and the model reads it as one.
+_NAMES_THE_PROJECT = re.compile(
+    r"\b(?:this|the|your|our|my)\s+(?:project|codebase|code|repo|repository|app|program)\b"
+    r"|\b(?:codebase|repo|repository|source\s+tree|source\s+code)\b"
+    r"|\b(?:function|class|method|module|variable|import|test|tests|file|files|folder|directory|script|bug|stack\s+trace|traceback)\b"
+    r"|\b(?:elaina|main\s?\.py)\b"
+    r"|\b[\sw-]+\.(?:py|js|ts|json|yaml|yml|md|toml|cfg)\b"
+    r"|\b(?:in|from|inside)\s+(?:the\s+)?(?:code|project|repo)\b"
+    r"|코드|소스|프로젝트",
+    re.IGNORECASE,
+)
+
 _SPOKEN_SEARCH = re.compile(
     r"\b(?:search|look\s+up|find)\s+(?:for\s+)?"
     # "search it up", "look it up", "find them" -- a phrasal verb with a
@@ -620,7 +634,9 @@ class SemanticIntentRouter:
                     )
                 elif self.safety_mode == "enforce":
                     decision = safe_decision
-                decision = self._apply_optional_capability_policy(decision)
+                decision = self._apply_optional_capability_policy(
+                    decision, original_input=user_input,
+                )
                 if (
                     decision.intent in ACTION_INTENTS
                     and decision.speech_act == "action_request"
@@ -1404,8 +1420,34 @@ class SemanticIntentRouter:
     @staticmethod
     def _apply_optional_capability_policy(
         decision: IntentDecision,
+        original_input: str = "",
     ) -> IntentDecision:
         """Turn indirect interest in a read-only capability into an offer."""
+        if decision.intent == "project_question" and not _NAMES_THE_PROJECT.search(
+            # Both, because the model's paraphrase can drop the very word
+            # that made it a project question: "Inspect the codebase and
+            # explain how voice input reaches chat" came back normalized as
+            # "Explain the voice input flow."
+            f"{original_input} {decision.normalized_request or ''}",
+        ):
+            # "Project" has an everyday sense, and the model reads it.
+            # Measured live: "I'm interested in like AI software companies"
+            # came back as project_question 0.95 -- "a specific
+            # project-related inquiry" -- and the Coding Agent went and
+            # searched Elaina's own source tree for internship employers.
+            #
+            # This intent means one thing: the local codebase. A turn that
+            # names nothing in it is not asking about it.
+            return replace(
+                decision,
+                intent="conversation",
+                reason=(
+                    "The turn names nothing in the local project, so it is "
+                    "not a question about the codebase."
+                ),
+                action_requested=False,
+                action_target="",
+            )
         if (
             decision.intent == "project_question"
             and decision.recommendation_needed

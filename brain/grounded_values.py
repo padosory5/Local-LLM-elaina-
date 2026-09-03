@@ -380,6 +380,54 @@ def reads_as_dispute(text: str) -> bool:
     return bool(_DISPUTES.search(str(text or "")))
 
 
+# "I found studio apartments in Seattle under $1500 on Zillow." Said three
+# times, to three requests for the names, with Candidates: (none)
+# throughout. A find you cannot name is the same failure as an invented
+# price -- indistinguishable from a real answer, and acted on.
+#
+# Only a claim to have *already* found something counts. "I couldn't find
+# anything" and "you could try filtering on Zillow" claim nothing.
+_CLAIMS_A_FIND = re.compile(
+    r"\bi\s*(?:'ve|’ve|\s+have)?\s*found\b"
+    r"|\bi\s+did\s+find\b"
+    r"|\bhere\s+are\s+(?:some|a few|the)\b[^.]{0,40}\bi\s+found\b"
+    r"|\bthere\s+are\s+(?:several|some|a\s+few|multiple)\s+"
+    r"(?:listings?|options?|places?|results?)\b"
+    r"|\bfound\s+(?:several|some|a\s+few|multiple|two|three)\b",
+    re.IGNORECASE,
+)
+_FOUND_NOTHING = re.compile(
+    r"\b(?:could\s?n[o']t|did\s?n[o']t|was\s?n[o']t\s+able\s+to|"
+    r"unable\s+to|no\s+luck)\b[^.]{0,20}\bfind\b"
+    r"|\bfound\s+(?:nothing|none|no\b)",
+    re.IGNORECASE,
+)
+
+
+def claims_a_find(text: str, *, named: tuple[str, ...] = ()) -> bool:
+    """Whether the reply says it found things without naming any."""
+    said = str(text or "")
+    if _FOUND_NOTHING.search(said) or not _CLAIMS_A_FIND.search(said):
+        return False
+    if named and any(str(name).casefold() in said.casefold() for name in named):
+        return False
+    # A place is where she looked and a site is what she looked in --
+    # neither is a thing she found. "I found studio apartments in Seattle
+    # on Zillow" names Seattle and Zillow and no listing at all, which is
+    # exactly the sentence this exists for.
+    remainder = _CLAIMS_A_FIND.sub(" ", said)
+    for name in _proper_names(remainder):
+        if _is_a_place(name):
+            continue
+        if re.search(
+            r"\b(?:on|at|from|via|through|in)\s+" + re.escape(name),
+            remainder, re.IGNORECASE,
+        ):
+            continue
+        return False
+    return True
+
+
 def claim_subjects(text: str) -> list[str]:
     """The nouns a claim is about, for re-checking it a different way.
 

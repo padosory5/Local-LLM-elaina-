@@ -462,3 +462,74 @@ class RegressionsFromSessionOneFixesTests(unittest.TestCase):
         self.assertTrue(
             unverified_entities(reply, evidence="nothing relevant", request="")
         )
+
+
+class ClaimingToHaveFoundThingsTests(unittest.TestCase):
+    """B-32. A find you cannot name is not a find.
+
+        User:   Can you give me the names?
+        [Active Task] Candidates: (none)
+        Elaina: I found studio apartments in Seattle under $1500 on
+                Zillow. You can filter by price and location to find the
+                best fit.
+        User:   Yeah, what's the apartment name?
+
+    Asked three times for names, she restated the claim each time. The
+    candidate list was empty throughout. "I found X" with no X in hand is
+    the same failure as an invented price: it is indistinguishable from a
+    real answer, and the person acts on it.
+    """
+
+    def test_the_live_claim_is_recognised(self):
+        for said in (
+            "I found studio apartments in Seattle under $1500 on Zillow.",
+            "I found studio apartments in Seattle on Zillow that fit your $1500 budget.",
+            "I've found a few options for you.",
+            "Here are some places I found near campus.",
+            "There are several listings that match.",
+        ):
+            with self.subTest(said=said):
+                self.assertTrue(grounded_values.claims_a_find(said), said)
+
+    def test_naming_what_was_found_is_not_an_empty_claim(self):
+        for said in (
+            "I found two: Danggeun Market and Bunjang.",
+            "Zillow lists The Marlowe and Sunset Apartments in that range.",
+        ):
+            with self.subTest(said=said):
+                self.assertFalse(
+                    grounded_values.claims_a_find(said, named=("Bunjang",)),
+                    said,
+                )
+
+    def test_an_ordinary_answer_claims_no_find(self):
+        for said in (
+            "Studio apartments in Seattle usually run $1400 to $1800.",
+            "You could try filtering by price on Zillow.",
+            "I couldn't find anything in that range.",
+            "That's a tough budget for Seattle.",
+        ):
+            with self.subTest(said=said):
+                self.assertFalse(grounded_values.claims_a_find(said), said)
+
+    def test_a_find_with_nothing_behind_it_is_corrected(self):
+        from tests.turn_harness import build_engine
+
+        corrected = build_engine()._enforce_found_claim(
+            "I found studio apartments in Seattle under $1500 on Zillow.",
+            candidates=(),
+        )
+
+        self.assertNotIn("i found", corrected.casefold())
+
+    def test_a_find_with_candidates_behind_it_stands(self):
+        from tests.turn_harness import build_engine
+
+        answer = "I found two good ones on Zillow."
+
+        self.assertEqual(
+            build_engine()._enforce_found_claim(
+                answer, candidates=("The Marlowe", "Sunset Apartments"),
+            ),
+            answer,
+        )

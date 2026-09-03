@@ -1390,6 +1390,41 @@ class ChatEngine:
                 return str(turn.get("content", "") or "")
         return ""
 
+    def _enforce_found_claim(self, reply: str, *, candidates=()) -> str:
+        """Never say she found options she cannot name.
+
+        Measured live, three times in a row against three requests for the
+        names, with ``Candidates: (none)`` throughout:
+
+            "I found studio apartments in Seattle under $1500 on Zillow.
+             You can filter by price and location to find the best fit."
+
+        A find with nothing behind it is the same failure as an invented
+        price -- indistinguishable from a real answer, and acted on. What
+        she can honestly say is that the search did not come back with
+        named listings, which is also the thing that lets the person ask
+        for something else.
+        """
+        text = str(reply or "").strip()
+        if not text or candidates:
+            return text
+        named = tuple(str(item) for item in candidates)
+        if not grounded_values.claims_a_find(text, named=named):
+            return text
+        print("[Grounding Guard] Claimed a find with no named result.")
+        kept = [
+            sentence.strip()
+            for sentence in _SENTENCE_SPLIT.split(text)
+            if sentence.strip()
+            and not grounded_values.claims_a_find(sentence)
+        ]
+        honest = (
+            "I couldn't get actual listing names out of that search -- "
+            "want me to open it in the browser and read them off?"
+        )
+        rebuilt = " ".join(kept).strip()
+        return f"{rebuilt} {honest}" if rebuilt else honest
+
     def _resolve_named_choice(
         self, route: IntentDecision, transcript: str,
     ) -> IntentDecision:
@@ -5497,6 +5532,13 @@ class ChatEngine:
                 action_performed=action_performed,
                 research_evidence=self._last_research_evidence,
                 trusted_result=bool(effective_forced_response),
+            )
+            active_problem = self.task_sessions.active_recommendation()
+            reply = self._enforce_found_claim(
+                reply,
+                candidates=(
+                    active_problem.candidates if active_problem else ()
+                ),
             )
             reply = self._enforce_grounded_entities(
                 reply,
