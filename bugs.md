@@ -3,8 +3,12 @@
 Issues found using Elaina for real, not from benchmarks. Benchmarks say the
 parts work; this says whether she is usable.
 
-**Status:** session 1 run 2026-09-02 (55 turns, log in `runtime/session1.log`).
-26 issues recorded, **all 26 fixed and verified**. See below.
+**Status:** two dogfooding sessions run (2026-09-02, 55 turns and 60 turns;
+logs in `runtime/session1.log` and `runtime/session2.log`).
+**55 issues recorded. 51 fixed and verified, 2 deferred capabilities,
+2 accepted limitations. No open bugs.**
+
+Session 3 is validation, not development: see `docs/SESSION3_PLAN.md`.
 
 ---
 
@@ -843,6 +847,8 @@ ever allows one.
 ---
 
 ### [B-32] Search says matching Zillow listings exist but cannot provide any actual names
+- **Status:** FIXED (8a7aa7a2)
+- **Root cause / note:** `Candidates: (none)` throughout, while she said "I found studio apartments..." three times to three requests for names. A find with nothing behind it is the same failure as an invented price. The distinction that makes the guard work: a place is where she looked and a site is what she looked in, so neither counts as naming a result.
 
 - **When:** apartment search
 - **Severity:** P1
@@ -965,6 +971,8 @@ ever allows one.
 ---
 
 ### [B-36] "Open one of those websites" opens a literal phrase instead of resolving one of the candidates
+- **Status:** FIXED (9f3a014e)
+- **Root cause / note:** "One of those" points into the list she had just read out, and nothing looked there. Resolved against her previous turn -- and an explicit target is never overridden: "open Bunjang for me" resolves to nothing here.
 
 - **When:** secondhand-market discussion
 - **Severity:** P1
@@ -989,6 +997,8 @@ ever allows one.
 ---
 
 ### [B-37] Browser failure complaint still falls into unsupported-action path
+- **Status:** FIXED (9f3a014e)
+- **Root cause / note:** "No it's not" contradicts the claim she had just made. The complaint predicate now covers contradicting a success claim, so the turn returns to the surface that just ran instead of being answered with a capability list.
 
 - **When:** immediately after B-36
 - **Severity:** P1
@@ -1009,6 +1019,8 @@ ever allows one.
 ---
 
 ### [B-38] Browser planner repeatedly exhausts its 12-round limit on simple navigation
+- **Status:** FIXED (9f3a014e)
+- **Root cause / note:** Six identical describe/click cycles to round 12, three separate times. Nothing asked whether a step had already been taken and changed nothing. `ProgressWatch` says, on the third identical step, what has been done and what has not been tried -- keyed on tool *and* target, so four different links are four pieces of work.
 
 - **When:** Zillow search and ISS contact-page navigation
 - **Severity:** P1
@@ -1034,6 +1046,8 @@ ever allows one.
 ---
 
 ### [B-39] Public contact information is incorrectly blocked as private information
+- **Status:** FIXED (9f3a014e)
+- **Root cause / note:** Round one, no tool call: the model wrote a privacy policy it does not have, about a page the user had asked her to open and was looking at. Reading text printed on such a page is not accessing private data. Nudged once toward actually reading it, and only while the page is unread -- so a model that really did look and found nothing is still believed.
 
 - **When:** ISS contact-page navigation
 - **Severity:** P1
@@ -1050,6 +1064,8 @@ ever allows one.
 ---
 
 ### [B-40] Browser successfully reads page text but cannot return the requested public contact values
+- **Status:** FIXED (9f3a014e)
+- **Root cause / note:** Downstream of B-38: the twelve-round budget went on re-clicking, so `read_page_text` never ran and the phone number was never reached.
 
 - **When:** ISS About page
 - **Severity:** P1
@@ -1069,6 +1085,8 @@ ever allows one.
 ---
 
 ### [B-41] Internship intent is still being misclassified as project/codebase inspection
+- **Status:** FIXED (8a7aa7a2)
+- **Root cause / note:** "Project" is an ordinary English word and the model read it as one, so an internship question invoked the Coding Agent against Elaina's own source tree. That intent means the local codebase; a turn naming nothing in it is not asking about it. Checked against the original transcript too, because the paraphrase can drop the word that made it one.
 
 - **When:** internship discussion
 - **Severity:** P1
@@ -1116,6 +1134,8 @@ ever allows one.
 ---
 
 ### [B-43] Travel recommendation search answers with van-rental advice instead of destinations
+- **Status:** FIXED (14ed90a9)
+- **Root cause / note:** "What if you have a car?" is a condition, not a subject -- it supplied the category and the query went out as "Washington State cars Seattle". The request is in the last clause, and the discarded clause may not supply the category either.
 
 - **When:** Washington State travel discussion
 - **Severity:** P1
@@ -1186,6 +1206,8 @@ ever allows one.
 ---
 
 ### [B-46] "Why is it taking so long?" loses awareness of the pending task
+- **Status:** FIXED (9743730b)
+- **Root cause / note:** Asking how it is going is not asking for something new, and the answer is state she already holds: a turn in flight, an offer parked and unanswered, or nothing at all. The missing one was the third.
 
 - **When:** immediately after B-45
 - **Severity:** P2
@@ -1225,6 +1247,8 @@ ever allows one.
 ---
 
 ### [B-48] "Stop the music" is interpreted as force-quitting an app named Music instead of stopping Spotify playback
+- **Status:** DEFERRED CAPABILITY -- not a release bug
+- **Root cause / note:** **Media playback controls -- pause/stop/resume current media.** There is no pause or stop operation in `COMPUTER_OPERATIONS`. Routing "stop the music" correctly requires that capability to exist; it is out of Phase 4E scope and does not count as an unresolved release bug.
 - **Status:** OPEN -- needs a capability, not a fix
 - **Root cause / note:** "Stop the music" has no correct destination: there is no pause or stop operation in COMPUTER_OPERATIONS. Routing it properly means adding a media control, which is a feature rather than a bug fix, so it is deliberately not in the dogfooding work.
 
@@ -1250,6 +1274,8 @@ ever allows one.
 ---
 
 ### [B-49] Compound "stop the music and Spotify" becomes one nonexistent application name
+- **Status:** DEFERRED CAPABILITY -- not a release bug
+- **Root cause / note:** Same missing capability as B-48, plus compound target parsing ("the music and Spotify"). Both wait on **Media playback controls -- pause/stop/resume current media.**
 - **Status:** OPEN -- same as B-48
 - **Root cause / note:** Compound "stop the music and Spotify" is the same missing capability, plus compound target parsing.
 
@@ -1302,6 +1328,8 @@ ever allows one.
 ---
 
 ### [B-51] Gambling-age question was misheard as "agent" and assistant failed to infer the likely intended meaning
+- **Status:** ACCEPTED LIMITATION
+- **Root cause / note:** "What agent do I have to be" was "age" misheard. A homophone-repair table is precisely the growing collection of hardcoded phrase checks this project forbids, and guessing what someone meant risks confidently answering a question they did not ask. The general fix -- ask when a turn is semantically incoherent in context -- needs a coherence judgement the deterministic layer cannot make. Recorded rather than bodged.
 
 - **When:** gambling discussion
 - **Severity:** P2
@@ -1322,6 +1350,8 @@ ever allows one.
 ---
 
 ### [B-52] Casino information appears incorrectly grounded and resists user correction
+- **Status:** FIXED (14ed90a9)
+- **Root cause / note:** Three faults. First-hand experience ("I did go") was read as nothing -- it is the strongest evidence a person can offer and is now a dispute. The new question ("find the place of that name") was read as consent, so the offer's stored query replaced it. And the escalation left `search_query` holding the question that produced the disputed answer, so the same search returned the same conclusion. A disputed claim is now re-checked against what the person just said: the claim's subjects are kept, its yes/no shape is not.
 
 - **When:** Seattle/Bainbridge casino discussion
 - **Severity:** P1
@@ -1349,6 +1379,8 @@ ever allows one.
 ---
 
 ### [B-53] International Driving Permit guidance likely used wrong jurisdiction
+- **Status:** FIXED (e3abce11) for the query; jurisdiction is answer quality
+- **Root cause / note:** The query was contaminated by the anchor. With that gone the search is clean and the locale layer supplies the user's market. Whether she then reasons correctly about Korean vs US issuance is model answer quality, not routing.
 
 - **When:** International Driving Permit discussion
 - **Severity:** P1
@@ -1372,6 +1404,8 @@ ever allows one.
 ---
 
 ### [B-54] PC flight-packing advice is incomplete and potentially unsafe for a desktop PC
+- **Status:** ACCEPTED LIMITATION
+- **Root cause / note:** Desktop-PC-specific packing advice (GPU removal, tempered glass, airline rules) is domain knowledge she does not have. Adding it is a feature, not a fix. Her advice was generic rather than wrong.
 
 - **When:** moving-PC discussion
 - **Severity:** P2
@@ -1461,6 +1495,19 @@ The largest remaining clusters appear to be:
 
 8. **Exit intent and spoken lifecycle command are not wired together**
    - B-55
+
+## Deferred capabilities
+
+Not bugs, and not counted against the release. Each needs something to
+be built that does not exist in Phase 4E scope.
+
+- **Media playback controls -- pause/stop/resume current media.**
+  Blocks B-48 and B-49. `COMPUTER_OPERATIONS` has no pause or stop, so
+  "stop the music" has no correct destination to route to.
+- **Vision in the browser planner.** Would let her see an image results
+  page rather than reporting the steps she took (B-08's fuller answer).
+  `qwen3-vl` is loaded; the planner's nine tools are all text.
+
 ## Fixed
 
 _None yet._
