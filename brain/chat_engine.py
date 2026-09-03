@@ -19,6 +19,7 @@ from brain.deliberation.goal_intent import SemanticGoal
 from brain import capability_selection
 from brain import browser_outcome
 from brain import browser_progress
+from brain import progress_question
 from brain import world_clock
 from brain.capability_selection import CapabilityChoice
 from brain.deliberation.interaction import InteractionDecision
@@ -1389,6 +1390,30 @@ class ChatEngine:
             if turn.get("role") == "assistant":
                 return str(turn.get("content", "") or "")
         return ""
+
+    def _progress_report(self) -> str:
+        """What is actually going on, for someone who just asked.
+
+        Three states, and the one that was missing is the third. Measured
+        live: "Why is it taking so long?" was answered "What would you like
+        me to do next?" while nothing at all was running -- the lookup she
+        had offered was never started, because the yes that accepted it
+        took a fast path. Saying so is both honest and the thing that lets
+        the person start it.
+        """
+        with self._turn_lock:
+            working = (
+                self._active_turn_cancel is not None
+                and not self._active_turn_cancel.is_set()
+            )
+        if working:
+            return "Still on it -- give me a moment."
+        pending = self.capability_offer.peek()
+        if pending is not None:
+            goal = str(getattr(pending, "goal", "") or "").strip()
+            tail = f" -- {goal}" if goal and len(goal.split()) <= 12 else ""
+            return f"I haven't started; I was waiting for you to say go{tail}."
+        return "Nothing's running right now. Want me to start it?"
 
     def _enforce_found_claim(self, reply: str, *, candidates=()) -> str:
         """Never say she found options she cannot name.
@@ -6297,6 +6322,27 @@ class ChatEngine:
                 locked_response=self.action_status.select(StatusContext(
                     action="checking", phase="acknowledgement", force=True,
                 )) or "Okay, dropped it.",
+            )
+        if progress_question.asks_about_progress(user_input) and not any((
+            pending_computer,
+            pending_task,
+            pending_clarification,
+        )):
+            # Asking how it is going is not asking for something new, and
+            # the answer is state she already holds. Measured live, this
+            # got "What would you like me to do next?" while nothing was
+            # running at all.
+            timings["route"] = time.perf_counter() - route_started
+            return TurnRouting(
+                route=IntentDecision(
+                    intent="conversation",
+                    confidence=1.0,
+                    normalized_request=user_input,
+                    reason="The user asked how the work in hand is going.",
+                    speech_act="information_request",
+                ),
+                user_input=user_input,
+                locked_response=self._progress_report(),
             )
         if social_lines.reads_as_frustration(user_input) and not any((
             pending_computer,
