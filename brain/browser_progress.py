@@ -89,7 +89,16 @@ class ProgressWatch:
 # "one of those", "the second one", "that first site" -- a choice made
 # from a list she read out rather than a name given fresh.
 _PICKS_FROM_A_LIST = re.compile(
-    r"\b(?:one|any)\s+of\s+(?:those|these|them|the)\b"
+    # "Open the website." A bare definite points at the one thing the
+    # conversation has just been about, and nothing resolved it -- so the
+    # raw utterance went to the planner as its own target, it searched
+    # blind, and landed on example.com:
+    #
+    #     User:   Yeah, use browser control and then open the website.
+    #     Elaina: Clicked 'Example Domain Example Domain
+    r"\b(?:the|that|their|its)\s+"
+    r"(?:site|website|page|link|homepage)\b"
+    r"|\b(?:one|any)\s+of\s+(?:those|these|them|the)\b"
     r"|\bthe\s+(?P<ordinal>%s)\s+(?:one|site|website|link|option)?\b"
     r"|\b(?:that|the)\s+(?:first|last)\s+(?:one|site|website|link)\b"
     % "|".join(sorted(ORDINAL_INDEX, key=len, reverse=True)),
@@ -97,7 +106,14 @@ _PICKS_FROM_A_LIST = re.compile(
 )
 
 # A proper name in what she said: the things a list is made of.
-_NAMED = re.compile(r"\b([A-Z][A-Za-z0-9&'’-]*(?:\s+[A-Z][A-Za-z0-9&'’-]*)?)\b")
+# A proper name does not end at its first lowercase word: "University of
+# Washington" is one name, and stopping at "University" is how a bare
+# definite reference resolved to something that was not a site at all.
+_NAMED = re.compile(
+    r"\b([A-Z][A-Za-z0-9&'’-]*"
+    r"(?:\s+(?:of|the|and|de|del|van|von)\s+[A-Z][A-Za-z0-9&'’-]*"
+    r"|\s+[A-Z][A-Za-z0-9&'’-]*){0,3})\b"
+)
 
 # Words that open a sentence or name a place rather than an option.
 _NOT_AN_OPTION = frozenset({
@@ -112,6 +128,9 @@ def _options_in(said_before: str) -> list[str]:
     found: list[str] = []
     for match in _NAMED.finditer(str(said_before or "")):
         name = match.group(1).strip()
+        # A capitalised article opens a sentence; it is not part of the
+        # name. "The University of Washington..." offers the university.
+        name = re.sub(r"^(?:The|A|An)\s+", "", name).strip()
         words = [word.casefold() for word in name.split()]
         if not words or all(word in _NOT_AN_OPTION for word in words):
             continue

@@ -30,7 +30,7 @@ and the country and region words people actually say.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, available_timezones
 
 # Places the IANA database has no entry of its own for, because they share
@@ -200,13 +200,48 @@ def clock_in(place: str) -> tuple[str, datetime] | None:
 
 
 def describe(place: str) -> str:
-    """One line stating the time and date there, computed not guessed."""
+    """One line stating the time and date there, computed not guessed.
+
+    The gap between the two clocks is stated too. Measured live, the local
+    time was right and the model was left to work out the relationship:
+
+        "It's 1:20 AM in Seattle right now. The time there is 13 hours
+         behind Korea Standard Time."
+
+    Seattle is sixteen hours behind Korea on that date, not thirteen. The
+    two clocks were both in the prompt and the difference between them was
+    not, so the one number nobody had computed was the one that was wrong.
+    """
     found = clock_in(place)
     if found is None:
         return ""
     zone, moment = found
-    return (
+    line = (
         f"In {place.title()} ({zone}) it is now "
         f"{moment.strftime('%I:%M %p on %A, %B %d, %Y')} "
         f"({moment.strftime('%Z')})."
     )
+    gap = _hours_from_here(moment)
+    if gap:
+        line += f" That is {gap}."
+    return line
+
+
+def _hours_from_here(moment: datetime) -> str:
+    """How far that clock is from this machine's, in plain words."""
+    here = datetime.now().astimezone()
+    # %Z is localised by the OS -- on Korean Windows it comes back as
+    # "대한민국 표준시", which reads oddly inside an English sentence and
+    # is not what the abbreviation is for. Use it when it is one.
+    label = here.strftime("%Z") or ""
+    local_zone = label if label.isascii() and label else "your local time"
+    offset = (moment.utcoffset() or timedelta()) - (
+        here.utcoffset() or timedelta()
+    )
+    hours = offset.total_seconds() / 3600
+    if abs(hours) < 0.5:
+        return f"the same time as {local_zone}"
+    whole = int(abs(hours)) if abs(hours) == int(abs(hours)) else round(abs(hours), 1)
+    plural = "" if whole == 1 else "s"
+    way = "ahead of" if hours > 0 else "behind"
+    return f"{whole} hour{plural} {way} {local_zone}"

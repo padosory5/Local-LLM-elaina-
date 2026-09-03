@@ -534,6 +534,42 @@ def _as_phrase(value: str) -> str:
     return " ".join(words[:_SUBJECT_WORDS])
 
 
+# A multi-word capitalised name -- an organisation, an institution, a
+# place. Single capitalised words are excluded: too many of them are just
+# sentence openings, and a one-word name is usually already in the subject.
+_NAMED_ENTITY = re.compile(
+    r"\b([A-Z][A-Za-z0-9&'’-]*"
+    r"(?:\s+(?:of|the|and|de|del|van|von)\s+[A-Z][A-Za-z0-9&'’-]*"
+    r"|\s+[A-Z][A-Za-z0-9&'’-]*){1,4})\b"
+)
+
+
+def _with_named_entities(core: str, request: str) -> str:
+    """Keep a name the request introduced that the subject does not have.
+
+    The held subject is usually the better search term -- it survives
+    revisions and carries what several turns established. What it cannot do
+    is know about an organisation the person named for the first time in
+    this turn, and dropping that turns a question about an office into a
+    question about a form.
+    """
+    core = " ".join(str(core or "").split())
+    request = " ".join(str(request or "").split())
+    if not request:
+        return core
+    lowered = core.casefold()
+    for match in _NAMED_ENTITY.finditer(request):
+        name = match.group(1).strip()
+        if name.casefold() in lowered:
+            continue
+        # Sentence-initial capitals are grammar, not names.
+        if match.start() == 0:
+            continue
+        core = f"{core} {name}".strip() if core else name
+        lowered = core.casefold()
+    return core
+
+
 def _clean(value: str) -> str:
     value = " ".join(str(value or "").split()).strip(" ,.;:!?-")
     while True:
@@ -996,6 +1032,13 @@ class RecommendationProblem:
 
         head = " ".join(self.values(ATTRIBUTE, PREFERENCE))
         core = self.strip_retired(self.subject) or self.domain
+        # A name this turn introduced is not optional. Measured live: the
+        # request was "find contact information for the University of
+        # Washington regarding I-20 verification" and the query went out as
+        # "I-20 form processing" -- the held subject outranked the entity
+        # the person had just named, and the search was about the form
+        # rather than about the office that issues it.
+        core = _with_named_entities(core, fallback)
         if not core or core.casefold() in _EMPTY_SUBJECTS:
             # The turn's own words are the last resort, and only their
             # content half: "pull up some spots for me" contributes

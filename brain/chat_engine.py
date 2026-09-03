@@ -3306,11 +3306,7 @@ class ChatEngine:
                 resolved = self._with_focus(
                     resolved, focus, include_subject=False,
                 )
-                resolved = self.user_locale.localize_query(
-                    resolved,
-                    category=problem.category,
-                    assume_local=problem.real_world,
-                )
+                resolved = self._localised(problem, resolved, focus=focus)
             if resolved and resolved.casefold() != router_query.casefold():
                 print("[Query]")
                 print("  source: active_task")
@@ -3318,6 +3314,33 @@ class ChatEngine:
                 return resolved
         return self._with_focus(
             router_query or self._search_subject(route, goal), focus,
+        )
+
+    def _localised(self, problem, query: str, *, focus=None) -> str:
+        """Add the user's market, unless the query already says where.
+
+        The place test used to be re-derived from the query text, which
+        cannot see a name it does not already know. Measured live:
+
+            [Query] studio apartments University of Washington $1,500
+                    in South Korea
+
+        "University of Washington" is where, and the locale layer had no
+        way to tell -- so it appended the user's own country to a search
+        about Seattle. Nothing in the text needs interpreting: the caller
+        knows whether it just put a place in, because it is holding it.
+        """
+        placed = bool(
+            str(getattr(problem, "location", "") or "").strip()
+            or str(getattr(problem, "anchor", "") or "").strip()
+        )
+        if not placed and focus is not None:
+            placed = bool(focus.background.get("location", ""))
+        return self.user_locale.localize_query(
+            query,
+            category=getattr(problem, "category", ""),
+            assume_local=getattr(problem, "real_world", False),
+            already_placed=placed,
         )
 
     def _with_focus(self, query: str, focus, *, include_subject: bool = True) -> str:

@@ -476,7 +476,12 @@ class UserLocale:
         return False
 
     def localize_query(
-        self, query: str, *, category: str = "", assume_local: bool = False,
+        self,
+        query: str,
+        *,
+        category: str = "",
+        assume_local: bool = False,
+        already_placed: bool = False,
     ) -> str:
         """Add the market only when a query's answer depends on location.
 
@@ -491,7 +496,13 @@ class UserLocale:
             return text
         if self.country_code == DEFAULT_COUNTRY and self.language == "en":
             return text
-        if self._names_a_place(text):
+        # The caller may already know a place went into this query -- it
+        # is holding the anchor or the location it appended. That is worth
+        # more than re-deriving it from the words, which cannot recognise a
+        # name it has never heard of: "University of Washington" read as
+        # placeless and the user's own country was appended to a search
+        # about Seattle.
+        if already_placed or self._names_a_place(text):
             return text
         category = str(category or "").strip().casefold()
         market_categories = set(_REGIONAL_SITES.get(self.country_code, {}))

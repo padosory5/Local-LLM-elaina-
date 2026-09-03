@@ -3,17 +3,13 @@
 Issues found using Elaina for real, not from benchmarks. Benchmarks say the
 parts work; this says whether she is usable.
 
-**Status:** two dogfooding sessions run (2026-09-02, 55 turns and 60 turns;
-logs in `runtime/session1.log` and `runtime/session2.log`).
-**60 issues recorded across three sessions.** 51 fixed and verified,
-2 deferred capabilities, 3 accepted limitations, **0 open**.
-Session 3 found five; four are fixed and one is a recorded P3 tone note.
+**Status:** four sessions run (logs in `runtime/session1.log` .. `session4.log`).
+**66 issues recorded.** 56 fixed and verified, 2 deferred capabilities,
+3 accepted limitations, 1 open P3 (S4-06).
 
-**Code is frozen at `55546ecd` for final release validation.**
-Session 4 is the release gate: see `docs/SESSION4_PLAN.md`. No code
-changes during it -- session 3 was meant to be validation and became
-development the moment fixing started, which is why a fourth session
-is needed.
+**Session 4 failed the release gate** and its fixes changed code, so it
+is invalidated as a gate. Session 5 is the next one:
+`docs/SESSION5_PLAN.md`.
 
 ---
 
@@ -1641,6 +1637,117 @@ finished at round 8 instead of exhausting twelve), B-03/corrections
 - **Actual:** "Spotify's gone, no trace left." -- accurate, and reads as
   ominous rather than friendly for an ordinary close.
 - **Suspected area:** action status / brief response phrasing
+
+## Session 4 issues
+
+Release gate: **FAIL**. Five failures, one of them under direct
+revalidation. Triaged by the user; the notes below add what the
+reproduction showed.
+
+**Confirmed working:** B-59 (`[Router] restored ... from the transcript.`,
+and again on the UW I-20 correction), B-58 (no reply ended in a bare
+`Stop.` / `Done.` / `Continue.`), B-56 (no rewritten-answer loop, and
+deliberate repetition allowed for the phone number and the second `1500`),
+quit (one clean shutdown, no spam), the project-question guard, moving-date
+recall, and bounded browser runs.
+
+---
+
+### [S4-01] The clock's arithmetic was left to the model
+
+- **Status:** FIXED
+- **Severity:** P1 (REGRESSION, against B-57's own revalidation)
+- **Actual:** "It's 1:20 AM in Seattle right now. The time there is 13
+  hours behind Korea Standard Time." The local time was right and no
+  search ran, so B-57's routing fix held -- but Seattle is sixteen hours
+  behind Korea on 3 September, not thirteen.
+- **Root cause / note:** the context handed over two clocks and no
+  relationship between them, so the one number nobody had computed was the
+  one that came back wrong. `describe()` now works the gap out from the two
+  offsets, direction and plural included. A localised OS zone name falls
+  back to "your local time" rather than being dropped into an English
+  sentence.
+
+---
+
+### [S4-02] The user's locale overrode an explicitly named place
+
+- **Status:** FIXED
+- **Severity:** P1
+- **Actual:** `[Query] studio apartments University of Washington $1,500 in South Korea`
+- **Root cause / note:** shared with S4-03 -- held state beating the
+  current turn, by two different mechanisms. Here the place test was
+  re-derived from the query text, and text cannot recognise a name it has
+  never heard of, so "University of Washington" read as placeless. Nothing
+  needed interpreting: the caller is holding the anchor it just appended.
+  `localize_query` takes `already_placed` from it now. A genuinely
+  placeless query still gets the market.
+
+---
+
+### [S4-03] A named entity was dropped from the query
+
+- **Status:** FIXED
+- **Severity:** P1
+- **I said:** "Can you find me the contact information for the University
+  of Washington about my I-20?"
+- **Actual:** the router read it correctly and the query went out as
+  `I-20 form processing in South Korea`, twice more on the follow-up.
+- **Root cause / note:** the problem's held subject outranked the entity
+  the request named, so the search was about the form rather than about the
+  office that issues it. The held subject is usually the better term -- it
+  survives revisions and carries several turns -- but it cannot know about
+  an organisation named for the first time in this turn. A multi-word
+  proper name the request introduces is kept now. Single capitalised words
+  are excluded: too many of them are sentence openings.
+
+---
+
+### [S4-04] A bare definite reference went unresolved
+
+- **Status:** FIXED
+- **Severity:** P1
+- **I said:** "Yeah, use browser control and then open the website."
+- **Actual:** the raw utterance went to the planner as its own target, so
+  it searched blind and reported clicking an Example Domain page.
+- **Root cause / note:** the same family as B-36, one step further. "The
+  website" points at what the conversation has just been about, and the
+  resolver knew "one of those" but not the bare definite. Two fixes: the
+  pattern covers `the`/`that` + site/website/page/link, and the name reader
+  no longer stops at a lowercase particle, so "University of Washington" is
+  one name instead of "University". An explicit target still resolves to
+  nothing here.
+
+---
+
+### [S4-05] A number the user had just given came back changed
+
+- **Status:** FIXED
+- **Severity:** P2
+- **I said:** "My budget is 1500. Repeat that back to me."
+- **Actual:** "Your budget is 150." A second attempt was correct.
+- **Root cause / note:** the value guard stood down because nothing had
+  been researched -- the right test for "did she invent a figure" and the
+  wrong one for "did she mangle the person's own". A bare number is still
+  deliberately not money to the readers, because a year, a count and a
+  duration all look alike and treating them as amounts is how half a phone
+  number became a rental budget. The new signal is narrower: a number that
+  is a damaged copy of one just said, a digit dropped from either end, is
+  the same number wrong. A genuinely different figure is untouched.
+
+---
+
+### [S4-06] Image request refused, then answered without saying what was shown
+
+- **Status:** OPEN -- P3, not release-blocking
+- **Severity:** P3
+- **Actual:** the first request was refused with "I cannot show images
+  directly"; the second executed browser steps and completed, but described
+  products rather than reporting that image results were opened.
+- **Root cause / note:** B-08 is not fully confirmed from this session. The
+  refusal is B-39's shape on a path the nudge does not cover, and the
+  second half is answer phrasing rather than a wrong action. Recorded for
+  Session 5 to judge rather than fixed blind.
 
 ## Fixed
 

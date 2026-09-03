@@ -82,6 +82,45 @@ def _values(text: str) -> set[str]:
     return _digits(text) | _contacts(text)
 
 
+_BARE_NUMBER = re.compile(r"(?<![\d.,])\d[\d,]*(?:\.\d+)?(?![\d,])")
+
+
+def _mangled_numbers(reply: str, source: str) -> set[str]:
+    """Numbers in the reply that are a damaged copy of one in the source.
+
+    A bare number is deliberately not money to the readers above -- a year,
+    a count and a duration all look the same, and treating them as amounts
+    is how half a phone number became a rental budget. But a number the
+    person just said, coming back with a digit missing, is not a different
+    number. It is the same one, wrong:
+
+        User:   My budget is 1500. Repeat that back to me.
+        Elaina: Your budget is 150.
+
+    Only a near-miss counts. "You could stretch to 2000" is a different
+    figure and this says nothing about it.
+    """
+    def bare(text: str) -> set[str]:
+        return {
+            match.group(0).replace(",", "")
+            for match in _BARE_NUMBER.finditer(str(text or ""))
+        }
+
+    said, given = bare(reply), bare(source)
+    if not said or not given:
+        return set()
+    mangled = set()
+    for number in said - given:
+        for original in given:
+            if number == original or len(number) >= len(original):
+                continue
+            # A dropped digit, from either end.
+            if original.startswith(number) or original.endswith(number):
+                mangled.add(number)
+                break
+    return mangled
+
+
 class GroundedValueGuard:
     """Tell a looked-up figure from an invented one."""
 
@@ -130,7 +169,23 @@ class GroundedValueGuard:
         if grounded_subject is None:
             # Back-compatible reading for callers that pass only evidence.
             grounded_subject = bool(str(evidence or "").strip())
-        if not grounded_subject and not (disputed and _values(reply)):
+        # A value the person supplied in this very turn, coming back
+        # changed, is wrong whether or not anything was looked up.
+        # Measured live:
+        #
+        #     User:   My budget is 1500. Repeat that back to me.
+        #     Elaina: Your budget is 150.
+        #
+        # The guard stood down because nothing had been researched, which
+        # is the right test for "did she invent a figure" and the wrong one
+        # for "did she mangle the person's own".
+        contradicts_the_user = bool(
+            (_values(evidence) and cls.unsupported_values(reply, evidence))
+            or _mangled_numbers(reply, evidence)
+        )
+        if not grounded_subject and not contradicts_the_user and not (
+            disputed and _values(reply)
+        ):
             # No grounded subject means ordinary conversation, and most
             # numbers in it are fine to state from general knowledge -- "a
             # coffee in Seoul is about 5,000 won" is not a claim about a
@@ -140,18 +195,24 @@ class GroundedValueGuard:
             # happened -- told a phone number looked wrong, she gave back
             # the same phone number.
             return False
-        return bool(cls.unsupported_values(reply, evidence))
+        return bool(
+            cls.unsupported_values(reply, evidence)
+            or _mangled_numbers(reply, evidence)
+        )
 
     @classmethod
     def correct_values(cls, reply: str, *, evidence: str, offer: str) -> str:
         """Drop the sentences carrying values nothing checked."""
+        mangled = _mangled_numbers(reply, evidence)
         unsupported = cls.unsupported_values(reply, evidence) or _values(reply)
-        if not unsupported:
+        if not unsupported and not mangled:
             return reply
         kept = [
             sentence.strip()
             for sentence in _SENTENCE_SPLIT.split(str(reply).strip())
-            if sentence.strip() and not (_values(sentence) & unsupported)
+            if sentence.strip()
+            and not (_values(sentence) & unsupported)
+            and not _mangled_numbers(sentence, evidence)
         ]
         offer = str(offer or "").strip()
         rebuilt = " ".join(kept).strip()
