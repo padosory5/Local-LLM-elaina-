@@ -246,6 +246,9 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_project_question_scope",
             "test_progress_question",
             "test_current_turn_authority",
+            "test_rewrite_repetition",
+            "test_clock_beats_search",
+            "test_transcript_authority",
         ),
     ),
     "integration": (

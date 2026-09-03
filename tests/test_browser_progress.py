@@ -216,3 +216,45 @@ class AnInventedPolicyIsNotAResultTests(unittest.TestCase):
         watch.repeating("read_page_text", "", "observed")
 
         self.assertNotIn("read_page_text", watch.untried())
+
+
+class NoInstructionInTheAnswerTests(unittest.TestCase):
+    """B-58. The nudge added for B-38 ended up in what she said.
+
+        Elaina: The page text does not contain the requested information.
+                Stop.
+
+    The planner is instructed in the same channel it answers in, and it
+    read the last word of the instruction as part of the answer. The
+    wording is fixed too, but a prompt is not a guard.
+    """
+
+    def _strip(self, text: str) -> str:
+        from brain.browser_outcome import without_leaked_instruction
+
+        return without_leaked_instruction(text)
+
+    def test_the_live_leak_is_removed(self):
+        self.assertEqual(
+            self._strip(
+                "The page text does not contain the requested information. Stop."
+            ),
+            "The page text does not contain the requested information.",
+        )
+
+    def test_other_echoed_imperatives_go_too(self):
+        for said, word in (("I opened the calendar page. Done.", "done"),
+                           ("I read the page. Continue.", "continue"),
+                           ("Nothing there. Report.", "report")):
+            with self.subTest(said=said):
+                self.assertNotIn(word, self._strip(said).casefold())
+
+    def test_a_real_answer_is_untouched(self):
+        for said in (
+            "The page shows the autumn quarter starts September 30.",
+            "I could not reach the site.",
+            "Click Stop to end the process.",
+            "The contact number is 206-221-7857.",
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(self._strip(said), said)

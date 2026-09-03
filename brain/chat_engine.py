@@ -1391,6 +1391,28 @@ class ChatEngine:
                 return str(turn.get("content", "") or "")
         return ""
 
+    def _rewrite_is_usable(self, candidate: str, *, user_input: str) -> bool:
+        """Whether a rewritten answer may replace the draft.
+
+        The draft is checked for repeating a recent answer; the rewrite
+        that replaces it was not, so the one path that regenerates an
+        answer was the one path exempt from the rule about not repeating
+        one. Measured live, two turns running:
+
+            You said: nice
+            You said: Are you gonna feed me?
+
+        both answered, word for word, "You're welcome! Kiwis are also good
+        for heart health and can help with constipation. Want to try one?"
+        -- and the user said "you're repeating yourself".
+        """
+        text = str(candidate or "").strip()
+        if not text:
+            return False
+        return not ResponseQualityGuard.should_retry(
+            text, user_input, self.conversation.get_history(),
+        )
+
     def _progress_report(self) -> str:
         """What is actually going on, for someone who just asked.
 
@@ -4218,6 +4240,7 @@ class ChatEngine:
         # refreshing the page or checking your internet connection." Every
         # step had worked. She cannot see pictures, so she must not report
         # on their absence; what she can report is what she did.
+        message = browser_outcome.without_leaked_instruction(message)
         corrected = browser_outcome.correct_visual_claim(
             message, goal=goal_text, steps_succeeded=succeeded,
         )
@@ -5469,6 +5492,9 @@ class ChatEngine:
                     and rewrite_complete
                     and rewrite_advice_valid
                     and not response_limits.exceeds(rewrite_reply)
+                    and self._rewrite_is_usable(
+                        rewrite_reply, user_input=user_input,
+                    )
                 ):
                     reply = rewrite_reply
                 else:
@@ -5524,6 +5550,9 @@ class ChatEngine:
                                 recommendation=True,
                                 urgent_safety=False,
                                 advice_domain=route.advice_domain,
+                            )
+                            and self._rewrite_is_usable(
+                                finalizer_reply, user_input=user_input,
                             )
                         )
                         if finalizer_valid:

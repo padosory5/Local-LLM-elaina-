@@ -281,6 +281,22 @@ def _need_for(
     if has_usable_context and _value(route, "is_follow_up", False):
         return NEED_RECALLED
 
+    # A clock this machine can read is arithmetic, not fresh information.
+    # Measured live: the router correctly kept "what time is it in Seattle"
+    # as a time_question -- and this layer, which decides freshness on its
+    # own inputs, sent it to the web anyway. world_clock was never
+    # consulted, and the answer came back "2:52 AM ... Pacific Daylight
+    # Time, which is one hour behind UTC" when it was 11:58 PM and UTC-7.
+    #
+    # B-22 guarded the router's door and this one was left open. The rule
+    # belongs at every point that can send a resolvable clock question
+    # somewhere it cannot be answered.
+    if intent == "time_question":
+        from brain import world_clock
+
+        if world_clock.read_place(_value(route, "normalized_request", "")):
+            return NEED_NONE
+
     if wants == goal_intent.VERIFY or _value(route, "verification_required", False):
         return NEED_VERIFIED
     if _value(route, "requires_external_evidence", False):

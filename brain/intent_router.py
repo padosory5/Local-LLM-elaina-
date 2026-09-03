@@ -294,11 +294,58 @@ _NAMES_THE_PROJECT = re.compile(
     r"|\b(?:codebase|repo|repository|source\s+tree|source\s+code)\b"
     r"|\b(?:function|class|method|module|variable|import|test|tests|file|files|folder|directory|script|bug|stack\s+trace|traceback)\b"
     r"|\b(?:elaina|main\s?\.py)\b"
-    r"|\b[\sw-]+\.(?:py|js|ts|json|yaml|yml|md|toml|cfg)\b"
+    r"|\b[\w-]+\.(?:py|js|ts|json|yaml|yml|md|toml|cfg)\b"
     r"|\b(?:in|from|inside)\s+(?:the\s+)?(?:code|project|repo)\b"
     r"|코드|소스|프로젝트",
     re.IGNORECASE,
 )
+
+# The model sees recent turns, and sometimes reproduces a transcription
+# error from one of them in place of what was actually just said. Measured
+# live, after "universe" was misheard once:
+#
+#     You said: Do you remember what kind of university I'm going to?
+#     [Router] Interpreted transcript as: ... what kind of universe ...
+#     [Recall] Set aside 5 memory item(s) unrelated to 'Universe'.
+#
+# The user had corrected themselves and the correction was thrown away.
+# This is the same rule as everywhere else in this project: what the person
+# just said outranks anything held from before -- including the model's own
+# memory of mishearing it.
+_WORD = re.compile(r"[^\W_]{3,}", re.UNICODE)
+_NEARLY_THE_SAME = 0.7
+
+
+def _restore_misheard_words(paraphrase: str, transcript: str) -> str:
+    """Put back a word the paraphrase swapped for a near-miss from history.
+
+    Only a near-miss, and only in that direction: a paraphrase is allowed
+    to reword freely, so a word it introduces is left alone unless the
+    transcript holds one that is almost the same. "Universe" for
+    "university" is a mishearing carried forward; "hotel" for "place" is
+    ordinary paraphrase and is untouched.
+    """
+    import difflib
+
+    said = {word.casefold() for word in _WORD.findall(transcript or "")}
+    if not said:
+        return paraphrase
+
+    def swap(match):
+        word = match.group(0)
+        lowered = word.casefold()
+        if lowered in said:
+            return word
+        close = difflib.get_close_matches(
+            lowered, said, n=1, cutoff=_NEARLY_THE_SAME,
+        )
+        if not close or close[0] == lowered:
+            return word
+        restored = close[0]
+        return restored.capitalize() if word[:1].isupper() else restored
+
+    return _WORD.sub(swap, paraphrase or "")
+
 
 _SPOKEN_SEARCH = re.compile(
     r"\b(?:search|look\s+up|find)\s+(?:for\s+)?"
@@ -637,6 +684,18 @@ class SemanticIntentRouter:
                 decision = self._apply_optional_capability_policy(
                     decision, original_input=user_input,
                 )
+                # The model sees recent turns and can reproduce a
+                # transcription error from one of them instead of what was
+                # just said -- "universe" for "university", one turn after
+                # the user had corrected exactly that. Their words win.
+                restored = _restore_misheard_words(
+                    decision.normalized_request, user_input,
+                )
+                if restored != decision.normalized_request:
+                    print(
+                        f"[Router] restored {restored!r} from the transcript."
+                    )
+                    decision = replace(decision, normalized_request=restored)
                 if (
                     decision.intent in ACTION_INTENTS
                     and decision.speech_act == "action_request"

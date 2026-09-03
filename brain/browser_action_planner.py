@@ -796,8 +796,8 @@ class BrowserActionPlanner:
                             "not changed. Do not call it again. Tools not "
                             f"used yet this run: {untried}. If the answer "
                             "is already on the page, call read_page_text "
-                            "and report what it says. If it is not, say so "
-                            "plainly and stop."
+                            "and report what it says. If it is not there, "
+                            "report only what the page does show."
                         ),
                     })
 

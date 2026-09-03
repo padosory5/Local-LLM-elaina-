@@ -308,3 +308,27 @@ def correct_visual_claim(
         return text
     key = " ".join(str(goal or "").lower().split()).encode("utf-8")
     return _DID_THE_STEPS[zlib.crc32(key) % len(_DID_THE_STEPS)]
+
+# The planner is instructed in the same channel it answers in, and it
+# sometimes reads the instruction as part of the answer. Measured live,
+# after the loop-breaking nudge that ends "say so plainly and stop":
+#
+#     "The page text does not contain the requested information. Stop."
+#
+# The wording of the nudge is fixed too, but a prompt is not a guard: a
+# bare one-word imperative on the end of a report is an artifact whatever
+# the instruction happened to say, and it is never something she means.
+_LEAKED_INSTRUCTION = re.compile(
+    rf"[.!?]\s+(?:stop|halt|done|end|finish|continue|proceed|"
+    rf"report|answer|reply)[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def without_leaked_instruction(summary: str) -> str:
+    """Drop a trailing bare imperative the model echoed from its prompt."""
+    text = " ".join(str(summary or "").split())
+    match = _LEAKED_INSTRUCTION.search(text)
+    if match is None:
+        return text
+    return text[:match.start() + 1].strip()

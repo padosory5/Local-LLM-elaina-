@@ -6,7 +6,8 @@ parts work; this says whether she is usable.
 **Status:** two dogfooding sessions run (2026-09-02, 55 turns and 60 turns;
 logs in `runtime/session1.log` and `runtime/session2.log`).
 **60 issues recorded across three sessions.** 51 fixed and verified,
-2 deferred capabilities, 2 accepted limitations, **5 open from session 3**.
+2 deferred capabilities, 3 accepted limitations, **0 open**.
+Session 3 found five; four are fixed and one is a recorded P3 tone note.
 
 Session 3 is validation, not development: see `docs/SESSION3_PLAN.md`.
 
@@ -1523,7 +1524,8 @@ finished at round 8 instead of exhausting twelve), B-03/corrections
 
 ### [B-56] Two consecutive turns produced the identical sentence
 
-- **Status:** OPEN
+- **Status:** FIXED
+- **Root cause / note:** The repetition guard runs on the draft; the rewrite replaces the draft two hundred lines later and nothing re-checked it -- so the one path that *regenerates* an answer was the one path exempt from the rule about not repeating one. Both rewrite acceptance points now run the same check. The guard itself already caught the kiwi sentence; only the ordering was wrong.
 - **When:** early, after the kiwi answer
 - **Severity:** P1
 - **I said:** "nice", then "Are you gonna feed me?"
@@ -1556,7 +1558,8 @@ finished at round 8 instead of exhausting twelve), B-03/corrections
 
 ### [B-57] A time question reached the web instead of the clock
 
-- **Status:** OPEN
+- **Status:** FIXED
+- **Root cause / note:** Mine, and an incomplete fix rather than a new bug. B-22 guarded the router's door; the interaction layer decides freshness on its own inputs and sent the turn to the web anyway. A clock this machine can resolve is arithmetic, and arithmetic is never fresh information -- so the rule now sits at that decision too. A place the clock cannot resolve, and "what time does the game start", both still search.
 - **When:** early
 - **Severity:** P1
 - **I said:** "Can you tell me what time it is right now in Seattle?"
@@ -1585,7 +1588,8 @@ finished at round 8 instead of exhausting twelve), B-03/corrections
 
 ### [B-58] A planner instruction leaked into the spoken answer
 
-- **Status:** OPEN
+- **Status:** FIXED
+- **Root cause / note:** Also mine. The B-38 nudge ended "say so plainly and stop" and the model read the last word as part of the answer. Reworded -- but a prompt is not a guard, so a trailing bare imperative is now stripped in code whatever the instruction happened to say. "Click Stop to end the process" is untouched.
 - **When:** UW academic calendar browser task
 - **Severity:** P2
 - **Expected:** an honest report that the page did not have it.
@@ -1600,7 +1604,8 @@ finished at round 8 instead of exhausting twelve), B-03/corrections
 
 ### [B-59] A transcription error survived into the next turn's recall
 
-- **Status:** OPEN
+- **Status:** FIXED
+- **Root cause / note:** The model reads recent turns and reproduced its own earlier mishearing over the user's correction. The project's recurring rule in a new layer: what was just said outranks anything held from before, including the model's memory of mishearing it. A paraphrase may still reword freely -- only a near-miss of a word the transcript actually contains is put back.
 - **When:** memory recall
 - **Severity:** P2
 - **I said:** "Do you remember what kind of universe I'm going to?" (STT for
@@ -1624,7 +1629,8 @@ finished at round 8 instead of exhausting twelve), B-03/corrections
 
 ### [B-60] "Spotify's gone, no trace left."
 
-- **Status:** OPEN
+- **Status:** ACCEPTED -- P3 tone
+- **Root cause / note:** "Spotify's gone, no trace left" is free model phrasing on an action result, not a bank entry, so there is nothing to correct deterministically. Constraining it means prompt work on tone, which is not worth doing during stabilisation. Recorded so it can be judged in a later session rather than silently dropped.
 - **When:** closing Spotify
 - **Severity:** P3
 - **Expected:** something like "Closed Spotify."
