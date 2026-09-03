@@ -157,10 +157,12 @@ class TaskSessionStore:
             if not recommendation_state.references_conversation_anchor(text):
                 location = ""
                 anchor = ""
+            # No domain here. ``update`` reads it from the request once the
+            # subject has been reduced to a phrase, which is the only point
+            # at which a conditional clause ("what if you have a car") can
+            # be told apart from the thing being asked about.
             problem = recommendation_state.start(
-                subject or text,
-                domain=recommendation_state.domain_for(text),
-                now=time.monotonic(),
+                subject or text, now=time.monotonic(),
             )
         self._problem = recommendation_state.update(
             problem,

@@ -531,6 +531,33 @@ _ASKS_HER_TO_ACT = re.compile(
     re.IGNORECASE,
 )
 
+# "Go ahead, look it up" is consent. "Can you find the place of that
+# name?" is a different question that happens to contain a verb from the
+# same list -- and reading it as consent replaced it with the offer's
+# stored query, so the yes/no search she had already run ran again and
+# produced the same answer.
+#
+# The rule the docstring already states: consent adds nothing but assent.
+# So once the affirmatives, the act verbs and the grammar are taken away,
+# a turn that still has content of its own is a request.
+_CONSENT_SCAFFOLD = re.compile(
+    r"\b(?:yes|yeah|yep|yup|sure|ok|okay|alright|please|do|it|that|"
+    r"go|ahead|on|for|now|then|and|the|a|an|you|can|could|would|will|"
+    r"look|search|check|find|pull|bring|open|show|dig|google|browse|up|"
+    r"me|us|to|thanks|thank|"
+    # Words that stand in for the thing rather than naming one. "Search
+    # for some" adds no subject: the subject is whatever was offered.
+    r"some|any|one|ones|it|them|those|these|few|couple|more|"
+    r"options|option|stuff|things|thing|anything|something)\b|[^\w\s]",
+    re.IGNORECASE,
+)
+
+
+def _CARRIES_ITS_OWN_QUESTION(said: str) -> bool:
+    """Whether anything is left once the assent and the asking are gone."""
+    return bool(_CONSENT_SCAFFOLD.sub(" ", said).split())
+
+
 # A turn that specifies its own errand: it names a capability to use, a
 # destination to go to, or a target to act on. Those are instructions, and
 # an instruction outranks an offer made several turns ago -- accepting it
@@ -600,7 +627,7 @@ def reads_as_clear_acceptance(text: str) -> bool:
     if _NAMES_ITS_OWN_ERRAND.search(said):
         return False
 
-    if _ASKS_HER_TO_ACT.search(said):
+    if _ASKS_HER_TO_ACT.search(said) and not _CARRIES_ITS_OWN_QUESTION(said):
         return True
 
     # Said in answer to "let me know when you're ready". It asks for

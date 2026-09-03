@@ -503,6 +503,37 @@ def is_purchase(text: str) -> bool:
     return bool(_PURCHASE.search(str(text or "")))
 
 
+_SUBJECT_WORDS = 10
+
+# Said before getting to the point, and carrying no subject of its own.
+_LEADING_FILLER = re.compile(
+    r"^(?:(?:like|so|well|okay|ok|and|but|also|now|then|um|uh|yeah|"
+    r"actually|basically|i\s+mean|you\s+know)\b[,\s]*)+",
+    re.IGNORECASE,
+)
+
+
+def _as_phrase(value: str) -> str:
+    """The request inside an utterance, as something searchable.
+
+    Speech arrives whole, and the part that says what is wanted is
+    usually its last clause: "What if you have a car? Like, give me some
+    good places to travel along Washington State." The clause before it is
+    a condition, and treating it as the subject is how a question about
+    places to travel became a search about cars.
+    """
+    said = " ".join(str(value or "").split())
+    if not said or len(said.split()) <= _SUBJECT_WORDS:
+        return said
+    clause = [part for part in re.split(r"[.?!]+", said) if part.strip()]
+    chosen = (clause[-1] if clause else said).strip()
+    chosen = _LEADING_FILLER.sub("", chosen).strip()
+    chosen = _REQUEST_WRAPPER.sub(" ", chosen)
+    chosen = _LEADING_FILLER.sub("", " ".join(chosen.split())).strip(" ,.;:!?-")
+    words = chosen.split()
+    return " ".join(words[:_SUBJECT_WORDS])
+
+
 def _clean(value: str) -> str:
     value = " ".join(str(value or "").split()).strip(" ,.;:!?-")
     while True:
@@ -1173,6 +1204,7 @@ def update(
     # The thing they actually named beats the router's topic for it.
     # Measured live: "I want a guitar" was topic'd "personal desire", and
     # the summary read "electric guitar personal desire around 500,000 won".
+    dropped_a_clause = False
     named = next(
         (slot.value for slot in constraints if slot.name == PREFERENCE), "",
     )
@@ -1188,9 +1220,48 @@ def update(
         or len(resolved.split()) > 6
     ):
         resolved = named
-    domain = problem.domain or domain_for(text) or domain_for(problem.subject)
-    category = problem.category or category_for(text) or category_for(
-        problem.subject,
+    elif not named:
+        # No thing was named, and the subject is still whatever the person
+        # said in full. Measured live: "What if you have a car? Like, give
+        # me like some good places to travel along Washington State."
+        # became the subject entire, "car" supplied the category from a
+        # *conditional clause*, and the search went out as "Washington
+        # State cars Seattle" -- answered with van rental advice.
+        #
+        # A condition is not a subject. The request is in its last clause,
+        # so that is what is kept once the asking is stripped off it.
+        shortened = _as_phrase(resolved)
+        if shortened and shortened != resolved:
+            resolved = shortened
+            dropped_a_clause = True
+    # Read the category from what is being asked for before reading it from
+    # the whole utterance. "What if you have a car? ... good places to
+    # travel along Washington State" typed as the *car* domain, because the
+    # condition is in the sentence too -- and the query went out as
+    # "Washington State cars Seattle".
+    # When the utterance was reduced to a phrase, the half that was
+    # discarded is condition and filler, and it may not supply the
+    # category either. "What if you have a car? ... good places to travel
+    # along Washington State" typed as the car domain and searched
+    # "Washington State cars Seattle".
+    # Only when a clause was actually thrown away. Every subject is
+    # shorter than its utterance, so "shorter" is not the signal -- the
+    # signal is that part of the sentence was judged to be condition or
+    # filler, and that part may not supply the category either.
+    trimmed = dropped_a_clause
+    from_text = "" if trimmed else domain_for(text)
+    category_from_text = "" if trimmed else category_for(text)
+    domain = (
+        problem.domain
+        or domain_for(resolved)
+        or from_text
+        or ("" if trimmed else domain_for(problem.subject))
+    )
+    category = (
+        problem.category
+        or category_for(resolved)
+        or category_from_text
+        or ("" if trimmed else category_for(problem.subject))
     )
     return replace(
         problem,

@@ -1450,12 +1450,53 @@ class ChatEngine:
             # An instruction is not a request to go and check.
             return route
         print("[Grounding Guard] Disputed claim: verifying rather than repeating.")
+        # The flags alone were not enough. Measured live, the turn that
+        # said "But I did go to a casino there with my friends" was
+        # verified -- against the very query it was contradicting, because
+        # search_query still held the previous question. So the same search
+        # ran and the same conclusion came back, stated with the same
+        # confidence.
+        #
+        # A disputed claim is re-checked against what the person just said,
+        # not against the question that produced the claim. Their words are
+        # the new evidence; re-running the old query is how a searched
+        # claim becomes unfalsifiable.
         return replace(
             route,
             information_freshness="changing",
             requires_external_evidence=True,
             verification_required=True,
+            normalized_request=transcript,
+            search_query=self._reframed_query(transcript, claim),
         )
+
+    @staticmethod
+    def _reframed_query(transcript: str, claim: str) -> str:
+        """What to search now that the previous answer is in doubt.
+
+        The subject stays -- it is still about casinos on that island --
+        but the question changes shape. A yes/no existence question has
+        already been answered once and asking it again returns the same
+        answer; what is wanted is the thing itself, so the nouns from the
+        claim and from the turn are searched together.
+        """
+        said = " ".join(str(transcript or "").split())
+        subjects = grounded_values.claim_subjects(claim)
+        if not subjects:
+            return said
+        # Keep what the turn adds, minus the asking, so a genuinely new
+        # question ("what was it called") still steers the search.
+        from brain.recommendation_state import _content_of
+
+        words: list[str] = []
+        seen: set[str] = set()
+        for word in subjects + _content_of(said).split():
+            key = word.casefold().strip(".,!?;:")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            words.append(word.strip(".,!?;:"))
+        return " ".join(words)[:200]
 
     def _enforce_grounded_entities(
         self,

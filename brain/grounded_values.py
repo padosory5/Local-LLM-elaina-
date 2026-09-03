@@ -355,7 +355,22 @@ _DISPUTES = re.compile(
     r"|\bisn'?t\s+\w+\s+(?:a|an|the)\b"
     r"|\bthat'?s\s+not\s+(?:right|correct|true|it)\b"
     r"|\bwrong\s+(?:number|answer|one|time|date)\b"
-    r"|틀렸|아닌\s?것\s?같|맞아\?",
+    # First-hand experience, which is the strongest thing a person can
+    # offer against a claim about the world -- and it was read as nothing
+    # at all. Measured live: told there are no casinos on Bainbridge
+    # Island, "But I did go to a casino there with my friends" produced
+    # the same sentence again. A "but"/"wait"/"actually" opener, or the
+    # emphatic "did", marks it as contradicting rather than reminiscing:
+    # "I went to Seattle last year" is not an argument about anything.
+    r"|^\s*(?:but|wait|actually|no)\b[^.?!]{0,60}?"
+    r"\bi\s*(?:'ve|’ve|\s+have)?\s*(?:did\s+)?"
+    r"(?:go|went|been|saw|was|stayed|visited)\b"
+    r"|\bi\s+did\s+(?:go|see|visit|stay)\b"
+    r"|\bi\s+(?:definitely|actually|really)\s+(?:went|saw|was|have)\b"
+    r"|\bi\s+saw\s+(?:one|it|them|him|her)\s+myself\b"
+    r"|\bi\s+was\s+there\b"
+    r"|\bi\s*(?:'ve|’ve|\s+have)\s+been\s+to\s+one\b"
+    r"|틀렸|아닌\s?것\s?같|맞아\?|가봤",
     re.IGNORECASE,
 )
 
@@ -363,6 +378,43 @@ _DISPUTES = re.compile(
 def reads_as_dispute(text: str) -> bool:
     """Whether this turn says something she just claimed is wrong."""
     return bool(_DISPUTES.search(str(text or "")))
+
+
+def claim_subjects(text: str) -> list[str]:
+    """The nouns a claim is about, for re-checking it a different way.
+
+    A claim that has been searched once must not become unfalsifiable, and
+    re-running the query that produced it is how that happens. These are
+    what the new search keeps: the thing and the place, without the yes/no
+    shape of the question that has already been answered.
+    """
+    text = str(text or "")
+    found: list[str] = []
+    for name in _proper_names(text):
+        if name not in found:
+            found.append(name)
+    # Plus the plain nouns the sentence turns on, which a proper-name
+    # reader will not see: "casinos", "gambling venues".
+    for word in re.findall(r"\b[a-z]{4,}\b", text.casefold()):
+        if word in _CLAIM_STOPWORDS or word in {n.casefold() for n in found}:
+            continue
+        if word not in found:
+            found.append(word)
+    return found[:6]
+
+
+# Grammar and the vocabulary of denial, which say nothing about what the
+# claim was about.
+_CLAIM_STOPWORDS = frozenset({
+    "there", "their", "they", "them", "this", "that", "these", "those",
+    "with", "from", "have", "has", "had", "been", "being", "were", "was",
+    "will", "would", "could", "should", "about", "into", "your", "yours",
+    "here", "what", "when", "where", "which", "while", "also", "just",
+    "only", "very", "much", "many", "some", "any", "none", "legal",
+    "illegal", "area", "residential", "known", "find", "found", "look",
+    "know", "think", "sure", "like", "well", "yeah", "okay", "please",
+    "actually", "really",
+})
 
 
 def carries_a_checkable_claim(text: str) -> bool:

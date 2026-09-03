@@ -165,3 +165,50 @@ class AnsweringTheQuestionAskedTests(unittest.TestCase):
         for said in ("a studio", "1500", "electric", "I don't know"):
             with self.subTest(said=said):
                 self.assertFalse(state.points_at_an_earlier_answer(said), said)
+
+
+class ASubjectIsWhatIsBeingAskedForTests(unittest.TestCase):
+    """B-43. The condition became the subject.
+
+        User:   What if you have a car? Like, give me like some good places
+                to travel along Washington State.
+        [Query] text: Washington State cars Seattle
+        Elaina: Book a van rental in Seattle early for the best rates!
+
+    "If you have a car" is a condition on the question, not the thing
+    being asked about. It supplied the category, the whole utterance
+    became the subject, and the query came out about renting vehicles.
+    """
+
+    def _opened(self, said: str):
+        problem = state.start(said, domain=state.domain_for(said))
+        return state.update(problem, said)
+
+    def test_the_query_is_about_the_thing_asked_for(self):
+        query = self._opened(
+            "What if you have a car? Like, give me like some good places "
+            "to travel along Washington State."
+        ).search_query().casefold()
+
+        self.assertIn("places", query)
+        self.assertIn("washington", query)
+
+    def test_the_subject_is_a_phrase(self):
+        problem = self._opened(
+            "What if you have a car? Like, give me like some good places "
+            "to travel along Washington State."
+        )
+
+        self.assertLessEqual(len(problem.subject.split()), 10, problem.subject)
+        self.assertNotIn("what if", problem.subject.casefold())
+
+    def test_an_ordinary_short_request_is_untouched(self):
+        for said in (
+            "where can I buy a guitar in Seoul",
+            "I want to rent a place near UW",
+            "good restaurants in Seattle",
+        ):
+            with self.subTest(said=said):
+                problem = self._opened(said)
+                self.assertTrue(problem.subject)
+                self.assertLessEqual(len(problem.subject.split()), 10)
