@@ -454,6 +454,45 @@ def asks_where(request: str) -> bool:
     ))
 
 
+def supplies_only_a_place(text: str) -> str:
+    """The place, when the turn is a place and nothing else.
+
+    Measured live, one turn after a search for packing peanuts had gone
+    out as "packing peanuts Seattle" -- Seattle inherited from a question
+    about clocks twenty minutes earlier:
+
+        User:   In Korea though.
+        Elaina: Cool, you're in Korea! What's new there?
+
+    The open task had already recorded ``area=Korea``. Nothing re-ran it,
+    because the turn read as a remark, so the correction was acknowledged
+    and then dropped.
+
+    A place is the one dimension with a silent fallback behind it, which
+    is what makes correcting it urgent: say nothing and the market is
+    assumed, so the only way to tell the difference between "they did not
+    say" and "they said, and it was ignored" is to act on the saying.
+
+    Empty when the turn carries anything besides the place -- then it is a
+    request of its own and gets routed as one.
+    """
+    said = " ".join(str(text or "").split())
+    if not said:
+        return ""
+    areas = [
+        slot.value for slot in read_constraints(said, source="utterance")
+        if slot.name == AREA
+    ]
+    if len(areas) != 1:
+        return ""
+    place = areas[0]
+    residual = re.sub(re.escape(place), " ", said, flags=re.IGNORECASE)
+    for word in re.findall(r"[A-Za-z']+", residual):
+        if word.casefold() not in _FUNCTION_WORDS:
+            return ""
+    return place
+
+
 def _asks_for_places(request: str) -> bool:
     """Whether the turn asked for somewhere to go, rather than for advice."""
     return bool(_ASKS_FOR_PLACES.search(str(request or "")))
@@ -1030,7 +1069,15 @@ class RecommendationProblem:
             parts.extend(self.values(BUDGET))
             return " ".join(part for part in parts if part).strip()
 
-        head = " ".join(self.values(ATTRIBUTE, PREFERENCE))
+        # Housing type belongs here too, and only the real-estate branch
+        # above was using it. Measured live: a request for "a studio near
+        # the University of Washington" was classified ``hotel`` rather
+        # than ``apartments``, took this path instead, and searched
+        # "accommodation University of Washington" -- the one word the
+        # person had actually specified was the one word dropped. A
+        # constraint they gave may not vanish because a classifier put the
+        # task in a different bucket.
+        head = " ".join(self.values(ATTRIBUTE, PREFERENCE, HOUSING_TYPE))
         core = self.strip_retired(self.subject) or self.domain
         # A name this turn introduced is not optional. Measured live: the
         # request was "find contact information for the University of

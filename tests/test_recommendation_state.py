@@ -221,6 +221,26 @@ class QueryConstructionTests(unittest.TestCase):
         self.assertIn("guitar", query)
         self.assertIn("500,000", query)
 
+    def test_the_housing_type_survives_the_wrong_domain(self):
+        # Session 5. "a studio near the University of Washington" was
+        # classified `hotel` rather than `apartments`, so it took the
+        # general branch -- where housing type was not read at all -- and
+        # searched "accommodation University of Washington". The one word
+        # the person had specified was the one word dropped. A constraint
+        # they gave may not vanish because a classifier chose a bucket.
+        problem = rs.update(
+            rs.start("accommodation", domain="hotel"),
+            "Can you find me a studio near the University of Washington "
+            "with a budget?",
+        )
+
+        query = problem.search_query(
+            "Find a studio near the University of Washington",
+        ).casefold()
+
+        self.assertIn("studio", query)
+        self.assertIn("university of washington", query)
+
     def test_a_situation_stays_out_of_the_search_box(self):
         # "sore throat restaurants" finds clinics.
         problem = _run([

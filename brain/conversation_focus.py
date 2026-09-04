@@ -131,9 +131,26 @@ _DEICTIC_ONLY = re.compile(
     re.IGNORECASE,
 )
 
+# A reference to the entity under discussion made by its role rather than
+# its name -- "near my school", "close to the office". It has to *not name
+# the thing*, or it is not a reference at all.
+#
+# Measured live: "a studio near the University of Washington" matched on
+# "near the university", so the previous subject was preserved as the
+# task's anchor -- and the previous subject was ``time``, left over from
+# asking what time it was in Seattle. The query went out as
+#
+#     accommodation University of Washington time Seattle
+#
+# The lookahead is the whole fix: a role followed by a name is the name,
+# and a turn that says which university is not asking anything to
+# remember which one.
+_NAMES_ITS_OWN_REFERENT = r"(?!\s+(?:of\s+)?[A-Z])"
+
 _RELATIONAL_REFERENCE = re.compile(
     r"\b(?:near|close\s+to|around)\s+(?:my|the)\s+"
-    r"(?:school|university|campus|work|office|home)\b",
+    r"(?:school|university|campus|work|office|home)\b"
+    + _NAMES_ITS_OWN_REFERENT,
     re.IGNORECASE,
 )
 
@@ -197,6 +214,25 @@ def read_background(text: str) -> dict[str, str]:
     return found
 
 
+def location_is_about_the_user(text: str) -> bool:
+    """Whether the place was said about the person, or just mentioned.
+
+    "I'm moving to Seattle" is a fact about them and outlives whatever
+    they were discussing when they said it. "What time is it in Seattle?"
+    is a fact about that question and nothing else -- the first two
+    branches of ``_LOCATION`` are the first kind, the loose bare-preposition
+    branch is the second.
+
+    Measured live, this cost an entire session. "Now in Seattle" -- three
+    words inside a question about a clock -- became background, and twenty
+    turns later it was still there: a shopping search read "packing
+    peanuts Seattle" instead of the user's own market, and a search for
+    casinos on an island came back about casinos in Seattle.
+    """
+    place = _LOCATION.search(str(text or ""))
+    return bool(place and (place.group(1) or place.group(2)))
+
+
 def points_at_something_known(text: str) -> bool:
     """Whether the turn is a pointer rather than a subject of its own."""
     return bool(_DEICTIC_ONLY.match(" ".join(str(text or "").split())))
@@ -220,6 +256,10 @@ class Focus:
     corrected_to: str = ""
     superseded: tuple[str, ...] = ()
     expires_at: float = 0.0
+    # Whether the held location was mentioned in passing rather than
+    # stated about the person. A topical place is context for its own
+    # topic and retires with it; a place they said they live in does not.
+    topical_location: bool = False
 
     def expired(self, now: float | None = None) -> bool:
         return (now if now is not None else time.monotonic()) >= self.expires_at
@@ -268,7 +308,8 @@ def start(subject: str = "", *, now: float | None = None,
 # ("near my school"), a deictic ("there", "it"), or a correction.
 _POINTS_BACK = re.compile(
     r"\b(?:there|here|that|this|those|these|them|it|its|the\s+same)\b"
-    r"|\b(?:my|the)\s+(?:school|university|campus|work|office|home|place)\b",
+    r"|\b(?:my|the)\s+(?:school|university|campus|work|office|home|place)\b"
+    + _NAMES_ITS_OWN_REFERENT,
     re.IGNORECASE,
 )
 
@@ -319,7 +360,28 @@ def update(
     """
     now = now if now is not None else time.monotonic()
     background = dict(focus.background)
-    background.update(read_background(text))
+    topical_location = focus.topical_location
+    fresh = read_background(text)
+
+    # The same rule the anchor got, applied to the other background fact
+    # that steers every query silently. A place mentioned in passing is
+    # context for the topic that mentioned it, so when the topic moves to
+    # something the place has no part in, the place goes with it. A place
+    # stated about the person -- "I'm moving to Seattle" -- is a fact
+    # about them and stays.
+    if (
+        "location" not in fresh
+        and topical_location
+        and background.get("location")
+        and not _points_back(text)
+        and _introduces_a_new_subject(text, subject, background["location"])
+    ):
+        background.pop("location", None)
+        topical_location = False
+
+    background.update(fresh)
+    if "location" in fresh:
+        topical_location = not location_is_about_the_user(text)
 
     # The anchor is context for the subject it was set with, and nothing
     # retired it. Measured live: a correction set
@@ -351,6 +413,7 @@ def update(
             background=background,
             corrected_to="",
             expires_at=now + ttl,
+            topical_location=topical_location,
         )
 
     # A relational request names a new task while pointing back to the
@@ -378,13 +441,14 @@ def update(
             corrected_to=corrected,
             superseded=superseded[-3:],
             expires_at=now + ttl,
+            topical_location=topical_location,
         )
 
     if points_at_something_known(text):
         # "Yep, I'm going there." names nothing; the focus stands.
         return replace(
             focus, background=background, corrected_to="",
-            expires_at=now + ttl,
+            expires_at=now + ttl, topical_location=topical_location,
         )
 
     offered = _clean(subject)
@@ -394,4 +458,5 @@ def update(
         background=background,
         corrected_to="",
         expires_at=now + ttl,
+        topical_location=topical_location,
     )

@@ -1307,6 +1307,7 @@ class ChatEngine:
         action_performed: bool,
         research_evidence: str = "",
         trusted_result: bool = False,
+        searched: bool = False,
     ) -> str:
         """Never quote a value that nothing this session actually saw.
 
@@ -1348,9 +1349,20 @@ class ChatEngine:
         ):
             return text
 
+        # "I haven't actually checked that" was said after two searches had
+        # run and come back with nothing attributable -- measured live on a
+        # request for the UW international-students office. She had
+        # checked; what she had not done was find it. Saying the first when
+        # the second is true reads as not having bothered, and it hides the
+        # one fact the person needs: looking failed, so try somewhere else.
         state = self._capability_state()
         if CapabilityRegistry.is_available("browser_control", state):
-            offer = "I haven't actually checked that -- want me to look it up?"
+            offer = (
+                "I looked and couldn't find that -- want me to open the "
+                "site and check properly?"
+                if searched else
+                "I haven't actually checked that -- want me to look it up?"
+            )
             task_sessions = getattr(self, "task_sessions", None)
             active_problem = (
                 task_sessions.active_recommendation()
@@ -1370,7 +1382,11 @@ class ChatEngine:
                 ),
             )
         else:
-            offer = "I haven't actually checked that, so I'd rather not guess."
+            offer = (
+                "I looked and couldn't find that, so I'd rather not guess."
+                if searched else
+                "I haven't actually checked that, so I'd rather not guess."
+            )
         print(
             "[Grounding Guard] Removed "
             f"{'a disputed value' if disputed else 'a value'} "
@@ -1543,11 +1559,25 @@ class ChatEngine:
         # not against the question that produced the claim. Their words are
         # the new evidence; re-running the old query is how a searched
         # claim becomes unfalsifiable.
+        # And it has to actually go and check. Measured live: the guard
+        # fired, the need came out as ``live_verification``, and the
+        # interaction layer then downgraded it to an offer -- "current
+        # information about casinos would help, but this was a remark
+        # rather than a request" -- so the reply was "say the word and
+        # I'll go through casinos". She had already been told the answer
+        # was wrong; asking permission to find out is the offer, not the
+        # correction.
+        #
+        # The remark test exists to stop searching on idle complaints, and
+        # it is right about those. Contradicting something she just said is
+        # not idle: it is aimed at her claim, and checking it is the only
+        # honest reply available.
         return replace(
             route,
             information_freshness="changing",
             requires_external_evidence=True,
             verification_required=True,
+            request_explicitness="direct",
             normalized_request=transcript,
             search_query=self._reframed_query(transcript, claim),
         )
@@ -1701,6 +1731,56 @@ class ChatEngine:
                     action_requested=False,
                     computer_operation="none",
                 ), ability_answer
+        # Checked ahead of the gate below, because a correction to the
+        # thing she just did does not look like a request at all. "Only one
+        # S." names no action, asks for nothing, and routed as ordinary
+        # conversation -- so the answer repeated it back, the repetition
+        # guard caught that, and she apologised and asked for the whole
+        # address again. The correction is about the last action, so it
+        # goes back to the last action.
+        last_action = str(getattr(self, "_last_computer_action", "") or "")
+        last_goal = str(getattr(self, "_last_computer_goal", "") or "")
+        if last_action and last_goal:
+            corrected_address = browser_progress.respelled_address(
+                last_goal, user_input,
+            )
+            if corrected_address:
+                print(f"[Rescue] respelled the address -> {corrected_address}")
+                return replace(
+                    route,
+                    intent="computer_action",
+                    computer_operation="open_url",
+                    computer_url=corrected_address,
+                    normalized_request=corrected_address,
+                    action_target=corrected_address,
+                    action_requested=True,
+                    reason=(
+                        "The user corrected the spelling of the address "
+                        "just used, so it is that address again."
+                    ),
+                ), ""
+            # "So open it." -- the object is the last action's target.
+            # Nothing else in the turn, or this would not fire.
+            if browser_progress.continues_the_last_action(user_input):
+                print(f"[Rescue] continue the last action -> {last_action}")
+                return replace(
+                    route,
+                    intent="computer_action",
+                    computer_operation=last_action,
+                    computer_url=(
+                        last_goal if browser_progress.looks_like_an_address(
+                            last_goal,
+                        ) else route.computer_url
+                    ),
+                    normalized_request=last_goal,
+                    action_target=last_goal,
+                    action_requested=True,
+                    reason=(
+                        "The turn asks for the last action again and names "
+                        "no target of its own."
+                    ),
+                ), ""
+
         conversational_action = (
             route.intent == "conversation"
             and not route.action_requested
@@ -3333,6 +3413,15 @@ class ChatEngine:
         placed = bool(
             str(getattr(problem, "location", "") or "").strip()
             or str(getattr(problem, "anchor", "") or "").strip()
+            # An area the turn itself supplied is the most direct answer
+            # there is to "did they say where". It used to be reached only
+            # through the conversation's background location, which meant
+            # the guard depended on a fact left over from an older topic --
+            # and when that fact was retired, "studio apartments University
+            # of Washington" collected "in South Korea" again.
+            or bool(getattr(problem, "values", lambda *_: ())(
+                recommendation_state.AREA,
+            ))
         )
         if not placed and focus is not None:
             placed = bool(focus.background.get("location", ""))
@@ -3852,6 +3941,22 @@ class ChatEngine:
                 if prepared_result.prepared is not None
                 else prepared_result
             )
+
+        # What was just done, so a turn that points at it has something to
+        # point at. Only the two planner paths recorded this, which meant
+        # that after three structured ``open_url`` turns the last action on
+        # record was still a browser_action from four turns earlier -- and
+        # "So open it." would have retried the wrong address.
+        if route.computer_operation not in {"none", "unsupported", ""}:
+            target = (
+                route.computer_url
+                or getattr(result, "target", "")
+                or route.action_target
+                or ""
+            )
+            if target:
+                self._last_computer_action = route.computer_operation
+                self._last_computer_goal = target
 
         # Observation results carry real information (which windows exist,
         # what a window contains), not just a pass/fail outcome, so they
@@ -5609,6 +5714,7 @@ class ChatEngine:
                 action_performed=action_performed,
                 research_evidence=self._last_research_evidence,
                 trusted_result=bool(effective_forced_response),
+                searched="web_search" in timings,
             )
             active_problem = self.task_sessions.active_recommendation()
             reply = self._enforce_found_claim(
@@ -7159,6 +7265,66 @@ class ChatEngine:
             print("  reason: missing results complaint")
             print("  capability: web_search")
             print("  reused payload: yes")
+        elif (
+            not locked_response
+            and active_problem is not None
+            # The same test the query builder uses to decide the open task
+            # has the last word. ``lookup_requested`` is narrower than it
+            # sounds -- it means the person asked to be shown options in
+            # so many words -- and an ordinary "where can I buy X?" never
+            # sets it, though it runs a search all the same.
+            and (active_problem.constraints or active_problem.lookup_requested)
+            and not has_explicit_attachment
+            and not continuing_agent_flow
+        ):
+            corrected_place = recommendation_state.supplies_only_a_place(
+                user_input,
+            )
+            if corrected_place and corrected_place.casefold() not in {
+                value.casefold()
+                for value in active_problem.values(recommendation_state.AREA)
+            }:
+                # Saying where, while a lookup is open, is that lookup
+                # again somewhere else. It is the correction the system is
+                # least able to notice on its own, because a place it was
+                # never told is filled in silently from the user's market --
+                # so a search that went out in the wrong place looks
+                # exactly like one that went out in the right one.
+                # Folded into the stored problem, not into a copy: the
+                # resume path below returns the stored one untouched, so a
+                # correction applied only here would be reported and then
+                # thrown away -- which is the failure this repairs.
+                revised = self.task_sessions.note_recommendation_turn(
+                    user_input,
+                    subject=active_problem.subject,
+                    said_before=self._last_claim(),
+                )
+                query = revised.search_query(user_input)
+                route = replace(
+                    route,
+                    intent="web_search",
+                    computer_operation="",
+                    normalized_request=query,
+                    topic=revised.subject,
+                    reason=(
+                        "The user corrected where the open lookup should "
+                        "be looking."
+                    ),
+                    is_follow_up=True,
+                    speech_act="action_request",
+                    action_requested=True,
+                    action_target=query,
+                    requires_external_evidence=True,
+                    recommendation_needed=True,
+                    search_query=query,
+                )
+                resumed_problem_id = active_problem.id
+                self.capability_offer.clear()
+                print("[Task Resume]")
+                print(f"  task_id: {active_problem.id}")
+                print(f"  reason: the place was corrected to {corrected_place}")
+                print("  capability: web_search")
+                print("  reused payload: yes")
         # One decision for the whole turn, made from signals that already
         # exist. No model call: this is the last thing routing does, and it
         # only reads what routing already worked out.

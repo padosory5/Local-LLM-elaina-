@@ -165,9 +165,18 @@ _FRUSTRATION_BANKS: dict[str, tuple[str, ...]] = {
 # Hostility aimed at her, as a shape rather than as a list of insults: a
 # second-person subject with a negative predicate, or a bare profanity with
 # nothing else in the turn.
+#
+# The middle slot is degree modifiers, which is a closed grammatical
+# class, not a list of insults -- and it has to include the profane ones.
+# Measured live: "You're so fucking stupid." missed entirely, because the
+# expletive sat between the intensifier and the adjective, and the reply
+# came from the model instead: "I'm here to help, not to be insulted."
+# Which is exactly the line this whole policy exists to prevent.
 _AIMED_AT_HER = re.compile(
-    r"\byou(?:'?re|\s+are|\s+r)?\s+(?:so\s+|such\s+a\s+|really\s+|"
-    r"pretty\s+|kind\s+of\s+)?"
+    r"\byou(?:'?re|\s+are|\s+r)?\s+"
+    r"(?:(?:so|such\s+a|really|pretty|kind\s+of|very|absolutely|"
+    r"completely|totally|utterly|bloody|damn|goddamn|effing|"
+    r"fucking|freaking|frickin['g]?|friggin['g]?)\s+){0,3}"
     r"(?:stupid|dumb|useless|terrible|awful|garbage|trash|"
     r"worthless|pathetic|broken|wrong|bad|annoying|the\s+worst)\b"
     r"|\bfuck\s+(?:you|off)\b"

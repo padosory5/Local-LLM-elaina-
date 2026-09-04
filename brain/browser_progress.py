@@ -139,6 +139,110 @@ def _options_in(said_before: str) -> list[str]:
     return found
 
 
+# "So open it." -- an instruction whose object is the thing just acted on
+# and nothing else. Anchored at both ends on purpose: the moment the turn
+# carries any content of its own, it is naming its own target and this
+# must not fire. That is the rule the whole file rests on.
+_CONTINUES_THE_LAST_ACTION = re.compile(
+    r"^(?:so|then|ok(?:ay)?|well|yeah|yes|alright|right|now|and|but|"
+    r"please)?[,. ]*"
+    r"(?:(?:can|could|would|will)\s+you\s+)?"
+    r"(?:just\s+|then\s+|please\s+|still\s+)*"
+    r"(?:open|try|do|retry|redo|run|go\s+to|load)\s+"
+    r"(?:it|that|this|them|those)"
+    r"(?:\s+(?:again|now|properly|for\s+me|please|one\s+more\s+time))*"
+    r"[.!? ]*$",
+    re.IGNORECASE,
+)
+
+# A whole turn that is only a statement about spelling: "Only one S.",
+# "with two Ls", "no, spelled with a K". Deliberately a closed grammar
+# over letter counts rather than a list of phrasings -- it reads a number
+# and a letter, and it means nothing at all without a target to apply it
+# to.
+_A_LETTER_COUNT = re.compile(
+    r"^(?:no[,.]?\s+)?(?:it(?:'s|s)?\s+|is\s+)?(?:spel(?:led|t)\s+)?"
+    r"(?:with\s+)?(?:only\s+|just\s+)?"
+    r"(?P<count>one|two|three|a|an|single|double|triple|no)\s+"
+    r"(?P<letter>[A-Za-z])(?:'s|s)?"
+    r"(?:\s+(?:only|though|there|in\s+it))?"
+    r"[.!, ]*$",
+    re.IGNORECASE,
+)
+
+_COUNTS = {
+    "no": 0, "a": 1, "an": 1, "one": 1, "single": 1,
+    "two": 2, "double": 2, "three": 3, "triple": 3,
+}
+
+# Something with a dot in it and no spaces: the shape of a web address.
+_ADDRESS = re.compile(r"\b[\w-]+(?:\.[\w-]+)+\b")
+
+
+def looks_like_an_address(text: str) -> bool:
+    """Whether this is a web address rather than a sentence about one."""
+    said = " ".join(str(text or "").split())
+    return bool(said) and bool(_ADDRESS.fullmatch(said))
+
+
+def continues_the_last_action(text: str) -> bool:
+    """Whether the turn is "do that again" and nothing else.
+
+    Measured live, after she reported opening a page that had not opened:
+
+        User:   though it's not.
+        Elaina: You're right -- it's not.
+        User:   So open it.
+
+    Every layer read that last turn as a fresh request, found no target in
+    it, and the desktop planner burned its whole budget looking for a
+    native window. The target was the address of the action before it.
+    """
+    return bool(_CONTINUES_THE_LAST_ACTION.match(" ".join(str(text or "").split())))
+
+
+def respelled_address(goal: str, text: str) -> str:
+    """The address in ``goal``, with the spelling the turn asks for.
+
+    Measured live, one turn after opening ``isss.washington.edu``:
+
+        User:   Only one S.
+
+    It was routed as ordinary conversation, the answer repeated the turn
+    back, and the guard that catches that apologised and asked for the
+    whole address again. A correction to what was just done is not a new
+    subject.
+
+    Empty unless the goal holds exactly one address and exactly one run of
+    that letter in it is the wrong length -- ambiguity is not guessed at.
+    """
+    said = " ".join(str(text or "").split())
+    match = _A_LETTER_COUNT.match(said)
+    if match is None:
+        return ""
+    wanted = _COUNTS.get(match.group("count").casefold())
+    letter = match.group("letter").casefold()
+    if wanted is None:
+        return ""
+
+    addresses = {found.group(0) for found in _ADDRESS.finditer(str(goal or ""))}
+    if len(addresses) != 1:
+        return ""
+    address = addresses.pop()
+
+    runs = [
+        run for run in re.finditer(rf"{re.escape(letter)}+", address, re.IGNORECASE)
+    ]
+    wrong = [run for run in runs if len(run.group(0)) != wanted]
+    if len(wrong) != 1:
+        return ""
+    run = wrong[0]
+    corrected = (
+        address[:run.start()] + letter * wanted + address[run.end():]
+    )
+    return corrected if corrected and corrected != address else ""
+
+
 def resolve_named_choice(text: str, *, said_before: str = "") -> str:
     """Which of the things she just listed this turn is asking for.
 

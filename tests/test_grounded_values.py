@@ -167,6 +167,27 @@ class EngineIntegrationTests(unittest.TestCase):
             engine.capability_offer.peek().capability_id, "browser_control",
         )
 
+    def test_a_search_that_found_nothing_is_not_a_search_that_never_ran(self):
+        # Session 5. Two searches ran for the UW international-students
+        # office, both came back with nothing attributable, and the answer
+        # was "I haven't actually checked that, so I'd rather not guess."
+        # She had checked. What she had not done was find it, and that is
+        # the part the person needs to hear. The two tests either side of
+        # this one hold the other direction: with no search this turn, the
+        # honest answer is still that she has not checked.
+        engine = self._engine(control_mode=False)
+
+        reply = engine._enforce_grounded_values(
+            "Rooms are 120,000 KRW.",
+            user_input="for real?",
+            action_performed=False,
+            searched=True,
+        )
+
+        self.assertNotIn("120,000", reply)
+        self.assertIn("looked", reply)
+        self.assertNotIn("haven't actually checked", reply)
+
     def test_with_browser_control_off_it_declines_to_guess_instead(self):
         engine = self._engine(control_mode=False)
 

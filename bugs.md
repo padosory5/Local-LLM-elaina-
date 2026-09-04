@@ -3,13 +3,19 @@
 Issues found using Elaina for real, not from benchmarks. Benchmarks say the
 parts work; this says whether she is usable.
 
-**Status:** four sessions run (logs in `runtime/session1.log` .. `session4.log`).
-**66 issues recorded.** 56 fixed and verified, 2 deferred capabilities,
-3 accepted limitations, 1 open P3 (S4-06).
+**Status:** five sessions run (logs in `runtime/session1.log` .. `session5.log`).
+**74 issues recorded.** 64 fixed and verified, 2 deferred capabilities,
+3 accepted limitations, 1 open P3 (S4-06), 1 open limitation (S5-06
+retrieval).
 
-**Session 4 failed the release gate** and its fixes changed code, so it
-is invalidated as a gate. Session 5 is the next one:
-`docs/SESSION5_PLAN.md`.
+**Session 5 failed the release gate** and its fixes changed code, so it
+is invalidated as a gate, exactly as session 4 was. Session 6 is the next
+one: `docs/SESSION6_PLAN.md`.
+
+Five of session 5's eight findings were P1, and all five were the same
+bug -- held state beating the current turn -- at three boundaries the
+earlier fixes had not reached: the query, the correction, and the
+continuation after a failed action.
 
 ---
 
@@ -1748,10 +1754,194 @@ recall, and bounded browser runs.
   refusal is B-39's shape on a path the nudge does not cover, and the
   second half is answer phrasing rather than a wrong action. Recorded for
   Session 5 to judge rather than fixed blind.
+- **Session 5 judgement:** the refusal did not recur. The same request ran
+  browser control, hit the repeat detector at round 6, switched to
+  `read_page_text`, and completed in 8 rounds. What is left is that she
+  cannot say what is *in* an image, which is the accepted browser-vision
+  limitation and not a separate bug. Stays P3, stays open, not
+  release-blocking.
 
-## Fixed
+---
 
-_None yet._
+## Session 5 issues
+
+Release gate: **FAIL**. Eight issues, five of them P1, and the P1s are one
+bug wearing five hats. Triaged by the user; the notes below add what the
+reproduction showed.
+
+**Confirmed working:** S4-01 (Seattle 16 hours, London 8, no search),
+S4-05 (`1500` came back as `1500`, and `150 x 30` still answered `4500`),
+explicit URL authority (`open_url iss.washington.edu` from a named
+address), quit (one shutdown, one goodbye), and the browser progress
+watch (the image run hit the repeat detector at round 6, switched to
+`read_page_text`, and finished in 8).
+
+**The pattern, for the sixth session running:** held state beating the
+current turn. Session 4 named it and fixed it in two places. Session 5
+found it in five more, at three different boundaries -- the query, the
+correction, and the continuation. The fixes below are all one rule
+applied at each: *what the turn says outranks what the system is
+holding, and what the turn does not say may be filled in.* The
+difference between those two cases is the whole invariant.
+
+---
+
+### [S5-01] A place mentioned in passing never stopped being background
+
+- **Status:** FIXED
+- **Severity:** P1 (REGRESSION, same family as B-28/B-42)
+- **I said:** "Can you find me a studio near the University of Washington
+  with a budget?", eight turns after asking what time it was in Seattle.
+- **Actual:** `[Query] accommodation University of Washington time Seattle`
+- **Root cause / note:** two leaks, one turn. `location: Seattle` was set
+  by three words inside a question about a clock and then rode every
+  query for the rest of the session -- a shopping search read "packing
+  peanuts Seattle", and a search for casinos on an island came back about
+  casinos in Seattle. The anchor got a retirement rule in session 2; the
+  location never had one. It has the same rule now, with a provenance
+  test in front of it: a place stated about the person ("I'm moving to
+  Seattle") is a fact about them and stays, a place mentioned in passing
+  is context for its own topic and goes when the topic goes.
+  And `about: time`, which is the second leak: "near the University of
+  Washington" matched the relational-reference reader on "near the
+  university", so the previous subject was preserved as the task's
+  anchor. A role followed by a name is the name. A turn that says which
+  university is not asking anything to remember which one.
+
+---
+
+### [S5-02] The corrected place did not reach the search
+
+- **Status:** FIXED
+- **Severity:** P1
+- **I said:** "Where can I buy packing peanuts?" then "In Korea though."
+- **Actual:** `[Query] packing peanuts Seattle`, then
+  "Cool, you're in Korea! What's new there?"
+- **Root cause / note:** the first half is S5-01. The second half is its
+  own failure and the more serious one: the open task *had already
+  recorded* `area=Korea`. Nothing re-ran it, because the turn read as a
+  remark rather than a request, so the correction was acknowledged and
+  dropped. A place is the one dimension with a silent fallback behind it,
+  which is exactly what makes correcting it urgent -- say nothing and the
+  market is assumed, so a search that went out in the wrong place looks
+  identical to one that went out in the right one. Saying where, while a
+  lookup is open, is that lookup again somewhere else. A turn that
+  carries anything besides the place is still a request of its own.
+
+---
+
+### [S5-03] A correction to the address was answered as conversation
+
+- **Status:** FIXED
+- **Severity:** P1
+- **I said:** "open to isss.washington.edu", then "Only one S."
+- **Actual:** routed as conversation, the answer repeated the turn back,
+  the repetition guard caught that, and she said "Sorry -- I answered the
+  wrong thing there. Say it once more and I'll take it properly?" I had
+  to restate the whole address.
+- **Root cause / note:** the misheard-name rescue handles a name swapped
+  for another name. This is a correction with no name in it at all -- it
+  describes the target rather than replacing it. Read as a closed grammar
+  over letter counts (a number and a letter) and applied to the one
+  address in the last goal, which is a designed reading rather than a
+  phrase list: it means nothing without a target, and it refuses to guess
+  when more than one run of the letter is a candidate.
+
+---
+
+### [S5-04] A pronoun was taken for the name of an application
+
+- **Status:** FIXED
+- **Severity:** P1
+- **I said:** "So open it.", one turn after she reported opening a page
+  that had not opened and agreed it had not.
+- **Actual:** `[Capability Rescue] computer_action/unsupported -> ui_action`,
+  then fourteen rounds of the desktop planner hunting native windows --
+  including an attempt to play media -- and
+  `failure=model_round_budget_exhausted` after 32 seconds.
+- **Root cause / note:** the desktop matcher accepted "it" as an
+  application name. It does not now. Behind that, a bare deictic
+  instruction had nothing to resolve against: only the two planner paths
+  recorded what they had just done, so after three structured `open_url`
+  turns the last action on record was a browser_action from four turns
+  earlier. Structured operations record themselves now, and a turn that
+  is only "do that again" goes back to the last one. A turn carrying any
+  target of its own does not.
+
+---
+
+### [S5-05] The dispute was escalated and then offered rather than checked
+
+- **Status:** FIXED
+- **Severity:** P1 (REGRESSION, against B-52)
+- **I said:** "but I've been there", after "No casinos are listed for
+  Brainsome Island right now."
+- **Actual:** `[Grounding Guard] Disputed claim: verifying rather than
+  repeating.` fired, the need came out as `live_verification`, and the
+  interaction layer then downgraded it: "current information about
+  casinos would help, but this was a remark rather than a request". The
+  reply was "Say the word and I'll go through casinos."
+- **Root cause / note:** she did not restate the claim, which is what
+  B-52 fixed. She also did not check, which is what B-52 was for. The
+  remark test exists because "Spotify won't play anything today."
+  produced a web search, and it is right about that. Contradicting
+  something she just said is not idle: it is aimed at her claim, and
+  checking is the only honest reply available. The escalation says so
+  now, and an ordinary remark is still only offered.
+
+---
+
+### [S5-06] "I haven't checked" after checking twice
+
+- **Status:** FIXED (the honesty half)
+- **Severity:** P2
+- **Actual:** `[Query] contact_information University of Washington Seattle`
+  -- S4-03's fix held, the named organisation survived -- two searches
+  ran, both came back with nothing attributable, and the answer was
+  "I haven't actually checked that, so I'd rather not guess."
+- **Root cause / note:** she had checked. What she had not done was find
+  it, and saying the first when the second is true reads as not having
+  bothered and hides the one fact worth knowing: looking failed, so try
+  somewhere else. The wording now distinguishes the two.
+  **Not fixed:** the retrieval itself. A general web search does not
+  reliably surface the UW international-students office contact page, and
+  making it do so is a search-quality problem rather than a defect in the
+  query. Recorded as a limitation, not closed.
+
+---
+
+### [S5-07] The insult reader missed the insult
+
+- **Status:** FIXED
+- **Severity:** P2
+- **I said:** "You're so fucking stupid."
+- **Actual:** "I'm here to help, not to be insulted. Let me know what you
+  need." -- which is the customer-service line the whole frustration
+  policy exists to prevent.
+- **Root cause / note:** the reader matches a shape rather than a list of
+  insults, and the shape had a gap: the expletive sat between the
+  intensifier and the adjective, so nothing matched and the model
+  answered instead. The middle slot is degree modifiers, which is a
+  closed grammatical class, and it now includes the profane ones. A turn
+  that also asks for something is still answered rather than soothed.
+
+---
+
+### [S5-08] The one word the request specified was the one word dropped
+
+- **Status:** FIXED
+- **Severity:** P2
+- **Actual:** a request for a studio was classified `Domain: hotel`, took
+  the general query branch, and searched "accommodation University of
+  Washington". "Studio" appeared nowhere in it.
+- **Root cause / note:** housing type was read into the problem and then
+  only ever used by the real-estate branch, so a classification the user
+  never saw silently deleted a constraint they had given. A constraint
+  they stated may not vanish because a classifier chose a different
+  bucket. The domain classification itself is still wrong and is worth
+  looking at separately; this makes the query right either way.
+
+---
 
 ## Accepted known limitations
 

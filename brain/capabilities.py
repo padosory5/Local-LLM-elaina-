@@ -226,8 +226,18 @@ _MATCH_PATTERNS: tuple[tuple[str, re.Pattern[str], float, str], ...] = (
     (
         "ui_control",
         re.compile(
+            # A pronoun is not the name of an application. Measured live:
+            # one turn after a browser action failed to open a URL, "So
+            # open it." matched here on "open it", was rescued to the
+            # desktop planner, and it spent fourteen rounds hunting for a
+            # native window -- trying, among other things, to play media --
+            # before exhausting its budget. What "it" referred to was the
+            # address of the page she had just failed to open.
             r"\b(?:open|launch|start|close|quit|kill)\s+"
-            r"(?:the\s+)?[A-Za-z][\w .+-]{1,30}\s*(?:app|application)?\b"
+            r"(?:the\s+)?"
+            r"(?!(?:it|that|this|them|those|these|there|here|one|"
+            r"again|up)\b)"
+            r"[A-Za-z][\w .+-]{1,30}\s*(?:app|application)?\b"
             r"|\b(?:create|make|delete|move)\s+(?:a\s+|the\s+)?(?:file|folder)\b"
             # "Control my computer" names the ability with no target at
             # all -- the shape an ability question takes.

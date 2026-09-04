@@ -40,6 +40,12 @@ class ReadingFrustrationTests(unittest.TestCase):
             "shut up",
             "you're wrong",
             "짜증나",
+            # Session 5. The expletive sat between the intensifier and the
+            # adjective, so nothing matched, and the reply came from the
+            # model instead: "I'm here to help, not to be insulted."
+            "You're so fucking stupid.",
+            "you are absolutely useless",
+            "you're such a damn useless assistant",
         ):
             with self.subTest(said=said):
                 self.assertTrue(reads_as_frustration(said))
