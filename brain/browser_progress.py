@@ -167,8 +167,12 @@ _A_LETTER_COUNT = re.compile(
     # knew the bare form -- so the correction became a new conversational
     # subject called "only one S", the browser action was retired, and she
     # opened the misspelled address again.
+    r"(?:so\s+)?(?:from\s+(?:my|the)\s+(?:previous|last)\s+\w+,?\s+)?"
     r"(?:i\s+(?:mean|meant)\s+)?"
     r"(?:i\s+(?:just\s+)?(?:want|wanted|need|needed)\s+)?"
+    r"(?:(?:can|could|would)\s+(?:you|we|it)\s+"
+    r"(?:just\s+|please\s+)?(?:only\s+)?"
+    r"(?:have|make\s+it|use|do)\s+)?"
     r"(?:(?:it|that|there)(?:'s|s| is)?\s+)?"
     r"(?:should\s+(?:be|have)\s+)?"
     r"(?:spel(?:led|t)\s+)?"
@@ -251,24 +255,36 @@ def respelled_address(goal: str, text: str) -> str:
         return ""
     address = addresses.pop()
 
+    # A correction about spelling is about the site's own name, which in
+    # an address is its first label. Everything after the first dot is the
+    # registry talking -- washington.edu, .com, .co.kr -- and nobody
+    # corrects the spelling of that.
+    #
+    # Measured live: "is.washington.edu" plus "I meant two S's" found the
+    # lone s in "is" and the lone s in "washington", called it ambiguous,
+    # and refused. The whole exchange then went four more turns and ended
+    # with the planner trying to add the letter S to the page's contents.
+    #
+    # Restricting to the first label is also what makes the correction
+    # work in both directions. The rule before this one preferred a
+    # *repeated* run, which can only ever shorten one.
+    head, dot, tail = address.partition(".")
+    if not dot:
+        return ""
     runs = [
-        run for run in re.finditer(rf"{re.escape(letter)}+", address, re.IGNORECASE)
+        run for run in re.finditer(
+            rf"{re.escape(letter)}+", head, re.IGNORECASE,
+        )
     ]
     wrong = [run for run in runs if len(run.group(0)) != wanted]
     if len(wrong) != 1:
-        # A letter-count correction is about a run that is repeated. Every
-        # ordinary word has single letters in it, so counting those as
-        # candidates made "two S's" ambiguous on isss.washington.edu --
-        # the tripled run and the lone s in "washington" were both wrong,
-        # so nothing was corrected and the person had to say the whole
-        # address again.
-        doubled = [run for run in wrong if len(run.group(0)) > 1]
-        if len(doubled) != 1:
-            return ""
-        wrong = doubled
+        # More than one run of that letter in the name itself, both the
+        # wrong length: "assess.com" with "only one S" could mean either,
+        # so it means neither.
+        return ""
     run = wrong[0]
     corrected = (
-        address[:run.start()] + letter * wanted + address[run.end():]
+        head[:run.start()] + letter * wanted + head[run.end():] + dot + tail
     )
     return corrected if corrected and corrected != address else ""
 

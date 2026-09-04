@@ -36,6 +36,7 @@ from tools.computer_control.computer_control import (
     ComputerActionResult,
     PreparedComputerAction,
 )
+from tools.browser_control.browser_observer import TabInfo
 from tools.computer_control.windows_ui_control import UIActionResult
 from tools.computer_control.windows_ui_observer import (
     ControlInfo,
@@ -115,10 +116,14 @@ class RecordingComputerControl:
         self.operations.append((f"prepare:{operation}", str(target)))
         # The real payload type: guessing its fields one at a time is how a
         # harness ends up testing itself instead of the engine.
+        url = str(getattr(request, "url", "") or "")
+        if operation in {"open_url", "open_search"} and not url:
+            url = str(target)
         prepared = PreparedComputerAction(
             operation=operation,
             target=str(target),
             display_name=str(target),
+            url=url,
         )
         return ComputerActionResult(
             "prepared", str(target), str(target),
@@ -129,7 +134,16 @@ class RecordingComputerControl:
     def execute(self, prepared, **kwargs):
         operation = getattr(prepared, "operation", "")
         target = getattr(prepared, "display_name", "")
+        url = str(getattr(prepared, "url", "") or "")
         self.operations.append((f"{operation}:executed", str(target)))
+        if operation in {"open_url", "open_search"}:
+            # The real status, which is the point: it says the navigation
+            # was dispatched, not that the page arrived. A harness that
+            # returned "done" here hid the whole distinction.
+            return ComputerActionResult(
+                "url_opened", str(target), str(target),
+                f"Opened {url} in a new tab.", operation=operation, url=url,
+            )
         return ComputerActionResult(
             "done", str(target), str(target), f"Did {operation}.",
             operation=operation,
@@ -312,6 +326,39 @@ class RecordingBrowser:
         return recorded
 
 
+class RecordingBrowserObserver:
+    """A browser that shows exactly what a test says it shows.
+
+    The engine verifies a navigation by looking at the browser, so a test
+    about navigation has to be able to say what the browser is showing.
+    Empty by default, which is the honest "I could not check" case.
+    """
+
+    def __init__(self) -> None:
+        self.tabs: tuple = ()
+        self.page = None
+        self.calls: list[str] = []
+
+    def showing(self, url: str, title: str = "") -> None:
+        """Put one page in the browser, as the active tab."""
+        self.tabs = (TabInfo(index=0, title=title, url=url, is_active=True),)
+
+    def list_tabs(self):
+        self.calls.append("list_tabs")
+        return self.tabs
+
+    def describe_page(self, tab_index=None, *, query: str = ""):
+        self.calls.append("describe_page")
+        return self.page
+
+    def read_text(self, tab_index=None):
+        self.calls.append("read_text")
+        return self.page
+
+    def prefer_page(self, url: str) -> None:
+        self.calls.append("prefer_page")
+
+
 class SilentCursor:
     """The physical driver, disconnected."""
 
@@ -404,6 +451,10 @@ def build_engine(routes: dict[str, dict] | None = None) -> ChatEngine:
     engine.desktop_action_planner._sleep = lambda _seconds: None
     engine.browser_control = RecordingBrowser()
     engine.browser_action_planner.control = engine.browser_control
+    # The engine looks at the browser after opening a URL. Without this it
+    # would look at the real one on the machine running the tests.
+    engine.browser_observer = RecordingBrowserObserver()
+    engine.browser_action_planner.observer = engine.browser_observer
     engine.cursor_driver = SilentCursor()
     # The speakers are part of the machine too.
     engine.audio = RecordingAudio()

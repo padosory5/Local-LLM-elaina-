@@ -160,6 +160,19 @@ _DESTINATION_HINT = re.compile(
     r"([A-Za-z][\w'-]*(?:\s+[A-Za-z][\w'-]*){0,2})",
 )
 
+# Things whose own name says they are somewhere. A closed list of
+# place-kind nouns, capitalised as part of a proper name -- "University of
+# Washington", "Incheon Airport", "Seattle Public Library". Deliberately
+# not a gazetteer: it recognises the *kind*, which is what makes it work
+# for a place nobody has heard of.
+_NAMED_PLACE = re.compile(
+    r"\b[A-Z][\w'-]*(?:\s+(?:of|the|de|del)\s+[A-Z][\w'-]*|\s+[A-Z][\w'-]*){0,3}"
+    r"\b(?:University|College|Institute|Academy|Polytechnic|Airport|"
+    r"Station|Hospital|Museum|Stadium|Library|Cathedral|Palace|Campus|"
+    r"Terminal|Harbour|Harbor)\b"
+    r"|\b(?:University|College|Institute|Academy)\s+of\s+[A-Z][\w'-]*"
+)
+
 # Only searches whose answer genuinely depends on where the user is should be
 # pinned to the home market. The old code localized *every* placeless query,
 # turning global facts such as "latest World Cup winner" into "... in Seoul"
@@ -471,9 +484,20 @@ class UserLocale:
                 if " " not in place:
                     break
                 place = place.rsplit(" ", 1)[0]
-            if phrase[:1].isupper():
+            # An article is not part of the name. Measured live: "Korean
+            # restaurants near the University of Washington" captured
+            # "the University of", whose first letter is lowercase, so the
+            # query read as placeless and the search went out as
+            # "...near the University of Washington? in South Korea".
+            named = re.sub(r"^(?:the|a|an)\s+", "", phrase, flags=re.I)
+            if named[:1].isupper():
                 return True
-        return False
+
+        # A named institution or landmark is a place whether or not a
+        # preposition introduced it. Its own name says so: a thing called
+        # a University, an Airport or a Library is somewhere, and that is
+        # the one signal available without a gazetteer.
+        return bool(_NAMED_PLACE.search(str(text or "")))
 
     def localize_query(
         self,

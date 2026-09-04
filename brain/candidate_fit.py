@@ -426,8 +426,27 @@ _ARTICLE_HOSTS = (
 
 # Titles that announce themselves as writing about a set of things.
 _ARTICLE_TITLE = re.compile(
-    r"^\s*\d+\s*\+?\s*(?:best|top|great|amazing|must|cozy|authentic|"
-    r"beautiful|essential)\b"
+    # A cardinal number at the front is the listicle's signature, whatever
+    # adjective follows it. The old rule listed the adjectives, and
+    # measured live it missed "85 Easy Electric Guitar Songs for
+    # Beginners" -- recommended as an electric guitar -- and "12 Things You
+    # Never Thought to Do With Packing Peanuts", recommended as somewhere
+    # to buy them.
+    #
+    # A leading number on a real product is a quantity, and a quantity is
+    # followed by its unit. That is the whole distinction: "50 Pack
+    # Packing Peanuts" is a thing, "12 Things" is an article about things.
+    r"^\s*\d{1,3}\s*\+?\s+"
+    r"(?!(?:pack|packs|pc|pcs|piece|pieces|count|ct|set|sets|"
+    r"inch|inches|in|cm|mm|m|ft|foot|feet|kg|g|lb|lbs|oz|ml|l|"
+    r"litre|liter|liters|litres|gal|gallon|gallons|cu|cubic|"
+    r"string|strings|key|keys|watt|watts|w|v|volt|volts|"
+    r"bit|core|gb|tb|mb|hz|khz|mhz|ghz|mp|x)\b)"
+    # And what it counts is plural. "401 Restaurant Korean BBQ" is a
+    # restaurant whose name begins with a number; "12 Things You Never
+    # Thought..." is twelve things.
+    r"(?=[^,;]{0,44}\b[A-Za-z]{3,}s\b)"
+    r"[A-Za-z]"
     r"|\b(?:top|best)\s+\d+\b"
     r"|\b(?:recipes?|ideas|guide|guides|tips|how\s+to|why\s+you|"
     r"everything\s+you|explained|review\s+round[- ]?up|listicle|"

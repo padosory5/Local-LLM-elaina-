@@ -242,6 +242,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_clarification_relevance",
             "test_generic_app_targets",
             "test_browser_progress",
+            "test_browser_navigation",
             "test_user_evidence",
             "test_project_question_scope",
             "test_progress_question",

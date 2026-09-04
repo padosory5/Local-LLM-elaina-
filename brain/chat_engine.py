@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Any
 import json
 import re
@@ -18,6 +19,7 @@ from brain.deliberation import goal_intent, interaction
 from brain.deliberation.goal_intent import SemanticGoal
 from brain import capability_selection
 from brain import browser_outcome
+from brain import browser_navigation
 from brain import browser_progress
 from brain import progress_question
 from brain import world_clock
@@ -869,6 +871,11 @@ class ChatEngine:
         self._last_computer_action = ""
         self._last_computer_goal = ""
         self._turn_points_at_the_last_action = False
+        # The last navigation and the addresses it has been through. The
+        # history is what makes an honest recovery possible: a candidate
+        # the conversation supplied rather than one nobody mentioned.
+        self._navigation = None
+        self._navigation_history: tuple[str, ...] = ()
         # Set when this turn opened a different recommendation, so the
         # previous one's turns do not stay in the answering prompt.
         self._recommendation_restarted = False
@@ -3857,6 +3864,184 @@ class ChatEngine:
             summary += f", and {remaining} more"
         return f"{observation.title} has {len(names)} controls: {summary}."
 
+    # How long to let the browser settle before looking. A navigation that
+    # has not finished is not a navigation that failed, and calling it one
+    # would trade a false success for a false failure.
+    NAVIGATION_SETTLE_SECONDS = 0.8
+    NAVIGATION_LOOKS = 3
+
+    def _observed_tabs(self):
+        """What the browser is showing, or nothing if it cannot be read.
+
+        Two shapes, because the two drivers report differently. The CDP
+        driver's ``list_tabs`` carries a URL per tab. The screen driver
+        reads the window the person already has open, and its tab list is
+        window titles only -- the address lives in the omnibox, which
+        comes back with a page observation. So: the cheap call first, and
+        the fuller one only when the cheap one said nothing about where
+        the browser actually is.
+
+        Nothing here raises. A browser that cannot be inspected produces
+        an honest "I have not checked", which is the whole point of the
+        lifecycle -- an unreadable browser must never become a success
+        claim, and it must never become a crash either.
+        """
+        rows: list[Any] = []
+        try:
+            tabs = self.browser_observer.list_tabs()
+        except Exception as error:  # noqa: BLE001 - observation is best-effort
+            print(f"[Navigation] could not read the browser: {error}")
+            tabs = ()
+        if isinstance(tabs, (list, tuple)):
+            rows = [tab for tab in tabs if str(getattr(tab, "url", "") or "")]
+        if rows:
+            return tuple(rows)
+
+        try:
+            page = self.browser_observer.describe_page(None)
+        except Exception as error:  # noqa: BLE001
+            print(f"[Navigation] could not read the page: {error}")
+            return ()
+        url = str(getattr(page, "url", "") or "")
+        if not url:
+            detail = str(
+                getattr(page, "message", "") or getattr(page, "status", "")
+            )
+            if detail:
+                print(f"[Navigation] could not read the page: {detail}")
+            return ()
+        return (SimpleNamespace(
+            index=0, url=url,
+            title=str(getattr(page, "title", "") or ""),
+            is_active=True,
+        ),)
+
+    def _look_at(self, navigation):
+        """Verify one navigation, giving the page a moment to arrive."""
+        for attempt in range(self.NAVIGATION_LOOKS):
+            if attempt:
+                time.sleep(self.NAVIGATION_SETTLE_SECONDS)
+            looked = browser_navigation.verify(navigation, self._observed_tabs())
+            if looked.arrived or looked.status == browser_navigation.ERROR_PAGE:
+                return looked
+        return looked
+
+    def _verify_navigation(self, result, route):
+        """Say what actually happened, and recover when it is recoverable.
+
+        Session 7, three turns running:
+
+            [Computer Control] open_url openZillow.com status=url_opened
+            Elaina: All set, openZillow.com is open.
+            You said: didn't open it.
+            Elaina: Zillow.com is open.
+
+        Nothing had loaded at any point -- ``openZillow.com`` is not a host
+        anybody owns -- and the second claim was made after being told the
+        first was wrong. The status meant "the command was accepted"; every
+        layer above read it as "the page is on screen".
+
+        Returns the result, and a spoken line to use in place of the
+        ordinary success acknowledgement. An empty line means the page is
+        genuinely there and the normal path may speak.
+        """
+        requested = str(route.action_target or result.target or "").strip()
+        opened = str(result.url or "").strip()
+        history = tuple(self._navigation_history)
+        navigation = browser_navigation.start(
+            requested, opened, history=history,
+        )
+        navigation = self._look_at(navigation)
+        print(navigation.log_block())
+
+        if navigation.arrived:
+            self._navigation = navigation
+            self._navigation_history = (navigation.url,)
+            return result, ""
+
+        if navigation.status == browser_navigation.UNVERIFIED:
+            # True, and the sentence this whole lifecycle exists to make
+            # sayable. Better a hedge than a claim nothing checked.
+            self._navigation = navigation
+            return replace(
+                result, status="url_dispatched",
+                message=f"Sent the browser to {opened}, not yet verified.",
+            ), (
+                f"I sent the browser to {navigation.expected_host}, but I "
+                "couldn't check whether it loaded."
+            )
+
+        recovered, line = self._recover_navigation(navigation)
+        self._navigation = recovered
+        if recovered.arrived:
+            self._navigation_history = (recovered.url,)
+            self._last_computer_goal = recovered.url
+            return replace(
+                result, url=recovered.url, target=recovered.url,
+                display_name=recovered.url,
+                message=f"Opened {recovered.url}.",
+            ), line
+        self._navigation_history = navigation.history
+        return replace(
+            result, status="navigation_failed",
+            message=f"{navigation.expected_host} did not load.",
+        ), line
+
+    def _recover_navigation(self, navigation):
+        """Try the addresses the conversation itself supplied, or ask.
+
+        Never a domain nobody mentioned. There are exactly two sources --
+        a command verb the transcriber ran into the host, and the
+        spellings between the one first asked for and the one just tried --
+        and when neither yields anything the honest move is to say what
+        happened rather than to guess.
+        """
+        host = navigation.expected_host or navigation.url
+        candidates = browser_navigation.recovery_candidates(navigation)
+        if not candidates:
+            return navigation, (
+                f"{host} didn't load -- the browser couldn't reach it. "
+                "Give me the address again and I'll go straight there."
+            )
+        if len(candidates) > 1:
+            options = " or ".join(candidates[:2])
+            return navigation, (
+                f"{host} didn't load. Did you mean {options}?"
+            )
+
+        candidate = candidates[0]
+        print(f"[Navigation] recovering: {host} -> {candidate}")
+        attempt = browser_navigation.start(
+            navigation.requested, candidate,
+            history=(*navigation.history, candidate),
+        )
+        attempt = replace(attempt, recovered_from=host)
+        try:
+            prepared = self.computer_control.prepare(
+                ComputerActionRequest(
+                    operation="open_url", target=candidate, url=candidate,
+                )
+            )
+            if prepared.prepared is not None:
+                self.computer_control.execute(prepared.prepared)
+        except Exception as error:  # noqa: BLE001
+            print(f"[Navigation] recovery could not run: {error}")
+            return navigation, (
+                f"{host} didn't load, and I couldn't try {candidate} either."
+            )
+
+        attempt = self._look_at(attempt)
+        print(attempt.log_block())
+        if attempt.arrived:
+            return attempt, (
+                f"{host} doesn't exist, so I opened {candidate} instead -- "
+                "that one's up."
+            )
+        return attempt, (
+            f"Neither {host} nor {candidate} loaded. "
+            "Give me the address again and I'll go straight there."
+        )
+
     def _handle_computer_action(
         self,
         route: IntentDecision,
@@ -3983,6 +4168,15 @@ class ChatEngine:
             if target:
                 self._last_computer_action = route.computer_operation
                 self._last_computer_goal = target
+
+        # Dispatch is not arrival. ``url_opened`` means Windows accepted
+        # the navigation command; whether the page the person asked for is
+        # on their screen is a different question, and until session 7 it
+        # was never asked. Ask it here, before anything speaks.
+        if result is not None and result.status == "url_opened":
+            result, navigation_line = self._verify_navigation(result, route)
+            if navigation_line:
+                return navigation_line, result
 
         # Observation results carry real information (which windows exist,
         # what a window contains), not just a pass/fail outcome, so they
@@ -6684,6 +6878,7 @@ class ChatEngine:
                 action_target=transcript,
             )
 
+        active_problem = self.task_sessions.active_recommendation()
         if (
             pending_clarification is not None
             and pending_clarification.goal.kind == "recommendation"
@@ -6693,6 +6888,10 @@ class ChatEngine:
             and len(user_input.split()) <= 12
             and recommendation_state.answer_for_dimension(
                 pending_clarification.slot, user_input,
+                options=(
+                    active_problem.type_options()
+                    if active_problem is not None else ()
+                ),
             ) is not None
         ):
             # She asked which kind, and this is the answer. It belongs to

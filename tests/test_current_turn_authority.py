@@ -1057,5 +1057,316 @@ class ARetryIsCheckedLikeADraftTests(unittest.TestCase):
                     reply,
                 )
 
+
+class TheActiveTargetSurvivesACorrectionTests(unittest.TestCase):
+    """Session 7, S7-01 and S7-06. It worked once and then let go.
+
+        open isss.washington.edu
+        "I meant only one S."   -> is.washington.edu     (right)
+        "I meant two S's."      -> Current subject: two S's
+                                   No longer the focus: browser action
+                                   "Sorry -- I answered the wrong thing"
+
+    The first correction shortened a run of letters and the second had to
+    lengthen one, and only the first was possible: the reader preferred a
+    *repeated* run, which can only ever shorten. Four more turns of it
+    ended with the planner trying to add the letter S to the page.
+    """
+
+    ADDRESS = "isss.washington.edu"
+
+    def test_the_correction_works_in_both_directions(self):
+        shortened = browser_progress.respelled_address(
+            self.ADDRESS, "I meant only one S.",
+        )
+        self.assertEqual(shortened, "is.washington.edu")
+
+        self.assertEqual(
+            browser_progress.respelled_address(shortened, "I meant two S's."),
+            "iss.washington.edu",
+        )
+
+    def test_the_site_name_is_what_a_spelling_correction_is_about(self):
+        # "is.washington.edu" has a lone s in the name and another in
+        # "washington". Only the first is what anybody is correcting --
+        # nobody respells the registry.
+        self.assertEqual(
+            browser_progress.respelled_address(
+                "is.washington.edu", "two S's",
+            ),
+            "iss.washington.edu",
+        )
+
+    def test_the_ways_a_person_refers_back_to_the_last_address(self):
+        for said in (
+            "I meant two S's.",
+            "So from my previous link, can you only have two S's?",
+            "There's one S in there. I just want two S's in there.",
+            "no, two S's",
+            "it's spelled with two S's",
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(
+                    browser_progress.respelled_address(
+                        "is.washington.edu", said,
+                    ),
+                    "iss.washington.edu", said,
+                )
+
+    def test_an_ambiguous_correction_is_still_refused(self):
+        # The over-correction: two runs of the letter in the name itself
+        # means either could be meant, so neither is.
+        self.assertEqual(
+            browser_progress.respelled_address("assess.com", "only one S"), "",
+        )
+
+    def test_an_ordinary_sentence_is_not_a_spelling_correction(self):
+        for said in (
+            "I only have one S in my name", "Only one.", "open zillow.com",
+            "I want a studio", "that's not it",
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(
+                    browser_progress.respelled_address(self.ADDRESS, said),
+                    "", said,
+                )
+
+
+class TheUsersEyesOutrankTheDispatchStatusTests(unittest.TestCase):
+    """Session 7, S7-04.
+
+        [open_url Zillow.com status=url_opened]
+        You said: didn't open it.
+        Elaina: Zillow.com is open.
+
+    Being told the page is not there is evidence about the page. It was
+    answered by repeating the claim being contradicted.
+    """
+
+    def test_the_shapes_a_person_says_it_did_not_work_in(self):
+        for said in (
+            "didn't open it.",
+            "you didn't open it.",
+            "the website is not opened on my browser.",
+            "it's not open",
+            "that's not it",
+            "the page is not loaded",
+            "the site isn't up",
+        ):
+            with self.subTest(said=said):
+                self.assertTrue(
+                    state.complains_about_missing_results(said), said,
+                )
+
+    def test_it_goes_back_to_the_action_rather_than_the_capability_list(self):
+        from brain.intent_router import IntentDecision
+        from tests.turn_harness import build_engine
+
+        engine = build_engine()
+        engine._turn_points_at_the_last_action = False
+        engine._last_computer_action = "open_url"
+        engine._last_computer_goal = "Zillow.com"
+        try:
+            route, note = engine._rescue_capability_route(
+                IntentDecision(
+                    intent="computer_action", confidence=0.95,
+                    normalized_request="didn't open it", reason="t",
+                    computer_operation="unsupported",
+                ),
+                "didn't open it.",
+            )
+        finally:
+            engine.close()
+
+        self.assertEqual(route.computer_operation, "open_url")
+        self.assertEqual(route.action_target, "Zillow.com")
+        self.assertNotIn("can't do that one", note)
+
+    def test_an_ordinary_denial_about_something_else_is_not_one(self):
+        for said in (
+            "I didn't open it", "you didn't understand me",
+            "you didn't have to do that", "the website is really good",
+        ):
+            with self.subTest(said=said):
+                self.assertFalse(
+                    state.complains_about_missing_results(said), said,
+                )
+
+
+class AnExplicitPlaceOutranksTheMarketTests(unittest.TestCase):
+    """Session 7, S7-07, the third session running.
+
+        [Tool] Searching web for: Can you find me some good Korean
+               restaurants near the University of Washington? in South Korea
+
+    "Korean" is a cuisine. "University of Washington" is where. The locale
+    layer could not see the second, because the article in front of it
+    made the capitalisation test fail -- it captured "the University of".
+    """
+
+    def _names_a_place(self, text):
+        from brain.user_locale import UserLocale
+
+        return UserLocale._names_a_place(text)
+
+    def test_a_named_institution_is_a_place(self):
+        for said in (
+            "Korean restaurants near the University of Washington",
+            "Korean restaurants near University of Washington",
+            "cafes near Incheon Airport",
+            "parking at Seattle Central Library",
+        ):
+            with self.subTest(said=said):
+                self.assertTrue(self._names_a_place(said), said)
+
+    def test_a_placeless_request_still_gets_the_market(self):
+        # The over-correction: losing the market entirely is the failure
+        # this locale layer exists to prevent.
+        for said in (
+            "where can I buy packing peanuts",
+            "second-hand phone marketplaces",
+            "good Korean restaurants",
+        ):
+            with self.subTest(said=said):
+                self.assertFalse(self._names_a_place(said), said)
+
+    def test_an_infinitive_is_not_a_destination(self):
+        # "easy **to eat** dinner" looks exactly like "flights **to
+        # Tokyo**", and reading it as a place sent a Seoul user to Nha
+        # Trang.
+        self.assertFalse(self._names_a_place("easy to eat dinner restaurants"))
+        self.assertFalse(self._names_a_place("something to eat in the morning"))
+
+
+class NeverAskWhatWasAlreadySaidTests(unittest.TestCase):
+    """Session 7, S7-08. Four turns of the same question.
+
+        "Find me an electric guitar under 500,000 won."
+        "Electric or acoustic?"
+        "Electric, I said electric."
+        "Electric or acoustic?"
+
+    Two faults. The word was in the subject and not in a constraint, so
+    nothing knew it had been said; and the answer had to be at most three
+    words, so a person repeating themselves could not be understood.
+    """
+
+    def test_a_kind_the_request_named_is_not_asked_about(self):
+        problem = state.update(
+            state.start("electric guitar"),
+            "Find me an electric guitar under 500,000 won.",
+        )
+
+        self.assertEqual(problem.missing_dimension(), "")
+        self.assertIn("electric", problem.values(state.ATTRIBUTE))
+
+    def test_a_kind_nobody_named_is_still_asked_about(self):
+        # The over-correction: the question exists because the answer
+        # genuinely changes which candidates are worth finding.
+        problem = state.update(
+            state.start("guitar"), "I'm thinking about getting a guitar.",
+        )
+
+        self.assertEqual(problem.missing_dimension(), state.TYPE)
+
+    def test_the_answer_survives_the_rest_of_the_sentence(self):
+        options = ("electric", "acoustic")
+        for said in (
+            "Electric, I said electric.",
+            "I already said electric",
+            "yeah, electric",
+            "electric obviously",
+            "electric",
+        ):
+            with self.subTest(said=said):
+                answer = state.answer_for_dimension(
+                    state.TYPE, said, options=options,
+                )
+                self.assertIsNotNone(answer, said)
+                self.assertEqual(answer.value, "electric", said)
+
+    def test_naming_both_options_is_a_question_not_an_answer(self):
+        self.assertEqual(
+            state._option_named("electric or acoustic?", ("electric", "acoustic")),
+            "",
+        )
+
+    def test_the_other_option_is_read_just_as_well(self):
+        answer = state.answer_for_dimension(
+            state.TYPE, "acoustic please", options=("electric", "acoustic"),
+        )
+
+        self.assertEqual(answer.value, "acoustic")
+
+
+class AnArticleAboutTheThingIsNotTheThingTests(unittest.TestCase):
+    """Session 7, S7-09 and S7-11.
+
+        Selected: 85 Easy Electric Guitar Songs for Beginners - Guitar Lobby
+        ... recommended as an electric guitar.
+
+        12 Things You Never Thought to Do With Packing Peanuts - Bob Vila
+        ... recommended as somewhere to buy them.
+
+    The round-up test listed the adjectives a listicle opens with. Both of
+    these open with a number and a different adjective.
+    """
+
+    def test_a_leading_count_and_a_plural_is_a_round_up(self):
+        from brain import candidate_fit
+
+        for title in (
+            "85 Easy Electric Guitar Songs for Beginners - Guitar Lobby",
+            "12 Things You Never Thought to Do With Packing Peanuts",
+            "25 Best Electric Guitars in 2026",
+            "7 Great Places to Find Moving Supplies",
+        ):
+            with self.subTest(title=title):
+                self.assertTrue(
+                    candidate_fit._ARTICLE_TITLE.search(title), title,
+                )
+
+    def test_a_quantity_is_not_a_count_of_articles(self):
+        # The over-correction: a real product's leading number is a
+        # quantity, and a quantity is followed by its unit.
+        from brain import candidate_fit
+
+        for title in (
+            "50 Pack Packing Peanuts, Biodegradable - $12.99",
+            "3 cu ft Loose Fill Packing Peanuts",
+            "6 String Electric Guitar - Fender Player",
+            "12 Inch Guitar Cable",
+            "500 pcs Anti-Static Peanuts",
+            "401 Restaurant Korean BBQ",
+            "1201 Third Avenue Apartments",
+            "Fender Player Stratocaster Electric Guitar",
+        ):
+            with self.subTest(title=title):
+                self.assertFalse(
+                    candidate_fit._ARTICLE_TITLE.search(title), title,
+                )
+
+    def test_the_round_up_can_never_be_the_recommendation(self):
+        from brain import candidate_fit
+
+        problem = state.update(
+            state.start("electric guitar"),
+            "Find me an electric guitar under 500,000 won.",
+        )
+        fits = candidate_fit.evaluate(
+            [
+                {"title": "85 Easy Electric Guitar Songs for Beginners",
+                 "url": "https://guitarlobby.com/songs", "summary": ""},
+                {"title": "Fender Player Stratocaster Electric Guitar",
+                 "url": "https://shop.example.com/p/1",
+                 "summary": "450,000 won"},
+            ],
+            problem,
+        )
+
+        self.assertIn("Fender", fits[0].name)
+        round_up = next(fit for fit in fits if "85 Easy" in fit.name)
+        self.assertFalse(round_up.viable)
+
 if __name__ == "__main__":
     unittest.main()

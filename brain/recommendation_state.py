@@ -245,6 +245,22 @@ def complains_about_missing_results(text: str) -> bool:
         r"(?:actually\s+|even\s+|really\s+)?"
         r"(?:open(?:ed)?|load(?:ed)?|show(?:ed|n)?|find|found|"
         r"search(?:ed)?|play(?:ed)?|run|ran|click(?:ed)?|read|do|done)\b"
+        # The subject may be a noun for the thing rather than a pronoun,
+        # or absent altogether -- speech drops it constantly. Measured
+        # live: "the website is not opened on my browser." and a bare
+        # "didn't open it." were both read as fresh requests, and each was
+        # answered by repeating the success claim it was contradicting.
+        r"|\b(?:the\s+(?:site|website|page|tab|link))"
+        r"(?:\s+(?:is|was|does)\s?n[o']t|(?:'?s|\s+is|\s+was)?\s+not)\s+"
+        r"(?:open|opened|showing|there|up|working|load(?:ed|ing)?)\b"
+        r"|^\s*(?:no,?\s+)?did\s?n[o']?t\s+"
+        r"(?:open|load|work|show|find)\b"
+        # The other half of "it didn't work": it worked, and it went
+        # somewhere else. "That's not it" is about the destination, and it
+        # is the shape a person uses when a page did load.
+        r"|\b(?:that'?s|it'?s|this\s+is)\s+not\s+"
+        r"(?:it\b|the\s+(?:one|right|correct)\b)"
+        r"|\bwrong\s+(?:site|website|page|address|url|link|tab)\b"
         r"|\bnothing\s+(?:opened|loaded|happened|came\s+up)\b"
         r"|아무것도\s*안\s*보여|안\s*보여|안\s*열렸",
         str(text or ""),
@@ -817,7 +833,34 @@ def points_at_an_earlier_answer(text: str) -> bool:
     return bool(_POINTS_BACK_AT_AN_ANSWER.match(" ".join(str(text or "").split())))
 
 
-def answer_for_dimension(dimension: str, text: str) -> Slot | None:
+def _option_named(text: str, options) -> str:
+    """Which of a closed set of options this text names, if exactly one.
+
+    A question that offers two answers can be answered in a sentence, and
+    people do. Measured live, against "Electric or acoustic?":
+
+        "Electric, I said electric."   -> not an answer
+        "Electric, you ..."            -> not an answer
+        "electric"                     -> accepted
+
+    Three turns of the same question because the reply was four words
+    long. When the question named the options, finding one of them in the
+    reply is the whole job; the rest of the sentence is the person being
+    understandably short with her.
+    """
+    said = str(text or "").casefold()
+    words = set(re.findall(r"[a-z0-9가-힣'-]+", said))
+    found = [
+        option for option in (options or ())
+        if set(re.findall(r"[a-z0-9가-힣'-]+", option.casefold())) <= words
+    ]
+    # Both named is a question, not an answer.
+    return found[0] if len(found) == 1 else ""
+
+
+def answer_for_dimension(
+    dimension: str, text: str, *, options=(),
+) -> Slot | None:
     """Return a plausible typed answer to one outstanding dimension.
 
     This is deliberately stricter than ``read_short_reply``. A clarification
@@ -851,6 +894,9 @@ def answer_for_dimension(dimension: str, text: str) -> Slot | None:
             return _slot(BUDGET, amount.group("amount"), SOURCE_ASKED)
         return None
     if dimension == TYPE:
+        chosen = _option_named(said, options)
+        if chosen:
+            return _slot(ATTRIBUTE, chosen, SOURCE_ASKED)
         short = read_short_reply(said)
         return short[0] if short else None
     return next((slot for slot in constraints if slot.name == dimension), None)
@@ -865,7 +911,9 @@ def apply_dimension_answer(
     ttl: int = DEFAULT_TTL_SECONDS,
 ) -> RecommendationProblem | None:
     """Resolve one owned clarification without reinterpreting the reply."""
-    answer = answer_for_dimension(dimension, text)
+    answer = answer_for_dimension(
+        dimension, text, options=problem.type_options(),
+    )
     if answer is None:
         return None
     now = now if now is not None else time.monotonic()
@@ -951,6 +999,10 @@ class RecommendationProblem:
         ]
         return words[-1].casefold() if words else ""
 
+    def type_options(self) -> tuple[str, ...]:
+        """The two kinds this thing comes in, when they are known."""
+        return _VARIANTS.get(self._thing(), ())
+
     def missing_dimension(self) -> str:
         """The one unresolved thing worth asking about, or nothing.
 
@@ -998,6 +1050,11 @@ class RecommendationProblem:
             thing != "housing"
             and TYPE not in self.asked
             and not self.values(ATTRIBUTE)
+            # Never ask for something the person already said. Measured
+            # live: "Find me an electric guitar under 500,000 won" was
+            # answered "Electric or acoustic?", and then three more times,
+            # because the word was in the subject and not in a constraint.
+            and not _option_named(self.subject, _VARIANTS.get(thing, ()))
         ):
             return TYPE
         if (
@@ -1376,6 +1433,20 @@ def update(
         or category_for(resolved)
         or ("" if trimmed else category_for(problem.subject))
     )
+    # A kind the request named is a stated attribute, not something still
+    # to be asked about. Measured live: "an electric guitar under 500,000
+    # won" put "electric" in the subject and nowhere else, so nothing
+    # downstream could check a candidate against it -- and the answer that
+    # came back was an article about electric-guitar songs.
+    settled_thing = replace(problem, subject=resolved)._thing()
+    stated = _option_named(
+        f"{resolved} {text}", _VARIANTS.get(settled_thing, ()),
+    )
+    if stated and not any(slot.name == ATTRIBUTE for slot in constraints):
+        variant = _slot(ATTRIBUTE, stated, SOURCE_UTTERANCE)
+        if variant is not None:
+            constraints = _merge(constraints, (variant,))
+
     return replace(
         problem,
         subject=resolved,

@@ -3,14 +3,22 @@
 Issues found using Elaina for real, not from benchmarks. Benchmarks say the
 parts work; this says whether she is usable.
 
-**Status:** six sessions run (logs in `runtime/session1.log` .. `session6.log`).
-**84 issues recorded.** 73 fixed and verified, 2 deferred capabilities,
-3 accepted limitations, 2 open P3 (S4-06, S6-10), 1 open limitation
-(S5-06 retrieval).
+**Status:** seven sessions run (logs in `runtime/session1.log` .. `session7.log`).
+**96 issues recorded.** 83 fixed and verified, 2 deferred capabilities,
+3 accepted limitations, 2 open P3 (S4-06, S6-10), 3 open limitations
+(S5-06 retrieval, S7-10 geographic containment, S7-12 latency).
 
-**Session 6 failed the release gate** and its fixes changed code, so it
-is invalidated as a gate, exactly as sessions 4 and 5 were. Session 7 is
-the next one: `docs/SESSION7_PLAN.md`.
+**Session 7 failed the release gate** and its fixes changed code, so it
+is invalidated as a gate, as sessions 4, 5 and 6 were. Session 8 is the
+next one: `docs/SESSION8_PLAN.md` -- deliberately short and almost
+entirely about the browser.
+
+The release-critical finding was not a phrasing bug. `open_url` returned
+`url_opened`, which means Windows accepted the navigation command, and
+every layer above it read that as "the page is on the person's screen".
+She could not answer *did the page I asked for actually open?* -- so
+`brain/browser_navigation.py` now makes dispatch and arrival two
+different facts.
 
 Six of session 6's ten findings were P1, and the user's name for what
 they share is the one to keep:
@@ -2146,6 +2154,245 @@ one that already knows says so instead of letting the other guess.
   knowledge test this system does not have, and guessing wrong in the
   other direction -- refusing to engage with anything unfamiliar -- would
   be worse. Recorded, not fixed.
+
+---
+
+## Session 7 issues
+
+Release gate: **FAIL**. Twelve issues, nine of them P1, and the release-
+critical one is not a phrasing bug: **she could not answer "did the page I
+asked for actually open?"**
+
+**Confirmed working:** the first URL spelling correction reaching browser
+control, "So open it" going to the browser rather than the desktop
+planner, "near my school" resolving to the University of Washington, the
+packing-peanut object guard rejecting edible peanuts, explicit URLs
+overriding context, and quit.
+
+---
+
+### The navigation lifecycle
+
+`open_url` returned `url_opened` and every layer above it read that as
+"the page the person asked for is on their screen". It never meant that.
+It meant Windows accepted the navigation command.
+
+    You said: openZillow.com
+    [Computer Control] open_url openZillow.com status=url_opened
+    Elaina: All set, openZillow.com is open.
+    You said: didn't open it.
+    Elaina: Zillow.com is open.
+    You said: the website is not opened on my browser.
+    Elaina: I can't do that one.
+
+Three claims about one navigation, none checked, the second made after
+being told the first was wrong, and the third contradicting both.
+`openZillow.com` is not a host anybody owns, so nothing had loaded at any
+point.
+
+`brain/browser_navigation.py` is the answer, and it is a lifecycle rather
+than a status:
+
+    requested -> dispatched -> observed -> verified | failed -> recovered
+
+with one line drawn through it that decides what may be said out loud.
+Above the line she asked; below it she looked. Only `target_verified` and
+`recovered_target_verified` may be spoken as "it is open". A browser that
+cannot be read produces **"I sent the browser there, but I couldn't check
+whether it loaded"** -- a true sentence, and the one this whole module
+exists to make sayable.
+
+Recovery never invents a domain. It has exactly two sources and both are
+things the conversation supplied: a command verb the transcriber ran into
+the host (`openZillow.com` is "open zillow.com" said quickly), and the
+spellings between the one first asked for and the one just tried
+(`isss` corrected to `is` leaves `iss` untried, which is the address the
+person actually meant). When neither yields anything, she says the
+address did not load and asks for it again.
+
+---
+
+### [S7-01] The URL correction worked once and then let go
+
+- **Status:** FIXED
+- **Severity:** P1 (continuation of S5-03 and S6-01)
+- **I said:** "I meant only one S." -- which worked -- then "I meant two S's."
+- **Actual:** `Current subject: two S's`, `No longer the focus: browser
+  action`, and "Sorry -- I answered the wrong thing there." Four more
+  turns ended with the planner trying to add the letter S to the page's
+  contents.
+- **Root cause / note:** session 6's rule preferred a *repeated* run of
+  the letter, which can only ever shorten one. Going from one S to two has
+  no repeated run to find, so the correction was ambiguous and refused.
+  The right rule is structural: a spelling correction is about the site's
+  own name, which in an address is its first label -- nobody respells
+  `washington.edu`. Restricting to that label makes it work in both
+  directions and keeps the ambiguity guard for a name with two runs of the
+  same letter in it.
+
+---
+
+### [S7-02] `url_opened` was treated as proof the page loaded
+
+- **Status:** FIXED
+- **Severity:** P1, release-critical
+- **Root cause / note:** see the lifecycle above. Dispatch and arrival are
+  two different facts and only one of them was ever established.
+
+---
+
+### [S7-03] No recovery when an address does not exist
+
+- **Status:** FIXED
+- **Severity:** P1
+- **Root cause / note:** there was nothing to recover *from*, because
+  nothing ever concluded that the navigation had failed. With the
+  lifecycle in place the recovery is the conversation's own correction
+  history: `isss` was asked for, "only one S" produced `is`, `is` does not
+  resolve, and the spelling neither has tried is `iss`. She opens it,
+  verifies it, and says what she changed. Two candidates means asking
+  rather than choosing; no candidates means saying so.
+
+---
+
+### [S7-04] Being told it did not open was not authoritative
+
+- **Status:** FIXED
+- **Severity:** P1
+- **I said:** "didn't open it.", and then "the website is not opened on my
+  browser."
+- **Actual:** "Zillow.com is open.", and then "I can't do that one."
+- **Root cause / note:** the complaint reader knew "it didn't open" and
+  "you didn't open it" and not a dropped subject or a noun for the thing.
+  English does all three. Also added: "that's not it" and "wrong website",
+  which are the shapes a person uses when a page *did* load and went
+  somewhere else. Every one of them now sends the turn back to the action,
+  where the lifecycle checks it rather than restating the claim.
+
+---
+
+### [S7-05] The command verb was fused into the domain
+
+- **Status:** FIXED
+- **Severity:** P1
+- **Actual:** `open_url target=openZillow.com`, `target=opennaver.com`.
+- **Root cause / note:** the transcriber ran them together and nothing
+  separated them. Deliberately **not** fixed by stripping `^open` before
+  trying: `openai.com` and `opentable.com` are real places, and nothing
+  can tell them apart from a fused verb by looking. The split is a
+  recovery candidate, offered only after the address as given failed to
+  load and verified like any other. A site that works is never
+  second-guessed.
+
+---
+
+### [S7-06] A correction lost the browser capability
+
+- **Status:** FIXED
+- **Severity:** P1
+- **Root cause / note:** the same cause as S7-01 -- the correction could
+  not be read, so it fell through to the generic path. The reader also
+  learned the ways a person refers back to the last address ("so from my
+  previous link, can you only have two S's?").
+
+---
+
+### [S7-07] The market was appended to an explicit place
+
+- **Status:** FIXED
+- **Severity:** P1 (REGRESSION, third session running: S4-02, S5-02)
+- **Actual:** `Searching web for: Can you find me some good Korean
+  restaurants near the University of Washington? in South Korea`
+- **Root cause / note:** two layers localise, and only one of them knew
+  the answer. The engine's own locale call takes `already_placed` from
+  what it is holding; the research agent's does not and re-derives it from
+  the text. The text test then failed on the article: it captured "the
+  University of", whose first letter is lowercase, so a request naming a
+  university in Seattle read as placeless. An article is not part of a
+  name, and a thing whose own name says it is a University, an Airport or
+  a Library is somewhere -- which is a kind test, not a gazetteer, so it
+  works for a place nobody has heard of. A genuinely placeless query still
+  gets the market.
+
+---
+
+### [S7-08] She asked for something already said, then refused the answer
+
+- **Status:** FIXED
+- **Severity:** P1
+- **I said:** "Find me an electric guitar under 500,000 won." Four turns of
+  "Electric or acoustic?" followed, including after "Electric, I said
+  electric."
+- **Root cause / note:** two faults. "Electric" was in the subject and in
+  no constraint, so nothing knew it had been said -- a kind the request
+  names is recorded as a stated attribute now, which also lets the fit
+  layer check candidates against it. And the answer reader took at most
+  three words, so a person repeating themselves could not be understood.
+  When the question named the options, finding one of them in the reply is
+  the whole job; the rest of the sentence is the person being
+  understandably short with her. Naming both is a question, not an answer.
+
+---
+
+### [S7-09] An article about the thing was recommended as the thing
+
+- **Status:** FIXED
+- **Severity:** P1
+- **Actual:** `Selected: 85 Easy Electric Guitar Songs for Beginners -
+  Guitar Lobby`, offered as an electric guitar.
+- **Root cause / note:** the round-up test listed the adjectives a listicle
+  opens with -- best, top, great -- and this one opens with "Easy". The
+  signature is the leading cardinal number, whatever follows it. A real
+  product's leading number is a *quantity*, and a quantity is followed by
+  its unit: "50 Pack Packing Peanuts" is a thing, "12 Things" is an
+  article about things. The count is also plural, which is what keeps
+  "401 Restaurant Korean BBQ" a restaurant.
+
+---
+
+### [S7-10] The casino answer overstated its geography
+
+- **Status:** OPEN -- accepted limitation
+- **Severity:** P2
+- **Actual:** "Yes, there are casinos in Seattle. Popular ones include
+  Casino Caribbean, Muckleshoot Casino, and Suquamish Clearwater Casino
+  Resort." Two of those are outside Seattle.
+- **Root cause / note:** every name is in the evidence, so the entity
+  guard has nothing to object to; what is wrong is the *containment*
+  claim, and checking that a named place is inside a named city needs a
+  gazetteer this system does not have and cannot fake. Recorded rather
+  than half-fixed. The nearest honest improvement -- hedging every such
+  answer to "in and around" -- was considered and rejected as a wording
+  change that hides the problem rather than solving it.
+
+---
+
+### [S7-11] Packing peanuts kept their identity and still found an article
+
+- **Status:** FIXED with S7-09
+- **Severity:** P2
+- **Actual:** `12 Things You Never Thought to Do With Packing Peanuts -
+  Bob Vila`, offered as somewhere to buy them.
+- **Root cause / note:** the same round-up test, the same leading number.
+  Session 6's object-identity guard did its half correctly -- edible
+  peanuts were rejected -- and this is the other half.
+
+---
+
+### [S7-12] Latency
+
+- **Status:** OPEN -- recorded, not addressed
+- **Severity:** P2
+- **Actual:** a first URL open took 46s; routing turns ran 9-12s against
+  ~3.4s in earlier sessions; a casino answer took 30s.
+- **Root cause / note:** the dominant term is `route_model`, which is the
+  router's own model call and is unrelated to anything session 5, 6 or 7
+  changed -- K5 already records ~3.4s as decode-bound. Something about the
+  machine or the model server changed between sessions and that is worth
+  measuring before optimising. The navigation verification added here
+  costs at most 1.6s on a failed open and nothing on a successful one,
+  which is a real cost and a deliberate one: correctness first, as
+  instructed.
 
 ---
 
