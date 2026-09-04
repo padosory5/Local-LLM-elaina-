@@ -3,19 +3,25 @@
 Issues found using Elaina for real, not from benchmarks. Benchmarks say the
 parts work; this says whether she is usable.
 
-**Status:** five sessions run (logs in `runtime/session1.log` .. `session5.log`).
-**74 issues recorded.** 64 fixed and verified, 2 deferred capabilities,
-3 accepted limitations, 1 open P3 (S4-06), 1 open limitation (S5-06
-retrieval).
+**Status:** six sessions run (logs in `runtime/session1.log` .. `session6.log`).
+**84 issues recorded.** 73 fixed and verified, 2 deferred capabilities,
+3 accepted limitations, 2 open P3 (S4-06, S6-10), 1 open limitation
+(S5-06 retrieval).
 
-**Session 5 failed the release gate** and its fixes changed code, so it
-is invalidated as a gate, exactly as session 4 was. Session 6 is the next
-one: `docs/SESSION6_PLAN.md`.
+**Session 6 failed the release gate** and its fixes changed code, so it
+is invalidated as a gate, exactly as sessions 4 and 5 were. Session 7 is
+the next one: `docs/SESSION7_PLAN.md`.
 
-Five of session 5's eight findings were P1, and all five were the same
-bug -- held state beating the current turn -- at three boundaries the
-earlier fixes had not reached: the query, the correction, and the
-continuation after a failed action.
+Six of session 6's ten findings were P1, and the user's name for what
+they share is the one to keep:
+
+    CURRENT TURN + IMMEDIATELY ACTIVE REFERENT/ACTION
+    must beat
+    STALE FOCUS / OLD CORRECTION TEXT / OLD PARSE / GENERIC SUBJECT
+
+The reason it keeps reappearing is that each layer was deciding for
+itself what the turn was about. Where two layers must both look, the one
+that already knows now says so rather than letting the other guess.
 
 ---
 
@@ -1940,6 +1946,206 @@ difference between those two cases is the whole invariant.
   they stated may not vanish because a classifier chose a different
   bucket. The domain classification itself is still wrong and is worth
   looking at separately; this makes the query right either way.
+
+---
+
+## Session 6 issues
+
+Release gate: **FAIL**. Ten issues, six of them P1. Triaged by the user;
+the notes below add what the reproduction showed.
+
+**Confirmed working:** the Seattle clock and its offset, the UW studio
+query with no `time` leak, the same query correctly picking Seattle up
+again once "I'm moving to Seattle on September 18th" had been said, the
+Korea correction resuming the open task, "So open it" reaching browser
+control, an explicit URL overriding context, the I-20 contact lookup
+returning `intladm@uw.edu` end to end, the frustration reader, and quit.
+
+**What the six P1s had in common.** The user named it exactly:
+
+    CURRENT TURN + IMMEDIATELY ACTIVE REFERENT/ACTION
+    must beat
+    STALE FOCUS / OLD CORRECTION TEXT / OLD PARSE / GENERIC SUBJECT
+
+Session 5's fixes enforced that at the boundaries session 5 found. Session
+6 found four more, and the reason there were four is that each layer was
+deciding for itself what the turn was about. The work below makes the
+answer singular where it can be, and where two layers must both look, the
+one that already knows says so instead of letting the other guess.
+
+---
+
+### [S6-01] A correction to an address became a topic
+
+- **Status:** FIXED
+- **Severity:** P1 (continuation of S5-03)
+- **I said:** "open isss.washington.edu", then "I meant only one S."
+- **Actual:** `Current subject: only one S`, `No longer the focus:
+  browser_action`, and she opened `isss.washington.edu` again. Restating
+  it as "There's three S's in there. I just want two S's in there."
+  produced the search `two S's in there only one S Seattle`.
+- **Root cause / note:** two layers read the same turn and disagreed. The
+  repair layer had it as a correction to an address; the focus layer had
+  it as a change of subject. The focus layer runs second, so it won.
+  It does not decide any more: when the repair layer has claimed a turn,
+  it says so, and the focus layer takes the turn as a pointer rather than
+  reading a second answer out of the words. The spelling reader also
+  learned the ways a person opens a correction ("I meant...") and to
+  prefer the *repeated* run of a letter, since every word has single
+  letters in it and counting those made "two S's" ambiguous.
+
+---
+
+### [S6-02] The location was corrected and the object was lost
+
+- **Status:** FIXED
+- **Severity:** P1
+- **Actual:** `[Query] packing peanuts in Korea` -- correct -- then
+  `Selected: Coffee Flavor Peanut, Korea price supplier - 21food`,
+  `Why: fits Korea`, and a recommendation to buy edible peanuts.
+- **Root cause / note:** it did fit Korea. The fit reader checked
+  attributes, housing type, exclusions, budget, area and location, and
+  never checked what the thing *is* -- so constraints were doing the whole
+  job of ranking, and a candidate that matched the one constraint beat one
+  that was actually the right object. Constraints narrow a set; they do not
+  decide what is in it. A partial match on a compound name is now a
+  mismatch rather than a weak match, because "peanut" without "packing" is
+  a different thing, and a candidate that is a mismatch can never be the
+  recommendation. Naming the subject earns no credit either way: a page
+  called "Guitars" says nothing about electric or about the budget.
+
+---
+
+### [S6-03] She said she could not do the thing she had just done
+
+- **Status:** FIXED
+- **Severity:** P1
+- **I said:** "you didn't open it.", after `open_url Zillow.com
+  status=url_opened`.
+- **Actual:** `[Rescue] computer_action/unsupported ->
+  computer_action/unsupported`, and "I can't do that one. Right now I can
+  use browser control..." -- refusing the operation while listing it as
+  available.
+- **Root cause / note:** the complaint reader knew the denial with the
+  thing as its subject ("it didn't open") and not with the agent as its
+  subject ("you didn't open it"). English allows either and only one was
+  read. The verb list is closed on purpose: this is about an action, so
+  "you didn't understand me" is still not one of these.
+
+---
+
+### [S6-04] A correction from three turns ago went into a new search
+
+- **Status:** FIXED
+- **Severity:** P1 (REGRESSION, same family as B-28/B-42/S5-01)
+- **Actual:** `[Tool] Searching web for: Are there Cousinos in Seattle?
+  no, open Zillow.com`
+- **Root cause / note:** two independent faults, both needed. The anchor
+  had been set to "no, open Zillow.com", because a correction is stored as
+  what the conversation is about and nothing asked whether an errand can
+  be a topic. And it survived the change of subject because "Are **there**
+  casinos" matched the pointer test -- the existential *there*, which says
+  nothing about the previous topic and is simply how English asks whether
+  something exists. An anchor is a thing now: not an instruction, and not
+  a placeholder. The pointer test reads the existential out first.
+
+---
+
+### [S6-05] The turn survived in two versions at once
+
+- **Status:** FIXED
+- **Severity:** P1
+- **Actual:**
+
+      [Router] restored 'Are there Casinos in Seattle?' from the transcript.
+      [Router] conversation (0.95): The user is asking about the existence
+               of Cousinos in Seattle
+
+- **Root cause / note:** B-59's repair put the person's own word back into
+  the model's paraphrase, and into that field only -- so the corrected
+  transcript and the misheard one both left the router, and which one a
+  layer downstream believed depended on which field it happened to read.
+  The repair covers every field the model wrote now. It also stopped
+  rewriting function words: "the" and "there" score 0.75 against each
+  other, so applying it to prose turned every "the" into "there" until a
+  closed stop-list was added.
+
+---
+
+### [S6-06] "My school" resolved to the word "Conversation"
+
+- **Status:** FIXED
+- **Severity:** P1
+- **I said:** "Can you find me a rent near my school?"
+- **Actual:** `Anchor: Conversation`, and the query became `studio
+  apartments near Conversation $1,500`. One turn later, "Where's my
+  university again?" was answered "The University of Washington" --
+  correctly.
+- **Root cause / note:** the relational reader preserved *whatever the
+  previous subject had been*, and after two turns of small talk that was
+  the router's placeholder label. It looks for the thing now: an
+  institution says what kind of thing it is inside its own name, so a
+  conversation that has said "University of Washington" can answer "my
+  school" without a model call. The previous subject is the fallback, and
+  a placeholder is never either.
+
+---
+
+### [S6-07] A studio was handled as a hotel booking
+
+- **Status:** FIXED
+- **Severity:** P2
+- **Actual:** `Domain: hotel` for "a studio near the University of
+  Washington", repeatedly.
+- **Root cause / note:** the goal layer's one-word summary of the request
+  was "accommodation", which types as a booking, and the summary was read
+  before the sentence. The person's own words are read first now, unless a
+  clause was discarded as a condition -- in which case the sentence
+  contains something the request is not about, which is the case that put
+  the order this way round originally.
+
+---
+
+### [S6-08] She found it and then did not say it
+
+- **Status:** FIXED
+- **Severity:** P2
+- **Actual:** three candidates checked, one chosen with a reason -- and the
+  answer named "Perchn", which nothing had mentioned. The guard removed
+  it and offered to look for real ones.
+- **Root cause / note:** deleting an invented place is right. Offering to
+  go and find what had already been found is not. When the reasoning layer
+  has ranked and chosen, the guard names that candidate instead of
+  offering. With nothing found it still offers.
+
+---
+
+### [S6-09] The retry repeated the mistake the guard had caught
+
+- **Status:** FIXED
+- **Severity:** P2
+- **I said:** "I like strawberries."
+- **Actual:** `[Response Guard] Repeated an unrelated prior answer;
+  regenerating once.` and then "You're welcome -- strawberries are tasty."
+- **Root cause / note:** B-56's shape one layer over. The draft is
+  rejected for opening with a courtesy nobody earned; the regeneration
+  that replaces it was accepted without the same test. The clause is
+  removed rather than the answer rejected -- what follows it is a real
+  reply, and a third model call would cost a turn to no purpose.
+
+---
+
+### [S6-10] Agreeing about something she has never heard of
+
+- **Status:** OPEN -- P3, not release-blocking
+- **Severity:** P3
+- **I said:** "I like QEs."
+- **Actual:** "I like QEs too -- they're pretty cool."
+- **Root cause / note:** persona and model quality rather than a routing
+  or state defect. Telling an unknown term from a misheard one needs a
+  knowledge test this system does not have, and guessing wrong in the
+  other direction -- refusing to engage with anything unfamiliar -- would
+  be worse. Recorded, not fixed.
 
 ---
 

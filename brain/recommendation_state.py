@@ -233,6 +233,18 @@ def complains_about_missing_results(text: str) -> bool:
         r"|\b(?:that'?s|it'?s)\s+not\s+"
         r"(?:open|opened|showing|there|up|working|loaded)\b"
         r"|\bit\s+did\s?n[o']t\s+(?:open|load|work|show)\b"
+        # The same denial with the agent as the subject rather than the
+        # thing. English lets you say either, and only one was read.
+        # Measured live: "you didn't open it." one turn after a URL she
+        # reported opening -- routed as a fresh unsupported request, and
+        # answered "I can't do that one", while listing browser control as
+        # something she has. The verb list is closed on purpose: this is
+        # about an action, so a denial that names no action ("you didn't
+        # understand me") is not one of these.
+        r"|\byou\s+(?:did\s?n[o']t|have\s?n[o']t|never|did\s+not)\s+"
+        r"(?:actually\s+|even\s+|really\s+)?"
+        r"(?:open(?:ed)?|load(?:ed)?|show(?:ed|n)?|find|found|"
+        r"search(?:ed)?|play(?:ed)?|run|ran|click(?:ed)?|read|do|done)\b"
         r"|\bnothing\s+(?:opened|loaded|happened|came\s+up)\b"
         r"|아무것도\s*안\s*보여|안\s*보여|안\s*열렸",
         str(text or ""),
@@ -1341,16 +1353,27 @@ def update(
     trimmed = dropped_a_clause
     from_text = "" if trimmed else domain_for(text)
     category_from_text = "" if trimmed else category_for(text)
+    # When nothing was thrown away, the person's own sentence is read
+    # before the paraphrase of it. Measured live: "a studio near the
+    # University of Washington" arrived with the subject "accommodation",
+    # which types as a hotel, so the whole request was handled as a
+    # booking -- hotel surfaces, hotel candidates, and the word "studio"
+    # dropped from the query. The utterance said "studio" outright.
+    #
+    # The order flips back when a clause *was* discarded, because then the
+    # sentence contains something the request is not about: "what if you
+    # have a car? ... places to travel along Washington State" typed as
+    # the car domain and searched "Washington State cars Seattle".
     domain = (
         problem.domain
-        or domain_for(resolved)
         or from_text
+        or domain_for(resolved)
         or ("" if trimmed else domain_for(problem.subject))
     )
     category = (
         problem.category
-        or category_for(resolved)
         or category_from_text
+        or category_for(resolved)
         or ("" if trimmed else category_for(problem.subject))
     )
     return replace(

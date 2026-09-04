@@ -214,6 +214,51 @@ def read_background(text: str) -> dict[str, str]:
     return found
 
 
+# An institution says what kind of thing it is inside its own name, which
+# is the one signal available without a model call or a gazetteer.
+_INSTITUTION = re.compile(
+    r"\b([A-Z][\w.'-]*(?:\s+(?:of|the|and|de|del)\s+[A-Z][\w.'-]*"
+    r"|\s+[A-Z][\w.'-]*){0,4})\b"
+)
+_KIND_WORDS = {
+    "university": "school",
+    "college": "school",
+    "school": "school",
+    "institute": "school",
+    "academy": "school",
+    "polytechnic": "school",
+}
+
+
+def read_named_roles(text: str) -> dict[str, str]:
+    """Which role each institution the turn names could later be called by.
+
+    "Near my school" has to reach the school. Measured live, it did not:
+    the relational reader preserved whatever the previous subject had
+    been, and after two turns of small talk that was the literal word
+    "Conversation" -- so a rental search ran on "studio apartments near
+    Conversation $1,500". The user had named the University of Washington
+    four times in the same conversation, and one turn later she could
+    still answer "where's my university again?" correctly.
+
+    The name is the evidence. A thing called a university is what "my
+    university" means, and nothing else in the turn has to be understood
+    for that to hold.
+    """
+    found: dict[str, str] = {}
+    for match in _INSTITUTION.finditer(str(text or "")):
+        name = _clean(match.group(1))
+        words = [word.casefold().strip(".,") for word in name.split()]
+        if len(words) < 2:
+            # A bare "University" names no particular one.
+            continue
+        for word in words:
+            role = _KIND_WORDS.get(word)
+            if role and role not in found:
+                found[role] = name
+    return found
+
+
 def location_is_about_the_user(text: str) -> bool:
     """Whether the place was said about the person, or just mentioned.
 
@@ -260,6 +305,10 @@ class Focus:
     # stated about the person. A topical place is context for its own
     # topic and retires with it; a place they said they live in does not.
     topical_location: bool = False
+    # Role -> the institution the conversation has named for it, so "my
+    # school" resolves to the school rather than to whatever the previous
+    # subject happened to be.
+    named_roles: dict[str, str] = field(default_factory=dict)
 
     def expired(self, now: float | None = None) -> bool:
         return (now if now is not None else time.monotonic()) >= self.expires_at
@@ -304,6 +353,25 @@ def start(subject: str = "", *, now: float | None = None,
     return Focus(subject=_clean(subject), expires_at=now + ttl)
 
 
+# The existential "there" is not a pointer at anything. "Are there
+# casinos in Seattle?" says nothing about the previous topic; it is the
+# grammar English uses to ask whether something exists.
+#
+# Measured live: it read as a pointer, so the anchor held -- and the
+# anchor was "no, open Zillow.com", left over from a correction three
+# turns earlier. The search went out as
+#
+#     Are there Cousinos in Seattle? no, open Zillow.com
+#
+# The same is true of "here's" and "there's" introducing a clause.
+_EXISTENTIAL = re.compile(
+    r"\b(?:is|are|was|were|isn'?t|aren'?t|wasn'?t|weren'?t)\s+(?:there|here)\b"
+    r"|\b(?:there|here)(?:'s|'re)\b"
+    r"|\b(?:there|here)\s+(?:is|are|was|were|isn'?t|aren'?t|wasn'?t|"
+    r"weren'?t|will\s+be|used\s+to\s+be)\b",
+    re.IGNORECASE,
+)
+
 # A turn that points back at what is already held: a relational reference
 # ("near my school"), a deictic ("there", "it"), or a correction.
 _POINTS_BACK = re.compile(
@@ -319,9 +387,51 @@ _POINTS_BACK = re.compile(
 # thirteen words of task description, appended to every later query.
 _ANCHOR_WORDS = 8
 
+# An anchor is a thing, and these are not things.
+#
+# A placeholder is what the routing layer says when it has nothing to
+# say. Measured live: two small-talk turns set the subject to the literal
+# word "Conversation", and the next request -- "find me a rent near my
+# school" -- preserved it as the anchor, so the search ran on
+#
+#     studio apartments near Conversation $1,500
+#
+# An instruction is the other kind of non-thing. "No, no, open Zillow.com"
+# is a redirected errand, and holding it as what the conversation is about
+# is how it ended up inside a search for casinos two turns later.
+_PLACEHOLDER_SUBJECTS = frozenset({
+    "conversation", "chat", "chatting", "general", "general conversation",
+    "small talk", "smalltalk", "greeting", "unknown", "none", "other",
+    "personal preference", "preferences", "casual conversation",
+    "statement", "remark", "question", "topic", "discussion",
+})
+
+_AN_INSTRUCTION = re.compile(
+    r"^(?:(?:no|nope|nah|yeah|yes|ok(?:ay)?|actually|so|well)[,.!]?\s+)*"
+    r"(?:please\s+|just\s+|now\s+|then\s+|can\s+you\s+|could\s+you\s+)*"
+    r"(?:open|close|quit|launch|start|stop|play|pause|show|find|search|"
+    r"look|go|visit|click|type|scroll|read|check|make|create|delete|"
+    r"move|send|call|put|set|turn|use|try)\b",
+    re.IGNORECASE,
+)
+
+
+def _can_be_an_anchor(value: str) -> bool:
+    """Whether this is a thing the conversation can point back at."""
+    cleaned = _clean(value)
+    if not cleaned:
+        return False
+    if cleaned.casefold() in _PLACEHOLDER_SUBJECTS:
+        return False
+    return not _AN_INSTRUCTION.match(cleaned)
+
 
 def _points_back(text: str) -> bool:
-    return bool(_POINTS_BACK.search(str(text or "")))
+    said = str(text or "")
+    # The existential reading is taken out first, so what is left is only
+    # the deictic one. "Is there a cheaper one there?" still points back;
+    # "Are there casinos in Seattle?" no longer does.
+    return bool(_POINTS_BACK.search(_EXISTENTIAL.sub(" ", said)))
 
 
 def _introduces_a_new_subject(
@@ -349,6 +459,7 @@ def update(
     subject: str = "",
     now: float | None = None,
     ttl: int = DEFAULT_TTL_SECONDS,
+    pointer: bool = False,
 ) -> Focus:
     """Fold this turn in, with a correction outranking everything.
 
@@ -383,6 +494,14 @@ def update(
     if "location" in fresh:
         topical_location = not location_is_about_the_user(text)
 
+    # Named institutions accumulate. The most recent one wins its role,
+    # and a role once filled is never emptied by a turn that names none --
+    # "my school" a week later still means the school.
+    named_roles = dict(focus.named_roles)
+    named_roles.update(read_named_roles(text))
+    if subject:
+        named_roles.update(read_named_roles(subject))
+
     # The anchor is context for the subject it was set with, and nothing
     # retired it. Measured live: a correction set
     #
@@ -404,6 +523,18 @@ def update(
     ):
         background.pop("about", None)
 
+    if pointer:
+        # The layer above has already resolved what this turn is about, so
+        # nothing here may read a second answer out of the words. Measured
+        # live: "I meant only one S" is a correction by every test in this
+        # module, and reading it as one made the subject "only one S" and
+        # retired the browser action it was correcting.
+        return replace(
+            focus, background=background, corrected_to="",
+            expires_at=now + ttl, topical_location=topical_location,
+            named_roles=named_roles,
+        )
+
     corrected = read_correction(text)
     explicit_anchor = read_education_anchor(text)
     if explicit_anchor and not corrected:
@@ -414,17 +545,24 @@ def update(
             corrected_to="",
             expires_at=now + ttl,
             topical_location=topical_location,
+            named_roles=named_roles,
         )
 
-    # A relational request names a new task while pointing back to the
-    # current entity. Preserve that entity as the task's anchor before the
-    # generic subject ("rent near my school") replaces it.
-    if (
-        _RELATIONAL_REFERENCE.search(str(text or ""))
-        and focus.subject
-        and "about" not in background
-    ):
-        background["about"] = _shortened(focus.subject)
+    # A relational request names a new task while pointing back to a known
+    # entity. Resolve which one before the generic subject ("rent near my
+    # school") replaces it.
+    #
+    # The role comes first and the previous subject is only the fallback.
+    # It used to be the only source, which meant the anchor was whatever
+    # had been talked about last -- and after two turns of small talk that
+    # was the word "Conversation".
+    relational = _RELATIONAL_REFERENCE.search(str(text or ""))
+    if relational and "about" not in background:
+        role = _KIND_WORDS.get(relational.group(0).split()[-1].casefold(), "")
+        by_name = named_roles.get(role, "") if role else ""
+        candidate = by_name or focus.subject
+        if _can_be_an_anchor(candidate):
+            background["about"] = _shortened(candidate)
 
     if corrected:
         superseded = focus.superseded
@@ -433,7 +571,12 @@ def update(
         # A correction is the most explicit thing a person says about what
         # they meant, so it outlives the turn that made it: "rent near my
         # school" three turns later still means near UW.
-        background["about"] = _shortened(corrected)
+        #
+        # Unless it is an errand. "No, no, open Zillow.com" corrects what
+        # to do, not what this is about, and holding it as the anchor put
+        # it inside a search for casinos two turns later.
+        if _can_be_an_anchor(corrected):
+            background["about"] = _shortened(corrected)
         return replace(
             focus,
             subject=corrected,
@@ -442,6 +585,7 @@ def update(
             superseded=superseded[-3:],
             expires_at=now + ttl,
             topical_location=topical_location,
+            named_roles=named_roles,
         )
 
     if points_at_something_known(text):
@@ -449,6 +593,7 @@ def update(
         return replace(
             focus, background=background, corrected_to="",
             expires_at=now + ttl, topical_location=topical_location,
+            named_roles=named_roles,
         )
 
     offered = _clean(subject)
@@ -459,4 +604,5 @@ def update(
         corrected_to="",
         expires_at=now + ttl,
         topical_location=topical_location,
+        named_roles=named_roles,
     )

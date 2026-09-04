@@ -155,6 +155,19 @@ class Fit:
         return "nothing to check it against"
 
 
+def _names(word: str, lowered: str) -> bool:
+    """Whether the candidate says this word, plural or singular.
+
+    A title says "Packing Peanuts" and another says "Peanut". Comparing
+    them literally makes the second one an unchecked candidate rather
+    than the wrong object, so the singular and the plural are the same
+    word here.
+    """
+    if word in lowered:
+        return True
+    return bool(word.endswith("s") and len(word) > 3 and word[:-1] in lowered)
+
+
 def _check(text: str, problem) -> tuple[list[str], list[str], list[str]]:
     matches: list[str] = []
     conflicts: list[str] = []
@@ -194,6 +207,38 @@ def _check(text: str, problem) -> tuple[list[str], list[str], list[str]]:
             re.IGNORECASE,
         ):
             conflicts.append(value)
+        else:
+            unknown.append(value)
+
+    # What the thing actually is. This was the one dimension nothing
+    # checked, and constraints were doing the whole job of ranking --
+    # measured live, a search for packing peanuts in Korea recommended
+    #
+    #     Coffee Flavor Peanut, Korea price supplier - 21food
+    #
+    # chosen over "Biodegradable Packing Peanuts for sale", with the
+    # reason "fits Korea". It did fit Korea. Constraints narrow a set;
+    # they do not decide what is in it.
+    #
+    # A partial match on a compound name is a mismatch and not a weak
+    # match, which is the whole point: "peanut" without "packing" is a
+    # different object, and calling it unchecked is how it won.
+    for value in problem.values(rs.PREFERENCE):
+        wanted = [
+            word for word in re.findall(r"[\w']+", value.casefold())
+            if len(word) > 2 and word not in _UNINFORMATIVE
+        ]
+        if not wanted:
+            continue
+        present = [word for word in wanted if _names(word, lowered)]
+        if len(present) == len(wanted):
+            # No credit for being the right kind of thing. A page titled
+            # "Guitars" names the subject and says nothing about electric
+            # or about the budget, and counting the subject as a match
+            # would make it a fit on that alone.
+            continue
+        if present:
+            conflicts.append(f"not {value}")
         else:
             unknown.append(value)
 

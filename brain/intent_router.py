@@ -315,6 +315,22 @@ _NAMES_THE_PROJECT = re.compile(
 _WORD = re.compile(r"[^\W_]{3,}", re.UNICODE)
 _NEARLY_THE_SAME = 0.7
 
+# Never restored, in either direction. Function words are a closed class
+# and none of them is ever a transcription error worth repairing, but they
+# are short enough that difflib finds them "nearly the same" as each other
+# and as anything they are a prefix of. "The" and "there" score 0.75, so
+# a transcript containing "are there casinos" rewrote every "the" in the
+# paraphrase to "there".
+_NEVER_A_MISHEARING = frozenset({
+    "the", "and", "but", "for", "not", "you", "are", "was", "were", "has",
+    "had", "have", "his", "her", "its", "our", "their", "them", "they",
+    "this", "that", "these", "those", "there", "here", "then", "than",
+    "with", "from", "into", "onto", "over", "under", "about", "your",
+    "who", "what", "when", "where", "which", "why", "how", "all", "any",
+    "can", "could", "will", "would", "should", "may", "might", "must",
+    "one", "two", "some", "more", "most", "much", "many", "such", "very",
+})
+
 
 def _restore_misheard_words(paraphrase: str, transcript: str) -> str:
     """Put back a word the paraphrase swapped for a near-miss from history.
@@ -327,14 +343,16 @@ def _restore_misheard_words(paraphrase: str, transcript: str) -> str:
     """
     import difflib
 
-    said = {word.casefold() for word in _WORD.findall(transcript or "")}
+    said = {
+        word.casefold() for word in _WORD.findall(transcript or "")
+    } - _NEVER_A_MISHEARING
     if not said:
         return paraphrase
 
     def swap(match):
         word = match.group(0)
         lowered = word.casefold()
-        if lowered in said:
+        if lowered in said or lowered in _NEVER_A_MISHEARING:
             return word
         close = difflib.get_close_matches(
             lowered, said, n=1, cutoff=_NEARLY_THE_SAME,
@@ -688,6 +706,19 @@ class SemanticIntentRouter:
                 # transcription error from one of them instead of what was
                 # just said -- "universe" for "university", one turn after
                 # the user had corrected exactly that. Their words win.
+                #
+                # Every field the model wrote, not only the request. The
+                # restoration used to apply to ``normalized_request``
+                # alone, so a turn could leave here saying two different
+                # things at once -- measured live:
+                #
+                #   [Router] restored 'Are there Casinos in Seattle?'
+                #   [Router] conversation (0.95): The user is asking about
+                #            the existence of Cousinos in Seattle
+                #
+                # The corrected transcript has to be the only version of
+                # the turn that survives, or every layer downstream picks
+                # whichever field it happens to read.
                 restored = _restore_misheard_words(
                     decision.normalized_request, user_input,
                 )
@@ -695,7 +726,20 @@ class SemanticIntentRouter:
                     print(
                         f"[Router] restored {restored!r} from the transcript."
                     )
-                    decision = replace(decision, normalized_request=restored)
+                    decision = replace(
+                        decision,
+                        normalized_request=restored,
+                        **{
+                            field: _restore_misheard_words(
+                                getattr(decision, field), user_input,
+                            )
+                            for field in (
+                                "reason", "topic", "entity", "search_query",
+                                "action_target",
+                            )
+                            if getattr(decision, field, "")
+                        },
+                    )
                 if (
                     decision.intent in ACTION_INTENTS
                     and decision.speech_act == "action_request"

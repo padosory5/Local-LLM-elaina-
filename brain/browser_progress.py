@@ -161,14 +161,29 @@ _CONTINUES_THE_LAST_ACTION = re.compile(
 # and a letter, and it means nothing at all without a target to apply it
 # to.
 _A_LETTER_COUNT = re.compile(
-    r"^(?:no[,.]?\s+)?(?:it(?:'s|s)?\s+|is\s+)?(?:spel(?:led|t)\s+)?"
-    r"(?:with\s+)?(?:only\s+|just\s+)?"
+    r"^(?:(?:no|nope|nah)[,.!]?\s+)*"
+    # The ways a person introduces a correction to a spelling. Measured
+    # live: "I meant only one S." matched nothing, because the reader only
+    # knew the bare form -- so the correction became a new conversational
+    # subject called "only one S", the browser action was retired, and she
+    # opened the misspelled address again.
+    r"(?:i\s+(?:mean|meant)\s+)?"
+    r"(?:i\s+(?:just\s+)?(?:want|wanted|need|needed)\s+)?"
+    r"(?:(?:it|that|there)(?:'s|s| is)?\s+)?"
+    r"(?:should\s+(?:be|have)\s+)?"
+    r"(?:spel(?:led|t)\s+)?"
+    r"(?:with\s+)?(?:only\s+|just\s+)*"
     r"(?P<count>one|two|three|a|an|single|double|triple|no)\s+"
     r"(?P<letter>[A-Za-z])(?:'s|s)?"
-    r"(?:\s+(?:only|though|there|in\s+it))?"
+    r"(?:\s+(?:only|though|there|in\s+(?:it|there)))*"
     r"[.!, ]*$",
     re.IGNORECASE,
 )
+
+# A turn may correct itself mid-sentence -- "There's three S's in there. I
+# just want two S's in there." The operative clause is the last one that
+# reads as a letter count; the ones before it are describing the problem.
+_CLAUSE = re.compile(r"[.!?;]+|,\s+(?=i\b|just\b|so\b)", re.IGNORECASE)
 
 _COUNTS = {
     "no": 0, "a": 1, "an": 1, "one": 1, "single": 1,
@@ -217,7 +232,13 @@ def respelled_address(goal: str, text: str) -> str:
     that letter in it is the wrong length -- ambiguity is not guessed at.
     """
     said = " ".join(str(text or "").split())
-    match = _A_LETTER_COUNT.match(said)
+    match = None
+    for clause in reversed([part.strip() for part in _CLAUSE.split(said)]):
+        if not clause:
+            continue
+        match = _A_LETTER_COUNT.match(clause)
+        if match is not None:
+            break
     if match is None:
         return ""
     wanted = _COUNTS.get(match.group("count").casefold())
@@ -235,7 +256,16 @@ def respelled_address(goal: str, text: str) -> str:
     ]
     wrong = [run for run in runs if len(run.group(0)) != wanted]
     if len(wrong) != 1:
-        return ""
+        # A letter-count correction is about a run that is repeated. Every
+        # ordinary word has single letters in it, so counting those as
+        # candidates made "two S's" ambiguous on isss.washington.edu --
+        # the tripled run and the lone s in "washington" were both wrong,
+        # so nothing was corrected and the person had to say the whole
+        # address again.
+        doubled = [run for run in wrong if len(run.group(0)) > 1]
+        if len(doubled) != 1:
+            return ""
+        wrong = doubled
     run = wrong[0]
     corrected = (
         address[:run.start()] + letter * wanted + address[run.end():]

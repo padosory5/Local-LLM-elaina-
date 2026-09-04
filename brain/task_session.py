@@ -98,13 +98,21 @@ class TaskSessionStore:
 
     # -------------------------------------------------- conversation focus
 
-    def note_turn(self, text: str, *, subject: str = ""):
-        """Fold this turn into the focus, and hand back what it now is."""
+    def note_turn(self, text: str, *, subject: str = "", pointer: bool = False):
+        """Fold this turn into the focus, and hand back what it now is.
+
+        ``pointer`` says the caller already knows this turn is about
+        something the conversation is holding -- a correction to the
+        action just taken, say. Such a turn introduces no subject of its
+        own, and reading one out of it is how "I meant only one S" became
+        a topic called "only one S".
+        """
         focus = self.focus()
         if focus is None:
             focus = conversation_focus.start(now=time.monotonic())
         self._focus = conversation_focus.update(
             focus, text, subject=subject, now=time.monotonic(),
+            pointer=pointer,
         )
         return self._focus
 

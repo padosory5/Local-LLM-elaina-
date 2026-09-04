@@ -868,6 +868,7 @@ class ChatEngine:
         # instead of being read as a fresh, unsupported request.
         self._last_computer_action = ""
         self._last_computer_goal = ""
+        self._turn_points_at_the_last_action = False
         # Set when this turn opened a different recommendation, so the
         # previous one's turns do not stay in the answering prompt.
         self._recommendation_restarted = False
@@ -1651,27 +1652,48 @@ class ChatEngine:
             "[Grounding Guard] Unverified place(s): "
             f"{', '.join(invented)}."
         )
-        offer = (
-            "I don't want to send you somewhere I haven't checked -- "
-            "want me to look up real ones?"
-        )
+        active_problem = self.task_sessions.active_recommendation()
+        # Offering to look is the right answer when nothing was found. It
+        # is the wrong one when something was. Measured live: the fit
+        # layer had already ranked three candidates, chosen "Studio
+        # off-campus student housing near University of Washington" and
+        # said why -- and the answer named "Perchn", which nothing had
+        # ever mentioned. Deleting the invented name left a stub and an
+        # offer to go and find what had already been found.
+        #
+        # ``record_candidates`` stores the fitting ones in rank order, so
+        # the first is the one the reasoning layer picked.
+        already_found = ""
+        if active_problem is not None and active_problem.candidates:
+            already_found = str(active_problem.candidates[0] or "").strip()
+        if already_found:
+            print(f"[Grounding Guard] Naming what was found: {already_found}")
+            offer = f"The one I actually found is {already_found}."
+        else:
+            offer = (
+                "I don't want to send you somewhere I haven't checked -- "
+                "want me to look up real ones?"
+            )
         # Park what answers it. This guard asked a question and left
         # nothing to accept, so "Yeah." took the bare-acknowledgement fast
         # path -- which only fires when nothing is outstanding -- and got
         # "Got it." with no lookup. Its sibling, the value guard, has
         # always parked a real offer; this one never did, and the
-        # session-1 work made it fire far more often.
-        active_problem = self.task_sessions.active_recommendation()
-        self.capability_offer.offer(
-            capability_id="web_search",
-            goal=f"Find real, checkable options for: {user_input}",
-            offer_text=offer,
-            task_id=(active_problem.id if active_problem is not None else ""),
-            task_query=(
-                active_problem.search_query()
-                if active_problem is not None else ""
-            ),
-        )
+        # session-1 work made it fire far more often. Nothing to park when
+        # the answer already names a real one.
+        if not already_found:
+            self.capability_offer.offer(
+                capability_id="web_search",
+                goal=f"Find real, checkable options for: {user_input}",
+                offer_text=offer,
+                task_id=(
+                    active_problem.id if active_problem is not None else ""
+                ),
+                task_query=(
+                    active_problem.search_query()
+                    if active_problem is not None else ""
+                ),
+            )
         kept = [
             sentence.strip()
             for sentence in _SENTENCE_SPLIT.split(text)
@@ -1746,6 +1768,7 @@ class ChatEngine:
             )
             if corrected_address:
                 print(f"[Rescue] respelled the address -> {corrected_address}")
+                self._turn_points_at_the_last_action = True
                 return replace(
                     route,
                     intent="computer_action",
@@ -1763,6 +1786,7 @@ class ChatEngine:
             # Nothing else in the turn, or this would not fire.
             if browser_progress.continues_the_last_action(user_input):
                 print(f"[Rescue] continue the last action -> {last_action}")
+                self._turn_points_at_the_last_action = True
                 return replace(
                     route,
                     intent="computer_action",
@@ -1810,6 +1834,7 @@ class ChatEngine:
                 if meant.casefold() not in goal.casefold():
                     goal = f"{goal} {meant}".strip()
                 print(f"[Rescue] misheard {mistook!r} -> {meant!r}")
+                self._turn_points_at_the_last_action = True
                 return replace(
                     route,
                     computer_operation=getattr(self, "_last_computer_action", ""),
@@ -1835,6 +1860,7 @@ class ChatEngine:
                     "[Rescue] complaint about the last action -> "
                     f"{getattr(self, '_last_computer_action', '')}"
                 )
+                self._turn_points_at_the_last_action = True
                 return replace(
                     route,
                     computer_operation=getattr(self, "_last_computer_action", ""),
@@ -5527,8 +5553,24 @@ class ChatEngine:
                     max_sentences=max_sentences,
                 )
                 if retry_reply:
+                    # The retry is checked the way the draft was. Measured
+                    # live: "I like strawberries." was answered "You're
+                    # welcome -- strawberries are tasty. Want to try
+                    # some?" -- the guard caught the stale courtesy
+                    # opener, regenerated, and the regeneration opened
+                    # with it again, unexamined. Nobody had said thank
+                    # you, so the clause is simply removed; the rest of
+                    # the answer is about strawberries and is fine.
+                    trimmed = ResponseQualityGuard.without_stale_courtesy(
+                        retry_reply, user_input,
+                    )
+                    if trimmed != retry_reply:
+                        print(
+                            "[Response Guard] The retry opened with a "
+                            "courtesy nobody had earned; removed it."
+                        )
                     raw_reply = retry_raw
-                    reply = retry_reply
+                    reply = trimmed or retry_reply
 
             # Length limits guide both the first generation and this optional
             # rewrite. The sanitizer never slices the final answer. If the
@@ -6307,6 +6349,13 @@ class ChatEngine:
         nothing else -- which is what made it safe to move.
         """
         route_started = time.perf_counter()
+        # One answer per turn to "is this turn about the thing she just
+        # did?". Set by the repair layer, read by the focus layer, which
+        # runs after it -- because a correction to a machine target is not
+        # a change of subject, and reading it as one is how "I meant only
+        # one S" became a topic called "only one S" with the browser
+        # action retired behind it.
+        self._turn_points_at_the_last_action = False
         continuing_agent_flow = bool(
             self.agent_builder.active or self.calendar_agent.active
         )
@@ -7340,6 +7389,7 @@ class ChatEngine:
         # touched -- and the Seattle answer was given twice.
         focus = self.task_sessions.note_turn(
             user_input, subject=str(getattr(goal, "subject", "") or ""),
+            pointer=self._turn_points_at_the_last_action,
         )
         if focus.corrected_to and focus.subject:
             goal = replace(goal, subject=focus.subject)

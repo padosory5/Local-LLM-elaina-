@@ -312,6 +312,31 @@ class ResponseQualityGuard:
     )
 
     @classmethod
+    def without_stale_courtesy(cls, reply: str, current_user: str) -> str:
+        """The reply with an unearned "you're welcome" taken off the front.
+
+        ``should_retry`` already refuses a draft that opens this way, and
+        the regeneration was then accepted without the same check.
+        Measured live: "I like strawberries." was answered "You're welcome
+        -- strawberries are tasty. Want to try some?", the guard fired,
+        and the retry opened with it again.
+
+        Removing the clause is safe in a way that rejecting the answer is
+        not: what follows it is a real reply, and asking the model a third
+        time costs a turn to no purpose.
+        """
+        text = str(reply or "").strip()
+        if not text or cls._is_thanking(str(current_user or "")):
+            return text
+        match = cls._COURTESY_OPENER.match(text)
+        if not match:
+            return text
+        rest = text[match.end():].lstrip(" ,.!-–—:;")
+        if not rest:
+            return text
+        return rest[:1].upper() + rest[1:]
+
+    @classmethod
     def _is_thanking(cls, text: str) -> bool:
         """Whether this turn actually thanks her.
 

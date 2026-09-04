@@ -531,5 +531,531 @@ class TheCorrectedPlaceReachesTheSearchTests(unittest.TestCase):
 
         self.assertEqual(second.route.intent, "conversation")
 
+
+class OneRepresentationOfTheCurrentTurnTests(unittest.TestCase):
+    """Session 6. The turn may not survive in two versions at once.
+
+    The router repairs a mishearing by putting the person's own word back
+    into its paraphrase. It repaired one field and left the rest, so the
+    same turn left the router saying two things:
+
+        [Router] restored 'Are there Casinos in Seattle?'
+        [Router] conversation (0.95): The user is asking about the
+                 existence of Cousinos in Seattle
+
+    Which one a layer downstream believes then depends on which field it
+    happens to read.
+    """
+
+    class _Scripted:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def chat(self, **_kwargs):
+            import json
+
+            return {"message": {"content": json.dumps(self.payload)}}
+
+    def _decision(self):
+        from brain.intent_router import SemanticIntentRouter
+
+        router = SemanticIntentRouter(
+            self._Scripted({
+                "intent": "web_search",
+                "confidence": 0.95,
+                "normalized_request": "Are there Cousinos in Seattle?",
+                "reason": (
+                    "The user is asking about the existence of Cousinos in "
+                    "Seattle, which is a direct question."
+                ),
+                "topic": "Cousinos in Seattle",
+                "entity": "Cousinos",
+                "search_query": "Cousinos in Seattle",
+                "speech_act": "information_request",
+            }),
+            "qwen3:8b",
+        )
+        return router.route("No, no, are there casinos in Seattle?")
+
+    def test_the_repair_reaches_every_field_the_model_wrote(self):
+        decision = self._decision()
+
+        for field in (
+            "normalized_request", "reason", "topic", "entity", "search_query",
+        ):
+            with self.subTest(field=field):
+                self.assertNotIn(
+                    "cousinos", str(getattr(decision, field, "")).casefold(),
+                )
+
+    def test_the_repair_does_not_damage_the_prose_it_touches(self):
+        # The over-correction: "the" and "there" score 0.75 against each
+        # other, so a transcript containing "are there casinos" rewrote
+        # every "the" in the reason to "there".
+        decision = self._decision()
+
+        self.assertTrue(decision.reason.startswith("The user"), decision.reason)
+        self.assertIn("about the existence", decision.reason)
+
+
+class ACorrectionToAnActionIsNotANewSubjectTests(unittest.TestCase):
+    """Session 6, S6-01. The correction became a topic.
+
+        User:   open isss.washington.edu
+        User:   I meant only one S.
+        [Conversation State] Current subject: only one S
+                             No longer the focus: browser_action
+
+    Two layers read the same turn and disagreed: the repair layer had it
+    as a correction to an address, the focus layer as a change of subject.
+    The focus layer runs second, and it won.
+    """
+
+    def _engine(self, action="open_url", goal="isss.washington.edu"):
+        from tests.turn_harness import build_engine
+
+        engine = build_engine()
+        engine._turn_points_at_the_last_action = False
+        engine._last_computer_action = action
+        engine._last_computer_goal = goal
+        return engine
+
+    def test_the_correction_reaches_the_address(self):
+        from brain.intent_router import IntentDecision
+
+        engine = self._engine()
+        try:
+            route, _ = engine._rescue_capability_route(
+                IntentDecision(
+                    intent="conversation", confidence=0.95,
+                    normalized_request="I meant only one S", reason="t",
+                ),
+                "I meant only one S.",
+            )
+        finally:
+            engine.close()
+
+        self.assertEqual(route.computer_operation, "open_url")
+        self.assertEqual(route.action_target, "is.washington.edu")
+
+    def test_a_turn_the_repair_layer_claimed_names_no_new_subject(self):
+        import time
+
+        focus = conversation_focus.start(now=time.monotonic())
+        focus = conversation_focus.update(
+            focus, "Can you use my browser control and open isss.washington.edu?",
+            subject="browser_action", now=time.monotonic(),
+        )
+        after = conversation_focus.update(
+            focus, "I meant only one S.", subject="only one S",
+            now=time.monotonic(), pointer=True,
+        )
+
+        self.assertEqual(after.subject, focus.subject)
+        self.assertNotIn("browser_action", after.superseded)
+
+    def test_without_that_claim_a_correction_still_moves_the_subject(self):
+        # The over-correction: an ordinary "I mean X" must still work.
+        import time
+
+        focus = conversation_focus.start(now=time.monotonic())
+        focus = conversation_focus.update(
+            focus, "I'm moving to Seattle.", subject="moving",
+            now=time.monotonic(),
+        )
+        after = conversation_focus.update(
+            focus, "No, I mean I'm going to UW.", subject="Seattle",
+            now=time.monotonic(),
+        )
+
+        self.assertEqual(after.subject, "UW")
+
+    def test_the_operative_clause_is_the_last_one(self):
+        # "There's three S's in there. I just want two S's in there."
+        # Both clauses are letter counts and they disagree; the one that
+        # says what is wanted is the one at the end.
+        self.assertEqual(
+            browser_progress.respelled_address(
+                "isss.washington.edu",
+                "There's three S's in there. I just want two S's in there.",
+            ),
+            "iss.washington.edu",
+        )
+
+
+class EvidenceThatAnActionFailedReachesItTests(unittest.TestCase):
+    """Session 6, S6-03.
+
+        Elaina: [open_url Zillow.com status=url_opened]
+        User:   you didn't open it.
+        Elaina: I can't do that one. Right now I can use browser control...
+
+    Saying she cannot do the thing while listing it as something she can
+    do. English lets the denial take the agent as its subject or the
+    thing as its subject, and only one of the two was read.
+    """
+
+    def test_the_denial_goes_back_to_the_action(self):
+        from brain.intent_router import IntentDecision
+        from tests.turn_harness import build_engine
+
+        engine = build_engine()
+        engine._turn_points_at_the_last_action = False
+        engine._last_computer_action = "open_url"
+        engine._last_computer_goal = "Zillow.com"
+        try:
+            route, note = engine._rescue_capability_route(
+                IntentDecision(
+                    intent="computer_action", confidence=0.95,
+                    normalized_request="you didn't open it.", reason="t",
+                    computer_operation="unsupported",
+                ),
+                "you didn't open it.",
+            )
+        finally:
+            engine.close()
+
+        self.assertEqual(route.computer_operation, "open_url")
+        self.assertEqual(route.action_target, "Zillow.com")
+        self.assertEqual(note, "")
+
+    def test_both_word_orders_are_the_same_complaint(self):
+        for said in (
+            "you didn't open it.", "You never opened it",
+            "it didn't open", "You haven't shown me anything",
+            "it's not open",
+        ):
+            with self.subTest(said=said):
+                self.assertTrue(
+                    state.complains_about_missing_results(said), said,
+                )
+
+    def test_a_denial_that_names_no_action_is_not_one(self):
+        # The over-correction: not every "you didn't" is about the last
+        # machine action.
+        for said in (
+            "you didn't understand me", "you didn't say that",
+            "you didn't have to do that", "I didn't open it",
+        ):
+            with self.subTest(said=said):
+                self.assertFalse(
+                    state.complains_about_missing_results(said), said,
+                )
+
+
+class AnAnchorIsAThingTests(unittest.TestCase):
+    """Session 6, S6-04 and S6-06. What the anchor is allowed to be.
+
+    It held an errand -- "no, open Zillow.com" -- and then a placeholder,
+    the literal word "Conversation". Both rode into searches:
+
+        Are there Cousinos in Seattle? no, open Zillow.com
+        studio apartments near Conversation $1,500
+    """
+
+    def _walk(self, turns):
+        import time
+
+        focus = conversation_focus.start(now=time.monotonic())
+        for said, subject in turns:
+            focus = conversation_focus.update(
+                focus, said, subject=subject, now=time.monotonic(),
+            )
+        return focus
+
+    def test_an_errand_is_not_what_the_conversation_is_about(self):
+        focus = self._walk((
+            ("Can you use my browser control and open zelo.com?", "browser_action"),
+            ("No, no, open Zillow.com", "website"),
+        ))
+
+        self.assertNotIn("about", focus.background)
+
+    def test_a_placeholder_is_not_either(self):
+        focus = self._walk((
+            ("Can you find me a studio near the University of Washington?",
+             "accommodation"),
+            ("I like strawberries.", "Conversation"),
+            ("Can you find me a rent near my school?", "rental housing"),
+        ))
+
+        self.assertNotEqual(focus.background.get("about", ""), "Conversation")
+
+    def test_my_school_resolves_to_the_school_that_was_named(self):
+        # She could answer "where's my university again?" correctly one
+        # turn later, so the knowledge was there. The referent resolver
+        # was reading the previous subject instead of looking for it.
+        focus = self._walk((
+            ("Can you find me a studio near the University of Washington?",
+             "accommodation"),
+            ("You better be.", "Conversation"),
+            ("I like strawberries.", "Conversation"),
+            ("Can you find me a rent near my school?", "rental housing"),
+        ))
+
+        self.assertEqual(
+            focus.background.get("about", ""), "University of Washington",
+        )
+
+    def test_a_real_topic_correction_still_becomes_the_anchor(self):
+        # The over-correction: the anchor exists so that "rent near my
+        # school" three turns later still means near UW.
+        focus = self._walk((
+            ("I'm moving to Seattle on September 18.", "moving"),
+            ("No, I mean I'm going to UW.", "Seattle"),
+            ("Where can I rent a place near my school?", "rentals"),
+        ))
+
+        self.assertIn("UW", focus.query_context())
+
+
+class TheExistentialThereIsNotAPointerTests(unittest.TestCase):
+    """Session 6, S6-04. "Are there casinos in Seattle?"
+
+    Read as pointing back at the previous topic, so the anchor was kept,
+    and the anchor was a browser instruction from three turns earlier.
+    """
+
+    def test_asking_whether_something_exists_moves_the_topic_on(self):
+        import time
+
+        focus = conversation_focus.start(now=time.monotonic())
+        focus = conversation_focus.update(
+            focus, "No, I mean Bainbridge Island.", subject="Seattle",
+            now=time.monotonic(),
+        )
+        self.assertEqual(focus.background.get("about"), "Bainbridge Island")
+
+        after = conversation_focus.update(
+            focus, "Are there Cousinos in Seattle?",
+            subject="Cousinos in Seattle", now=time.monotonic(),
+        )
+
+        self.assertNotIn(
+            "bainbridge", " ".join(after.query_context()).casefold(),
+        )
+
+    def test_a_deictic_there_still_points_back(self):
+        # The over-correction: "is it cheaper there?" is about the place
+        # under discussion and must keep pointing at it.
+        import time
+
+        focus = conversation_focus.start(now=time.monotonic())
+        focus = conversation_focus.update(
+            focus, "I mean I'm going to UW.", subject="Seattle",
+            now=time.monotonic(),
+        )
+        after = conversation_focus.update(
+            focus, "Is it expensive there?", subject="cost of living",
+            now=time.monotonic(),
+        )
+
+        self.assertIn("UW", " ".join(after.query_context()))
+
+
+class ACandidateMustBeTheThingAskedForTests(unittest.TestCase):
+    """Session 6, S6-02.
+
+        [Query] packing peanuts in Korea
+        Selected: Coffee Flavor Peanut, Korea price supplier - 21food
+        Why: fits Korea
+
+    It did fit Korea. Nothing checked whether it was packing material,
+    because the fit reader looked at every dimension except the one that
+    says what the thing is.
+    """
+
+    def _problem(self):
+        problem = state.update(
+            state.start("packing peanuts"), "Where can I buy packing peanuts?",
+        )
+        return state.update(problem, "In Korea though.")
+
+    def test_a_partial_match_on_a_compound_name_is_a_mismatch(self):
+        from brain import candidate_fit
+
+        fits = candidate_fit.evaluate(
+            [{"title": "Coffee Flavor Peanut, Korea price supplier",
+              "url": "https://21food.com/x", "summary": ""}],
+            self._problem(),
+        )
+
+        self.assertEqual(fits[0].verdict, "MISMATCH")
+        self.assertFalse(fits[0].viable)
+
+    def test_the_thing_actually_asked_for_outranks_it(self):
+        from brain import candidate_fit
+
+        fits = candidate_fit.evaluate(
+            [
+                {"title": "Coffee Flavor Peanut, Korea price supplier",
+                 "url": "https://21food.com/x", "summary": ""},
+                {"title": "White Anti-Static Packing Peanuts in Korea",
+                 "url": "https://shop.example.com/p/2", "summary": "$20"},
+            ],
+            self._problem(),
+        )
+
+        self.assertIn("Packing Peanuts", fits[0].name)
+
+    def test_naming_the_subject_is_not_by_itself_a_fit(self):
+        # The over-correction: being the right kind of thing is the floor,
+        # not evidence. A page titled "Guitars" says nothing about
+        # electric or about the budget.
+        from brain import candidate_fit
+        from brain.task_session import TaskSessionStore
+
+        store = TaskSessionStore()
+        for turn in (
+            "I'm thinking about getting a guitar.", "Electric.",
+            "About 500,000 won.",
+        ):
+            problem = store.note_recommendation_turn(turn, subject="guitar")
+
+        fits = candidate_fit.evaluate(
+            [{"title": "Guitars", "summary": ""}], problem,
+        )
+
+        self.assertEqual(fits[0].verdict, "UNCHECKED")
+
+
+class TheSentenceOutranksItsParaphraseTests(unittest.TestCase):
+    """Session 6, S6-07. A studio is not a hotel.
+
+        [Preference Resolution] Domain: hotel
+
+    for "a studio near the University of Washington" -- because the goal
+    layer's one-word summary of it was "accommodation", which types as a
+    booking, and the summary was read before the sentence.
+    """
+
+    def test_the_request_decides_the_category(self):
+        problem = state.update(
+            state.start("accommodation"),
+            "Can you find me a studio near the University of Washington "
+            "with a budget?",
+        )
+
+        self.assertEqual(problem.category, "realestate")
+        self.assertIn("studio", problem.search_query("").casefold())
+
+    def test_a_discarded_clause_still_may_not_supply_it(self):
+        # The over-correction: when part of the sentence was judged to be
+        # a condition, that part may not type the request either.
+        # "What if you have a car?" typed the whole thing as the car
+        # domain and searched "Washington State cars Seattle".
+        problem = state.update(
+            state.start("travel"),
+            "What if you have a car? Where are good places to travel "
+            "along Washington State?",
+        )
+
+        self.assertNotIn("car", problem.search_query("").casefold().split())
+
+
+class WhatWasFoundIsWhatGetsSaidTests(unittest.TestCase):
+    """Session 6, S6-08.
+
+        [Recommendation Reasoning] Candidates: 3 (3 fit, 0 unchecked)
+        Selected: Studio off-campus student housing near University of
+                  Washington
+        Why: fits studio, University of Washington
+
+        Elaina: [Grounding Guard] Unverified place(s): Perchn.
+                ... I don't want to send you somewhere I haven't checked
+                -- want me to look up real ones?
+
+    Three candidates had been checked and ranked, one had been chosen and
+    the reason written down, and the answer named something else entirely.
+    Deleting the invented name is right. Offering to go and find what had
+    already been found is not.
+    """
+
+    def _engine(self):
+        from tests.turn_harness import build_engine
+
+        engine = build_engine()
+        engine._grounded_context = {"subject": "studios near UW", "statement": ""}
+        return engine
+
+    def test_the_answer_names_the_candidate_that_was_chosen(self):
+        engine = self._engine()
+        try:
+            engine.task_sessions.note_recommendation_turn(
+                "Can you find me a studio near the University of Washington?",
+                subject="accommodation",
+            )
+            engine.task_sessions.record_candidates(
+                ("Studio off-campus student housing near University of "
+                 "Washington",),
+                evidence=("checked",),
+            )
+
+            reply = engine._enforce_grounded_entities(
+                "Try Perchn for studios near campus.",
+                user_input="Can you find me a studio near UW?",
+                action_performed=False,
+            )
+        finally:
+            engine.close()
+
+        self.assertNotIn("Perchn", reply)
+        self.assertIn("Studio off-campus student housing", reply)
+        self.assertNotIn("look up real ones", reply)
+
+    def test_with_nothing_found_it_still_offers_to_look(self):
+        # The other direction: the offer is the right answer when there
+        # is nothing to name.
+        engine = self._engine()
+        try:
+            reply = engine._enforce_grounded_entities(
+                "Try Walmart or Target for packing peanuts.",
+                user_input="Where can I buy packing peanuts?",
+                action_performed=False,
+            )
+        finally:
+            engine.close()
+
+        self.assertNotIn("Walmart", reply)
+        self.assertIn("look up real ones", reply)
+
+
+class ARetryIsCheckedLikeADraftTests(unittest.TestCase):
+    """Session 6, S6-09. The guard fired and the retry did it again.
+
+        User:   I like strawberries.
+        [Response Guard] Repeated an unrelated prior answer; regenerating
+        Elaina: You're welcome -- strawberries are tasty. Want to try some?
+
+    Nobody had said thank you. The draft was rejected for opening this
+    way and the regeneration was accepted without the same test -- the
+    same shape as B-56, one layer over.
+    """
+
+    def test_an_unearned_courtesy_is_removed(self):
+        from brain.response_quality import ResponseQualityGuard
+
+        self.assertEqual(
+            ResponseQualityGuard.without_stale_courtesy(
+                "You're welcome -- strawberries are tasty. Want to try some?",
+                "I like strawberries.",
+            ),
+            "Strawberries are tasty. Want to try some?",
+        )
+
+    def test_an_earned_one_is_left_alone(self):
+        from brain.response_quality import ResponseQualityGuard
+
+        for reply, said in (
+            ("You're welcome! Enjoy the film.", "thanks a lot"),
+            ("Strawberries are tasty.", "I like strawberries."),
+            ("No problem. Here you go.", "thank you"),
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(
+                    ResponseQualityGuard.without_stale_courtesy(reply, said),
+                    reply,
+                )
+
 if __name__ == "__main__":
     unittest.main()
