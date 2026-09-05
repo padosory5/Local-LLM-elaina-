@@ -101,6 +101,9 @@ _TEXT_ENTRY_ROLES = frozenset({"textbox", "searchbox", "combobox"})
 _LINK_ROLES = frozenset({"link"})
 _MAX_HREF_LENGTH = 400
 _DIALOG_ROLES = frozenset({"dialog", "alertdialog"})
+# Smaller than this in either direction and nobody can see it, let alone
+# click it. Real controls are far larger; a hidden one is 0 or 1.
+_MIN_VISIBLE_PIXELS = 2
 # Landmarks that are site chrome rather than the page's own answer.
 _CHROME_LANDMARKS = frozenset({
     "banner", "navigation", "contentinfo", "complementary",
@@ -391,6 +394,13 @@ class ScreenPageObserver:
                 # unusable rectangles -- a YouTube skip link measured at
                 # y=-960. Clicking one moves the pointer off the page.
                 continue
+            if not self._is_visible(node, rect):
+                # A person asks for the control they can see. A collapsed
+                # menu's items, a hidden tab panel and a zero-height
+                # skip-link all sit inside the viewport rectangle and are
+                # not on the screen, so offering one as a candidate offers
+                # something nobody was looking at.
+                continue
             key = (role, label, centre[0] // 4, centre[1] // 4)
             if key in seen:
                 continue
@@ -499,6 +509,35 @@ class ScreenPageObserver:
             return str(info.element.CurrentAriaRole or "").strip().lower()
         except Exception:
             return ""
+
+    @staticmethod
+    def _is_visible(info: Any, rect: tuple[int, int, int, int]) -> bool:
+        """Whether a person could actually see this control right now.
+
+        Two independent tests, because neither alone is enough. UIA's
+        ``IsOffscreen`` covers what the page has hidden -- a closed
+        dropdown's items, an inactive tab panel -- and reports it directly.
+        A degenerate rectangle covers what is technically rendered and
+        occupies no space, which is how skip links and icon-font spacers
+        present.
+
+        Missing ``IsOffscreen`` is treated as visible: an observer that
+        cannot answer must not silently empty the page.
+        """
+        left, top, right, bottom = rect
+        if right - left < _MIN_VISIBLE_PIXELS or bottom - top < _MIN_VISIBLE_PIXELS:
+            return False
+        try:
+            offscreen = info.element.CurrentIsOffscreen
+        except Exception:
+            try:
+                offscreen = info.is_offscreen
+            except Exception:
+                return True
+        try:
+            return not bool(offscreen)
+        except Exception:
+            return True
 
     def _read_node(
         self, info: Any,

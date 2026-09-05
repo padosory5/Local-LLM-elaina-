@@ -33,6 +33,7 @@ from brain.browser_interaction import (
     AmbiguousPageAction,
     BrowserInteraction,
     Candidate,
+    landmarks_for,
     strip_surface_context,
 )
 from brain.deliberation import Decision, Goal, decide, interpret
@@ -1834,7 +1835,7 @@ class BrowserActionPlanner:
             # The candidates are the useful half of an ambiguous match: a
             # person can answer "which one" only if they are told what the
             # choices were.
-            choices = self._candidates_from(matches)
+            choices = self._candidates_from(matches, observation.elements)
             return ActionPlanResult(
                 "failed",
                 f"I found multiple controls named {target!r}, so I didn't choose one.",
@@ -1862,14 +1863,20 @@ class BrowserActionPlanner:
         )
 
     @staticmethod
-    def _candidates_from(matches) -> tuple[Candidate, ...]:
+    def _candidates_from(matches, elements=()) -> tuple[Candidate, ...]:
         """The matched elements as things a person can choose between.
 
-        Where each one sits is the only thing that tells identical labels
-        apart, and the ISS page had two links both reading ABOUT. The page
-        already knows which of its elements are content and which are
-        chrome; that is what is reported, rather than a guess at "footer"
-        the observation cannot support.
+        People point at things on a page by what is beside them -- "the
+        one next to Services" -- and when the labels are identical that is
+        the only handle there is. Measured in the session-14 run, offering
+        the alternative:
+
+            There are two about links on the page -- the first one in the
+            page navigation and the second one in the page navigation.
+
+        Which is one description twice. So each candidate is placed
+        against its nearest sayable neighbour, and the landmark is used
+        only where it actually separates them.
         """
         found = []
         for order, element in enumerate(matches, start=1):
@@ -1885,7 +1892,26 @@ class BrowserActionPlanner:
                 order=order, where=where,
                 href=str(getattr(element, "href", "") or ""),
             ))
-        return tuple(found)
+        chosen_ids = {candidate.element_id for candidate in found}
+        placed = landmarks_for(
+            [
+                (candidate.element_id, candidate.label,
+                 tuple(getattr(match, "rect", (0, 0, 0, 0))))
+                for candidate, match in zip(found, matches)
+            ],
+            [
+                (str(getattr(other, "label", "") or ""),
+                 tuple(getattr(other, "rect", (0, 0, 0, 0))))
+                for other in elements
+                if str(getattr(other, "id", "") or "") not in chosen_ids
+            ],
+        )
+        return tuple(
+            replace(candidate, relation=placed[candidate.element_id][0],
+                    near=placed[candidate.element_id][1])
+            if candidate.element_id in placed else candidate
+            for candidate in found
+        )
 
     def _try_direct_ordinal_result(
         self, goal: str, *, allowed_hosts: tuple[str, ...] = (),

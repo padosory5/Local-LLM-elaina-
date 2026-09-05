@@ -220,6 +220,98 @@ _LEAVES_IT_TO_HER = re.compile(
 )
 
 
+# How far apart two elements may sit and still be described as being next
+# to each other. Generous enough for a padded navigation bar, tight enough
+# that "next to" means something a person can see.
+_ADJACENT_PIXELS = 320
+# A neighbour has to be sayable. Four words is a menu item or a heading;
+# more is a sentence, and "the one next to Apply for your I-20 before the
+# deadline" helps nobody.
+_NEIGHBOUR_WORDS = 4
+
+
+def _overlaps(first: tuple[int, int], second: tuple[int, int]) -> int:
+    """How much two 1-D spans share. Negative is the gap between them."""
+    return min(first[1], second[1]) - max(first[0], second[0])
+
+
+def _relation(target, other) -> tuple[str, int] | None:
+    """How ``other`` sits relative to ``target``, and how far away.
+
+    Only the four readings a person would actually use: beside it on the
+    same line, or directly above or below it in the same column.
+    """
+    t_left, t_top, t_right, t_bottom = target
+    o_left, o_top, o_right, o_bottom = other
+    same_row = _overlaps((t_top, t_bottom), (o_top, o_bottom)) > 0
+    same_column = _overlaps((t_left, t_right), (o_left, o_right)) > 0
+    if same_row and not same_column:
+        gap = o_left - t_right if o_left >= t_right else t_left - o_right
+        if 0 <= gap <= _ADJACENT_PIXELS:
+            return "next to", gap
+        return None
+    if same_column and not same_row:
+        if o_bottom <= t_top:
+            gap = t_top - o_bottom
+            return ("under", gap) if gap <= _ADJACENT_PIXELS else None
+        gap = o_top - t_bottom
+        return ("above", gap) if gap <= _ADJACENT_PIXELS else None
+    return None
+
+
+def landmarks_for(targets, others) -> dict[str, tuple[str, str]]:
+    """What each target sits next to, when that tells them apart.
+
+    ``targets`` are ``(id, label, rect)``; ``others`` are ``(label, rect)``
+    for everything else visible on the page.
+
+    People locate things on a page by what is beside them -- "the one next
+    to Services" -- and that is the only handle they have when the labels
+    are identical. Measured in the session-14 run, where the alternative
+    was offered instead:
+
+        There are two about links on the page -- the first one in the page
+        navigation and the second one in the page navigation.
+
+    A landmark is kept only if it separates the candidates. Two links both
+    "next to Services" is the same sentence again with more words in it.
+    """
+    found: dict[str, tuple[str, str]] = {}
+    target_labels = {
+        str(label or "").strip().casefold() for _id, label, _rect in targets
+    }
+    for element_id, _label, rect in targets:
+        if not any(rect):
+            continue
+        best: tuple[int, str, str] | None = None
+        for other_label, other_rect in others:
+            name = " ".join(str(other_label or "").split())
+            if not name or name == "(unlabeled)" or not any(other_rect):
+                continue
+            if name.casefold() in target_labels:
+                continue
+            if len(name.split()) > _NEIGHBOUR_WORDS:
+                continue
+            placed = _relation(rect, other_rect)
+            if placed is None:
+                continue
+            relation, gap = placed
+            # Beside beats above and below: a person reads a row first.
+            rank = gap if relation == "next to" else gap + _ADJACENT_PIXELS
+            if best is None or rank < best[0]:
+                best = (rank, relation, name)
+        if best is not None:
+            found[element_id] = (best[1], best[2])
+    # A landmark that every candidate shares distinguishes none of them.
+    seen: dict[tuple[str, str], int] = {}
+    for placed in found.values():
+        seen[placed] = seen.get(placed, 0) + 1
+    return {
+        element_id: placed for element_id, placed in found.items()
+        if seen[placed] == 1
+    }
+
+
 @dataclass(frozen=True)
 class Candidate:
     """One of several page elements a request could have meant.
@@ -235,9 +327,19 @@ class Candidate:
     order: int              # 1-based, in the page's own order
     where: str = ""         # "the page navigation", "the main content"
     href: str = ""
+    # What this one sits beside, and how: ("next to", "Services").
+    relation: str = ""
+    near: str = ""
 
     def named(self) -> str:
-        """How to refer to this one so a person can tell it apart."""
+        """How to refer to this one so a person can tell it apart.
+
+        What it is beside first, because that is how people point at
+        things on a page. Where it sits second. Its position last, which
+        is true but tells you nothing about which one you were looking at.
+        """
+        if self.near:
+            return f"the one {self.relation} {self.near}"
         position = ORDINAL_WORD.get(self.order - 1, f"number {self.order}")
         return f"the {position} one{f' in {self.where}' if self.where else ''}"
 
@@ -275,6 +377,17 @@ class AmbiguousPageAction:
         said = " ".join(str(text or "").split())
         if not said or not self.candidates:
             return None
+        # Answering with the landmark she offered: "the one next to
+        # Services". This is how the question was asked, so it has to be
+        # how an answer can be given.
+        for candidate in self.candidates:
+            near = candidate.near.strip()
+            if near and near.casefold() in said.casefold():
+                if sum(
+                    1 for other in self.candidates
+                    if other.near.casefold() == near.casefold()
+                ) == 1:
+                    return candidate
         # Naming one outright, when the labels actually differ.
         for candidate in self.candidates:
             label = candidate.label.strip()
@@ -339,3 +452,15 @@ class AmbiguousPageAction:
             f"There are {spelled} {named} links on the page -- {listed}. "
             "Which one do you mean?"
         )
+
+    def still_answerable_for(self, label: str) -> bool:
+        """Whether a later choice still refers to this same set.
+
+        Measured in the session-14 run: one candidate was chosen and
+        clicked, and the very next turn -- "Can you click the second
+        one?" -- had nothing left to choose from, so a bare ordinal went
+        to the router and became a Google search for ABOUT. Answering a
+        question does not use up the answer to it.
+        """
+        asked = " ".join(str(label or "").split()).casefold()
+        return not asked or asked == self.requested_label.casefold()

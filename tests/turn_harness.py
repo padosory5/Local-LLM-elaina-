@@ -386,7 +386,7 @@ class SilentCursor:
 
     available = True
 
-    def begin_run(self) -> None:
+    def begin_run(self, action: str = "") -> None:
         pass
 
     def end_run(self, *, restore: bool = True) -> None:

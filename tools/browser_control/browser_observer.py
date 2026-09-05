@@ -459,6 +459,12 @@ class PageElement:
     # In the page's main content rather than its site chrome. Only affects
     # reading order on a dense page; nothing is ever dropped for it.
     in_main: bool = True
+    # Where it sits on the screen, in physical pixels: (left, top, right,
+    # bottom). Zero when the observer has no geometry -- the CDP path does
+    # not -- so nothing may depend on it being present. What it is for is
+    # telling identical labels apart: two links both reading ABOUT are
+    # distinguishable only by what they are next to.
+    rect: tuple[int, int, int, int] = (0, 0, 0, 0)
 
 
 @dataclass(frozen=True)

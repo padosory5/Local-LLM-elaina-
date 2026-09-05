@@ -233,6 +233,7 @@ def to_page_observation(
                 in_privacy_dialog=privacy_reject,
                 is_privacy_dismissal=privacy_reject,
                 in_main=element.in_main,
+                rect=element.rect,
             )
         )
     return PageObservation(

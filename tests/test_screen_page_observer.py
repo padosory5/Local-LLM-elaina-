@@ -12,8 +12,9 @@ class _Rect:
 class _RawElement:
     """Stands in for IUIAutomationElement (ARIA role + value property)."""
 
-    def __init__(self, aria="", value=""):
+    def __init__(self, aria="", value="", offscreen=False):
         self.CurrentAriaRole = aria
+        self.CurrentIsOffscreen = offscreen
         self._value = value
 
     def GetCurrentPropertyValue(self, property_id):
@@ -32,13 +33,14 @@ class _Info:
         value="",
         rect=(0, 0, 10, 10),
         enabled=True,
+        offscreen=False,
         children=(),
     ):
         self.control_type = control_type
         self.name = name
         self.rectangle = _Rect(*rect)
         self.enabled = enabled
-        self.element = _RawElement(aria, value)
+        self.element = _RawElement(aria, value, offscreen)
         self._children = list(children)
 
     def children(self):
@@ -131,6 +133,30 @@ class ObservationTests(unittest.TestCase):
         )
         result = _observer(document).observe(_window())
         self.assertEqual([e.label for e in result.elements], ["Visible"])
+
+    def test_what_the_page_has_hidden_is_not_a_candidate(self):
+        # A collapsed dropdown's items and an inactive tab panel's
+        # controls carry perfectly good rectangles inside the viewport.
+        # Nobody can see them, so nobody is asking for them -- and
+        # offering one as a choice offers something that was never on the
+        # screen.
+        document = _document(
+            _Info("Hyperlink", "Services", aria="link",
+                  rect=(100, 100, 200, 130)),
+            _Info("Hyperlink", "Advising", aria="link",
+                  rect=(100, 140, 200, 170), offscreen=True),
+        )
+        result = _observer(document).observe(_window())
+        self.assertEqual([e.label for e in result.elements], ["Services"])
+
+    def test_an_observer_that_cannot_answer_keeps_the_element(self):
+        # Missing IsOffscreen must not silently empty a page. A driver
+        # that cannot tell is not evidence that nothing is visible.
+        info = _Info("Button", "Search", aria="button", rect=(10, 10, 90, 40))
+        del info.element.CurrentIsOffscreen
+
+        result = _observer(_document(info)).observe(_window())
+        self.assertEqual([e.label for e in result.elements], ["Search"])
 
     def test_zero_sized_elements_are_dropped(self):
         document = _document(

@@ -142,7 +142,7 @@ class _IdleCursor:
     def acknowledge_user(self):
         pass
 
-    def begin_run(self):
+    def begin_run(self, action=""):
         self.runs += 1
 
     def end_run(self, *, restore=True):

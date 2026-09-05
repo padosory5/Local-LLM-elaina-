@@ -142,6 +142,154 @@ class TheQuestionCanBeAnsweredTests(unittest.TestCase):
         self.assertIn(", and ", asked)
 
 
+class PointingAtSomethingByWhatItIsNextToTests(unittest.TestCase):
+    """People locate things on a page by their neighbours.
+
+    Session 14, and the reason this exists:
+
+        There are two about links on the page -- the first one in the page
+        navigation and the second one in the page navigation.
+
+    Which is one description, twice. Both links were in the navigation
+    bar, so the thing that was supposed to tell them apart told the person
+    nothing at all.
+    """
+
+    def test_a_row_of_links_is_described_by_its_neighbours(self):
+        from brain.browser_interaction import landmarks_for
+
+        placed = landmarks_for(
+            [("e1", "ABOUT", (100, 10, 160, 30)),
+             ("e2", "ABOUT", (600, 10, 660, 30))],
+            [("Home", (20, 10, 90, 30)),
+             ("Services", (680, 10, 780, 30))],
+        )
+
+        self.assertEqual(placed["e1"], ("next to", "Home"))
+        self.assertEqual(placed["e2"], ("next to", "Services"))
+
+    def test_a_column_uses_above_and_under(self):
+        from brain.browser_interaction import landmarks_for
+
+        placed = landmarks_for(
+            [("e1", "Apply", (100, 100, 200, 130)),
+             ("e2", "Apply", (100, 400, 200, 430))],
+            [("Undergraduate", (100, 60, 200, 90)),
+             ("Graduate", (100, 360, 200, 390))],
+        )
+
+        self.assertEqual(placed["e1"], ("under", "Undergraduate"))
+        self.assertEqual(placed["e2"], ("under", "Graduate"))
+
+    def test_a_landmark_every_candidate_shares_distinguishes_none(self):
+        # The failure mode being fixed, in its general form: a label both
+        # of them sit next to is the same sentence with more words in it.
+        from brain.browser_interaction import landmarks_for
+
+        placed = landmarks_for(
+            [("e1", "Edit", (100, 10, 160, 30)),
+             ("e2", "Edit", (100, 50, 160, 70))],
+            [("Menu", (20, 10, 90, 30)), ("Menu", (20, 50, 90, 70))],
+        )
+
+        self.assertEqual(placed, {})
+
+    def test_a_neighbour_too_long_to_say_is_not_a_landmark(self):
+        from brain.browser_interaction import landmarks_for
+
+        placed = landmarks_for(
+            [("e1", "ABOUT", (100, 10, 160, 30))],
+            [("Apply for your I-20 well before the deadline",
+              (20, 10, 90, 30))],
+        )
+
+        self.assertEqual(placed, {})
+
+    def test_something_far_away_is_not_next_to_anything(self):
+        from brain.browser_interaction import landmarks_for
+
+        placed = landmarks_for(
+            [("e1", "ABOUT", (100, 10, 160, 30))],
+            [("Search", (3000, 10, 3100, 30))],
+        )
+
+        self.assertEqual(placed, {})
+
+    def test_the_question_points_at_the_neighbours(self):
+        asked = AmbiguousPageAction(
+            operation="click_element", requested_label="about",
+            candidates=(
+                Candidate("e1", "ABOUT", 1, relation="next to", near="Home"),
+                Candidate("e2", "ABOUT", 2, relation="next to",
+                          near="Student Life"),
+            ),
+        ).question()
+
+        self.assertIn("the one next to Home", asked)
+        self.assertIn("the one next to Student Life", asked)
+
+    def test_and_the_neighbour_is_how_it_can_be_answered(self):
+        standing = AmbiguousPageAction(
+            operation="click_element", requested_label="about",
+            candidates=(
+                Candidate("e1", "ABOUT", 1, relation="next to", near="Home"),
+                Candidate("e2", "ABOUT", 2, relation="next to",
+                          near="Student Life"),
+            ),
+        )
+
+        self.assertEqual(standing.choose("the one next to Home").element_id, "e1")
+        self.assertEqual(
+            standing.choose("the one next to student life").element_id, "e2",
+        )
+        # And a position still works, because people say both.
+        self.assertEqual(standing.choose("the second one").element_id, "e2")
+
+    def test_the_planner_places_the_candidates_it_found(self):
+        from types import SimpleNamespace
+
+        from brain.browser_action_planner import BrowserActionPlanner
+
+        def element(identity, label, rect, main=True):
+            return SimpleNamespace(
+                id=identity, label=label, rect=rect, in_main=main,
+                in_dialog=False, href="",
+            )
+
+        matches = [
+            element("e1", "ABOUT", (100, 10, 160, 30)),
+            element("e2", "ABOUT", (600, 10, 660, 30)),
+        ]
+        everything = matches + [
+            element("n1", "Home", (20, 10, 90, 30)),
+            element("n2", "Services", (680, 10, 780, 30)),
+        ]
+
+        placed = BrowserActionPlanner._candidates_from(matches, everything)
+
+        self.assertEqual(placed[0].near, "Home")
+        self.assertEqual(placed[1].near, "Services")
+        self.assertEqual(placed[0].relation, "next to")
+
+    def test_without_geometry_it_falls_back_to_position(self):
+        # The CDP observer reports no rectangles. Saying "the first one"
+        # is worse than saying "next to Home" and better than crashing.
+        from types import SimpleNamespace
+
+        from brain.browser_action_planner import BrowserActionPlanner
+
+        matches = [
+            SimpleNamespace(id="e1", label="ABOUT", in_main=False,
+                            in_dialog=False, href=""),
+            SimpleNamespace(id="e2", label="ABOUT", in_main=True,
+                            in_dialog=False, href=""),
+        ]
+        placed = BrowserActionPlanner._candidates_from(matches, matches)
+
+        self.assertEqual(placed[0].near, "")
+        self.assertEqual(placed[0].named(), "the first one in the page navigation")
+
+
 class TheChoiceResumesTheSameActionTests(unittest.TestCase):
 
     def _engine(self):
@@ -177,10 +325,39 @@ class TheChoiceResumesTheSameActionTests(unittest.TestCase):
         self.assertEqual(prepared.tab_index, 0)
         self.assertEqual(prepared.browser_scan_id, "scan-1")
 
-    def test_the_question_is_answered_once(self):
+    def test_answering_does_not_use_up_the_answer(self):
+        # This assertion used to be the other way round, and the
+        # session-14 run showed it was wrong:
+        #
+        #     You said: the first one.
+        #     [Page Action] chose the first one ... 'ABOUT' (78d2c290-e25)
+        #     Elaina: Clicked 'ABOUT'.
+        #     You said: Can you click the second one?
+        #     [Reference] 'one of those' -> 'ABOUT'
+        #     [Computer Control] open_search target=ABOUT
+        #
+        # Having answered "which one?" once, there was nothing left to
+        # choose from, so a bare ordinal reached the router and went to
+        # Google. The candidates outlive the choice.
         engine = self._engine()
         try:
             engine._route_turn("the first one", timings={})
+            routing = engine._route_turn(
+                "Can you click the second one?", timings={},
+            )
+            prepared = routing.approved_computer_action
+        finally:
+            engine.close()
+
+        self.assertEqual(routing.route.computer_operation, "browser_action")
+        self.assertIsNotNone(prepared)
+        self.assertEqual(prepared.target, "e2")
+
+    def test_a_navigation_retires_the_candidates(self):
+        # A different page has different elements.
+        engine = self._engine()
+        try:
+            engine._route_turn("open naver.com", timings={})
             still_asking = engine._page_choice
         finally:
             engine.close()

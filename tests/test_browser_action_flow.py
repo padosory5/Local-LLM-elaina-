@@ -30,8 +30,9 @@ class FakeCursor:
         self.begin_calls = 0
         self.restore_values = []
 
-    def begin_run(self):
+    def begin_run(self, action=""):
         self.begin_calls += 1
+        self.actions = getattr(self, "actions", []) + [action]
 
     def end_run(self, *, restore=True):
         self.restore_values.append(restore)

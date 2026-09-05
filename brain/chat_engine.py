@@ -1695,7 +1695,7 @@ class ChatEngine:
         if route.computer_operation not in {"open_search", "open_url",
                                             "browser_action"}:
             return route
-        if self._page_choice is not None:
+        if getattr(self, "_page_choice", None) is not None:
             # A choice is outstanding between elements on a page. Whatever
             # this turn is, it is not a request to search the web for one
             # of their labels.
@@ -4805,6 +4805,11 @@ class ChatEngine:
         # from one taken too early.
         if route.computer_operation in {"open_url", "open_search"}:
             self._navigation_before = self._browser_fingerprint()
+            # A different page has different elements, so anything still
+            # waiting to be chosen between belongs to a page that is on
+            # its way out.
+            if hasattr(self, "_page_choice"):
+                self._page_choice = None
 
         if approved_action is not None and not (
             self.computer_control.requires_extra_confirmation(
@@ -4850,11 +4855,37 @@ class ChatEngine:
                     detail=prepared_result.prepared.request,
                     operation=route.computer_operation,
                 ), prepared_result
-            result = (
-                self.computer_control.execute(prepared_result.prepared)
-                if prepared_result.prepared is not None
-                else prepared_result
+            # A screen-driver navigation types into a real address bar
+            # with the real cursor, so it is an actuation like any other
+            # and needs the same interruption window. It never had one --
+            # measured in the session-14 run:
+            #
+            #     [Input Watch] takeover reason=pointer_drift
+            #                   parked_at=(2222,1171) now=(1585,342)
+            #     Elaina: I couldn't get to google.com: Something moved
+            #             the pointer, so I stopped ...
+            #
+            # With no run open, `_input_mark` was None, the real-input
+            # test was skipped entirely, and drift was the only signal
+            # left -- which is exactly the branch that cannot identify a
+            # person.
+            screen_navigation = (
+                getattr(self, "browser_driver", "") == "screen"
+                and route.computer_operation in {"open_url", "open_search"}
             )
+            if screen_navigation:
+                self.cursor_driver.begin_run(
+                    f"{route.computer_operation}:{route.action_target}"
+                )
+            try:
+                result = (
+                    self.computer_control.execute(prepared_result.prepared)
+                    if prepared_result.prepared is not None
+                    else prepared_result
+                )
+            finally:
+                if screen_navigation:
+                    self.cursor_driver.end_run(restore=False)
 
         # What was just done, so a turn that points at it has something to
         # point at. Only the two planner paths recorded this, which meant
@@ -5301,9 +5332,16 @@ class ChatEngine:
         )
         ambiguity = getattr(plan_result, "ambiguity", None)
         if ambiguity is None or not ambiguity.candidates:
-            # This run answered whatever was outstanding, one way or the
-            # other. An old question must not survive it.
-            self._page_choice = None
+            # A run about something else retires the old question. A run
+            # about the same thing does not -- that is the one whose
+            # candidates a follow-up choice still refers to.
+            standing = getattr(self, "_page_choice", None)
+            if standing is not None and not standing.still_answerable_for(
+                BrowserActionPlanner._direct_click_target(
+                    str(route.normalized_request or original_request or "")
+                ),
+            ):
+                self._page_choice = None
         if ambiguity is not None and ambiguity.candidates:
             # Not a failure to report and forget. The action is standing,
             # missing one thing, and the next turn can supply it.
@@ -5450,12 +5488,17 @@ class ChatEngine:
             return
         element = BrowserActionPlanner._direct_click_target(requested_goal)
         if element:
+            # A click that worked has to record *what* it clicked, or the
+            # record says it succeeded at nothing. Measured in the
+            # session-14 run: "click_element target='about' status=clicked
+            # resolved=''" -- which `satisfied` reads as unsatisfied.
+            done = plan_result.status == "done"
             self._browser_interaction = BrowserInteraction(
                 operation="click_element", target=element,
                 source=requested_goal,
-                status=(
-                    "clicked" if plan_result.status == "done" else "failed"
-                ),
+                status="clicked" if done else "failed",
+                resolved=element if done else "",
+                evidence=str(getattr(plan_result, "summary", "") or ""),
             )
         elif proposed:
             # Not a page interaction -- a navigation or a whole-goal run.
@@ -5490,7 +5533,11 @@ class ChatEngine:
     def _resume_page_choice(self, chosen) -> "TurnRouting":
         """Run the standing page action on the element they picked."""
         standing = self._page_choice
-        self._page_choice = None
+        # Deliberately kept. Answering "which one?" does not use up the
+        # answer: measured in the session-14 run, "the first one" was
+        # clicked and the very next turn -- "Can you click the second
+        # one?" -- had nothing left to choose from, so a bare ordinal
+        # reached the router and became a Google search for ABOUT.
         self._retire_pending_interpretations()
         print(
             f"[Page Action] chose {chosen.named()}: "
@@ -7759,7 +7806,9 @@ class ChatEngine:
         #     open_search ABOUT -> google.com/search?q=ABOUT
         #
         # A label is not an identity, and a search is not a click.
-        if not continuing_agent_flow and self._page_choice is not None:
+        if not continuing_agent_flow and getattr(
+            self, "_page_choice", None,
+        ) is not None:
             chosen = self._page_choice.choose(user_input)
             if chosen is not None:
                 resumed = self._resume_page_choice(chosen)
