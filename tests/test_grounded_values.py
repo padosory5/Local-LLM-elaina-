@@ -188,6 +188,35 @@ class EngineIntegrationTests(unittest.TestCase):
         self.assertIn("looked", reply)
         self.assertNotIn("haven't actually checked", reply)
 
+    def test_only_one_offer_survives(self):
+        # Session 8, S8-07. The model had already ended with an offer and
+        # the guard appended its own behind it -- two questions, and only
+        # one of them was parked, so answering the wrong one did nothing.
+        from brain.grounded_values import GroundedValueGuard
+
+        reply = GroundedValueGuard.correct_values(
+            "Guitars usually run about 500,000 won. Would you like me to "
+            "find some options?",
+            evidence="",
+            offer="I haven't actually checked that -- want me to look it up?",
+        )
+
+        self.assertNotIn("Would you like me to find some options", reply)
+        self.assertIn("want me to look it up", reply)
+
+    def test_the_rest_of_the_answer_is_still_kept(self):
+        # The over-correction: only a sentence that offers to act goes.
+        from brain.grounded_values import GroundedValueGuard
+
+        reply = GroundedValueGuard.correct_values(
+            "Guitars usually run about 500,000 won. Prices vary by brand.",
+            evidence="",
+            offer="I haven't actually checked that -- want me to look it up?",
+        )
+
+        self.assertIn("Prices vary by brand", reply)
+        self.assertNotIn("500,000", reply)
+
     def test_with_browser_control_off_it_declines_to_guess_instead(self):
         engine = self._engine(control_mode=False)
 

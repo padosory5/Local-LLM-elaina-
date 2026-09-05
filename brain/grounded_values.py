@@ -217,7 +217,22 @@ class GroundedValueGuard:
         offer = str(offer or "").strip()
         rebuilt = " ".join(kept).strip()
         if rebuilt and offer:
-            return f"{rebuilt} {offer}"
+            # One offer per answer. Measured live, session 8: the model had
+            # already ended with "Would you like me to find some options?"
+            # and the guard appended "I haven't actually checked that --
+            # want me to look it up?" behind it. Two questions, and only
+            # one of them was parked, so answering the wrong one did
+            # nothing.
+            try:
+                from brain.response_policy import ClosingOfferGuard
+
+                rebuilt = " ".join(
+                    sentence for sentence in kept
+                    if not ClosingOfferGuard.offers_to_act(sentence)
+                ).strip()
+            except Exception:
+                pass
+            return f"{rebuilt} {offer}".strip()
         return rebuilt or offer or reply
 
     @classmethod

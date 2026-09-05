@@ -24,6 +24,7 @@ import copy
 import json
 import re
 import tempfile
+from types import SimpleNamespace
 from pathlib import Path
 from dataclasses import dataclass, field, replace
 
@@ -36,7 +37,6 @@ from tools.computer_control.computer_control import (
     ComputerActionResult,
     PreparedComputerAction,
 )
-from tools.browser_control.browser_observer import TabInfo
 from tools.computer_control.windows_ui_control import UIActionResult
 from tools.computer_control.windows_ui_observer import (
     ControlInfo,
@@ -339,9 +339,26 @@ class RecordingBrowserObserver:
         self.page = None
         self.calls: list[str] = []
 
-    def showing(self, url: str, title: str = "") -> None:
-        """Put one page in the browser, as the active tab."""
-        self.tabs = (TabInfo(index=0, title=title, url=url, is_active=True),)
+    def showing(self, url: str, title: str = "", text: str = "") -> None:
+        """Put one page in the browser, as the active tab.
+
+        ``text`` is the page's own words. A title that is only the address
+        with nothing behind it is how a browser says it had nothing to
+        show, so a test about arrival has to be able to say whether there
+        is anything there.
+        """
+        self.tabs = (SimpleNamespace(
+            index=0, title=title, url=url, text=text, is_active=True,
+        ),)
+        self.page = SimpleNamespace(
+            status="observed", url=url, title=title,
+            headings=(), text_excerpt=text, message="",
+        )
+
+    def unreadable(self) -> None:
+        """A browser that cannot be inspected at all."""
+        self.tabs = ()
+        self.page = None
 
     def list_tabs(self):
         self.calls.append("list_tabs")

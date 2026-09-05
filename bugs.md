@@ -3,22 +3,24 @@
 Issues found using Elaina for real, not from benchmarks. Benchmarks say the
 parts work; this says whether she is usable.
 
-**Status:** seven sessions run (logs in `runtime/session1.log` .. `session7.log`).
-**96 issues recorded.** 83 fixed and verified, 2 deferred capabilities,
+**Status:** eight sessions run (logs in `runtime/session1.log` .. `session8.log`).
+**103 issues recorded.** 90 fixed and verified, 2 deferred capabilities,
 3 accepted limitations, 2 open P3 (S4-06, S6-10), 3 open limitations
 (S5-06 retrieval, S7-10 geographic containment, S7-12 latency).
 
-**Session 7 failed the release gate** and its fixes changed code, so it
-is invalidated as a gate, as sessions 4, 5 and 6 were. Session 8 is the
-next one: `docs/SESSION8_PLAN.md` -- deliberately short and almost
-entirely about the browser.
+**Session 8 failed the release gate** and its fixes changed code, so it
+is invalidated as a gate, as sessions 4 through 7 were. Session 9 is the
+next one: `docs/SESSION9_PLAN.md` -- seven checks, nothing else, per the
+user's instruction not to broaden until they pass.
 
-The release-critical finding was not a phrasing bug. `open_url` returned
-`url_opened`, which means Windows accepted the navigation command, and
-every layer above it read that as "the page is on the person's screen".
-She could not answer *did the page I asked for actually open?* -- so
-`brain/browser_navigation.py` now makes dispatch and arrival two
-different facts.
+Sessions 7 and 8 are one piece of work. Session 7 found that `open_url`
+returned `url_opened` -- Windows accepted the navigation command -- and
+that every layer above read it as "the page is on the person's screen",
+so `brain/browser_navigation.py` made dispatch and arrival two different
+facts. Session 8 found that *arrival* was still being decided by the
+address bar alone, which a browser preserves through every kind of
+failure. It is decided by the page now: **a page that rendered has a
+name of its own.**
 
 Six of session 6's ten findings were P1, and the user's name for what
 they share is the one to keep:
@@ -2393,6 +2395,158 @@ address did not load and asks for it again.
   costs at most 1.6s on a failed open and nothing on a successful one,
   which is a real cost and a deliberate one: correctness first, as
   instructed.
+
+---
+
+## Session 8 issues
+
+Release gate: **FAIL**. Seven issues, six of them P1. The lifecycle was
+the right architecture and its definition of *arrival* was wrong.
+
+**Confirmed working:** the honest hedge when the browser cannot be read
+("I sent the browser to naver.com, but I couldn't check whether it
+loaded"), a genuine naver.com navigation verifying, multi-step address
+correction surviving several turns, the University of Washington beating
+the South Korea locale, and quit.
+
+---
+
+### What VERIFIED meant, and what it has to mean
+
+Session 7 drew the line between *dispatched* and *arrived* and then put
+one test behind it: does the address bar hold the host we asked for? A
+browser keeps that host through a DNS failure, a parked domain and an
+error interstitial, so four non-existent addresses came back
+`target_verified` in a single run:
+
+    requested: host.example         title: host.example
+    requested: opennavier.com       title: opennavier.com
+    requested: openzillow.com       title: openzillow.com
+    requested: isss.washington.edu  title: isss.washington.edu
+
+against the two that had really arrived:
+
+    requested: naver.com            title: NAVER
+    requested: iss.washington.edu   title: International Student
+                                           Services - ISS
+
+The signal was sitting in the log the whole time. **A page that rendered
+has a name of its own; a browser with nothing to show falls back to the
+address it was given.** The observation is classified now, and only one
+class is arrival:
+
+| What she sees | What it is |
+|---|---|
+| the requested host, a page with its own name, no error signature | **arrived** |
+| a browser error page, or a search *for* the address | error |
+| the requested host, title naming a different site | wrong destination -- or stale, if the browser was already showing exactly that |
+| the requested host, no page behind it | error when there is nothing there, unverified when there is something unjudgeable |
+| a different host, or a blank tab | wrong destination / failed |
+| nothing readable | unverified |
+
+A fingerprint of the browser is taken *before* the navigation is
+dispatched, which is what tells a stale reading from a real arrival
+somewhere wrong.
+
+---
+
+### [S8-01] A non-existent host verified
+
+- **Status:** FIXED
+- **Severity:** P1
+- **Actual:** `requested: host.example / actual: https://host.example /
+  title: host.example / status: target_verified`, and "Host.example opened
+  in a new tab."
+- **Root cause / note:** host-matching was the whole test. See above.
+
+---
+
+### [S8-02] The recovery never ran, because the failure was called a success
+
+- **Status:** FIXED
+- **Severity:** P1
+- **Actual:** `is.washington.edu` came back `target_verified` with the
+  title `isss.washington.edu`, so the lifecycle stopped there and the
+  person had to say "I meant two S's" by hand.
+- **Root cause / note:** the recovery module cannot recover from a bad
+  target that the observer labels a success. With the classification in
+  place the whole chain runs by itself: `isss` fails, "I meant only one S"
+  gives `is`, `is` fails, and the spelling neither attempt has tried --
+  `iss` -- is opened, verified, and reported as a substitution.
+
+---
+
+### [S8-03] The address bar and the page disagreed, and it still verified
+
+- **Status:** FIXED
+- **Severity:** P1
+- **Actual:** `requested: Zillow.com / actual: https://zillow.com /
+  title: openzillow.com / status: target_verified`
+- **Root cause / note:** two sources disagreeing about which page this is
+  means neither has established anything. It is **wrong destination**
+  now -- unless the browser was showing exactly that pair before the
+  navigation was dispatched, in which case it is a stale reading and she
+  says so rather than claiming either way.
+
+---
+
+### [S8-04] Verification needed page evidence, not just an address
+
+- **Status:** FIXED
+- **Severity:** P1
+- **Root cause / note:** the classification above, plus the page's own
+  words. Error signatures are read from the body as well as the title,
+  because a localised browser puts its message in the body and titles the
+  tab with the host. The observer hands the text over now; it was
+  collecting it and throwing it away.
+
+---
+
+### [S8-05] The fused verb was never reconsidered
+
+- **Status:** FIXED
+- **Severity:** P1
+- **Actual:** `openzillow.com` responded, so the lifecycle said
+  `target_verified` and the `zillow.com` candidate was never tried.
+- **Root cause / note:** no parser provenance was needed in the end.
+  `openzillow.com` has the address in the bar and no page behind it, which
+  is now a failure, and a failure is what makes the candidate eligible.
+  The rule from session 7 holds unchanged: a site that *works* is never
+  second-guessed, so `openai.com` is still opened and left alone.
+
+---
+
+### [S8-06] An offer swallowed an explicit request
+
+- **Status:** FIXED
+- **Severity:** P1 (REGRESSION, the B-33/B-35 family)
+- **I said:** "Find me an electric guitar under 500,000 won." -- one turn
+  after "want me to look it up?"
+- **Actual:** `[Router] computer_action (0.00): The user accepted the
+  offered ability.`, then the browser planner, then "'Shopping' looks like
+  a credential field -- please handle that one yourself."
+- **Root cause / note:** `reads_as_clear_acceptance` already refuses to
+  call that a yes -- there has been a test asserting it since session 2.
+  What happened next was the problem: when it says no, the model
+  classifier is asked, and the classifier said accept. There is a
+  deterministic veto in front of it now. A request verb alone proves
+  nothing, because "search for some" is a perfectly good yes; the object
+  is what decides, and "an electric guitar under 500,000 won" is an
+  errand.
+
+---
+
+### [S8-07] Two offers in one answer
+
+- **Status:** FIXED
+- **Severity:** P2
+- **Actual:** "Would you like me to find some options? I haven't actually
+  checked that -- want me to look it up?"
+- **Root cause / note:** the value guard appends its offer to whatever
+  survived, and what survived ended in an offer of the model's own. Only
+  one of the two was parked, so answering the other did nothing. A
+  sentence that offers to act is dropped before the guard's own offer goes
+  on the end.
 
 ---
 

@@ -596,6 +596,64 @@ _MERE_APPROVAL = re.compile(
 )
 
 
+# A request verb at the front of the turn. On its own this proves
+# nothing -- "search for some" is an acceptance -- so it only counts
+# alongside an object with content in it.
+_ASKS_FOR_SOMETHING = re.compile(
+    r"^\s*(?:(?:so|and|ok(?:ay)?|well|yeah|please|now|hey)[,.!]?\s+)*"
+    r"(?:(?:can|could|would|will)\s+you\s+)?"
+    r"(?:please\s+)?"
+    r"(?:find|get|show|give|search|look\s+up|look\s+for|pull\s+up|"
+    r"bring\s+up|buy|book|order|play|check|tell\s+me\s+about|"
+    r"recommend|suggest|compare)\b",
+    re.IGNORECASE,
+)
+
+def names_its_own_errand(text: str) -> bool:
+    """Whether the turn is a request in its own right rather than a yes.
+
+    A pending offer must never consume one. Measured live, session 8:
+
+        Elaina: ... want me to look it up?
+        You said: Find me an electric guitar under 500,000 won.
+        [Router] computer_action (0.00): The user accepted the offered
+                 ability.
+        [Browser Planner] click_element status=refused
+        Elaina: 'Shopping' looks like a credential field -- please handle
+                that one yourself.
+
+    ``reads_as_clear_acceptance`` already refuses to call that a yes. The
+    trouble was what happened next: the model classifier was asked, and it
+    said accept. This is the deterministic veto in front of it -- when the
+    turn plainly asks for something of its own, nothing needs to be
+    classified.
+
+    The object is what decides. "Search for some" is a request verb with
+    nothing after it and is a perfectly good yes; "find me an electric
+    guitar under 500,000 won" is an errand.
+    """
+    from brain.recommendation_state import _FUNCTION_WORDS, _content_of
+
+    said = " ".join(str(text or "").split())
+    if not said:
+        return False
+    if _NAMES_ITS_OWN_ERRAND.search(said):
+        return True
+    if not _ASKS_FOR_SOMETHING.match(said):
+        return False
+    content = [
+        word for word in re.findall(
+            r"[A-Za-z0-9가-힣][\w'.,-]*", _content_of(said).casefold(),
+        )
+        if word.strip(".,") not in _FUNCTION_WORDS
+        and word.strip(".,") not in {
+            "some", "any", "one", "ones", "thing", "things", "it", "that",
+            "options", "option", "something", "anything", "few", "couple",
+        }
+    ]
+    return len(content) >= 2
+
+
 def reads_as_clear_acceptance(text: str) -> bool:
     """Whether this plainly says yes to the offer, rather than to the topic.
 

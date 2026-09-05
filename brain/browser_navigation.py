@@ -91,6 +91,9 @@ _SEARCH_HOSTS = (
     "yandex.",
 )
 
+# A whole string that is nothing but an address.
+_ADDRESS_SHAPE = re.compile(r"[\w-]+(?:\.[\w-]+)+(?::\d+)?(?:/\S*)?")
+
 
 def host_of(url: str) -> str:
     """The hostname a URL or bare address points at, normalised."""
@@ -122,12 +125,57 @@ def same_destination(expected: str, actual: str) -> bool:
     return got.endswith(f".{wanted}") or wanted.endswith(f".{got}")
 
 
-def reads_as_error(url: str, title: str) -> bool:
+def reads_as_error(url: str, title: str, text: str = "") -> bool:
     """Whether what loaded is the browser saying it could not load it."""
     address = " ".join(str(url or "").split())
     if _ERROR_URL.match(address):
         return True
-    return bool(_ERROR_TITLE.search(str(title or "")))
+    return bool(
+        _ERROR_TITLE.search(str(title or ""))
+        or _ERROR_TITLE.search(str(text or "")[:400])
+    )
+
+
+def _is_bare_address(title: str) -> bool:
+    """Whether the title is just an address rather than a page's name.
+
+    A page that rendered has a name: "NAVER", "International Student
+    Services - ISS", "Zillow: Real Estate...". A browser that had nothing
+    to show falls back to the address it was given.
+
+    Measured live, session 8, four times in one run -- and every one of
+    them was called ``target_verified``:
+
+        requested: host.example        title: host.example
+        requested: opennavier.com      title: opennavier.com
+        requested: openzillow.com      title: openzillow.com
+        requested: isss.washington.edu title: isss.washington.edu
+
+    against the two that had really arrived:
+
+        requested: naver.com           title: NAVER
+        requested: iss.washington.edu  title: International Student
+                                              Services - ISS
+    """
+    said = " ".join(str(title or "").split())
+    if not said or " " in said:
+        return False
+    return bool(_ADDRESS_SHAPE.fullmatch(said.removeprefix("https://")
+                                         .removeprefix("http://")
+                                         .rstrip("/")))
+
+
+def title_names_another_host(title: str, expected: str) -> bool:
+    """Whether the page's own title says it belongs somewhere else.
+
+    Measured live: ``zillow.com`` was requested, the address bar read
+    ``zillow.com``, and the title read ``openzillow.com`` -- the page from
+    the turn before. Two sources disagreeing about which page this is means
+    neither of them has established it.
+    """
+    if not _is_bare_address(title):
+        return False
+    return not same_destination(expected, title)
 
 
 def reads_as_blank(url: str) -> bool:
@@ -201,14 +249,34 @@ def start(requested: str, url: str, *, history=()) -> Navigation:
     )
 
 
-def verify(navigation: Navigation, tabs) -> Navigation:
-    """Read the browser's own tabs and say where this navigation got to.
+def verify(navigation: Navigation, tabs, *, before=()) -> Navigation:
+    """Read the browser and say where this navigation actually got to.
 
-    ``tabs`` is whatever the observer handed back. Anything that is not a
-    sequence of tab-like objects means the browser could not be read, and
-    that is reported as unverified rather than guessed at -- "I sent the
-    browser there but have not checked" is a true sentence, and the one
-    this whole module exists to make sayable.
+    A matching hostname is necessary and nowhere near sufficient. Browsers
+    keep the address you asked for in the bar through DNS failures, parked
+    domains and error interstitials, so session 8 called four
+    non-existent hosts ``target_verified`` on that evidence alone --
+    including the one the recovery path was waiting for, which meant the
+    recovery never ran.
+
+    The observation is classified, and only one of the classes is
+    arrival:
+
+    * the requested host, a page with a name of its own, no error
+      signature -- **arrived**;
+    * a browser error page, or a search *for* the address -- **error**;
+    * the requested host with a title that names a different site --
+      **wrong destination**, or a stale reading when the browser was
+      already showing exactly that before the navigation;
+    * the requested host with no page behind it -- **error** when there
+      is nothing there at all, **unverified** when there is something and
+      it cannot be judged;
+    * a different host -- **wrong destination**;
+    * nothing readable -- **unverified**, which is the honest one.
+
+    ``before`` is what the browser was showing when the navigation was
+    dispatched. It is what tells a stale reading from a real arrival at
+    the wrong place.
     """
     expected = navigation.expected_host
     if not expected:
@@ -218,45 +286,78 @@ def verify(navigation: Navigation, tabs) -> Navigation:
     for tab in tabs or ():
         url = str(getattr(tab, "url", "") or "")
         title = str(getattr(tab, "title", "") or "")
+        text = str(getattr(tab, "text", "") or "")
         if url or title:
-            rows.append((url, title, bool(getattr(tab, "is_active", False))))
+            rows.append((url, title, text, bool(getattr(tab, "is_active", False))))
     if not rows:
         return replace(
             navigation, status=UNVERIFIED,
             detail="the browser did not report any tabs",
         )
 
-    for url, title, _active in rows:
-        if same_destination(navigation.url, url):
-            return replace(
-                navigation,
-                status=(
-                    RECOVERED if navigation.recovered_from else VERIFIED
-                ),
-                actual_url=url, title=title,
-            )
+    matching = [row for row in rows if same_destination(navigation.url, row[0])]
+    if matching:
+        url, title, text, _active = matching[0]
+    else:
+        active = [row for row in rows if row[3]] or rows
+        url, title, text, _active = active[0]
 
-    # Nothing is at the address. What is there decides which failure it is.
-    active = [row for row in rows if row[2]] or rows
-    url, title, _ = active[0]
-    if reads_as_error(url, title):
+    seen_before = any(
+        host_of(url) == host_of(str(getattr(row, "url", "") or row[0]))
+        and title == str(getattr(row, "title", "") or row[1])
+        for row in (before or ())
+        if isinstance(row, tuple) or hasattr(row, "url")
+    ) if before else False
+
+    landed = replace(navigation, actual_url=url, title=title)
+
+    if reads_as_error(url, title, text):
         return replace(
-            navigation, status=ERROR_PAGE, actual_url=url, title=title,
+            landed, status=ERROR_PAGE,
             detail="the browser reported it could not load that address",
         )
     if reads_as_search_results(url, navigation.url):
         return replace(
-            navigation, status=ERROR_PAGE, actual_url=url, title=title,
+            landed, status=ERROR_PAGE,
             detail="the browser searched for the address instead of opening it",
         )
     if reads_as_blank(url):
+        return replace(landed, status=FAILED, detail="the tab is blank")
+    if not matching:
         return replace(
-            navigation, status=FAILED, actual_url=url, title=title,
-            detail="the tab is blank",
+            landed, status=WRONG_DESTINATION,
+            detail="a different page is showing",
         )
+
+    # The address is right. Whether a page is behind it is a second
+    # question, and it is the one session 8 never asked.
+    if title_names_another_host(title, navigation.url):
+        if seen_before:
+            return replace(
+                landed, status=UNVERIFIED,
+                detail=(
+                    "the browser is still showing what it showed before, "
+                    f"so this reading of {title} may be stale"
+                ),
+            )
+        return replace(
+            landed, status=WRONG_DESTINATION,
+            detail=f"the address bar says {host_of(url)} and the page says {title}",
+        )
+    if _is_bare_address(title):
+        if not text.strip():
+            return replace(
+                landed, status=ERROR_PAGE,
+                detail="the address is in the bar and no page is behind it",
+            )
+        return replace(
+            landed, status=UNVERIFIED,
+            detail="the page has no name of its own, so it could not be checked",
+        )
+
     return replace(
-        navigation, status=WRONG_DESTINATION, actual_url=url, title=title,
-        detail="a different page is showing",
+        landed,
+        status=RECOVERED if navigation.recovered_from else VERIFIED,
     )
 
 

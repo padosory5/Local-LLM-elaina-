@@ -79,6 +79,7 @@ from brain.capabilities import CapabilityRegistry
 from brain.action_commitment import ActionCommitmentGuard
 from brain.recommendation import (
     RecommendationPolicy,
+    names_its_own_errand,
     reads_as_clear_acceptance,
     subject_is_offerable,
     subject_phrase,
@@ -876,6 +877,8 @@ class ChatEngine:
         # the conversation supplied rather than one nobody mentioned.
         self._navigation = None
         self._navigation_history: tuple[str, ...] = ()
+        # What the browser was showing when a navigation was dispatched.
+        self._navigation_before: tuple[tuple[str, str], ...] = ()
         # Set when this turn opened a different recommendation, so the
         # previous one's turns do not stay in the answering prompt.
         self._recommendation_restarted = False
@@ -3904,24 +3907,53 @@ class ChatEngine:
             return ()
         url = str(getattr(page, "url", "") or "")
         if not url:
-            detail = str(
-                getattr(page, "message", "") or getattr(page, "status", "")
-            )
-            if detail:
-                print(f"[Navigation] could not read the page: {detail}")
+            print("[Navigation] the browser did not report an address.")
             return ()
+        # The page's own words as well as its name. A title that is just
+        # the address, with nothing behind it, is a browser saying it had
+        # nothing to show -- and that is only visible if the text comes
+        # too.
+        body = " ".join((
+            " ".join(getattr(page, "headings", ()) or ()),
+            str(getattr(page, "text_excerpt", "") or ""),
+        )).strip()
         return (SimpleNamespace(
             index=0, url=url,
             title=str(getattr(page, "title", "") or ""),
+            text=body,
             is_active=True,
         ),)
 
-    def _look_at(self, navigation):
+    def _browser_fingerprint(self):
+        """What the browser was showing, cheaply, before anything moved.
+
+        Only ``list_tabs`` -- the fast call. It is enough to tell a stale
+        reading from a real one, which is the question it exists to
+        answer: the address bar said zillow.com and the page said
+        openzillow.com, and knowing whether that pair was already there a
+        moment ago is what separates "wrong page" from "I looked too
+        early".
+        """
+        try:
+            tabs = self.browser_observer.list_tabs()
+        except Exception:  # noqa: BLE001 - a snapshot is best-effort
+            return ()
+        if not isinstance(tabs, (list, tuple)):
+            return ()
+        return tuple(
+            (str(getattr(tab, "url", "") or ""),
+             str(getattr(tab, "title", "") or ""))
+            for tab in tabs
+        )
+
+    def _look_at(self, navigation, *, before=()):
         """Verify one navigation, giving the page a moment to arrive."""
         for attempt in range(self.NAVIGATION_LOOKS):
             if attempt:
                 time.sleep(self.NAVIGATION_SETTLE_SECONDS)
-            looked = browser_navigation.verify(navigation, self._observed_tabs())
+            looked = browser_navigation.verify(
+                navigation, self._observed_tabs(), before=before,
+            )
             if looked.arrived or looked.status == browser_navigation.ERROR_PAGE:
                 return looked
         return looked
@@ -3948,10 +3980,11 @@ class ChatEngine:
         requested = str(route.action_target or result.target or "").strip()
         opened = str(result.url or "").strip()
         history = tuple(self._navigation_history)
+        before = tuple(self._navigation_before)
         navigation = browser_navigation.start(
             requested, opened, history=history,
         )
-        navigation = self._look_at(navigation)
+        navigation = self._look_at(navigation, before=before)
         print(navigation.log_block())
 
         if navigation.arrived:
@@ -3971,7 +4004,7 @@ class ChatEngine:
                 "couldn't check whether it loaded."
             )
 
-        recovered, line = self._recover_navigation(navigation)
+        recovered, line = self._recover_navigation(navigation, before=before)
         self._navigation = recovered
         if recovered.arrived:
             self._navigation_history = (recovered.url,)
@@ -3987,7 +4020,7 @@ class ChatEngine:
             message=f"{navigation.expected_host} did not load.",
         ), line
 
-    def _recover_navigation(self, navigation):
+    def _recover_navigation(self, navigation, *, before=()):
         """Try the addresses the conversation itself supplied, or ask.
 
         Never a domain nobody mentioned. There are exactly two sources --
@@ -3999,9 +4032,17 @@ class ChatEngine:
         host = navigation.expected_host or navigation.url
         candidates = browser_navigation.recovery_candidates(navigation)
         if not candidates:
+            # Say what she saw, not just that it failed. "The browser is
+            # showing openzillow.com" is actionable; "it didn't load" is
+            # a shrug.
+            seen = (
+                f" The browser is showing {navigation.title}."
+                if navigation.status == browser_navigation.WRONG_DESTINATION
+                and navigation.title else ""
+            )
             return navigation, (
-                f"{host} didn't load -- the browser couldn't reach it. "
-                "Give me the address again and I'll go straight there."
+                f"{host} didn't load -- the browser couldn't reach it."
+                f"{seen} Give me the address again and I'll go straight there."
             )
         if len(candidates) > 1:
             options = " or ".join(candidates[:2])
@@ -4030,7 +4071,7 @@ class ChatEngine:
                 f"{host} didn't load, and I couldn't try {candidate} either."
             )
 
-        attempt = self._look_at(attempt)
+        attempt = self._look_at(attempt, before=before)
         print(attempt.log_block())
         if attempt.arrived:
             return attempt, (
@@ -4102,6 +4143,11 @@ class ChatEngine:
                 original_request=original_request,
                 clarified_goal=clarified_goal,
             )
+
+        # Before anything moves, so a reading taken afterwards can be told
+        # from one taken too early.
+        if route.computer_operation in {"open_url", "open_search"}:
+            self._navigation_before = self._browser_fingerprint()
 
         if approved_action is not None and not (
             self.computer_control.requires_extra_confirmation(
