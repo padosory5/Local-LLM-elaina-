@@ -45,6 +45,9 @@ _LLKHF_INJECTED = 0x00000010
 # delivered to the installing thread's queue, so it only has to stay
 # responsive, not spin.
 _PUMP_INTERVAL_SECONDS = 0.01
+# How long after one of Elaina's own injected events an unflagged event is
+# still assumed to be that same event arriving without its flag.
+SELF_ECHO_SECONDS = 0.35
 _HOOK_INSTALL_TIMEOUT_SECONDS = 2.0
 
 try:
@@ -100,6 +103,9 @@ class InputWatcher:
         self._real_mouse_events = 0
         self._real_key_events = 0
         self._injected_events = 0
+        self._self_echo_events = 0
+        self._last_self_input: float | None = None
+        self._last_real_kind = ""
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._installed = threading.Event()
@@ -186,9 +192,37 @@ class InputWatcher:
                     except Exception:
                         pass
 
-    def _record_real(self, *, mouse: bool) -> None:
+    def note_self_input(self) -> None:
+        """Elaina is about to inject something. Remember when.
+
+        The injected flag is the primary test and it is the right one --
+        measured, 26 mouse and 6 keyboard events from CursorDriver all
+        arrived flagged. But "measured on one machine" is not "true on
+        every machine": a pointing-device driver, an overlay, or a remote
+        session can pass one of our own events through unflagged, and the
+        cost of believing it is that Elaina cancels her own work and
+        blames the person for it.
+
+        So an unflagged event arriving in the moment after we injected one
+        is treated as ours. It costs a fraction of a second of
+        responsiveness to a real interruption, which is the cheaper of the
+        two mistakes by a wide margin.
+        """
         with self._lock:
-            self._last_real_input = self._clock()
+            self._last_self_input = self._clock()
+
+    def _record_real(self, *, mouse: bool) -> None:
+        now = self._clock()
+        with self._lock:
+            recent_self = (
+                self._last_self_input is not None
+                and now - self._last_self_input < SELF_ECHO_SECONDS
+            )
+            if recent_self:
+                self._self_echo_events += 1
+                return
+            self._last_real_input = now
+            self._last_real_kind = "mouse" if mouse else "key"
             if mouse:
                 self._real_mouse_events += 1
             else:
@@ -269,4 +303,14 @@ class InputWatcher:
                 "real_mouse": self._real_mouse_events,
                 "real_key": self._real_key_events,
                 "injected": self._injected_events,
+                "self_echo": self._self_echo_events,
             }
+
+    def last_real_event(self) -> tuple[str, float | None]:
+        """What the last unflagged event was, and when. For the log.
+
+        A cancellation that says "you moved the mouse" has to be able to
+        show the event it is talking about.
+        """
+        with self._lock:
+            return self._last_real_kind, self._last_real_input

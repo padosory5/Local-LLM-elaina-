@@ -2080,6 +2080,31 @@ class ChatEngine:
         # carried no recognised action shape, so it never reached the
         # capability layer at all -- and a pending offer for a different
         # site was the only thing left to interpret it.
+        # "That website" points at the one the conversation has named.
+        # Measured live: after "I met Zillow.com", "can you open that
+        # website for me?" went to the planner, which searched and landed
+        # on the Google homepage. One address in the recent conversation
+        # is a referent; two are a question.
+        pointed = browser_progress.site_pointed_at(
+            user_input, said_recently=" ".join(
+                str(turn.get("content", "") or "")
+                for turn in list(getattr(self, "_router_history", ()) or ())[-6:]
+            ),
+        )
+        if pointed:
+            print(f"[Rescue] 'that website' -> {pointed}")
+            self._turn_points_at_the_last_action = True
+            return replace(
+                route,
+                intent="computer_action",
+                computer_operation="open_url",
+                computer_url=pointed,
+                normalized_request=f"open {pointed}",
+                action_target=pointed,
+                action_requested=True,
+                reason="The turn points at the address just named.",
+            ), ""
+
         opening = browser_navigation.asks_to_open_an_address(user_input)
         if opening and not self._asks_for_more_than_opening(
             user_input, opening,
@@ -7354,6 +7379,29 @@ class ChatEngine:
             # Resolve authority before any pending gate gets to reinterpret
             # the turn. An unrelated later 'yeah' cannot revive these offers.
             self._retire_pending_interpretations()
+        if not continuing_agent_flow and browser_progress.disputes_the_reason(
+            user_input,
+        ):
+            # Telling her the explanation was wrong is not asking for the
+            # thing again. Measured live: browser control kept cancelling
+            # itself and blaming the person, and "I'm not moving the
+            # mouse" was read as accepting an offer -- so it ran again,
+            # and blamed them again.
+            self._retire_pending_interpretations()
+            print("[Input Watch] the user disputes the interruption reason.")
+            timings["route"] = time.perf_counter() - route_started
+            return TurnRouting(
+                route=IntentDecision(
+                    intent="conversation", confidence=1.0,
+                    normalized_request=user_input,
+                    reason="The user disputes why the last action stopped.",
+                ),
+                user_input=user_input,
+                locked_response=(
+                    "Understood -- then something else moved the pointer, "
+                    "not you. Say the word and I'll try again."
+                ),
+            )
         if confirmed_machine:
             # She said she could not confirm it; the person can. That
             # resolves the doubt rather than starting the work again.

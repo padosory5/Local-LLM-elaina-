@@ -213,6 +213,115 @@ class APendingOfferIsTheLastReadingTests(unittest.TestCase):
         self.assertEqual(routing.route.action_target, "zillow.com")
 
 
+class DisputingTheReasonIsNotAskingAgainTests(unittest.TestCase):
+    """The acceptance run cancelled six browser actions and blamed the
+    person for moving the mouse. They said so, and it ran again.
+
+        You said: I'm not moving the mouse.
+        [Router] computer_action (0.00): The user accepted the offered
+                 ability.  -> open_url, and the same claim again
+    """
+
+    def test_the_shapes_a_person_denies_it_in(self):
+        for said in (
+            "I'm not moving the mouse.", "I'm not touching the mouse",
+            "I didn't touch the mouse", "No, I'm not moving the mouse",
+            "I am not moving anything",
+        ):
+            with self.subTest(said=said):
+                self.assertTrue(
+                    browser_progress.disputes_the_reason(said), said,
+                )
+
+    def test_a_request_is_not_a_denial(self):
+        for said in ("it didn't open", "open zillow.com", "I'm not sure"):
+            with self.subTest(said=said):
+                self.assertFalse(
+                    browser_progress.disputes_the_reason(said), said,
+                )
+
+    def test_it_runs_nothing_and_clears_the_offer(self):
+        from tests.turn_harness import build_engine
+
+        engine = build_engine()
+        engine.capability_offer.offer(
+            capability_id="browser_control", goal="zillow.com",
+            offer_text="Want me to try zillow.com again?",
+        )
+        try:
+            routing = engine._route_turn(
+                "I'm not moving the mouse.", timings={},
+            )
+            cleared = engine.capability_offer.peek() is None
+        finally:
+            engine.close()
+
+        self.assertEqual(routing.route.computer_operation, "none")
+        self.assertTrue(cleared)
+        self.assertIn("something else moved the pointer", routing.locked_response.casefold())
+
+
+class ABareReferenceToASiteResolvesTests(unittest.TestCase):
+    """"That website" means the one the conversation named.
+
+    Measured live: after "I met Zillow.com", "can you open that website
+    for me?" went to the planner, which searched and landed on the Google
+    homepage.
+    """
+
+    def test_one_address_in_the_conversation_is_the_referent(self):
+        for said in (
+            "Yeah, can you open that website for me?", "open that site",
+            "go there",
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(
+                    browser_progress.site_pointed_at(
+                        said, said_recently="I met Zillow.com",
+                    ),
+                    "Zillow.com", said,
+                )
+
+    def test_two_addresses_are_a_question_not_a_referent(self):
+        self.assertEqual(
+            browser_progress.site_pointed_at(
+                "open that website",
+                said_recently="zillow.com and naver.com",
+            ),
+            "",
+        )
+
+    def test_a_turn_that_names_its_own_address_is_not_pointing(self):
+        self.assertEqual(
+            browser_progress.site_pointed_at(
+                "open naver.com", said_recently="I met Zillow.com",
+            ),
+            "",
+        )
+
+    def test_it_goes_to_the_navigation_operation(self):
+        from tests.turn_harness import build_engine
+
+        engine = build_engine()
+        engine._router_history.extend([
+            {"role": "user", "content": "I met Zillow.com"},
+            {"role": "assistant", "content": "Zillow.com is a listings site."},
+        ])
+        try:
+            route, _ = engine._rescue_capability_route(
+                IntentDecision(
+                    intent="conversation", confidence=0.9,
+                    normalized_request="open that website", reason="t",
+                ),
+                "Yeah, can you open that website for me?",
+            )
+        finally:
+            engine.close()
+
+        self.assertEqual(route.computer_operation, "open_url")
+        self.assertEqual(route.action_target, "Zillow.com")
+
+
 class AContradictoryFrameGetsASecondLookTests(unittest.TestCase):
     """A-06/A-07. The address bar commits before the title follows.
 

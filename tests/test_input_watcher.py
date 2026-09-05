@@ -87,8 +87,55 @@ class AvailabilityTests(unittest.TestCase):
         watcher = InputWatcher()
         self.assertEqual(
             watcher.counters(),
-            {"real_mouse": 0, "real_key": 0, "injected": 0},
+            {"real_mouse": 0, "real_key": 0, "injected": 0, "self_echo": 0},
         )
+
+    def test_an_unflagged_echo_of_our_own_event_is_not_the_person(self):
+        """The acceptance run cancelled six browser actions and blamed the
+        person, who had not touched the mouse.
+
+        The injected flag is the primary test and it is the right one --
+        measured, every event CursorDriver generated arrived flagged. But
+        that was measured on one machine, and a pointing-device driver, an
+        overlay or a remote session can pass one of our own events through
+        unflagged. Believing it costs the whole feature and blames the
+        wrong person for it.
+        """
+        clock = [100.0]
+        watcher = InputWatcher(clock=lambda: clock[0])
+
+        watcher.note_self_input()
+        clock[0] += 0.05          # the echo of what we just injected
+        watcher._record_real(mouse=True)
+
+        self.assertFalse(watcher.user_input_since(99.0))
+        self.assertEqual(watcher.counters()["self_echo"], 1)
+        self.assertEqual(watcher.counters()["real_mouse"], 0)
+
+    def test_a_real_event_after_the_grace_window_still_counts(self):
+        # The over-correction to watch: a genuine interruption a moment
+        # later must still stop the run.
+        clock = [100.0]
+        watcher = InputWatcher(clock=lambda: clock[0])
+
+        watcher.note_self_input()
+        clock[0] += 1.0
+        watcher._record_real(mouse=True)
+
+        self.assertTrue(watcher.user_input_since(99.0))
+        self.assertEqual(watcher.counters()["real_mouse"], 1)
+
+    def test_the_last_event_can_be_named(self):
+        # A cancellation that says "you moved the mouse" has to be able to
+        # show the event it is talking about.
+        clock = [100.0]
+        watcher = InputWatcher(clock=lambda: clock[0])
+
+        watcher._record_real(mouse=False)
+
+        kind, when = watcher.last_real_event()
+        self.assertEqual(kind, "key")
+        self.assertEqual(when, 100.0)
 
     def test_stop_is_safe_before_start(self):
         InputWatcher().stop()

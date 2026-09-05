@@ -45,9 +45,10 @@ class _FakeScreen:
         return [event for event in self.events if event.type == _INPUT_KEYBOARD]
 
 
-def _driver(fake):
+def _driver(fake, *, watcher=None):
     driver = CursorDriver(
         sender=fake.send, cursor_reader=fake.read, sleeper=lambda seconds: None,
+        input_watcher=watcher,
     )
     driver.virtual_screen = staticmethod(lambda: fake.screen)
     return driver
@@ -195,7 +196,40 @@ class TakeoverTests(unittest.TestCase):
         self.assertTrue(driver.user_took_over())
         result = driver.click((1000, 600))
         self.assertEqual(result.status, "user_took_over")
-        self.assertIn("gave it back", result.message)
+        # Stopping is right. Blaming the person for it is not: this branch
+        # sees a cursor somewhere else and knows nothing about who put it
+        # there. Measured live, that sentence was said six times in one
+        # session to somebody who had not touched the mouse.
+        self.assertEqual(driver.last_takeover, "pointer_drift")
+        self.assertNotIn("You moved the mouse", result.message)
+        self.assertIn("moved the pointer", result.message)
+
+    def test_real_input_is_the_only_thing_that_blames_the_user(self):
+        class _Watcher:
+            available = True
+
+            def mark(self):
+                return 0.0
+
+            def user_input_since(self, marker):
+                return True
+
+            def last_real_event(self):
+                return "mouse", 1.0
+
+            def counters(self):
+                return {"real_mouse": 1, "real_key": 0, "injected": 0}
+
+            def note_self_input(self):
+                pass
+
+        driver = _driver(_FakeScreen(), watcher=_Watcher())
+        driver.begin_run()
+
+        result = driver.click((1000, 600))
+
+        self.assertEqual(driver.last_takeover, "real_input")
+        self.assertIn("You moved the mouse", result.message)
 
     def test_small_drift_is_not_treated_as_takeover(self):
         fake = _FakeScreen()

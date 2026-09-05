@@ -163,9 +163,29 @@ class CursorDriver:
         # Where the pointer was before a run started, so it can be handed
         # back exactly where the user left it.
         self._restore_to: tuple[int, int] | None = None
+        # Why the last takeover fired, and the evidence for it. Read by
+        # the guard so the sentence matches what was actually observed.
+        self.last_takeover = ""
+        self.last_takeover_detail = ""
 
     # ------------------------------------------------------------------
     # platform primitives
+
+    def _send(self, inputs: list[_INPUT]) -> int:
+        """Inject, having told the watcher that what follows is ours.
+
+        Every one of Elaina's own events goes through here. The watcher's
+        primary test is still the injected flag; this is what stops a
+        machine where that flag goes missing from turning her own pointer
+        movement into "you moved the mouse, so I stopped".
+        """
+        watcher = self.input_watcher
+        if watcher is not None:
+            try:
+                watcher.note_self_input()
+            except Exception:
+                pass
+        return self._sender(inputs)
 
     @staticmethod
     def _default_sender(inputs: list[_INPUT]) -> int:
@@ -234,6 +254,8 @@ class CursorDriver:
         stopping when we did not have to is a great deal better than
         wrestling someone for their own mouse.
         """
+        self.last_takeover = ""
+        self.last_takeover_detail = ""
         watcher = self.input_watcher
         if (
             watcher is not None
@@ -242,6 +264,14 @@ class CursorDriver:
         ):
             try:
                 if watcher.user_input_since(self._input_mark):
+                    kind, when = watcher.last_real_event()
+                    counts = watcher.counters()
+                    self.last_takeover = "real_input"
+                    self.last_takeover_detail = (
+                        f"event={kind or 'unknown'} "
+                        f"at={when} mark={self._input_mark} "
+                        f"counters={counts}"
+                    )
                     return True
             except Exception:
                 pass
@@ -251,10 +281,22 @@ class CursorDriver:
             current = self._cursor_reader()
         except Exception:
             return False
-        return (
+        drifted = (
             abs(current[0] - self._parked_at[0]) > _TAKEOVER_TOLERANCE_PIXELS
             or abs(current[1] - self._parked_at[1]) > _TAKEOVER_TOLERANCE_PIXELS
         )
+        if drifted:
+            # This branch cannot tell a person from a page that moved the
+            # pointer, a focus change, or a rounding error in our own
+            # absolute coordinates. It is a reason to stop; it is not
+            # evidence about who did it, and it must not be reported as
+            # though it were.
+            self.last_takeover = "pointer_drift"
+            self.last_takeover_detail = (
+                f"parked_at={self._parked_at} now={current} "
+                f"tolerance={_TAKEOVER_TOLERANCE_PIXELS}"
+            )
+        return drifted
 
     def _guard(self) -> InputResult | None:
         if not self.available:
@@ -264,9 +306,24 @@ class CursorDriver:
                 "(DPI awareness could not be set), so I will not click blindly.",
             )
         if self.user_took_over():
+            # Say only what the evidence supports. "You moved the mouse"
+            # is a claim about the person, and one branch below cannot
+            # make it -- pointer drift sees a cursor somewhere else and
+            # knows nothing about who put it there.
+            print(
+                f"[Input Watch] takeover reason={self.last_takeover or 'unknown'} "
+                f"{self.last_takeover_detail}"
+            )
+            if self.last_takeover == "real_input":
+                return InputResult(
+                    "user_took_over",
+                    "You moved the mouse, so I stopped and gave it back "
+                    "to you.",
+                )
             return InputResult(
                 "user_took_over",
-                "You moved the mouse, so I stopped and gave it back to you.",
+                "Something moved the pointer, so I stopped rather than "
+                "fight you for it.",
             )
         return None
 
@@ -302,7 +359,7 @@ class CursorDriver:
 
     def _move_to(self, point: tuple[int, int]) -> None:
         absolute = self._to_absolute(point)
-        self._sender([self._mouse_event(
+        self._send([self._mouse_event(
             _MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE | _MOUSEEVENTF_VIRTUALDESK,
             absolute,
         )])
@@ -351,9 +408,9 @@ class CursorDriver:
         blocked = self._guard()
         if blocked is not None:
             return blocked
-        self._sender([self._mouse_event(_MOUSEEVENTF_LEFTDOWN)])
+        self._send([self._mouse_event(_MOUSEEVENTF_LEFTDOWN)])
         self._sleep(_CLICK_HOLD_SECONDS)
-        self._sender([self._mouse_event(_MOUSEEVENTF_LEFTUP)])
+        self._send([self._mouse_event(_MOUSEEVENTF_LEFTUP)])
         return InputResult("done")
 
     def double_click(self, point: tuple[int, int]) -> InputResult:
@@ -377,9 +434,9 @@ class CursorDriver:
         for press in range(2):
             if press:
                 self._sleep(_DOUBLE_CLICK_GAP_SECONDS)
-            self._sender([self._mouse_event(_MOUSEEVENTF_LEFTDOWN)])
+            self._send([self._mouse_event(_MOUSEEVENTF_LEFTDOWN)])
             self._sleep(_CLICK_HOLD_SECONDS)
-            self._sender([self._mouse_event(_MOUSEEVENTF_LEFTUP)])
+            self._send([self._mouse_event(_MOUSEEVENTF_LEFTUP)])
         return InputResult("done")
 
     def scroll(self, point: tuple[int, int], notches: int) -> InputResult:
@@ -391,7 +448,7 @@ class CursorDriver:
         if blocked is not None:
             return blocked
         for _ in range(abs(int(notches))):
-            self._sender([self._mouse_event(
+            self._send([self._mouse_event(
                 _MOUSEEVENTF_WHEEL,
                 data=_WHEEL_DELTA if notches > 0 else -_WHEEL_DELTA,
             )])
@@ -422,10 +479,10 @@ class CursorDriver:
             return blocked
         for character in str(text):
             for unit in self._utf16_units(character):
-                self._sender([
+                self._send([
                     self._key_event(scan=unit, flags=_KEYEVENTF_UNICODE),
                 ])
-                self._sender([
+                self._send([
                     self._key_event(
                         scan=unit, flags=_KEYEVENTF_UNICODE | _KEYEVENTF_KEYUP,
                     ),
@@ -457,13 +514,13 @@ class CursorDriver:
             codes.append(code)
         for code in codes:
             flags = _KEYEVENTF_EXTENDEDKEY if code in _EXTENDED_KEYS else 0
-            self._sender([self._key_event(vk=code, flags=flags)])
+            self._send([self._key_event(vk=code, flags=flags)])
             self._sleep(_KEYSTROKE_SECONDS)
         for code in reversed(codes):
             flags = _KEYEVENTF_KEYUP
             if code in _EXTENDED_KEYS:
                 flags |= _KEYEVENTF_EXTENDEDKEY
-            self._sender([self._key_event(vk=code, flags=flags)])
+            self._send([self._key_event(vk=code, flags=flags)])
             self._sleep(_KEYSTROKE_SECONDS)
         return InputResult("done")
 

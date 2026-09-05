@@ -235,6 +235,38 @@ _ACTION_DISPUTE = re.compile(
 )
 
 
+# Disputing the *reason* she gave, rather than the outcome. Measured
+# live: browser control kept cancelling itself and blaming the person,
+# and when they said so it was read as accepting an offer and the URL was
+# opened again.
+_DISPUTES_THE_REASON = re.compile(
+    r"^(?:(?:no|but|well|actually|hey)[,! .]*)*"
+    r"i(?:'m| am)?\s*(?:not|never)\s+"
+    r"(?:even\s+|actually\s+)?"
+    r"(?:moving|touching|using|typing\s+on|on)\s+"
+    r"(?:the|my|any)?\s*"
+    r"(?:mouse|keyboard|trackpad|touchpad|pointer|cursor|anything)"
+    r"[.! ]*$"
+    r"|^(?:(?:no|but)[,! .]*)*i\s+did\s?n[o']?t\s+"
+    r"(?:touch|move|use|press)\s+(?:the|my|any)?\s*"
+    r"(?:mouse|keyboard|trackpad|touchpad|pointer|cursor|anything)"
+    r"[.! ]*$",
+    re.IGNORECASE,
+)
+
+
+def disputes_the_reason(text: str) -> bool:
+    """Whether the person is contradicting why the last action stopped.
+
+    Not a request to try again -- they are telling her the explanation was
+    wrong. Running the same thing again on the strength of that is how a
+    false cancellation became a loop.
+    """
+    return bool(
+        _DISPUTES_THE_REASON.fullmatch(" ".join(str(text or "").split()))
+    )
+
+
 def disputes_last_action(text: str) -> bool:
     return bool(_ACTION_DISPUTE.fullmatch(" ".join(str(text or "").split())))
 
@@ -453,6 +485,41 @@ def respelled_address(goal: str, text: str) -> str:
     if original.startswith(("https://", "http://")) and not re.search(r"\s", original):
         return original.replace(address, corrected, 1)
     return corrected
+
+
+# "That website", "that site", "it", "there" -- a pointer at a page the
+# conversation has already named. Measured live: the person said
+# "I met Zillow.com" (a mistranscription), then "Yeah, can you open that
+# website for me?", and the request went to the planner, which searched
+# and landed on the Google homepage. There was exactly one address in the
+# conversation and it was the obvious referent.
+_POINTS_AT_A_SITE = re.compile(
+    r"\b(?:that|the|this)\s+(?:website|site|page|link|url|address)\b"
+    r"|\bopen\s+(?:it|that)\b"
+    r"|\bgo\s+(?:there|to\s+it)\b",
+    re.IGNORECASE,
+)
+
+
+def site_pointed_at(text: str, *, said_recently: str = "") -> str:
+    """The address a bare "that website" refers to, or nothing.
+
+    Exactly one address in the recent conversation, or none: two make the
+    reference ambiguous, and guessing between them is worse than asking.
+    A turn that names its own address is not pointing at anything.
+    """
+    said = " ".join(str(text or "").split())
+    if not said or not _POINTS_AT_A_SITE.search(said):
+        return ""
+    if _ADDRESS.search(said):
+        # It names one itself, so it is not a reference.
+        return ""
+    seen: list[str] = []
+    for match in _ADDRESS.finditer(str(said_recently or "")):
+        found = match.group(0).rstrip(".,!?")
+        if found.casefold() not in {item.casefold() for item in seen}:
+            seen.append(found)
+    return seen[0] if len(seen) == 1 else ""
 
 
 def resolve_named_choice(text: str, *, said_before: str = "") -> str:
