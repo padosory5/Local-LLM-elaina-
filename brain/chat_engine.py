@@ -908,6 +908,9 @@ class ChatEngine:
         # again?" both need one recorded action to operate on rather than
         # a target rebuilt out of the conversation each time.
         self._last_action_failed = False
+        # Whether the machine target has already survived one drifting
+        # turn. A second one retires it.
+        self._machine_target_reprieved = False
         self._turn_points_at_the_last_action = False
         # The last navigation and the addresses it has been through. The
         # history is what makes an honest recovery possible: a candidate
@@ -1096,6 +1099,7 @@ class ChatEngine:
         self._last_computer_action = ""
         self._last_computer_goal = ""
         self._last_action_failed = False
+        self._machine_target_reprieved = False
         self._navigation = None
         self._navigation_history = ()
 
@@ -4127,11 +4131,22 @@ class ChatEngine:
             return ()
         if not isinstance(tabs, (list, tuple)):
             return ()
-        return tuple(
+        rows = [
             (str(getattr(tab, "url", "") or ""),
              str(getattr(tab, "title", "") or ""))
             for tab in tabs
-        )
+        ]
+        # The page the last navigation actually landed on, with its real
+        # address. The screen driver's tab list reports window titles and
+        # no URLs, so without this there is nothing to compare a title
+        # against -- and telling a stale reading from a real one is
+        # exactly a comparison against where we were.
+        previous = getattr(self, "_navigation", None)
+        if previous is not None and previous.title:
+            rows.append(
+                (previous.actual_url or previous.url, previous.title),
+            )
+        return tuple(rows)
 
     def _look_at(self, navigation, *, before=()):
         """Verify one navigation, giving the page a moment to arrive."""
@@ -4285,9 +4300,12 @@ class ChatEngine:
             # name of its own, it is also a claim the evidence does not
             # support. Three states, three sentences.
             if navigation.status == browser_navigation.UNVERIFIED:
+                # "I opened X" is a claim about arrival, and this branch
+                # exists precisely because arrival was not established.
+                # Say what she did do: she sent the browser.
                 return navigation, (
-                    f"I opened {host}, but I couldn't confirm the page that "
-                    "came up is really it."
+                    f"I sent the browser to {host}, but I couldn't confirm "
+                    "that the site loaded correctly."
                 )
             seen = (
                 f" The browser is showing {navigation.title}."
@@ -8075,15 +8093,45 @@ class ChatEngine:
         if focus.corrected_to and focus.subject:
             goal = replace(goal, subject=focus.subject)
         if not self._turn_points_at_the_last_action:
-            if route.intent != "computer_action" and (
+            # A turn that asks for something else replaces the machine
+            # target. A turn that merely drifts does not -- not the first
+            # time.
+            #
+            # Measured live, session 11: an address was open, the next turn
+            # came back from the transcriber as "I met only one S", the
+            # subject became "meeting", and the target was retired. The
+            # correction that followed it -- correctly heard this time --
+            # had nothing left to correct, and the person had to reopen the
+            # address by hand before the same words worked.
+            #
+            # One reprieve, not a standing exemption: a second drifting
+            # turn retires it, so an unrelated conversation cannot keep an
+            # old address alive indefinitely.
+            drifted = bool(
+                previous_focus is not None
+                and focus.subject != previous_focus.subject
+            )
+            asks_for_something_else = (
                 names_its_own_errand(user_input)
-                or (previous_focus is not None and focus.subject != previous_focus.subject)
+                or reads_as_new_request(user_input)
+            )
+            if route.intent != "computer_action" and (
+                asks_for_something_else
+                or (drifted and self._machine_target_reprieved)
             ):
                 self._retire_machine_target()
+            elif route.intent != "computer_action" and drifted:
+                self._machine_target_reprieved = True
+                print(
+                    "[Reference] keeping the last address available for one "
+                    "more turn."
+                )
             elif route.computer_operation == "open_url":
-                # A new address starts a new spelling history. Corrections
-                # above explicitly mark themselves as pointing back.
+                # A new address starts a new spelling history, and a fresh
+                # reprieve. Corrections above explicitly mark themselves as
+                # pointing back.
                 self._navigation_history = ()
+                self._machine_target_reprieved = False
         has_context, recalled_evidence, recall_origin = self._recall_context(
             route, goal, locked_response=locked_response,
         )

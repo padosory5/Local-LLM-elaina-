@@ -397,9 +397,12 @@ class NavigationTests(unittest.TestCase):
         self.assertGreaterEqual(observer.position, 4)
 
     def test_navigation_uses_the_address_bar_and_verifies_the_landing(self):
+        # Each page gets its own name, because they are two pages. A
+        # landing that keeps the title of the page it left is the stale
+        # observation this file tests separately below.
         observer = _FakeObserver([
-            _observation(_element(), url="https://start.example"),
-            _observation(_element(), url="https://example.com"),
+            _observation(_element(), url="https://start.example", title="Start"),
+            _observation(_element(), url="https://example.com", title="Example"),
         ])
         cursor = _FakeCursor()
         result = _control(observer, cursor).navigate("https://example.com")
@@ -407,6 +410,37 @@ class NavigationTests(unittest.TestCase):
         self.assertIn(("ctrl", "l"), cursor.presses)
         self.assertIn(("enter",), cursor.presses)
         self.assertEqual(cursor.typed, ["https://example.com"])
+
+    def test_a_landing_still_wearing_the_previous_title_is_not_verified(self):
+        # Session 11. The address bar commits when a navigation starts; the
+        # window title follows when the new document says so. Measured
+        # live:
+        #
+        #     requested: Zillow.com
+        #     actual: https://zillow.com
+        #     title: International Student Services - ISS
+        #     status: target_verified
+        #
+        # A fresh URL and the previous page's title are two observations of
+        # two pages, and combining them is how a page nobody had loaded was
+        # reported as open.
+        observer = _FakeObserver([
+            _observation(
+                _element(), url="https://iss.washington.edu",
+                title="International Student Services - ISS",
+            ),
+            _observation(
+                _element(), url="https://zillow.com",
+                title="International Student Services - ISS",
+            ),
+        ])
+
+        result = _control(observer, _FakeCursor()).navigate("https://zillow.com")
+
+        self.assertEqual(result.status, "navigate_unverified")
+        self.assertEqual(
+            result.navigation.classification, "stale_observation",
+        )
 
     def test_cold_about_blank_tab_does_not_block_address_bar_navigation(self):
         observer = _FakeObserver([
@@ -491,13 +525,14 @@ class NavigationTests(unittest.TestCase):
 
     def test_search_goes_through_the_configured_engine_only(self):
         observer = _FakeObserver([
-            _observation(_element(), url="https://start.example"),
+            _observation(_element(), url="https://start.example", title="Start"),
             _observation(
                 _element(
                     role="link", label="Laptop results",
                     href="https://shop.example/laptops",
                 ),
                 url="https://www.google.com/search?q=laptops",
+                title="laptops - Google Search",
             ),
         ])
         cursor = _FakeCursor()

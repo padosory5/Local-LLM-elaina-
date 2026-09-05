@@ -629,6 +629,10 @@ class LookingAndJudgingAreDifferentTests(unittest.TestCase):
 
         self.assertIn("couldn't confirm", line)
         self.assertNotIn("didn't load", line)
+        # And it does not claim to have opened it either: that is the
+        # thing this branch exists because it could not establish.
+        self.assertNotIn("I opened", line)
+        self.assertIn("sent the browser", line)
         self.assertEqual(result.status, "url_dispatched")
 
     # D -------------------------------------------------------------

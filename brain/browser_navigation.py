@@ -331,12 +331,40 @@ def verify(navigation: Navigation, tabs, *, before=()) -> Navigation:
     text = str(getattr(row, "text", "") or "")
     matching = same_destination(navigation.url, url)
 
+    def _was_showing(candidate):
+        """(url, title) pairs the browser was showing before this navigation."""
+        for row in (candidate or ()):
+            if isinstance(row, tuple) and len(row) >= 2:
+                yield str(row[0] or ""), str(row[1] or "")
+            elif hasattr(row, "url"):
+                yield str(row.url or ""), str(row.title or "")
+
     seen_before = any(
-        host_of(url) == host_of(str(row[0] if isinstance(row, tuple) else row.url))
-        and title == str(row[1] if isinstance(row, tuple) else row.title)
-        for row in (before or ())
-        if isinstance(row, tuple) or hasattr(row, "url")
+        host_of(url) == host_of(was_url) and title == was_title
+        for was_url, was_title in _was_showing(before)
     ) if before else False
+
+    # The address bar and the page's own name do not update together. The
+    # omnibox commits the moment a navigation starts; the window title
+    # follows when the new document says so. Measured live, session 11:
+    #
+    #     requested: Zillow.com
+    #     actual: https://zillow.com
+    #     title: International Student Services - ISS
+    #     status: target_verified
+    #
+    # A fresh URL and the previous page's title are not one observation of
+    # one page. They are two observations of two, and combining them is how
+    # a page nobody had loaded was reported as open.
+    title_is_the_previous_page = bool(title) and any(
+        title == was_title and not same_destination(was_url, url)
+        for was_url, was_title in _was_showing(before)
+        # An address is needed on both sides or there is nothing to
+        # compare. The screen driver's tab list reports window titles with
+        # no URL at all, and treating those as "a different page" would
+        # make every navigation inside one site look stale.
+        if was_title and was_url
+    )
 
     landed = replace(navigation, actual_url=url, title=title,
                      observation_id=str(getattr(row, "identity", "") or ""))
@@ -406,6 +434,14 @@ def verify(navigation: Navigation, tabs, *, before=()) -> Navigation:
     if not title.strip() or not text.strip():
         return replace(landed, status=UNVERIFIED, classification="unreadable",
                        detail="an address and title alone do not establish page content")
+    if title_is_the_previous_page:
+        return replace(
+            landed, status=UNVERIFIED, classification="stale_observation",
+            detail=(
+                f"the address bar says {host_of(url)} and the page is still "
+                f"titled {title!r}, so this is not one page's state"
+            ),
+        )
     return replace(
         landed,
         status=RECOVERED if navigation.recovered_from else VERIFIED,

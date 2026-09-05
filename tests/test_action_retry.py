@@ -180,5 +180,83 @@ class AFailedDispatchReachesTheRecoveryTests(unittest.TestCase):
         self.assertEqual(result.status, "url_opened")
 
 
+class ACorrectionTargetSurvivesOneUncertainTurnTests(unittest.TestCase):
+    """Session 11, S11-02. One bad transcription erased the referent.
+
+        [open_url isss.washington.edu]
+        You said: I met only one S.       <- "meant", mistranscribed
+        Current subject: meeting
+        You said: I meant only one S      <- correct this time
+        ... answered as generic conversation
+
+    The subject drifted, the machine target was retired on the drift, and
+    the correction that followed had nothing left to correct. The person
+    had to reopen the address by hand before the same words worked.
+
+    One reprieve, not a standing exemption.
+    """
+
+    def _after(self, middle):
+        from tests.turn_harness import build_engine
+
+        engine = build_engine()
+        engine.NAVIGATION_SETTLE_SECONDS = 0
+        engine._last_computer_action = "open_url"
+        engine._last_computer_goal = "isss.washington.edu"
+        try:
+            engine._route_turn(middle, timings={})
+            route, _ = engine._rescue_capability_route(
+                IntentDecision(
+                    intent="conversation", confidence=0.9,
+                    normalized_request="only one S", reason="t",
+                ),
+                "I meant only one S.",
+            )
+            return route.computer_operation, route.action_target
+        finally:
+            engine.close()
+
+    def test_the_correction_still_lands_after_a_misheard_turn(self):
+        self.assertEqual(
+            self._after("I met only one S."),
+            ("open_url", "is.washington.edu"),
+        )
+
+    def test_a_genuine_change_of_subject_does_retire_it(self):
+        # The over-correction to watch: an address must not stay
+        # correctable forever. Asking for something else is asking for
+        # something else.
+        operation, _target = self._after("What's the weather tomorrow?")
+
+        self.assertNotEqual(operation, "open_url")
+
+    def test_a_second_drifting_turn_retires_it_too(self):
+        from tests.turn_harness import build_engine
+
+        engine = build_engine()
+        engine.NAVIGATION_SETTLE_SECONDS = 0
+        engine._last_computer_action = "open_url"
+        engine._last_computer_goal = "isss.washington.edu"
+        try:
+            # A prior turn, so there is a subject for the drift to be
+            # measured against -- in life the address was opened by one.
+            engine._route_turn("Open isss.washington.edu.", timings={})
+            engine._last_computer_action = "open_url"
+            engine._last_computer_goal = "isss.washington.edu"
+            engine._route_turn("I met only one S.", timings={})
+            engine._route_turn("I like strawberries.", timings={})
+            route, _ = engine._rescue_capability_route(
+                IntentDecision(
+                    intent="conversation", confidence=0.9,
+                    normalized_request="only one S", reason="t",
+                ),
+                "I meant only one S.",
+            )
+        finally:
+            engine.close()
+
+        self.assertNotEqual(route.computer_operation, "open_url")
+
+
 if __name__ == "__main__":
     unittest.main()
