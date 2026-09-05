@@ -30,6 +30,7 @@ from dataclasses import dataclass, field, replace
 
 from brain.chat_engine import ChatEngine
 from brain.deliberation.profile import UserProfile
+from brain.standing_orders import StandingOrders
 from agents.coordinator import AgentCoordinator
 from agents.task_manager import AgentTaskManager
 from config.loader import Config
@@ -492,6 +493,12 @@ def build_engine(routes: dict[str, dict] | None = None) -> ChatEngine:
     # actually plays. A test must neither read it nor write to it.
     test_state = Path(tempfile.mkdtemp(prefix="elaina-turns-"))
     engine.user_profile = UserProfile(path=test_state / "profile.json")
+    # Her standing rules and the facts about the person live in the user's
+    # own runtime/data. A test must neither read those nor write to them.
+    engine.standing_orders = StandingOrders.load(
+        directives_path=test_state / "directives.yaml",
+        about_me_path=test_state / "about_me.yaml",
+    )
     engine.desktop_action_planner.profile = engine.user_profile
     # Agent assignment normally appends to runtime/audit. Whole-turn tests
     # must be hermetic: running the deterministic suite may not depend on a

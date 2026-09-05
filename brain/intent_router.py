@@ -373,6 +373,21 @@ def _restore_misheard_words(paraphrase: str, transcript: str) -> str:
             # Ordinary tense/plural changes are paraphrase, not a changed
             # entity: "released" may legitimately query a "release date".
             return word
+        if shorter in longer:
+            # One word inside the other is a *segmentation*, and the model
+            # splitting a run-together transcript is repairing it rather
+            # than mishearing it. Measured live, session 10:
+            #
+            #     You said: Use my browser control and opennaver.com
+            #     [Router] restored 'Use my browser control and
+            #              opennaver.com...' from the transcript.
+            #
+            # The model had correctly written "open naver.com" and this
+            # put the fusion back, because "naver" scores 0.71 against
+            # "opennaver" and the transcript was assumed to be right about
+            # words. It is right about what was *heard*; it is not
+            # authoritative about where one word ends.
+            return word
         return restored.capitalize() if word[:1].isupper() else restored
 
     return _WORD.sub(swap, paraphrase or "")

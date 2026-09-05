@@ -293,6 +293,8 @@ _BROWSER_SURFACE_HINTS = (
 )
 from tools.browser_control.safe_browser import SafeBrowserControl
 from brain.resolved_turn import ResolvedTurn, command_was_fused
+from brain import standing_orders
+from brain.standing_orders import StandingOrders
 from tools.computer_control.safe_filesystem import SafeFilesystemControl
 from tools.computer_control.windows_app_catalog import WindowsAppCatalog
 
@@ -691,6 +693,12 @@ class ChatEngine:
         # What she has learned about this person from what they asked for
         # and what actually happened. Local to this machine.
         self.user_profile = UserProfile()
+        # The person's own standing rules, and the facts they have asked
+        # her to keep. Two hand-editable files that outlive a restart --
+        # see brain/standing_orders.py for why a directive is executed
+        # rather than read out to the model.
+        self.standing_orders = StandingOrders.load()
+        print(self.standing_orders.log_block())
         self.input_watcher = InputWatcher()
         watching = self.input_watcher.start()
         self.cursor_driver = CursorDriver(input_watcher=self.input_watcher)
@@ -2540,6 +2548,40 @@ class ChatEngine:
             if word.casefold() not in {w.casefold() for w in words}:
                 words.append(word)
         return " ".join(words)
+
+    def _note_standing_instruction(self, user_input: str, *, kinds=()) -> str:
+        """Write down a rule the person has just stated, and say so.
+
+        The whole point is that they say it once. So the confirmation
+        names what was written and where, because a rule you cannot see is
+        a rule you cannot correct -- and both files are theirs to open.
+        """
+        kind, first, second = standing_orders.read_instruction(user_input)
+        if not kind or (kinds and kind not in kinds):
+            return ""
+
+        if kind == "repair":
+            if not self.standing_orders.remember_repair(first, second):
+                return ""
+            print(f"[Standing Orders] +say {first!r} -> {second!r}")
+            return f"Got it -- from now on {first} means {second}."
+        if kind == "fact":
+            if not self.standing_orders.remember_fact(first):
+                return ""
+            print(f"[Standing Orders] +fact {first!r}")
+            return "Noted -- I'll keep that."
+        if kind == "note":
+            if not self.standing_orders.remember_note(first):
+                return ""
+            print(f"[Standing Orders] +note {first!r}")
+            return f"Alright -- I'll {first} from now on."
+        if kind == "forget":
+            rules, facts = self.standing_orders.forget(first)
+            if not rules and not facts:
+                return ""
+            print(f"[Standing Orders] -{rules} rule(s), -{facts} fact(s)")
+            return f"Done -- I've dropped what I had about {first}."
+        return ""
 
     def _note_preference(self, user_input: str) -> str:
         """Record what this turn says about what she should usually use.
@@ -6802,6 +6844,13 @@ class ChatEngine:
             "\n\nCURRENTLY AVAILABLE AI AGENTS\n"
             f"{self._capability_context()}"
         )
+        # The few things she must never be wrong about, always present
+        # rather than retrieved. Deliberately small: this is the weak
+        # mechanism, and the rules that actually bind are executed
+        # elsewhere.
+        standing = self.standing_orders.context_text()
+        if standing:
+            context_prompt += f"\n\nABOUT THIS PERSON\n{standing}"
         if routing.problem is not None and routing.problem.real_world:
             # Market context belongs to concrete acquisition and discovery,
             # not to every conversation. This preserves local fallbacks for
@@ -6860,6 +6909,13 @@ class ChatEngine:
                 flags=re.IGNORECASE,
             )
             print(f"[Speech Repair] {misheard!r} -> {meant!r}")
+        # And the person's own repairs, which outrank everything here:
+        # they wrote them down precisely because this keeps happening to
+        # them, and nothing this module infers is better evidence than
+        # that.
+        user_input, applied = self.standing_orders.heard_as(user_input)
+        if applied:
+            print(f"[Standing Orders] {applied}")
         previous_focus = self.task_sessions.focus()
         # One answer per turn to "is this turn about the thing she just
         # did?". Set by the repair layer, read by the focus layer, which
@@ -6874,6 +6930,29 @@ class ChatEngine:
         has_explicit_attachment = bool(
             screen_region is not None or screen_snapshot is not None
         )
+        # A rule about her rules is read from the raw words, and read
+        # first. Measured while building this: a `say` rule rewrote the
+        # very sentence asking for it to be removed -- "forget the rule
+        # about opennaver.com" became "forget the rule about naver.com"
+        # and nothing was dropped. A directive may not edit the
+        # instruction that manages directives.
+        managed = self._note_standing_instruction(
+            raw_transcript, kinds=("repair", "fact", "forget"),
+        )
+        if managed:
+            self.clarification.clear()
+            self.capability_offer.clear()
+            timings["route"] = time.perf_counter() - route_started
+            return TurnRouting(
+                route=IntentDecision(
+                    intent="conversation",
+                    confidence=1.0,
+                    normalized_request=raw_transcript,
+                    reason="The user gave a standing instruction.",
+                ),
+                user_input=raw_transcript,
+                locked_response=managed,
+            )
         preference_reply = self._note_preference(user_input)
         if preference_reply:
             # Saying how she should work is a statement, not a request for
@@ -6893,6 +6972,29 @@ class ChatEngine:
                 ),
                 user_input=user_input,
                 locked_response=preference_reply,
+            )
+        # After the preference reader, not before it. A preference has a
+        # typed home with its own standing and confidence, which is
+        # strictly better than free prose -- and "From now on use Spotify
+        # whenever I ask you to play music" is one. What is left over is
+        # the kind of rule nothing else models: a repair, a fact, or a
+        # note in the person's own words.
+        standing_reply = self._note_standing_instruction(
+            raw_transcript, kinds=("note",),
+        )
+        if standing_reply:
+            self.clarification.clear()
+            self.capability_offer.clear()
+            timings["route"] = time.perf_counter() - route_started
+            return TurnRouting(
+                route=IntentDecision(
+                    intent="conversation",
+                    confidence=1.0,
+                    normalized_request=user_input,
+                    reason="The user gave a standing instruction.",
+                ),
+                user_input=user_input,
+                locked_response=standing_reply,
             )
         disputed_machine = bool(
             self._last_computer_action and self._last_computer_goal

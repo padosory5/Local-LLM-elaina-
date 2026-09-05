@@ -245,6 +245,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_browser_progress",
             "test_browser_navigation",
             "test_speech_repair",
+            "test_standing_orders",
             "test_action_retry",
             "test_user_evidence",
             "test_project_question_scope",
