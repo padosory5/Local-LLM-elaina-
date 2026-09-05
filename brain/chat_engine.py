@@ -2075,6 +2075,27 @@ class ChatEngine:
                     ),
                 ), ""
 
+        # An opening verb and an address is an instruction, whatever shape
+        # the sentence is in. Measured live: "No, open naver.com instead."
+        # carried no recognised action shape, so it never reached the
+        # capability layer at all -- and a pending offer for a different
+        # site was the only thing left to interpret it.
+        opening = browser_navigation.asks_to_open_an_address(user_input)
+        if opening and not self._asks_for_more_than_opening(
+            user_input, opening,
+        ):
+            print(f"[Rescue] an address goes straight there -> {opening}")
+            return replace(
+                route,
+                intent="computer_action",
+                computer_operation="open_url",
+                computer_url=opening,
+                normalized_request=f"open {opening}",
+                action_target=opening,
+                action_requested=True,
+                reason="The request names an address, so it is a navigation.",
+            ), ""
+
         conversational_action = (
             route.intent == "conversation"
             and not route.action_requested
@@ -4385,6 +4406,14 @@ class ChatEngine:
                 receipt, requested=requested, history=navigation.history,
                 command_fused=navigation.command_fused,
             )
+            # A frame that contradicts itself is worth a second look
+            # before it becomes a verdict. The dispatcher reads the page
+            # once, and the address bar commits before the title follows,
+            # so a recovery step can arrive at the right host wearing the
+            # name of the one it just left.
+            if navigation.classification == "stale_observation":
+                print("[Navigation] contradictory frame; looking again.")
+                navigation = self._look_at(navigation, before=before)
         else:
             navigation = self._look_at(navigation, before=before)
         print(navigation.log_block())
@@ -4561,6 +4590,13 @@ class ChatEngine:
         if isinstance(receipt, browser_navigation.Navigation):
             attempt = replace(receipt, requested=attempt.requested,
                               history=attempt.history, recovered_from=host)
+            # The same second look the first navigation gets. A recovery
+            # step lands on the right host while the title still says the
+            # one it came from, and concluding from that first frame is
+            # how a working candidate was called a wrong destination.
+            if attempt.classification == "stale_observation":
+                print("[Navigation] contradictory frame; looking again.")
+                attempt = self._look_at(attempt, before=before)
             if attempt.arrived:
                 attempt = replace(attempt, status=browser_navigation.RECOVERED)
         else:
@@ -7260,16 +7296,83 @@ class ChatEngine:
                 user_input=user_input,
                 locked_response=standing_reply,
             )
-        disputed_machine = bool(
+        # What the turn is about, decided before any pending gate gets to
+        # reinterpret it. The order is the one the user set out: an
+        # explicit correction, then an explicit instruction, then a report
+        # about the last action, then a retry -- and a pending offer only
+        # after all of those have declined it.
+        #
+        # Measured live, the acceptance run, twice in one session:
+        #
+        #     Elaina: I couldn't confirm that zillow.com loaded.
+        #     You said: It's opened. Thanks.
+        #     [Router] computer_action: The user accepted the offered
+        #              ability.  -> open_url zillow.com again
+        #
+        #     You said: I meant only two S's.
+        #     [Router] computer_action (0.00): The user accepted the
+        #              offered ability.  -> the browser planner
+        #
+        # Neither was an acceptance. There was no offer worth accepting in
+        # the first one, and the second was a correction to an address.
+        has_machine_target = bool(
             self._last_computer_action and self._last_computer_goal
+        )
+        disputed_machine = bool(
+            has_machine_target
             and browser_progress.disputes_last_action(user_input)
         )
+        confirmed_machine = bool(
+            has_machine_target
+            and self._navigation is not None
+            and not self._navigation.arrived
+            and browser_progress.confirms_last_action(user_input)
+        )
+        corrects_machine = bool(
+            has_machine_target
+            and self._last_computer_action in {"open_url", "browser_action"}
+            and (
+                browser_progress.respelled_address(
+                    self._last_computer_goal, user_input,
+                )
+                or browser_progress.resubstituted_address(
+                    self._last_computer_goal, user_input,
+                )
+            )
+        )
+        retries_machine = bool(
+            has_machine_target
+            and browser_progress.continues_the_last_action(user_input)
+        )
         if not continuing_agent_flow and (
-            names_its_own_errand(user_input) or disputed_machine
+            names_its_own_errand(user_input)
+            or disputed_machine
+            or confirmed_machine
+            or corrects_machine
+            or retries_machine
         ):
             # Resolve authority before any pending gate gets to reinterpret
             # the turn. An unrelated later 'yeah' cannot revive these offers.
             self._retire_pending_interpretations()
+        if confirmed_machine:
+            # She said she could not confirm it; the person can. That
+            # resolves the doubt rather than starting the work again.
+            self._navigation = replace(
+                self._navigation, status=browser_navigation.VERIFIED,
+                classification="user_confirmed", detail=user_input,
+            )
+            self._last_action_failed = False
+            print("[Navigation] the user confirms the page is up.")
+            timings["route"] = time.perf_counter() - route_started
+            return TurnRouting(
+                route=IntentDecision(
+                    intent="conversation", confidence=1.0,
+                    normalized_request=user_input,
+                    reason="The user says the last action worked.",
+                ),
+                user_input=user_input,
+                locked_response="Good -- glad that one landed.",
+            )
         if disputed_machine and self._navigation is not None:
             self._navigation = replace(self._navigation, status=browser_navigation.DISPUTED,
                                        classification="user_dispute", detail=user_input)

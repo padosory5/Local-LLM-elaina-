@@ -413,6 +413,23 @@ def verify(navigation: Navigation, tabs, *, before=()) -> Navigation:
                     f"so this reading of {title} may be stale"
                 ),
             )
+        # A title naming an address this very navigation has already
+        # tried is the previous frame, not a different destination.
+        # Measured live, the acceptance run: recovering from
+        # openisss.washington.edu to isss.washington.edu observed the new
+        # address with the old host still in the title, and called it a
+        # wrong destination on the first frame.
+        if any(
+            same_destination(title, tried) for tried in navigation.history
+        ):
+            return replace(
+                landed, status=UNVERIFIED, classification="stale_observation",
+                detail=(
+                    f"the address bar says {host_of(url)} and the page is "
+                    f"still titled {title!r}, which this navigation has "
+                    "already been through"
+                ),
+            )
         return replace(
             landed, status=WRONG_DESTINATION,
             classification="wrong_destination",
@@ -472,6 +489,30 @@ _KNOWN_TAIL = re.compile(
 # transcriber renders "nosuchhost.example" -- and closing those up is only
 # safe when the whole string is the target.
 _TARGET_WORDS = 5
+
+
+# An opening verb anywhere, with an address after it. Anchored forms are
+# handled by ``address_in``; this is for a request that arrives inside a
+# sentence -- "no, open naver.com instead".
+_OPENS_SOMETHING = re.compile(
+    r"\b(?:open|go\s+to|goto|visit|launch|browse|load|navigate\s+to|"
+    r"pull\s+up|bring\s+up)\b",
+    re.IGNORECASE,
+)
+
+
+def asks_to_open_an_address(text: str) -> str:
+    """The address this turn asks to open, or nothing.
+
+    An opening verb and an address, in that order. "What is naver.com
+    about?" names an address and asks nothing to be opened, so it is not
+    one of these.
+    """
+    said = " ".join(str(text or "").split())
+    verb = _OPENS_SOMETHING.search(said)
+    if verb is None:
+        return ""
+    return address_in(said[verb.start():])
 
 
 def address_in(text: str) -> str:

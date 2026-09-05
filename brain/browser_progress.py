@@ -185,9 +185,17 @@ _A_LETTER_COUNT = re.compile(
     r"(?:so\s+)?(?:from\s+(?:my|the)\s+(?:previous|last)\s+\w+,?\s+)?"
     r"(?:actually[, ]+)?(?:i\s+(?:mean|meant)\s+)?"
     r"(?:i\s+(?:just\s+)?(?:want|wanted|need|needed)\s+)?"
-    r"(?:(?:can|could|would)\s+(?:you|we|it)\s+"
-    r"(?:just\s+|please\s+)?(?:only\s+)?"
-    r"(?:have|make\s+it|use|do)\s+)?"
+    # "Can you try with two S's?", "make it two S's", "use two S's" --
+    # the same edit, asked or ordered rather than stated. Measured live,
+    # the first of those came back computer_action/unsupported and "I
+    # can't do that one." Listing the phrasings is not the same as
+    # listing phrases: what varies is the verb in front of a number and a
+    # letter, and the modal in front of the verb is optional.
+    r"(?:(?:can|could|would)\s+(?:you|we|it)\s+)?"
+    r"(?:just\s+|please\s+|only\s+)*"
+    r"(?:(?:have|make\s+it|use|do|try(?:\s+(?:it\s+)?with)?|"
+    r"put|set\s+it\s+to|go\s+with)\s+)?"
+    r"(?:there\s+should\s+be\s+)?"
     r"(?:(?:it|that|there)(?:'s|s| is)?\s+)?"
     r"(?:should\s+(?:be|have)\s+)?"
     r"(?:spel(?:led|t)\s+)?"
@@ -210,8 +218,11 @@ _COUNTS = {
 }
 _LETTER_DELTA = re.compile(
     r"^(?:actually[, ]+|please\s+|i\s+meant\s+)*"
-    r"(?:(?P<verb>remove|add)\s+(?P<count>one|two|three)\s+"
-    r"|(?P<amount>one|two|three)\s+(?P<direction>fewer|less|more)\s+)"
+    r"(?:(?:can|could|would)\s+(?:you|we|it)\s+)?(?:just\s+)?"
+    r"(?:(?P<verb>remove|add|drop|delete)\s+"
+    r"(?:another\s+|an\s+|a\s+|one\s+more\s+)?"
+    r"(?P<count>one|two|three)?\s*"
+    r"|(?P<amount>one|two|three)\s+(?P<direction>fewer|less|more|extra)\s+)"
     r"(?P<letter>[a-z])(?:'s|s)?[.! ]*$", re.I,
 )
 _ACTION_DISPUTE = re.compile(
@@ -226,6 +237,47 @@ _ACTION_DISPUTE = re.compile(
 
 def disputes_last_action(text: str) -> bool:
     return bool(_ACTION_DISPUTE.fullmatch(" ".join(str(text or "").split())))
+
+
+# The other half of the same evidence. Measured live, after she had said
+# she could not confirm Zillow had loaded:
+#
+#     You said: It's opened. Thanks.
+#     [Router] computer_action: The user accepted the offered ability.
+#     [Computer Control] open_url zillow.com
+#
+# There was no offer. A person telling her the page is up is answering
+# the doubt she raised, and the answer is "good" -- not doing it again.
+_CONFIRMS_THE_ACTION = re.compile(
+    r"^(?:(?:oh|ok(?:ay)?|yeah|yep|yes|well|and|but|no)[,.! ]*)*"
+    r"(?:it(?:'s|s| is| has)?|that(?:'s|s| is)?|the\s+(?:page|site|tab)"
+    r"(?:'s|s| is)?)?\s*"
+    r"(?:did\s+)?"
+    r"(?:open(?:ed)?|load(?:ed)?|work(?:ed|s|ing)?|"
+    r"up|there|fine|good|showing|come\s+up|came\s+up)"
+    r"(?:\s+(?:now|fine|good|already|correctly|properly|though|too))*"
+    r"[.! ]*"
+    r"(?:(?:thanks|thank\s+you|cheers|ta|got\s+it|nice|great|perfect)"
+    r"[,.! ]*)*$"
+    # "Thanks, got it." with no verb in it at all. Ambiguous in the
+    # abstract; unambiguous as the answer to "I couldn't confirm it
+    # loaded", which is the only place the caller asks.
+    r"|^(?:(?:ok(?:ay)?|yeah|yep|yes|oh)[,.! ]*)*"
+    r"(?:thanks|thank\s+you|cheers)[,.! ]*(?:got\s+it|i\s+see)?[.! ]*$"
+    r"|^(?:got\s+it|i\s+see\s+it)[.! ]*(?:thanks|thank\s+you)?[.! ]*$",
+    re.IGNORECASE,
+)
+
+
+def confirms_last_action(text: str) -> bool:
+    """Whether the person is saying the last action did work after all.
+
+    Deliberately whole-utterance: the moment the turn carries anything
+    else it is a request of its own, and this must not swallow it.
+    """
+    return bool(
+        _CONFIRMS_THE_ACTION.fullmatch(" ".join(str(text or "").split()))
+    )
 
 # Something with a dot in it and no spaces: the shape of a web address.
 _ADDRESS = re.compile(r"\b[\w-]+(?:\.[\w-]+)+\b")
@@ -341,9 +393,11 @@ def respelled_address(goal: str, text: str) -> str:
         return ""
     delta = "direction" in match.re.groupindex
     if delta:
+        # "Add another S" names no number, and means one.
         number = match.group("count") or match.group("amount")
-        amount = _COUNTS[number.casefold()]
-        amount *= -1 if (match.group("verb") or match.group("direction")).casefold() in {"remove", "fewer", "less"} else 1
+        amount = _COUNTS.get((number or "one").casefold(), 1)
+        moved = (match.group("verb") or match.group("direction") or "").casefold()
+        amount *= -1 if moved in {"remove", "drop", "delete", "fewer", "less"} else 1
         wanted = None
     else:
         wanted = _COUNTS.get(match.group("count").casefold())
