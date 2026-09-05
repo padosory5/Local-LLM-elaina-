@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import re
 
+from brain.browser_interaction import strip_surface_context
 from brain.references import ORDINAL_INDEX
 
 # How many times the same step may be taken before it stops being work.
@@ -509,7 +510,15 @@ def site_pointed_at(text: str, *, said_recently: str = "") -> str:
     A turn that names its own address is not pointing at anything.
     """
     said = " ".join(str(text or "").split())
-    if not said or not _POINTS_AT_A_SITE.search(said):
+    if not said:
+        return ""
+    # "On this page" says where to look; "that website" says what to open.
+    # The difference is the locative preposition, and it decides whether a
+    # deictic is the object of the request or an adjunct to it. Measured
+    # live: "Click about on this page" was read as pointing at a site, so
+    # the whole turn became a navigation and the click never ran.
+    located, _context = strip_surface_context(said, adverbs=False)
+    if not _POINTS_AT_A_SITE.search(located):
         return ""
     if _ADDRESS.search(said):
         # It names one itself, so it is not a reference.

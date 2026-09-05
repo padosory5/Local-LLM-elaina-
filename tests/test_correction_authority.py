@@ -291,6 +291,45 @@ class ABareReferenceToASiteResolvesTests(unittest.TestCase):
             "",
         )
 
+    def test_a_locative_is_not_a_referent(self):
+        # Measured live, and this one was mine. "Click about on this
+        # page" contains "this page", which was read as pointing at a
+        # site -- so the whole turn became open_url and the click never
+        # ran at all:
+        #
+        #     You said: Click about on this page.
+        #     [Rescue] 'that website' -> iss.washington.edu
+        #     [Rescue] computer_action/browser_action -> open_url
+        #     classification: stale_tab (the page did not change)
+        #
+        # "On this page" says where to look. It is the context of an
+        # action that already has its own object, not the object itself.
+        for said in (
+            "Click about on this page.", "click Calendar on this webpage",
+            "press Submit in this window", "find the hours on that site",
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(
+                    browser_progress.site_pointed_at(
+                        said, said_recently="iss.washington.edu",
+                    ),
+                    "", said,
+                )
+
+    def test_a_deictic_object_is_still_a_referent(self):
+        # The half that has to keep working.
+        for said in (
+            "open that website", "can you open that site for me?",
+            "go there", "open it",
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(
+                    browser_progress.site_pointed_at(
+                        said, said_recently="I met Zillow.com",
+                    ),
+                    "Zillow.com", said,
+                )
+
     def test_a_turn_that_names_its_own_address_is_not_pointing(self):
         self.assertEqual(
             browser_progress.site_pointed_at(

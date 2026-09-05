@@ -87,17 +87,24 @@ _SURFACE_ADVERB = re.compile(
 )
 
 
-def strip_surface_context(label: str) -> tuple[str, str]:
+def strip_surface_context(
+    label: str, *, adverbs: bool = True,
+) -> tuple[str, str]:
     """Split a spoken element label from the words locating the page.
 
     Returns ``(element, context)``. Repeated because people do say "click
     about on this page here", and each pass removes one phrase.
+
+    ``adverbs=False`` keeps a bare "there"/"here". Those are the only
+    surface words that are also ordinary objects -- "go there" points
+    somewhere, "in here" locates -- so a caller asking what a turn *refers
+    to* wants the prepositional form only.
     """
     said = " ".join(str(label or "").split())
     context: list[str] = []
     while said:
         stripped = _SURFACE_CONTEXT.sub("", said)
-        if stripped == said:
+        if stripped == said and adverbs:
             stripped = _SURFACE_ADVERB.sub("", said)
         if stripped == said or not stripped.strip():
             # Never strip the whole label away: "click here" means the
