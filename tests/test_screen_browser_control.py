@@ -32,12 +32,26 @@ def _observation(*elements, url="https://example.com", title="Example", scan="s1
     )
 
 
+def _blank_tab(handle=1):
+    """What a just-opened tab actually shows: nothing."""
+    return ScreenPageObservation(
+        "observed", handle=handle, title="New Tab", url="about:blank",
+        text_excerpt="", elements=(), scan_id="blank",
+    )
+
+
 class _FakeObserver:
     """A page that changes only once the cursor has actually done something.
 
     Modelled this way rather than as a queue because the control layer
     legitimately observes more than once per action -- it re-scans after
     focusing the window, since focusing can move or resize it.
+
+    A navigation now opens a tab of its own first, and the tab it opens is
+    blank until something is typed into it. That frame is real, so it is
+    modelled rather than skipped: a fake that jumped straight from the old
+    page to the destination would hide the very signature comparison the
+    stale-tab tests depend on.
     """
 
     def __init__(self, observations, lookup=None, cursor=None):
@@ -51,7 +65,11 @@ class _FakeObserver:
 
     def observe(self, window=None):
         self.calls += 1
-        if self.cursor is not None and self.cursor.acted:
+        if self.cursor is None:
+            return self.before
+        if ("ctrl", "t") in self.cursor.presses and not self.cursor.typed:
+            return _blank_tab(self.before.handle)
+        if self.cursor.acted:
             return self.after
         return self.before
 
@@ -424,6 +442,13 @@ class NavigationTests(unittest.TestCase):
         # A fresh URL and the previous page's title are two observations of
         # two pages, and combining them is how a page nobody had loaded was
         # reported as open.
+        #
+        # Reusing the tab is now the only way to reach this, and that is a
+        # real consequence rather than a fixture detail: a navigation that
+        # opens its own tab cannot land wearing the previous page's title,
+        # because the previous page is still in the tab it was in. The
+        # in-tab path stays -- the one bounded retry inside _go_to uses it
+        # -- so the guard still has to hold here.
         observer = _FakeObserver([
             _observation(
                 _element(), url="https://iss.washington.edu",
@@ -435,12 +460,92 @@ class NavigationTests(unittest.TestCase):
             ),
         ])
 
-        result = _control(observer, _FakeCursor()).navigate("https://zillow.com")
+        result = _control(observer, _FakeCursor()).navigate(
+            "https://zillow.com", new_tab=False,
+        )
 
         self.assertEqual(result.status, "navigate_unverified")
         self.assertEqual(
             result.navigation.classification, "stale_observation",
         )
+
+    def test_going_somewhere_new_opens_a_tab_of_its_own(self):
+        # Asked for directly: opening something must not take away the
+        # page the person is reading.
+        observer = _FakeObserver([
+            _observation(_element(), url="https://news.example", title="News"),
+            _observation(_element(), url="https://example.com", title="Example"),
+        ])
+        cursor = _FakeCursor()
+
+        result = _control(observer, cursor).navigate("https://example.com")
+
+        self.assertEqual(result.status, "navigated")
+        self.assertIn(("ctrl", "t"), cursor.presses)
+        # And the tab is opened before the address bar is touched.
+        self.assertLess(
+            cursor.presses.index(("ctrl", "t")),
+            cursor.presses.index(("ctrl", "l")),
+        )
+
+    def test_a_search_gets_its_own_tab_too(self):
+        observer = _FakeObserver([
+            _observation(_element(), url="https://news.example", title="News"),
+            _observation(_element(), url="https://duckduckgo.com/?q=hotels"),
+        ])
+        cursor = _FakeCursor()
+
+        _control(observer, cursor).search("hotels")
+
+        self.assertIn(("ctrl", "t"), cursor.presses)
+
+    def test_a_blank_tab_is_used_rather_than_stacked_on(self):
+        # Nobody is reading about:blank, so opening a second empty tab in
+        # front of it helps no one.
+        observer = _FakeObserver([
+            _blank_tab(),
+            _observation(_element(), url="https://example.com"),
+        ])
+        cursor = _FakeCursor()
+
+        _control(observer, cursor).navigate("https://example.com")
+
+        self.assertNotIn(("ctrl", "t"), cursor.presses)
+
+    def test_an_unreadable_tab_is_not_treated_as_reading_material(self):
+        observer = _FakeObserver([
+            ScreenPageObservation(
+                "cold_tree", handle=1, title="New Tab", url="about:blank",
+                message="no document yet",
+            ),
+            _observation(_element(), url="https://example.com"),
+        ])
+        cursor = _FakeCursor()
+
+        _control(observer, cursor).navigate("https://example.com")
+
+        self.assertNotIn(("ctrl", "t"), cursor.presses)
+
+    def test_a_refused_new_tab_still_navigates(self):
+        # A keystroke that did not land is not a reason to refuse the
+        # thing that was actually asked for.
+        class _NoNewTab(_FakeCursor):
+            def press(self, *keys):
+                if keys == ("ctrl", "t"):
+                    self.presses.append(keys)
+                    return InputResult("unavailable", "no")
+                return super().press(*keys)
+
+        observer = _FakeObserver([
+            _observation(_element(), url="https://news.example", title="News"),
+            _observation(_element(), url="https://example.com", title="Example"),
+        ])
+        cursor = _NoNewTab()
+
+        result = _control(observer, cursor).navigate("https://example.com")
+
+        self.assertEqual(result.status, "navigated")
+        self.assertEqual(cursor.typed, ["https://example.com"])
 
     def test_cold_about_blank_tab_does_not_block_address_bar_navigation(self):
         observer = _FakeObserver([

@@ -539,24 +539,31 @@ class ScreenBrowserControl:
 
     def navigate(
         self, url: str, *, window: BrowserWindow | int | None = None,
+        new_tab: bool = True,
     ) -> BrowserActionResult:
-        """Type a validated URL into the address bar and go there."""
+        """Open a validated URL, by default in a tab of its own."""
         resolution = self.safe_browser.resolve(url)
         if resolution.status != "resolved":
             return BrowserActionResult("refused", resolution.message)
-        return self._go_to(resolution.url, window=window)
+        return self._go_to(resolution.url, window=window, new_tab=new_tab)
 
     def search(
         self, query: str, *, window: BrowserWindow | int | None = None,
+        new_tab: bool = True,
     ) -> BrowserActionResult:
-        """Search using the configured engine -- never a model-chosen domain."""
+        """Search using the configured engine -- never a model-chosen domain.
+
+        A search is a new errand too, so it also gets its own tab rather
+        than replacing whatever the person was looking at.
+        """
         resolution = self.safe_browser.resolve_search(query)
         if resolution.status != "resolved":
             return BrowserActionResult("refused", resolution.message)
-        return self._go_to(resolution.url, window=window)
+        return self._go_to(resolution.url, window=window, new_tab=new_tab)
 
     def _go_to(
         self, url: str, *, window: BrowserWindow | int | None = None,
+        new_tab: bool = True,
     ) -> BrowserActionResult:
         # Navigation needs a real browser *window*, not an already-readable
         # document. Fresh tabs and about:blank commonly expose no Document
@@ -594,6 +601,29 @@ class ScreenBrowserControl:
             if before_observation.status == "observed"
             else ("", before_observation.title, 0, ())
         )
+
+        # Go somewhere new in a new tab, so a page the person is reading
+        # survives being asked a question. Asked for directly: "when I ask
+        # Elaina to use browser control and open something I want it to
+        # open a new tab and then go to the website so that it doesn't
+        # search over my current website."
+        #
+        # A blank or brand-new tab is not something anybody is reading, so
+        # that case reuses it rather than stacking empty tabs on a fresh
+        # browser start.
+        if new_tab and self._holds_a_page(before_observation):
+            opened = self.cursor.press("ctrl", "t")
+            if opened.succeeded:
+                self._sleep(_SETTLE_SECONDS)
+                before_observation = self.observer.observe(handle)
+                before = (
+                    self._page_signature(before_observation)
+                    if before_observation.status == "observed"
+                    else ("", before_observation.title, 0, ())
+                )
+            # A refusal is not fatal: navigating in the current tab is
+            # still the thing that was asked for, and saying no to it
+            # because a keystroke did not land would be worse.
 
         last = before_observation
         for attempt in range(2):
@@ -905,6 +935,17 @@ class ScreenBrowserControl:
             return _key(landed) == _key(requested)
         except Exception:
             return False
+
+    def _holds_a_page(self, observation) -> bool:
+        """Whether this tab is showing something worth not destroying.
+
+        A blank tab, an unreadable one, or one that could not be observed
+        at all is nobody's reading material, and opening a second empty
+        tab in front of it helps no one.
+        """
+        if getattr(observation, "status", "") != "observed":
+            return False
+        return self._usable_web_url(getattr(observation, "url", ""))
 
     @staticmethod
     def _usable_web_url(value: str) -> bool:
