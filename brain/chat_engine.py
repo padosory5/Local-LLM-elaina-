@@ -268,6 +268,26 @@ _CLAIMS_TO_HAVE_ACTED = re.compile(
     re.IGNORECASE,
 )
 
+# Doubting that an ability works. A question about the ability, and never
+# a task the ability can be pointed at.
+_DOUBTS_AN_ABILITY = re.compile(
+    r"\b(?:do\s?n[o']t|does\s?n[o']t|is\s?n[o']t|are\s?n[o']t)\s+"
+    r"(?:think\s+|seem\s+)?"
+    r"[^.?!]{0,40}\b(?:work|working|works|functioning|available)\b"
+    r"|\bis\s+(?:your|the)\s+\w+\s+control\s+(?:working|broken|down|ok)\b"
+    r"|\b(?:seems|looks)\s+(?:like\s+)?(?:it'?s\s+)?broken\b",
+    re.IGNORECASE,
+)
+
+# Something to do once the page is open, as opposed to opening it. The
+# navigation operation owns the address; the planner owns the page.
+_PAGE_INTERACTION = re.compile(
+    r"\b(?:check|read|find|search|look\s+(?:at|for|up)|click|press|fill|"
+    r"type|scroll|compare|book|buy|order|summari[sz]e|tell\s+me|show\s+me|"
+    r"see\s+what|what\s+it\s+says)\b",
+    re.IGNORECASE,
+)
+
 _ACTION_REQUEST_SHAPE = re.compile(
     r"^\s*(?:please\s+|now\s+|just\s+|then\s+|and\s+)*"
     r"(?:open|check|search|look|find|go|click|fill|type|browse|compare|"
@@ -1212,7 +1232,17 @@ class ChatEngine:
         screen vision, just doing the thing beats asking about it.
         """
         text = str(user_input or "").strip()
-        if not text or not CapabilityRegistry.is_ability_question(text):
+        if not text:
+            return ""
+        # Doubting that an ability works is a question about it, even
+        # though it is shaped like a statement. Measured live, the
+        # session-11 rerun: "I don't think your browser control is working
+        # right now" became a browser goal, the planner failed on it
+        # because a complaint is not a goal, and she concluded from that
+        # failure that she has no browser at all.
+        if not CapabilityRegistry.is_ability_question(text) and not (
+            _DOUBTS_AN_ABILITY.search(text)
+        ):
             return ""
 
         if _ABILITY_INVENTORY_QUESTION.search(text):
@@ -1231,6 +1261,26 @@ class ChatEngine:
             answer = f"Yes, I have {capability.name} -- but {blocked}."
             return answer + (f" {_sentence_case(fix)} and I'll use it." if fix else "")
 
+        # An offer needs something to do. Measured live, the session-11
+        # rerun:
+        #
+        #     You said: I don't think your browser control is working.
+        #     Elaina: I can use browser control for this -- want me to?
+        #     You said: Yep.
+        #     [browser_action target=I don't think your browser control
+        #      is working right now.]  -> failed
+        #     Elaina: I'm unable to access or control a browser.
+        #
+        # The complaint was handed to the planner as the goal, it failed
+        # because it is not a goal, and she concluded from that that she
+        # has no browser. A doubt about an ability is a question about it,
+        # not a task to run.
+        if _DOUBTS_AN_ABILITY.search(text):
+            print(f"[Ability] Answered a doubt about {capability.id}.")
+            return (
+                f"I do have {capability.name} -- I can {capability.summary}. "
+                "Give me a page to open and we'll see what it does."
+            )
         offer = "Want me to use it now?"
         self.capability_offer.offer(
             capability_id=capability.id, goal=text, offer_text=offer,
@@ -1722,6 +1772,61 @@ class ChatEngine:
             words.append(word.strip(".,!?;:"))
         return " ".join(words)[:200]
 
+    @staticmethod
+    def _asks_for_more_than_opening(text: str, address: str) -> bool:
+        """Whether the turn wants something done on the page as well.
+
+        The deterministic navigation operation owns opening an address.
+        The planner owns what happens next, and a request that names both
+        belongs to the planner -- it can navigate on its way.
+        """
+        rest = re.sub(
+            re.escape(address), " ", str(text or ""), flags=re.IGNORECASE,
+        )
+        # The address may have arrived with spaces in it; take those out
+        # too, so "no such host.example" leaves nothing behind.
+        rest = re.sub(
+            re.escape(address.replace(".", r"\s*.\s*")), " ", rest,
+        )
+        return bool(_PAGE_INTERACTION.search(rest))
+
+    def _refuse_unearned_success(
+        self, reply: str, *, action_performed: bool,
+    ) -> str:
+        """Never say a machine action happened on a turn where none did.
+
+        Measured live, the session-11 rerun. The browser planner had just
+        reported that it could not verify anything, the next turn was a
+        correction she did not understand, and she answered:
+
+            I opened isss.washington.edu in your browser.
+
+        Nothing had opened it. No action ran on that turn at all, and the
+        one before it had failed. A claim about the machine is the one
+        kind of sentence that must come from a result rather than from the
+        model, and this is the last place to catch one that did not.
+        """
+        text = str(reply or "").strip()
+        if not text or action_performed or not self._last_action_failed:
+            return text
+        if not _CLAIMS_TO_HAVE_ACTED.search(text):
+            return text
+        target = str(self._last_computer_goal or "").strip()
+        print("[Action Guard] Removed a success claim nothing performed.")
+        kept = [
+            sentence.strip()
+            for sentence in _SENTENCE_SPLIT.split(text)
+            if sentence.strip() and not _CLAIMS_TO_HAVE_ACTED.search(sentence)
+        ]
+        honest = (
+            f"I haven't got {browser_navigation.host_of(target) or target} "
+            "open -- the last try didn't go through."
+            if target else
+            "That didn't actually go through, so nothing is open yet."
+        )
+        rebuilt = " ".join(kept).strip()
+        return f"{rebuilt} {honest}".strip() if rebuilt else honest
+
     def _refuse_invented_capability(self, reply: str, user_input: str) -> str:
         """Never say she used an ability by a name she does not have.
 
@@ -2050,6 +2155,40 @@ class ChatEngine:
         if conversational_action and match.confidence < 0.7:
             return route, ""
 
+        # An address is never an application. Measured live, the session-11
+        # rerun:
+        #
+        #     You said: Open no such host.example.
+        #     [Rescue] computer_action/unsupported -> ui_action
+        #     [Computer Control] Cataloged 260 apps.
+        #     open_app target=no such host.example status=not_found
+        #     Elaina: I couldn't find no such host.example in your
+        #             installed apps.
+        #
+        # It also left a non-browser window in front, and every browser
+        # navigation for the rest of that run failed to find a surface to
+        # type into. One deterministic owner for opening an address: the
+        # navigation operation, never the desktop planner.
+        address = browser_navigation.address_in(user_input)
+        if address and self._asks_for_more_than_opening(user_input, address):
+            # Opening a page and doing something on it are two requests,
+            # and the planner owns the second. "Open trip.com and check
+            # the rooms" is not a navigation.
+            address = ""
+        if address and capability.id == "ui_control":
+            print(f"[Rescue] an address is not an app -> open_url {address}")
+            self._turn_points_at_the_last_action = False
+            return replace(
+                route,
+                intent="computer_action",
+                computer_operation="open_url",
+                computer_url=address,
+                normalized_request=f"open {address}",
+                action_target=address,
+                action_requested=True,
+                reason="The request names an address, so it is a navigation.",
+            ), ""
+
         blocked = CapabilityRegistry.blocked_reason(capability, state)
         if blocked:
             fix = CapabilityRegistry.fix_for(capability, state)
@@ -2063,6 +2202,24 @@ class ChatEngine:
             "browser_control": "browser_action",
             "ui_control": "ui_action",
         }.get(capability.id, "")
+        if operation == "browser_action" and address:
+            # A named address has a deterministic operation of its own, and
+            # the planner does not own it. Measured live, the session-11
+            # rerun: "Use my browser control and open isss.washington.edu"
+            # went to the planner, which searched Google for the domain and
+            # then reported the address bar said google.com. Searching for
+            # a site is not opening it.
+            print(f"[Rescue] an address goes straight there -> {address}")
+            return replace(
+                route,
+                intent="computer_action",
+                computer_operation="open_url",
+                computer_url=address,
+                normalized_request=f"open {address}",
+                action_target=address,
+                action_requested=True,
+                reason="The request names an address, so it is a navigation.",
+            ), ""
         if not operation:
             if capability.id == "task_planning":
                 print(
@@ -4179,6 +4336,35 @@ class ChatEngine:
         ordinary success acknowledgement. An empty line means the page is
         genuinely there and the normal path may speak.
         """
+        # One resolved target, or say so. Measured live, the session-11
+        # rerun:
+        #
+        #     You said: openZillow.com
+        #     [Router] Interpreted transcript as: open isss.washington.edu
+        #     [Computer Control] open_url target=openZillow.com
+        #
+        # The router's own record of the turn and the address the machine
+        # received had come apart, which is the failure this project has
+        # chased through six sessions under different names. It cannot be
+        # fixed by guessing which one is right -- but it can stop being
+        # silent.
+        interpreted = browser_navigation.address_in(route.normalized_request)
+        going_to = browser_navigation.host_of(
+            route.computer_url or route.action_target,
+        )
+        if interpreted and going_to and not browser_navigation.same_destination(
+            interpreted, going_to,
+        ):
+            print(
+                "[Navigation] MISMATCH: the turn was interpreted as "
+                f"{interpreted!r} and the browser was sent to {going_to!r}."
+            )
+
+        # A dispatch that never ran is a different failure from one that
+        # ran and could not be observed, and only the browser layer knows
+        # which happened.
+        dispatch_failed = result.status == "failed"
+        dispatch_detail = " ".join(str(result.message or "").split())
         requested = str(route.action_target or result.target or "").strip()
         # A dispatch that failed outright carries no url of its own, so the
         # address has to come from what was asked for. Without this the
@@ -4230,6 +4416,30 @@ class ChatEngine:
         if not navigation.observation_id:
             self._navigation = navigation
             self._navigation_history = navigation.history
+            # "I sent the browser there" is itself a claim, and it is false
+            # when the dispatch never ran. Measured live, the session-11
+            # rerun, four turns in a row:
+            #
+            #     [Computer Control] open_url isss.washington.edu status=failed
+            #     Elaina: I sent the browser to isss.washington.edu, but I
+            #             couldn't check whether it loaded.
+            #
+            # The browser layer had already reported that it could not find
+            # a window to navigate, and that reason was thrown away in
+            # favour of a sentence about not having checked. Not checking
+            # and not going are different failures and the person can act
+            # on only one of them.
+            if dispatch_failed:
+                self._offer_a_retry(navigation.url or opened)
+                return replace(
+                    result, status="navigation_failed", navigation=navigation,
+                ), (
+                    f"I couldn't get to {navigation.expected_host}: "
+                    f"{dispatch_detail}"
+                    if dispatch_detail else
+                    f"I couldn't open {navigation.expected_host} -- the "
+                    "browser didn't take the request."
+                )
             return replace(
                 result, status="url_dispatched",
                 navigation=navigation,
@@ -6339,6 +6549,9 @@ class ChatEngine:
                 trusted_result=bool(effective_forced_response),
             )
             reply = self._refuse_invented_capability(reply, user_input)
+            reply = self._refuse_unearned_success(
+                reply, action_performed=action_performed,
+            )
             # Last, so it also catches a footer a rewrite reintroduced. Her
             # personality file bans these outright and the model adds them
             # anyway, so the removal is code rather than more prompt wording.

@@ -449,6 +449,71 @@ def verify(navigation: Navigation, tabs, *, before=()) -> Navigation:
     )
 
 
+# The verbs a request opens with, stripped before the rest is read as a
+# host. Not a general command reader -- only enough to tell "open" from
+# the address it introduces.
+_OPENING_VERB = re.compile(
+    r"^(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?"
+    r"(?:open|go\s+to|goto|visit|launch|start|browse|load|navigate\s+to)\s+"
+    r"(?:the\s+|my\s+)?",
+    re.IGNORECASE,
+)
+
+# A tail that means somebody meant a website. Deliberately a list: without
+# it "version 2.0" and "I met only one S" read as hosts.
+_KNOWN_TAIL = re.compile(
+    r"\.(?:com|net|org|edu|gov|io|co|kr|jp|uk|de|fr|ai|app|dev|me|tv|"
+    r"info|biz|shop|site|example|test|invalid|localhost)(?:\.[a-z]{2})?$",
+    re.IGNORECASE,
+)
+
+# Short enough to be a target rather than a sentence about one. A spoken
+# address arrives with spaces in it -- "no such host.example" is how a
+# transcriber renders "nosuchhost.example" -- and closing those up is only
+# safe when the whole string is the target.
+_TARGET_WORDS = 5
+
+
+def address_in(text: str) -> str:
+    """The web address this names, with a spoken address closed up.
+
+    Measured live, the session-11 rerun:
+
+        You said: Open no such host.example.
+        [Rescue] computer_action/unsupported -> ui_action
+        [Computer Control] Cataloged 260 apps.
+        open_app target=no such host.example status=not_found
+
+    An address is never an application. Reading it as one also left a
+    non-browser window in front, and every browser navigation for the rest
+    of that run failed to find a surface to type into.
+
+    Empty when nothing here is an address -- a recognisable tail is
+    required, so a version number and a sentence about a letter are not.
+    """
+    said = " ".join(str(text or "").split())
+    if not said:
+        return ""
+    said = _OPENING_VERB.sub("", said, count=1).strip()
+    if not said:
+        return ""
+
+    words = said.split()
+    if len(words) <= _TARGET_WORDS:
+        # The whole thing is the target, so the spaces inside it are the
+        # transcriber's rather than the person's.
+        joined = "".join(words).rstrip(".,!?")
+        if _KNOWN_TAIL.search(joined) and len(joined.split(".")) >= 2:
+            return joined
+    # A sentence that mentions one: take the token that is an address and
+    # nothing around it.
+    for word in reversed(words):
+        candidate = word.strip("(),!?\"'").rstrip(".")
+        if _KNOWN_TAIL.search(candidate) and len(candidate.split(".")) >= 2:
+            return candidate
+    return ""
+
+
 def looks_like_an_address(text: str) -> bool:
     """Whether this whole string is a web address rather than a sentence.
 
