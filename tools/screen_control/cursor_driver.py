@@ -167,6 +167,11 @@ class CursorDriver:
         # the guard so the sentence matches what was actually observed.
         self.last_takeover = ""
         self.last_takeover_detail = ""
+        # How many times the pointer moved with no input event behind it.
+        # Not a failure -- a focus call or a page moved it -- but worth
+        # counting, because a run full of them means something is fighting
+        # for the cursor.
+        self.drifts_rebaselined = 0
 
     # ------------------------------------------------------------------
     # platform primitives
@@ -263,13 +268,41 @@ class CursorDriver:
         except Exception:
             return None
 
+    def _watching_real_input(self) -> bool:
+        """Whether the hook is actually installed and scoped to this run."""
+        watcher = self.input_watcher
+        return bool(
+            watcher is not None
+            and watcher.available
+            and self._input_mark is not None
+        )
+
     def user_took_over(self) -> bool:
         """True when the person has intervened since we last checked in.
 
         Real input is the primary signal because it is the only one that
-        sees typing. Pointer drift stays as a second, independent check:
-        stopping when we did not have to is a great deal better than
-        wrestling someone for their own mouse.
+        sees typing.
+
+        Pointer drift is not a second opinion about the same question. It
+        was written as a fallback for a machine where the hooks are
+        refused, and while the hooks *are* installed it answers a
+        different question entirely -- measured directly:
+
+            SendInput moves arrive flagged, 20 of 20, and an idle machine
+            produces no hook callbacks at all.
+            SetCursorPos moves the pointer and produces none whatsoever
+            (946,499 -> 740,400, zero callbacks). pywinauto's set_focus
+            moves the cursor that way, to (-10000, 500).
+
+        So when the hook is watching, a pointer that moved without an
+        event is evidence the mover was *not* a person -- a focus change,
+        a page, our own SetCursorPos-driven focus call. The session-13 run
+        showed this branch killing legitimate actions on exactly that:
+        parked at (1574,448), found at (1581,596), then (2123,1015), then
+        (770,1031), with no hook evidence behind any of them.
+
+        Drift therefore re-baselines and continues while the hook is
+        watching, and remains the emergency stop when it is not.
         """
         self.last_takeover = ""
         self.last_takeover_detail = ""
@@ -298,18 +331,29 @@ class CursorDriver:
             abs(current[0] - self._parked_at[0]) > _TAKEOVER_TOLERANCE_PIXELS
             or abs(current[1] - self._parked_at[1]) > _TAKEOVER_TOLERANCE_PIXELS
         )
-        if drifted:
-            # This branch cannot tell a person from a page that moved the
-            # pointer, a focus change, or a rounding error in our own
-            # absolute coordinates. It is a reason to stop; it is not
-            # evidence about who did it, and it must not be reported as
-            # though it were.
-            self.last_takeover = "pointer_drift"
-            self.last_takeover_detail = (
-                f"parked_at={self._parked_at} now={current} "
-                f"tolerance={_TAKEOVER_TOLERANCE_PIXELS}"
+        if not drifted:
+            return False
+        self.last_takeover_detail = (
+            f"parked_at={self._parked_at} now={current} "
+            f"tolerance={_TAKEOVER_TOLERANCE_PIXELS}"
+        )
+        if self._watching_real_input():
+            # The hook saw nothing, and the hook sees people. Take the new
+            # position as the truth and carry on rather than cancelling
+            # somebody's work over a movement nothing can attribute to
+            # them.
+            self.drifts_rebaselined += 1
+            print(
+                "[Input Watch] pointer moved with no input event; "
+                f"re-baselining and continuing. {self.last_takeover_detail}"
             )
-        return drifted
+            self._parked_at = current
+            self.last_takeover_detail = ""
+            return False
+        # No hook to consult, so this is the only signal there is, and it
+        # still stops the run -- while saying only what it can support.
+        self.last_takeover = "pointer_drift"
+        return True
 
     def _real_input_evidence(self, watcher) -> str:
         """Everything the hook recorded about why this fired.

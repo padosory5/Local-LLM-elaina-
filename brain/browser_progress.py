@@ -240,18 +240,41 @@ _ACTION_DISPUTE = re.compile(
 # live: browser control kept cancelling itself and blaming the person,
 # and when they said so it was read as accepting an offer and the URL was
 # opened again.
+# Denying that the input she blamed them for happened. The verbs are the
+# closed set of ways English says "operating a pointing device or a
+# keyboard", and the objects are those devices or a bare "anything" --
+# which is what people actually say. Measured: "I'm not moving the mouse"
+# was covered and "I'm not clicking anything" was not, so a second run of
+# false interruptions was read as declining an offer and answered "Sure,
+# no problem."
+_HANDLING_AN_INPUT_DEVICE = (
+    r"(?:moving|touching|using|typing\s+on|clicking|pressing|dragging|"
+    r"scrolling|hitting)"
+)
+_HANDLED_AN_INPUT_DEVICE = (
+    r"(?:touch|move|use|press|click|drag|scroll|hit|type\s+on)"
+)
+_AN_INPUT_DEVICE = (
+    r"(?:mouse|keyboard|trackpad|touchpad|pointer|cursor|screen|anything|"
+    r"it|that)"
+)
 _DISPUTES_THE_REASON = re.compile(
     r"^(?:(?:no|but|well|actually|hey)[,! .]*)*"
     r"i(?:'m| am)?\s*(?:not|never)\s+"
     r"(?:even\s+|actually\s+)?"
-    r"(?:moving|touching|using|typing\s+on|on)\s+"
-    r"(?:the|my|any)?\s*"
-    r"(?:mouse|keyboard|trackpad|touchpad|pointer|cursor|anything)"
-    r"[.! ]*$"
+    + _HANDLING_AN_INPUT_DEVICE +
+    # The object is optional: "I'm not clicking" and "I'm not scrolling"
+    # are whole sentences, and the verb has already narrowed this to
+    # operating an input device.
+    r"(?:\s+(?:the|my|any)?\s*" + _AN_INPUT_DEVICE + r")?[.! ]*$"
     r"|^(?:(?:no|but)[,! .]*)*i\s+did\s?n[o']?t\s+"
-    r"(?:touch|move|use|press)\s+(?:the|my|any)?\s*"
-    r"(?:mouse|keyboard|trackpad|touchpad|pointer|cursor|anything)"
-    r"[.! ]*$",
+    + _HANDLED_AN_INPUT_DEVICE +
+    r"(?:\s+(?:the|my|any)?\s*" + _AN_INPUT_DEVICE + r")?[.! ]*$"
+    # "That wasn't me." The same denial with the person as the object of
+    # the claim rather than the subject of the verb.
+    r"|^(?:(?:no|but|well)[,! .]*)*"
+    r"(?:that|it|this)\s*(?:'s|\s+is|\s+was|\s+wasn't|\s+was\s+not)?"
+    r"\s*(?:not|n[o']t)?\s*me[.! ]*$",
     re.IGNORECASE,
 )
 

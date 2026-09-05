@@ -46,6 +46,16 @@ class ReadingFrustrationTests(unittest.TestCase):
             "You're so fucking stupid.",
             "you are absolutely useless",
             "you're such a damn useless assistant",
+            # Session 13. She is the object of the feeling rather than the
+            # subject of the judgement, which the pattern had no shape
+            # for -- so it went to the model, which answered "I'm here for
+            # you, no matter what. Let's take a breath and see how we can
+            # move forward."
+            "fucking hate you",
+            "I hate you",
+            "i really hate you",
+            "screw you",
+            "I can't stand you",
         ):
             with self.subTest(said=said):
                 self.assertTrue(reads_as_frustration(said))
@@ -67,6 +77,8 @@ class ReadingFrustrationTests(unittest.TestCase):
     def test_ordinary_negatives_are_not_hostility(self):
         for said in (
             "that restaurant is terrible",
+            "I hate waiting",
+            "I hate this weather",
             "the weather is stupid today",
             "No, I can see the images. Thank you.",
             "I'm exhausted",

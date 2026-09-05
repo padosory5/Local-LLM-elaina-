@@ -52,7 +52,9 @@ because Google is not a surface -- it is where the label lives.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
+
+from brain.references import ORDINAL_INDEX, ORDINAL_WORD
 
 # The surface Elaina is already looking at. A genuinely closed class: these
 # are the words English has for "the thing on screen in front of you", and
@@ -175,4 +177,165 @@ class BrowserInteraction:
             f"{self.operation} target={self.target!r} "
             f"status={self.status} resolved={self.resolved!r} "
             f"tab={self.tab_identity or 'unknown'} attempts={self.attempts}"
+        )
+
+
+# Choosing one of several matches. A closed class of selection
+# expressions: a position, an end, the middle, or "you pick". Anything
+# else is not a choice and must not be read as one.
+_ORDINALS = "|".join(sorted(ORDINAL_INDEX, key=len, reverse=True))
+_CHOOSES_A_POSITION = re.compile(
+    rf"\b(?:the\s+)?(?P<ordinal>{_ORDINALS})\b(?!\s+(?:time|thing)\b)",
+    re.IGNORECASE,
+)
+# "Number two", "#2" -- the same position said as a cardinal. People do
+# both, and the ordinal table only knows the ordinal half.
+_CARDINALS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8,
+}
+_CHOOSES_BY_NUMBER = re.compile(
+    r"\b(?:number|no\.?|#)\s*(?P<count>\d+|"
+    + "|".join(_CARDINALS) + r")\b",
+    re.IGNORECASE,
+)
+_CHOOSES_THE_MIDDLE = re.compile(
+    r"\b(?:middle|centre|center)\b", re.IGNORECASE,
+)
+_CHOOSES_THE_TOP = re.compile(r"\b(?:top|topmost|upper)\b", re.IGNORECASE)
+_CHOOSES_THE_BOTTOM = re.compile(
+    r"\b(?:bottom|bottommost|lower)\b", re.IGNORECASE,
+)
+# Leaving the choice to her is still a choice, and it is the one the
+# acceptance run made: "click any of them".
+_LEAVES_IT_TO_HER = re.compile(
+    r"\b(?:any(?:\s+(?:of\s+)?(?:them|those|these|one))?"
+    r"|either(?:\s+(?:of\s+)?(?:them|those|one))?"
+    r"|whichever|whatever"
+    r"|one\s+of\s+(?:them|those|these)"
+    r"|you\s+(?:choose|pick|decide)"
+    r"|does\s?n[o']?t\s+matter"
+    r"|up\s+to\s+you)\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """One of several page elements a request could have meant.
+
+    The identity is the point. An ambiguity answered with a *label* sends
+    the planner back to a page to find something it already found -- and
+    when the labels are identical, as they were on the ISS site, that
+    cannot possibly resolve to the right one.
+    """
+
+    element_id: str
+    label: str
+    order: int              # 1-based, in the page's own order
+    where: str = ""         # "the page navigation", "the main content"
+    href: str = ""
+
+    def named(self) -> str:
+        """How to refer to this one so a person can tell it apart."""
+        position = ORDINAL_WORD.get(self.order - 1, f"number {self.order}")
+        return f"the {position} one{f' in {self.where}' if self.where else ''}"
+
+
+@dataclass(frozen=True)
+class AmbiguousPageAction:
+    """A page action that matched several things, waiting on a choice.
+
+    Measured in the session-13 run, and this is the whole bug:
+
+        You said: click about on this page
+        Elaina:   I found more than one about item -- ABOUT, ABOUT.
+                  Which one do you mean?
+        You said: the first one
+        [Reference] 'one of those' -> 'ABOUT'
+        [Computer Control] open_search target=ABOUT
+        -> https://www.google.com/search?q=ABOUT
+
+    Choosing one of several candidates for a click is not a new command.
+    It fills the unresolved slot of the action already standing, and that
+    action then runs -- same operation, same page, one named element.
+    """
+
+    operation: str
+    requested_label: str
+    candidates: tuple[Candidate, ...]
+    tab_index: int | None = None
+    tab_identity: str = ""
+    page_url: str = ""
+    scan_id: str = ""
+    goal: str = ""
+
+    def choose(self, text: str) -> Candidate | None:
+        """Which candidate this turn selects, or None if it selects none."""
+        said = " ".join(str(text or "").split())
+        if not said or not self.candidates:
+            return None
+        # Naming one outright, when the labels actually differ.
+        for candidate in self.candidates:
+            label = candidate.label.strip()
+            if len(label) > 2 and label.casefold() in said.casefold():
+                if sum(
+                    1 for other in self.candidates
+                    if other.label.casefold() == label.casefold()
+                ) == 1:
+                    return candidate
+        if _CHOOSES_THE_MIDDLE.search(said):
+            return self.candidates[(len(self.candidates) - 1) // 2]
+        numbered = _CHOOSES_BY_NUMBER.search(said)
+        if numbered is not None:
+            spoken = numbered.group("count").casefold()
+            count = _CARDINALS.get(spoken)
+            if count is None:
+                count = int(spoken) if spoken.isdigit() else 0
+            if 1 <= count <= len(self.candidates):
+                return self.candidates[count - 1]
+            return None
+        match = _CHOOSES_A_POSITION.search(said)
+        if match is not None:
+            index = ORDINAL_INDEX.get(match.group("ordinal").casefold())
+            if index is not None and -len(self.candidates) <= index < len(
+                self.candidates,
+            ):
+                return self.candidates[index]
+            return None
+        if _CHOOSES_THE_TOP.search(said):
+            return self.candidates[0]
+        if _CHOOSES_THE_BOTTOM.search(said):
+            return self.candidates[-1]
+        if _LEAVES_IT_TO_HER.search(said):
+            # Her own order is her ranking, same as everywhere else.
+            return self.candidates[0]
+        return None
+
+    def question(self) -> str:
+        """Ask in a way that can actually be answered.
+
+        "I found more than one about item -- ABOUT, ABOUT" gives a person
+        nothing to choose with. When the labels do not distinguish the
+        candidates, where they sit on the page does.
+        """
+        named = self.requested_label
+        count = len(self.candidates)
+        labels = [c.label.strip() for c in self.candidates]
+        distinct = len({label.casefold() for label in labels if label})
+        if distinct == count and distinct > 1:
+            listed = ", ".join(labels[:4])
+            return (
+                f"I found more than one {named} item -- {listed}. "
+                "Which one do you mean?"
+            )
+        described = [c.named() for c in self.candidates[:4]]
+        if len(described) == 2:
+            listed = f"{described[0]} and {described[1]}"
+        else:
+            listed = ", ".join(described[:-1]) + f", and {described[-1]}"
+        spelled = {2: "two", 3: "three", 4: "four"}.get(count, str(count))
+        return (
+            f"There are {spelled} {named} links on the page -- {listed}. "
+            "Which one do you mean?"
         )

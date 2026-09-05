@@ -30,7 +30,9 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from brain import browser_progress
 from brain import references
 from brain.browser_interaction import (
+    AmbiguousPageAction,
     BrowserInteraction,
+    Candidate,
     strip_surface_context,
 )
 from brain.deliberation import Decision, Goal, decide, interpret
@@ -87,6 +89,10 @@ class ActionPlanResult:
     # paraphrased from it and then rewritten by a layer that thinks this
     # was a search.
     interaction: BrowserInteraction | None = None
+    # Set when the request matched several elements. Carries their
+    # identities, so answering "the first one" resumes this action on that
+    # element instead of sending a label back to a planner to find again.
+    ambiguity: AmbiguousPageAction | None = None
 
 
 _TOOLS = [
@@ -1828,17 +1834,25 @@ class BrowserActionPlanner:
             # The candidates are the useful half of an ambiguous match: a
             # person can answer "which one" only if they are told what the
             # choices were.
-            found = tuple(
-                str(getattr(match, "label", "") or "").strip()
-                for match in matches
-            )
+            choices = self._candidates_from(matches)
             return ActionPlanResult(
                 "failed",
                 f"I found multiple controls named {target!r}, so I didn't choose one.",
                 failure_code="direct_target_ambiguous",
                 interaction=requested.finished(
                     "ambiguous",
-                    candidates=tuple(name for name in found if name),
+                    candidates=tuple(c.label for c in choices if c.label),
+                ),
+                ambiguity=AmbiguousPageAction(
+                    operation="click_element", requested_label=target,
+                    candidates=choices,
+                    tab_index=observation.tab_index,
+                    tab_identity=str(
+                        getattr(observation, "tab_identity", "") or ""
+                    ),
+                    page_url=str(getattr(observation, "url", "") or ""),
+                    scan_id=str(getattr(observation, "scan_id", "") or ""),
+                    goal=goal,
                 ),
             )
         element = matches[0]
@@ -1846,6 +1860,32 @@ class BrowserActionPlanner:
             observation, element, allowed_hosts=allowed_hosts,
             requested=requested,
         )
+
+    @staticmethod
+    def _candidates_from(matches) -> tuple[Candidate, ...]:
+        """The matched elements as things a person can choose between.
+
+        Where each one sits is the only thing that tells identical labels
+        apart, and the ISS page had two links both reading ABOUT. The page
+        already knows which of its elements are content and which are
+        chrome; that is what is reported, rather than a guess at "footer"
+        the observation cannot support.
+        """
+        found = []
+        for order, element in enumerate(matches, start=1):
+            if getattr(element, "in_dialog", False):
+                where = "the dialog"
+            elif getattr(element, "in_main", True):
+                where = "the main content"
+            else:
+                where = "the page navigation"
+            found.append(Candidate(
+                element_id=str(getattr(element, "id", "") or ""),
+                label=str(getattr(element, "label", "") or "").strip(),
+                order=order, where=where,
+                href=str(getattr(element, "href", "") or ""),
+            ))
+        return tuple(found)
 
     def _try_direct_ordinal_result(
         self, goal: str, *, allowed_hosts: tuple[str, ...] = (),

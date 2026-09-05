@@ -21,7 +21,7 @@ from brain import capability_selection
 from brain import browser_outcome
 from brain import browser_navigation
 from brain import browser_progress
-from brain.browser_interaction import BrowserInteraction
+from brain.browser_interaction import AmbiguousPageAction, BrowserInteraction
 from brain import progress_question
 from brain import world_clock
 from brain.capability_selection import CapabilityChoice
@@ -943,6 +943,10 @@ class ChatEngine:
         # page, and what became of it. A retry repeats this, never the
         # transcript of whatever was said in between.
         self._browser_interaction: BrowserInteraction | None = None
+        # A page action that matched several elements and is waiting on a
+        # choice. Choosing one is not a new command -- it fills the slot
+        # this action is missing, and the action then runs.
+        self._page_choice: AmbiguousPageAction | None = None
         # Whether that action ended in a failure the person can ask to have
         # tried again. "Try again" and a bare "yeah" after she asks "try
         # again?" both need one recorded action to operate on rather than
@@ -1139,6 +1143,7 @@ class ChatEngine:
         self._last_computer_action = ""
         self._last_computer_goal = ""
         self._browser_interaction = None
+        self._page_choice = None
         self._last_action_failed = False
         self._machine_target_reprieved = False
         self._navigation = None
@@ -1689,6 +1694,11 @@ class ChatEngine:
         """
         if route.computer_operation not in {"open_search", "open_url",
                                             "browser_action"}:
+            return route
+        if self._page_choice is not None:
+            # A choice is outstanding between elements on a page. Whatever
+            # this turn is, it is not a request to search the web for one
+            # of their labels.
             return route
         chosen = browser_progress.resolve_named_choice(
             transcript, said_before=self._last_claim(),
@@ -5289,10 +5299,25 @@ class ChatEngine:
         message = plan_result.summary.strip() or self._generic_outcome(
             succeeded,
         )
+        ambiguity = getattr(plan_result, "ambiguity", None)
+        if ambiguity is None or not ambiguity.candidates:
+            # This run answered whatever was outstanding, one way or the
+            # other. An old question must not survive it.
+            self._page_choice = None
+        if ambiguity is not None and ambiguity.candidates:
+            # Not a failure to report and forget. The action is standing,
+            # missing one thing, and the next turn can supply it.
+            self._page_choice = ambiguity
+            print(
+                f"[Page Action] waiting on a choice between "
+                f"{len(ambiguity.candidates)} candidates for "
+                f"{ambiguity.requested_label!r}."
+            )
         if not succeeded:
             message = self._spoken_browser_failure(
                 plan_result.failure_code, message,
                 interaction=getattr(plan_result, "interaction", None),
+                ambiguity=ambiguity,
             )
             # A machine result is the last word on what the machine did.
             # The search-grounding guards exist to stop an unbacked claim
@@ -5439,10 +5464,78 @@ class ChatEngine:
             self._browser_interaction = None
         self._last_computer_goal = proposed
 
+    def _what_the_watcher_actually_saw(self) -> str:
+        """Answer a dispute with the observation, not the conclusion.
+
+        They are telling her the reason was wrong, so the reply has to be
+        about the evidence rather than a restated verdict.
+        """
+        reason = str(getattr(self.cursor_driver, "last_takeover", "") or "")
+        if reason == "pointer_drift":
+            return (
+                "Got it -- I only saw the pointer move, not a click or a "
+                "keypress. Say the word and I'll try again."
+            )
+        if reason == "real_input":
+            return (
+                "Understood. Something produced a mouse event that didn't "
+                "look like mine, and I stopped on it. Say the word and "
+                "I'll try again."
+            )
+        return (
+            "Understood -- then something else moved the pointer, not you. "
+            "Say the word and I'll try again."
+        )
+
+    def _resume_page_choice(self, chosen) -> "TurnRouting":
+        """Run the standing page action on the element they picked."""
+        standing = self._page_choice
+        self._page_choice = None
+        self._retire_pending_interpretations()
+        print(
+            f"[Page Action] chose {chosen.named()}: "
+            f"{chosen.label!r} ({chosen.element_id})"
+        )
+        self._browser_interaction = BrowserInteraction(
+            operation=standing.operation,
+            target=standing.requested_label,
+            source=standing.goal,
+            tab_identity=standing.tab_identity,
+            page_url=standing.page_url,
+        )
+        prepared = PreparedComputerAction(
+            operation="browser_action",
+            target=chosen.element_id,
+            display_name=chosen.label or standing.requested_label,
+            tab_index=standing.tab_index,
+            url=standing.page_url,
+            browser_action="click",
+            browser_scan_id=standing.scan_id,
+            browser_href=chosen.href,
+            browser_goal=standing.goal,
+        )
+        return TurnRouting(
+            route=IntentDecision(
+                intent="computer_action", confidence=1.0,
+                normalized_request=(
+                    f"click {standing.requested_label}"
+                ),
+                reason="The user chose one of the elements she found.",
+                is_follow_up=True,
+                speech_act="action_request",
+                action_requested=True,
+                action_target=standing.requested_label,
+                computer_operation="browser_action",
+            ),
+            user_input=f"click {standing.requested_label}",
+            approved_computer_action=prepared,
+        )
+
     @staticmethod
     def _spoken_browser_failure(
         failure_code: str, summary: str, *,
         interaction: BrowserInteraction | None = None,
+        ambiguity: AmbiguousPageAction | None = None,
     ) -> str:
         """Say what went wrong, not what the planner said to itself.
 
@@ -5464,6 +5557,11 @@ class ChatEngine:
             if interaction.status == "not_found":
                 return f"I couldn't find a {named} element on this page."
             if interaction.status == "ambiguous":
+                if ambiguity is not None and ambiguity.candidates:
+                    # "I found more than one about item -- ABOUT, ABOUT"
+                    # gives a person nothing to choose with. Where each
+                    # one sits does.
+                    return ambiguity.question()
                 choices = [c for c in interaction.candidates if c]
                 if len(choices) > 1:
                     listed = ", ".join(choices[:4])
@@ -7647,11 +7745,32 @@ class ChatEngine:
                     reason="The user disputes why the last action stopped.",
                 ),
                 user_input=user_input,
-                locked_response=(
-                    "Understood -- then something else moved the pointer, "
-                    "not you. Say the word and I'll try again."
-                ),
+                locked_response=self._what_the_watcher_actually_saw(),
             )
+        # Choosing between things she found is not a new command. It
+        # fills the slot the standing action is missing, and that action
+        # then runs -- same operation, same page, one named element.
+        # Measured in the session-13 run:
+        #
+        #     You said: click about on this page
+        #     Elaina:   I found more than one about item ... which one?
+        #     You said: the first one
+        #     [Reference] 'one of those' -> 'ABOUT'
+        #     open_search ABOUT -> google.com/search?q=ABOUT
+        #
+        # A label is not an identity, and a search is not a click.
+        if not continuing_agent_flow and self._page_choice is not None:
+            chosen = self._page_choice.choose(user_input)
+            if chosen is not None:
+                resumed = self._resume_page_choice(chosen)
+                timings["route"] = time.perf_counter() - route_started
+                return resumed
+            if names_its_own_errand(user_input) or speaks_an_address:
+                # They asked for something else instead. The question
+                # lapses rather than lingering to catch a later "first".
+                print("[Page Action] the choice lapsed; a new errand came.")
+                self._page_choice = None
+
         if confirmed_machine:
             # She said she could not confirm it; the person can. That
             # resolves the doubt rather than starting the work again.

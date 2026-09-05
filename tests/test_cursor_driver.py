@@ -320,5 +320,85 @@ class KeyboardTests(unittest.TestCase):
         self.assertEqual(downs, [0x11, 0x41, 0x2E])
 
 
+class DriftIsNotProofOfAPersonTests(unittest.TestCase):
+    """The session-13 run, four actions killed with no hook evidence:
+
+        [Input Watch] takeover reason=pointer_drift
+                      parked_at=(1574, 448) now=(1581, 596)
+        [Input Watch] takeover reason=pointer_drift
+                      parked_at=... now=(2123, 1015)
+
+    Measured on this machine: SendInput moves arrive flagged 20 of 20, an
+    idle machine produces no callbacks at all, and SetCursorPos moves the
+    pointer while producing none whatsoever. pywinauto's set_focus moves
+    the cursor that way. So while the hook is watching, a pointer that
+    moved with no event behind it is evidence the mover was not a person.
+    """
+
+    def setUp(self):
+        from tools.screen_control.cursor_driver import CursorDriver
+        from tools.screen_control.input_watcher import InputWatcher
+
+        from tests.test_input_watcher import _Clock
+
+        self.clock = _Clock()
+        self.watcher = InputWatcher(clock=self.clock)
+        self.position = (100, 100)
+        self.driver = CursorDriver(
+            sender=lambda inputs: len(inputs),
+            cursor_reader=lambda: self.position,
+            sleeper=lambda seconds: None,
+            input_watcher=self.watcher,
+        )
+
+    def _watching(self, on: bool):
+        if on:
+            self.watcher._installed.set()
+        else:
+            self.watcher._installed.clear()
+
+    def test_drift_alone_re_baselines_and_continues(self):
+        self._watching(True)
+        self.driver.begin_run()
+        self.driver._parked_at = (100, 100)
+        self.position = (770, 1031)
+
+        self.assertFalse(self.driver.user_took_over())
+        self.assertEqual(self.driver.drifts_rebaselined, 1)
+
+    def test_and_the_new_position_becomes_the_baseline(self):
+        # Otherwise the very next check fires again on the same stale
+        # coordinate, and a retry aborts before it starts.
+        self._watching(True)
+        self.driver.begin_run()
+        self.driver._parked_at = (100, 100)
+        self.position = (770, 1031)
+        self.driver.user_took_over()
+
+        self.assertFalse(self.driver.user_took_over())
+        self.assertEqual(self.driver.drifts_rebaselined, 1)
+
+    def test_real_input_still_stops_everything(self):
+        self._watching(True)
+        self.driver.begin_run()
+        self.driver._parked_at = (100, 100)
+        self.clock.advance(1.0)
+        self.watcher._record_real(mouse=True, what="move")
+
+        self.assertTrue(self.driver.user_took_over())
+        self.assertEqual(self.driver.last_takeover, "real_input")
+
+    def test_with_no_hook_drift_is_still_the_emergency_stop(self):
+        # The case the branch was written for: hooks refused, so this is
+        # the only signal there is.
+        self._watching(False)
+        self.driver.begin_run()
+        self.driver._parked_at = (100, 100)
+        self.position = (900, 900)
+
+        self.assertTrue(self.driver.user_took_over())
+        self.assertEqual(self.driver.last_takeover, "pointer_drift")
+
+
 if __name__ == "__main__":
     unittest.main()

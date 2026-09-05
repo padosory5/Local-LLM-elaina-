@@ -172,14 +172,26 @@ _FRUSTRATION_BANKS: dict[str, tuple[str, ...]] = {
 # expletive sat between the intensifier and the adjective, and the reply
 # came from the model instead: "I'm here to help, not to be insulted."
 # Which is exactly the line this whole policy exists to prevent.
-_AIMED_AT_HER = re.compile(
-    r"\byou(?:'?re|\s+are|\s+r)?\s+"
+# Degree modifiers: a closed grammatical class, not a list of insults --
+# and it has to carry the profane ones, because that is where they sit.
+_INTENSIFIER = (
     r"(?:(?:so|such\s+a|really|pretty|kind\s+of|very|absolutely|"
     r"completely|totally|utterly|bloody|damn|goddamn|effing|"
     r"fucking|freaking|frickin['g]?|friggin['g]?)\s+){0,3}"
+)
+_AIMED_AT_HER = re.compile(
+    r"\byou(?:'?re|\s+are|\s+r)?\s+"
+    + _INTENSIFIER +
     r"(?:stupid|dumb|useless|terrible|awful|garbage|trash|"
     r"worthless|pathetic|broken|wrong|bad|annoying|the\s+worst)\b"
-    r"|\bfuck\s+(?:you|off)\b"
+    # The other half of the same shape: she is the object of the feeling
+    # rather than the subject of the judgement. Measured live, and it fell
+    # through to the model, which answered "I'm here for you, no matter
+    # what. Let's take a breath and see how we can move forward." -- the
+    # customer-service voice this whole policy exists to keep her out of.
+    r"|(?:^|\s)(?:i\s+)?" + _INTENSIFIER + r"(?:hate|despise|loathe)\s+you\b"
+    r"|\bi\s+(?:can[o']?t|cannot|can\s+not)\s+stand\s+you\b"
+    r"|\b(?:fuck|screw)\s+(?:you|off)\b"
     r"|\bshut\s+up\b"
     r"|\byou\s+suck\b"
     r"|짜증|답답해|바보",

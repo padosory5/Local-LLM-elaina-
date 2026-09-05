@@ -233,6 +233,23 @@ class DisputingTheReasonIsNotAskingAgainTests(unittest.TestCase):
                     browser_progress.disputes_the_reason(said), said,
                 )
 
+    def test_the_denial_covers_the_whole_input_vocabulary(self):
+        # Session 13: "I'm not clicking anything." was read as declining
+        # an offer -- "Sure, no problem." -- because the verb list had
+        # moving and touching but not clicking. The class is the closed
+        # set of ways English says "operating an input device", not the
+        # phrasings that have come up so far.
+        for said in (
+            "I'm not clicking anything.", "I didn't click anything",
+            "I'm not pressing anything", "I'm not touching it",
+            "That wasn't me.", "that's not me",
+            "I'm not scrolling", "I didn't drag anything",
+        ):
+            with self.subTest(said=said):
+                self.assertTrue(
+                    browser_progress.disputes_the_reason(said), said,
+                )
+
     def test_a_request_is_not_a_denial(self):
         for said in ("it didn't open", "open zillow.com", "I'm not sure"):
             with self.subTest(said=said):
