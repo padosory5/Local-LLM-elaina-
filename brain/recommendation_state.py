@@ -114,7 +114,7 @@ _SITUATIONS = (
 # summer 2027" leaves "internship" -- a phrase that can go in a search box.
 _WANTED = re.compile(
     r"\b(?:want|wanted|looking for|prefer|feel like|craving|"
-    r"in the mood for|fancy|after)\s+"
+    r"in the mood for|fancy|after|find(?:\s+me)?|recommend(?:\s+me)?)\s+"
     r"(?:to\s+[a-z]+\s+)?"
     r"(?:some\s+|a\s+|an\s+|the\s+)?"
     r"(?!(?:in|on|at|about|for|with|from|to|of|near|around|under)\b)"
@@ -650,6 +650,10 @@ def _slot(name: str, value: str, source: str) -> Slot | None:
     value = _clean(value)
     if not value or value.casefold() in _EMPTY_SUBJECTS:
         return None
+    if name == PREFERENCE and value.casefold() in _WEAK_SUBJECTS:
+        # "Find some places" names no new object. Keep the active task;
+        # qualified objects such as "guitar shops" still carry meaning.
+        return None
     return Slot(name=name, value=value, source=source)
 
 
@@ -720,6 +724,12 @@ def read_constraints(
             text,
         ).items():
             if name in {BUDGET, AREA, DATES}:
+                if name == BUDGET:
+                    bounded = re.search(
+                        rf"\b(?:under|below|less than|up to)\s*{re.escape(value)}", text, re.I,
+                    )
+                    if bounded:
+                        value = bounded.group(0)
                 # This is a relationship to an anchor, not an area named
                 # "school". The anchor is resolved from conversation context.
                 if name == AREA and re.fullmatch(
@@ -945,6 +955,8 @@ class RecommendationProblem:
     # Whether this is about something real that can be bought or visited,
     # as opposed to advice. Decides whether the query gets the user's market.
     purchase: bool = False
+    # Resolved once with the task, then consumed by query shaping and ranking.
+    entity_type: str = ""
     # Resolved task context copied from the existing conversation focus.
     # Explicit task constraints still outrank these background facts.
     location: str = ""
@@ -1084,7 +1096,7 @@ class RecommendationProblem:
     @property
     def real_world(self) -> bool:
         """Whether the answer names things that exist in a market."""
-        return bool(self.domain or self.category or self.purchase)
+        return bool(self.domain or self.category or self.purchase or self.entity_type)
 
     @property
     def retired_values(self) -> tuple[str, ...]:
@@ -1178,7 +1190,10 @@ class RecommendationProblem:
         for value in self.values(AREA):
             tail_parts.append(value if " " in value else f"in {value}")
         for value in self.values(BUDGET):
-            tail_parts.append(f"around {value}")
+            tail_parts.append(
+                value if re.match(r"(?:under|below|less than|up to)\b", value, re.I)
+                else f"around {value}"
+            )
         tail_parts.extend(self.values(DATES))
         query = " ".join(
             part for part in (head, core, " ".join(tail_parts)) if part
@@ -1453,6 +1468,12 @@ def update(
         domain=domain,
         category=category,
         purchase=problem.purchase or is_purchase(text),
+        entity_type=(
+            "rental_unit" if category == "realestate" else
+            "place" if category in {"restaurant", "hotel"} else
+            "product" if (problem.purchase or is_purchase(text)
+                          or settled_thing in _VARIANTS) else problem.entity_type
+        ),
         location=problem.location or _clean(location),
         anchor=problem.anchor or _clean(anchor),
         relationship=(
@@ -1516,6 +1537,17 @@ def about_the_same_thing(
     already being discussed continues it, whatever words it uses.
     """
     text = str(text or "")
+    # A new named object wins even inside an 'actually' correction or an
+    # options request. Revision grammar alone does not prove task identity.
+    incoming = read_constraints(text)
+    new_category = category_for(text)
+    named = [slot.value for slot in incoming if slot.name == PREFERENCE]
+    if named and (
+        (new_category and problem.category and new_category != problem.category)
+        or any(value.split()[-1].casefold() in _VARIANTS
+               and value.split()[-1].casefold() != problem._thing() for value in named)
+    ):
+        return False
     # A revision is by definition about the problem it revises.
     if revises(text):
         return True
@@ -1525,7 +1557,6 @@ def about_the_same_thing(
     ):
         return True
 
-    incoming = read_constraints(text)
     bare = {
         word for word in re.findall(
             r"[a-z0-9가-힣]+", _content_of(text).casefold(),

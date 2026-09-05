@@ -247,7 +247,7 @@ class StructuredComputerControlTests(unittest.TestCase):
         ))
         result = self.control.execute(ready.prepared)
 
-        self.assertEqual(result.status, "url_opened")
+        self.assertEqual(result.status, "url_dispatched")
         self.assertEqual(self.opened_urls, ["https://youtube.com"])
 
     def test_delete_requires_confirmation_and_uses_prepared_exact_path(self):

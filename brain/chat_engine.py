@@ -237,7 +237,7 @@ _BARE_ACKNOWLEDGEMENT = re.compile(
 # say so -- not to ask a model what kind of request it was.
 _CANCELLATION = re.compile(
     r"^\s*(?:(?:no|nah|actually|wait)[,! ]+)?"
-    r"(?:never ?mind|forget it|forget that|cancel(?: that| it)?|"
+    r"(?:never ?mind|forget\s+(?:about\s+)?(?:it|that)|cancel(?: that| it)?|"
     r"stop(?: that| it)?|drop it|leave it|don't bother|no need|"
     r"취소|됐어(?:요)?|그만)"
     r"\s*[.!?]*\s*$",
@@ -281,6 +281,7 @@ _BROWSER_SURFACE_HINTS = (
     "웨일",
 )
 from tools.browser_control.safe_browser import SafeBrowserControl
+from brain.resolved_turn import ResolvedTurn, command_was_fused
 from tools.computer_control.safe_filesystem import SafeFilesystemControl
 from tools.computer_control.windows_app_catalog import WindowsAppCatalog
 
@@ -320,6 +321,18 @@ class TurnRouting:
     # "pull up some spots" says nothing about the sore throat that decided
     # what to look for.
     problem: RecommendationProblem | None = None
+    resolved: ResolvedTurn | None = None
+
+    def __post_init__(self):
+        if self.resolved is None:
+            self.resolved = ResolvedTurn(
+                raw_transcript=self.user_input,
+                normalized_transcript=self.route.normalized_request,
+                intent=self.route.intent, subject=self.goal_intent.subject,
+                machine_target=self.route.computer_url or self.route.action_target,
+                search_query=self.route.search_query, task=self.problem,
+                confidence=self.route.confidence,
+            )
 
 
 class ChatEngine:
@@ -1050,6 +1063,17 @@ class ChatEngine:
             if self._active_turn_cancel is not None:
                 self._active_turn_cancel.set()
 
+    def _retire_pending_interpretations(self):
+        for gate in (self.agent_consent, self.computer_consent, self.task_consent,
+                     self.task_strategy_consent, self.capability_offer, self.clarification):
+            gate.clear()
+
+    def _retire_machine_target(self):
+        self._last_computer_action = ""
+        self._last_computer_goal = ""
+        self._navigation = None
+        self._navigation_history = ()
+
     def set_computer_control_mode(self, enabled: bool) -> bool:
         """Set the UI-owned session mode and publish the authoritative state."""
         available = bool(self.computer_control.enabled)
@@ -1773,9 +1797,23 @@ class ChatEngine:
         last_action = str(getattr(self, "_last_computer_action", "") or "")
         last_goal = str(getattr(self, "_last_computer_goal", "") or "")
         if last_action and last_goal:
+            if browser_progress.disputes_last_action(user_input):
+                self._turn_points_at_the_last_action = True
+                if self._navigation is not None:
+                    self._navigation = replace(
+                        self._navigation, status=browser_navigation.DISPUTED,
+                        classification="user_dispute", detail=user_input,
+                    )
+                return replace(
+                    route, intent="computer_action", computer_operation=last_action,
+                    computer_url=last_goal if last_action == "open_url" else "",
+                    normalized_request=last_goal, action_target=last_goal,
+                    action_requested=True, is_follow_up=True,
+                    reason="The user disputes the last action; verify a new attempt.",
+                ), ""
             corrected_address = browser_progress.respelled_address(
                 last_goal, user_input,
-            )
+            ) if last_action in {"open_url", "browser_action"} else ""
             if corrected_address:
                 print(f"[Rescue] respelled the address -> {corrected_address}")
                 self._turn_points_at_the_last_action = True
@@ -2513,7 +2551,7 @@ class ChatEngine:
             query,
         )
 
-    def _research_for_recommendation(self, query: str, *, resolution=None):
+    def _research_for_recommendation(self, query: str, *, resolution=None, resolved=None):
         """Find candidates, check them, and only then call any of them good.
 
         The cascade, in order, stopping as soon as the answer is settled:
@@ -2526,7 +2564,7 @@ class ChatEngine:
         Returns ``None`` whenever this is not a constrained recommendation,
         so every other lookup keeps the ordinary research path untouched.
         """
-        problem = self.task_sessions.active_recommendation()
+        problem = resolved.task if resolved is not None else self.task_sessions.active_recommendation()
         if problem is None or not problem.constraints or not query:
             return None
 
@@ -2750,7 +2788,7 @@ class ChatEngine:
         """One structured search, read as candidates, surfaces or neither."""
         try:
             found = self.research_agent.research_structured(
-                search_query=query, max_results=6,
+                search_query=query, max_results=6, query_is_resolved=True,
             )
         except Exception as error:
             print(
@@ -2772,7 +2810,7 @@ class ChatEngine:
                     try:
                         targeted = self.research_agent.research_structured(
                             search_query=f"{query} site:{preferred_hosts[0]}",
-                            max_results=6,
+                            max_results=6, query_is_resolved=True,
                         )
                     except Exception:
                         targeted = ()
@@ -3428,8 +3466,10 @@ class ChatEngine:
                 print("  source: active_task")
                 print(f"  text: {resolved}")
                 return resolved
-        return self._with_focus(
-            router_query or self._search_subject(route, goal), focus,
+        return self._localised(
+            problem, self._with_focus(
+                router_query or self._search_subject(route, goal), focus,
+            ), focus=focus,
         )
 
     def _localised(self, problem, query: str, *, focus=None) -> str:
@@ -3983,21 +4023,31 @@ class ChatEngine:
         before = tuple(self._navigation_before)
         navigation = browser_navigation.start(
             requested, opened, history=history,
+            command_fused=getattr(route, "command_fused", False),
         )
-        navigation = self._look_at(navigation, before=before)
+        receipt = getattr(result, "navigation", None)
+        if isinstance(receipt, browser_navigation.Navigation):
+            navigation = replace(
+                receipt, requested=requested, history=navigation.history,
+                command_fused=navigation.command_fused,
+            )
+        else:
+            navigation = self._look_at(navigation, before=before)
         print(navigation.log_block())
 
         if navigation.arrived:
             self._navigation = navigation
             self._navigation_history = (navigation.url,)
-            return result, ""
+            return replace(result, status="url_opened", navigation=navigation), ""
 
         if navigation.status == browser_navigation.UNVERIFIED:
             # True, and the sentence this whole lifecycle exists to make
             # sayable. Better a hedge than a claim nothing checked.
             self._navigation = navigation
+            self._navigation_history = navigation.history
             return replace(
                 result, status="url_dispatched",
+                navigation=navigation,
                 message=f"Sent the browser to {opened}, not yet verified.",
             ), (
                 f"I sent the browser to {navigation.expected_host}, but I "
@@ -4010,13 +4060,17 @@ class ChatEngine:
             self._navigation_history = (recovered.url,)
             self._last_computer_goal = recovered.url
             return replace(
-                result, url=recovered.url, target=recovered.url,
+                result, status="url_opened", navigation=recovered,
+                url=recovered.url, target=recovered.url,
                 display_name=recovered.url,
                 message=f"Opened {recovered.url}.",
             ), line
-        self._navigation_history = navigation.history
+        self._navigation_history = recovered.history
+        if recovered.status == browser_navigation.UNVERIFIED:
+            return replace(result, status="url_dispatched", navigation=recovered), line
         return replace(
             result, status="navigation_failed",
+            navigation=recovered,
             message=f"{navigation.expected_host} did not load.",
         ), line
 
@@ -4041,7 +4095,7 @@ class ChatEngine:
                 and navigation.title else ""
             )
             return navigation, (
-                f"{host} didn't load -- the browser couldn't reach it."
+                f"{host} didn't load as requested."
                 f"{seen} Give me the address again and I'll go straight there."
             )
         if len(candidates) > 1:
@@ -4058,25 +4112,40 @@ class ChatEngine:
         )
         attempt = replace(attempt, recovered_from=host)
         try:
+            before = self._browser_fingerprint()
             prepared = self.computer_control.prepare(
                 ComputerActionRequest(
                     operation="open_url", target=candidate, url=candidate,
                 )
             )
-            if prepared.prepared is not None:
-                self.computer_control.execute(prepared.prepared)
+            if prepared.prepared is None:
+                return navigation, f"{host} didn't load, and I couldn't try {candidate}."
+            dispatched = self.computer_control.execute(prepared.prepared)
+            if dispatched.status not in {"url_opened", "url_dispatched"}:
+                return navigation, f"{host} didn't load, and I couldn't try {candidate}."
         except Exception as error:  # noqa: BLE001
             print(f"[Navigation] recovery could not run: {error}")
             return navigation, (
                 f"{host} didn't load, and I couldn't try {candidate} either."
             )
 
-        attempt = self._look_at(attempt, before=before)
+        receipt = getattr(dispatched, "navigation", None)
+        if isinstance(receipt, browser_navigation.Navigation):
+            attempt = replace(receipt, requested=attempt.requested,
+                              history=attempt.history, recovered_from=host)
+            if attempt.arrived:
+                attempt = replace(attempt, status=browser_navigation.RECOVERED)
+        else:
+            attempt = self._look_at(attempt, before=before)
         print(attempt.log_block())
         if attempt.arrived:
             return attempt, (
-                f"{host} doesn't exist, so I opened {candidate} instead -- "
+                f"{host} didn't load, so I opened {candidate} instead -- "
                 "that one's up."
+            )
+        if attempt.status == browser_navigation.UNVERIFIED:
+            return attempt, (
+                f"I sent the browser to {candidate}, but I couldn't check whether it loaded."
             )
         return attempt, (
             f"Neither {host} nor {candidate} loaded. "
@@ -4219,7 +4288,7 @@ class ChatEngine:
         # the navigation command; whether the page the person asked for is
         # on their screen is a different question, and until session 7 it
         # was never asked. Ask it here, before anything speaks.
-        if result is not None and result.status == "url_opened":
+        if result is not None and result.status in {"url_opened", "url_dispatched"}:
             result, navigation_line = self._verify_navigation(result, route)
             if navigation_line:
                 return navigation_line, result
@@ -4852,6 +4921,7 @@ class ChatEngine:
         turn_started,
         timings,
         forced_response,
+        resolved=None,
     ) -> str:
         """Produce the answer, once the turn has decided what it is.
 
@@ -4962,17 +5032,20 @@ class ChatEngine:
         ):
             search_started = time.perf_counter()
             try:
-                resolved_query = self._resolved_search_query(
-                    route, goal_intent_result,
+                resolved_query = (
+                    resolved.search_query if resolved is not None
+                    else self._resolved_search_query(route, goal_intent_result)
                 )
                 research_result = self._research_for_recommendation(
                     resolved_query,
                     resolution=getattr(capability, "execution_preference", None),
+                    resolved=resolved,
                 ) or self.research_agent.research(
                     request=route.normalized_request,
                     search_query=resolved_query,
                     max_results=5,
                     verify=route.verification_required,
+                    query_is_resolved=resolved is not None,
                 )
                 self._last_search_query = research_result.queries[0]
                 self._last_research_evidence = research_result.evidence
@@ -6038,6 +6111,7 @@ class ChatEngine:
                 reply, decision=decision, capability=capability,
                 goal=goal_intent_result,
             )
+            checked_draft = reply
             reply = self._final_response_check(
                 reply,
                 user_input=user_input,
@@ -6050,6 +6124,28 @@ class ChatEngine:
                 max_sentences=max_sentences,
                 forced=bool(effective_forced_response),
             )
+            if reply != checked_draft:
+                # The repetition retry is the final model pass. Its output
+                # must pass the same factual/action boundaries as the draft;
+                # there are no model rewrites after these checks.
+                reply = self._enforce_action_commitment(
+                    reply, user_input=user_input, action_performed=action_performed,
+                )
+                reply = self._enforce_grounded_values(
+                    reply, user_input=user_input, action_performed=action_performed,
+                    research_evidence=self._last_research_evidence,
+                    trusted_result=False, searched="web_search" in timings,
+                )
+                reply = self._enforce_found_claim(
+                    reply, candidates=active_problem.candidates if active_problem else (),
+                )
+                reply = self._enforce_grounded_entities(
+                    reply, user_input=user_input, action_performed=action_performed,
+                    evidence=self._last_research_evidence, trusted_result=False,
+                )
+                reply = ClosingOfferGuard.strip(
+                    reply, keep_offers=self.capability_offer.peek() is not None,
+                )
             speech_buffer = reply
             if reply:
                 print(
@@ -6589,6 +6685,8 @@ class ChatEngine:
         nothing else -- which is what made it safe to move.
         """
         route_started = time.perf_counter()
+        raw_transcript = user_input
+        previous_focus = self.task_sessions.focus()
         # One answer per turn to "is this turn about the thing she just
         # did?". Set by the repair layer, read by the focus layer, which
         # runs after it -- because a correction to a machine target is not
@@ -6622,6 +6720,19 @@ class ChatEngine:
                 user_input=user_input,
                 locked_response=preference_reply,
             )
+        disputed_machine = bool(
+            self._last_computer_action and self._last_computer_goal
+            and browser_progress.disputes_last_action(user_input)
+        )
+        if not continuing_agent_flow and (
+            names_its_own_errand(user_input) or disputed_machine
+        ):
+            # Resolve authority before any pending gate gets to reinterpret
+            # the turn. An unrelated later 'yeah' cannot revive these offers.
+            self._retire_pending_interpretations()
+        if disputed_machine and self._navigation is not None:
+            self._navigation = replace(self._navigation, status=browser_navigation.DISPUTED,
+                                       classification="user_dispute", detail=user_input)
         pending_offer = self.agent_consent.peek()
         pending_computer = self.computer_consent.peek()
         pending_task = self.task_consent.peek()
@@ -6749,6 +6860,8 @@ class ChatEngine:
             # ends -- there is nothing here for a model to classify, and the
             # cancellation should not wait ~4.8s to take effect.
             self.cancel_active_turn()
+            self._retire_pending_interpretations()
+            self._retire_machine_target()
             self.clarification.clear()
             self.computer_consent.clear()
             self.task_consent.clear()
@@ -6852,7 +6965,7 @@ class ChatEngine:
         # every following request and re-offered itself instead.
         tool_preference = self._tool_preference_for(user_input)
         understood = (
-            None if has_explicit_attachment or continuing_agent_flow
+            None if has_explicit_attachment or continuing_agent_flow or disputed_machine
             else front_door.read(
                 user_input,
                 recent_subject=(
@@ -6903,6 +7016,9 @@ class ChatEngine:
             bypassing the discovery policy that would have named the
             user's own.
             """
+            if disputed_machine:
+                return IntentDecision(intent="conversation", confidence=1.0,
+                                      normalized_request=transcript)
             if continuing_agent_flow or has_explicit_attachment:
                 return route_current(transcript)
             decision = self.task_intent_gate.check(
@@ -7638,6 +7754,16 @@ class ChatEngine:
         )
         if focus.corrected_to and focus.subject:
             goal = replace(goal, subject=focus.subject)
+        if not self._turn_points_at_the_last_action:
+            if route.intent != "computer_action" and (
+                names_its_own_errand(user_input)
+                or (previous_focus is not None and focus.subject != previous_focus.subject)
+            ):
+                self._retire_machine_target()
+            elif route.computer_operation == "open_url":
+                # A new address starts a new spelling history. Corrections
+                # above explicitly mark themselves as pointing back.
+                self._navigation_history = ()
         has_context, recalled_evidence, recall_origin = self._recall_context(
             route, goal, locked_response=locked_response,
         )
@@ -7720,7 +7846,21 @@ class ChatEngine:
                 print(problem.log_block())
 
         timings["route"] = time.perf_counter() - route_started
+        route = replace(route, command_fused=command_was_fused(user_input, route))
+        search_may_run = capability_selection.WEB_SEARCH in (
+            capability.capability, *capability.fallbacks,
+        )
+        query = self._resolved_search_query(route, goal) if search_may_run else route.search_query
+        resolved = ResolvedTurn(
+            raw_transcript=raw_transcript, normalized_transcript=route.normalized_request,
+            intent=route.intent, subject=problem.subject if problem else goal.subject,
+            machine_target=route.computer_url or route.action_target,
+            search_query=query, task=problem, confidence=route.confidence,
+            correction_target=(self._last_computer_goal if self._turn_points_at_the_last_action else ""),
+            provenance="active_task" if resumed_problem_id else "current_turn",
+        )
         return TurnRouting(
+            resolved=resolved,
             problem=problem,
             route=route,
             user_input=user_input,
@@ -7981,6 +8121,7 @@ class ChatEngine:
             turn_started=turn_started,
             timings=timings,
             forced_response=forced_response,
+            resolved=routing.resolved,
         )
 
     def prepare_screen_region(self, region: dict) -> bool:

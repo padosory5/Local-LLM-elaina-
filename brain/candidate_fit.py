@@ -257,7 +257,7 @@ def _check(text: str, problem) -> tuple[list[str], list[str], list[str]]:
         # A range's upper endpoint is the ceiling. The old lower-endpoint
         # comparison rejected a $1,295 listing for a $1,000-$1,300 request.
         ceiling = (
-            max(limits) if len(limits) > 1
+            max(limits) if len(limits) > 1 or re.search(r"\b(?:under|below|less than|up to|maximum)\b|이하", value, re.I)
             else limits[0] * _BUDGET_TOLERANCE
         )
         if min(prices) > ceiling:
@@ -449,7 +449,7 @@ _ARTICLE_TITLE = re.compile(
     r"[A-Za-z]"
     r"|\b(?:top|best)\s+\d+\b"
     r"|\b(?:recipes?|ideas|guide|guides|tips|how\s+to|why\s+you|"
-    r"everything\s+you|explained|review\s+round[- ]?up|listicle|"
+    r"everything\s+you|explained|tutorials?|lessons?|review\s+round[- ]?up|listicle|"
     r"vs\.?\b|versus)\b"
     r"|\bin\s+20\d\d\s*$"
     r"|\b(?:blog|article|youtube|vlog)\b"
@@ -496,6 +496,11 @@ _HAS_PLACE_DETAIL = re.compile(
 
 def expected_shape(problem) -> str:
     """What kind of thing would actually answer this recommendation."""
+    entity_type = getattr(problem, "entity_type", "")
+    if entity_type == "product":
+        return PRODUCT
+    if entity_type in {"place", "rental_unit"}:
+        return PLACE
     category = str(getattr(problem, "category", "") or "")
     if category in {"restaurant", "hotel"}:
         return PLACE

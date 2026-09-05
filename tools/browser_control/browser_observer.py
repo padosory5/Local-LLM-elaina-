@@ -541,6 +541,7 @@ class BrowserObserver:
         # Electron text box receives focus).  Never silently choose the most
         # recently created unrelated tab.
         self._preferred_page_url = ""
+        self._preferred_page_ref: Any | None = None
 
     def close(self) -> None:
         if self._playwright is not None:
@@ -552,10 +553,19 @@ class BrowserObserver:
         self._playwright = None
         self._connect_result = None
         self._connect_thread_id = None
+        self._preferred_page_ref = None
 
     def prefer_page(self, url: str) -> None:
         """Remember an Elaina-opened page for the next terse follow-up."""
-        self._preferred_page_url = str(url or "").strip()
+        url = str(url or "").strip()
+        if self._preferred_page_ref is not None and self._safe_url(self._preferred_page_ref) != url:
+            self._preferred_page_ref = None
+        self._preferred_page_url = url
+
+    def bind_page(self, page: Any) -> None:
+        """Keep the dispatched Page identity while this CDP connection lives."""
+        self._preferred_page_ref = page
+        self._preferred_page_url = self._safe_url(page)
 
     def list_tabs(self) -> tuple[TabInfo, ...] | BrowserConnectionResult:
         result = self._ensure_connected()
@@ -878,13 +888,14 @@ class BrowserObserver:
 
     def _preferred_page(self, pages: list[Any]) -> Any | None:
         """The page Elaina herself most recently opened, if it is still open."""
+        for page in pages:
+            if page is self._preferred_page_ref:
+                return page
         preferred = str(self._preferred_page_url or "").strip()
         if not preferred:
             return None
-        for page in pages:
-            if self._safe_url(page) == preferred:
-                return page
-        return None
+        matches = [page for page in pages if self._safe_url(page) == preferred]
+        return matches[0] if len(matches) == 1 else None
 
     def _new_page(self) -> Any:
         try:
@@ -987,6 +998,9 @@ class BrowserObserver:
                 if len(matches) == 1:
                     return matches[0]
         if self._preferred_page_url:
+            for index, page in enumerate(pages):
+                if page is self._preferred_page_ref:
+                    return index
             # Prefer an exact live URL before the deliberately looser search
             # redirect comparison below. A Google result page can acquire
             # extra tracking parameters, but an exact Elaina-opened tab is a
@@ -1003,15 +1017,6 @@ class BrowserObserver:
             ]
             if len(matches) == 1:
                 return matches[0]
-            if len(matches) > 1:
-                # ``prefer_page`` is assigned only after Elaina itself opens
-                # or successfully navigates a controlled tab. Chromium/CDP
-                # returns pages in creation order, so a duplicate exact URL
-                # belongs to the most recently controlled copy rather than
-                # an arbitrary unrelated background tab. This narrowly fixes
-                # repeated identical searches without restoring the old
-                # global "last tab wins" fallback.
-                return matches[-1]
         return None
 
     @staticmethod

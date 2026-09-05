@@ -113,6 +113,9 @@ class _FakePage:
         self.brought_to_front = True
 
     def evaluate(self, script):
+        if "document.readyState" in script:
+            return {"url": self.url, "title": "Example page",
+                    "text": "The rendered destination page content", "ready": True}
         return self.privacy_dialog_present
 
 

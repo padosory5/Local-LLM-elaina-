@@ -24,9 +24,10 @@ def _element(index=0, role="button", label="Open", **kwargs):
     return ScreenElement(index=index, role=role, label=label, **fields)
 
 
-def _observation(*elements, url="https://example.com", title="Example", scan="s1"):
+def _observation(*elements, url="https://example.com", title="Example", scan="s1", handle=1):
     return ScreenPageObservation(
-        "observed", handle=1, title=title, url=url,
+        "observed", handle=handle, title=title, url=url,
+        text_excerpt="Rendered destination content" if elements else "",
         elements=tuple(elements), scan_id=scan,
     )
 
@@ -429,7 +430,7 @@ class NavigationTests(unittest.TestCase):
             message="no document yet",
         )
         observer = _LaunchableObserver(
-            before, _observation(_element(), url="https://example.com"),
+            before, _observation(_element(), url="https://example.com", handle=7),
         )
         cursor = _FakeCursor()
         observer.cursor = cursor
@@ -469,7 +470,8 @@ class NavigationTests(unittest.TestCase):
             _observation(_element(), url="https://www.elsewhere.example/path"),
         ])
         result = _control(observer).navigate("https://example.com")
-        self.assertEqual(result.status, "navigated")
+        self.assertEqual(result.status, "navigate_unverified")
+        self.assertEqual(result.navigation.classification, "wrong_destination")
         self.assertEqual(result.url, "https://www.elsewhere.example/path")
 
     def test_navigation_that_did_not_move_is_not_claimed(self):

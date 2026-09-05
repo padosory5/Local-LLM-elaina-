@@ -163,9 +163,11 @@ class SafeBrowserControl:
             message=f"Ready to open {host}.",
         )
 
-    def open(self, url: str) -> None:
-        if not self._opener(str(url)):
+    def open(self, url: str):
+        result = self._opener(str(url))
+        if not result:
             raise OSError("Windows did not accept the browser tab request.")
+        return result
 
     @staticmethod
     def _looks_like_host(value: str) -> bool:

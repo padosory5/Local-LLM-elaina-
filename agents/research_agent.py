@@ -49,6 +49,7 @@ class ResearchAgent:
         search_query: str,
         max_results: int = 5,
         verify: bool = False,
+        query_is_resolved: bool = False,
     ) -> ResearchResult:
         """
         Search the router's query and independently verify temporal answers.
@@ -57,7 +58,9 @@ class ResearchAgent:
         answer model. This prevents stale model knowledge from deciding which
         edition, release, office holder, or other changing fact is current.
         """
-        query = self._localized(" ".join((search_query or request).split()))
+        query = " ".join((search_query or request).split())
+        if not query_is_resolved:
+            query = self._localized(query)
         if not query:
             raise RuntimeError("The research query was empty.")
 
@@ -96,6 +99,7 @@ class ResearchAgent:
         *,
         search_query: str,
         max_results: int = 5,
+        query_is_resolved: bool = False,
     ) -> tuple[dict[str, str], ...]:
         """One search, returning raw per-result data (title/url/summary)
         rather than concatenated prose -- for a caller that needs real
@@ -107,7 +111,9 @@ class ResearchAgent:
         """
         if self._search_structured is None:
             raise RuntimeError("Structured search is not available.")
-        query = self._localized(" ".join(str(search_query).split()))
+        query = " ".join(str(search_query).split())
+        if not query_is_resolved:
+            query = self._localized(query)
         if not query:
             raise RuntimeError("The research query was empty.")
         results = self._search_structured(query, max_results)

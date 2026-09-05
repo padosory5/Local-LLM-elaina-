@@ -66,7 +66,7 @@ class TaskSessionStore:
         # What the person has already answered, by dimension, for as long
         # as this session lasts. A restarted problem drops its constraints;
         # the person's memory of having said it does not.
-        self._answered: dict[str, str] = {}
+        self._answered: dict[tuple[str, str], str] = {}
 
     def remember(self, task_state: Any) -> None:
         raw_items = tuple(getattr(task_state, "collected_items", ()) or ())
@@ -181,6 +181,8 @@ class TaskSessionStore:
             said_before=said_before,
             now=time.monotonic(),
         )
+        for slot in self._problem.constraints:
+            self._answered[(self._problem._thing(), slot.name)] = slot.value
         return self._problem
 
     def answer_recommendation_dimension(
@@ -196,7 +198,10 @@ class TaskSessionStore:
         # are kept for the session rather than for the problem, because
         # that is the span over which a person remembers saying it.
         if recommendation_state.points_at_an_earlier_answer(reply):
-            remembered = self._answered.get(dimension, "")
+            remembered = (
+                next(iter(problem.values(dimension)), "")
+                or self._answered.get((problem._thing(), dimension), "")
+            )
             if not remembered:
                 return None
             reply = remembered
@@ -207,7 +212,7 @@ class TaskSessionStore:
             self._problem = resolved
             for slot in resolved.constraints:
                 if slot.name == dimension:
-                    self._answered[dimension] = slot.value
+                    self._answered[(problem._thing(), dimension)] = slot.value
         return resolved
 
     def active_recommendation(self) -> "RecommendationProblem | None":
@@ -290,6 +295,7 @@ class TaskSessionStore:
         self._context = None
         self._problem = None
         self._focus = None
+        self._answered.clear()
 
     def current(self) -> TaskEvidenceContext | None:
         context = self._context

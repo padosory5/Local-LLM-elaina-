@@ -360,6 +360,11 @@ def _restore_misheard_words(paraphrase: str, transcript: str) -> str:
         if not close or close[0] == lowered:
             return word
         restored = close[0]
+        shorter, longer = sorted((lowered, restored), key=len)
+        if longer.startswith(shorter) and longer[len(shorter):] in {"s", "es", "d", "ed", "ing"}:
+            # Ordinary tense/plural changes are paraphrase, not a changed
+            # entity: "released" may legitimately query a "release date".
+            return word
         return restored.capitalize() if word[:1].isupper() else restored
 
     return _WORD.sub(swap, paraphrase or "")
@@ -456,6 +461,7 @@ class IntentDecision:
     computer_operation: str = "none"
     computer_location: str = ""
     computer_url: str = ""
+    command_fused: bool = False
 
 
 class SemanticIntentRouter:
@@ -722,23 +728,21 @@ class SemanticIntentRouter:
                 restored = _restore_misheard_words(
                     decision.normalized_request, user_input,
                 )
-                if restored != decision.normalized_request:
+                restored_fields = {
+                    name: _restore_misheard_words(getattr(decision, name), user_input)
+                    for name in ("reason", "topic", "entity", "search_query", "action_target")
+                }
+                if restored != decision.normalized_request or any(
+                    value != getattr(decision, name)
+                    for name, value in restored_fields.items()
+                ):
                     print(
                         f"[Router] restored {restored!r} from the transcript."
                     )
                     decision = replace(
                         decision,
                         normalized_request=restored,
-                        **{
-                            field: _restore_misheard_words(
-                                getattr(decision, field), user_input,
-                            )
-                            for field in (
-                                "reason", "topic", "entity", "search_query",
-                                "action_target",
-                            )
-                            if getattr(decision, field, "")
-                        },
+                        **restored_fields,
                     )
                 if (
                     decision.intent in ACTION_INTENTS

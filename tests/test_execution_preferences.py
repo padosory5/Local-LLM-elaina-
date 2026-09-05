@@ -222,7 +222,9 @@ class RecommendationAcquisitionIntegrationTests(unittest.TestCase):
             self.batches = list(batches)
             self.queries = []
 
-        def research_structured(self, *, search_query, max_results):
+        def research_structured(self, *, search_query, max_results, query_is_resolved=False):
+            if not query_is_resolved:
+                raise AssertionError("acquisition must use the resolved query")
             self.queries.append(search_query)
             return tuple(self.batches.pop(0))
 

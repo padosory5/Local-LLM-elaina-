@@ -27,6 +27,8 @@ tool-calling loop itself.
 
 from __future__ import annotations
 
+from brain import browser_navigation as navigation
+
 import re
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -40,6 +42,13 @@ from tools.browser_control.browser_observer import (
 from tools.browser_control.safe_browser import SafeBrowserControl
 
 _MAX_FILL_LENGTH = 500
+
+# How many times to look for page evidence after a navigation commits, and
+# how long to wait between looks. A single-page app renders after
+# ``domcontentloaded``, so the first read can legitimately find an empty
+# title and an empty body on a page that is about to appear.
+_EVIDENCE_READS = 4
+_EVIDENCE_SETTLE_MS = 500
 
 # The exact same label logic describe_page()'s scan uses, evaluated for one
 # already-located element -- so a committing-action check never sees a
@@ -371,6 +380,7 @@ class BrowserActionResult:
     # not expose enough state to verify independently.
     verified: bool | None = None
     evidence: str = ""
+    navigation: navigation.Navigation | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -774,16 +784,17 @@ class BrowserControl:
         if page is None:
             return BrowserActionResult("not_found", "I couldn't find that browser tab.")
         still_loading = False
+        response = None
+        navigation_error = ""
         try:
-            page.goto(url, timeout=15000, wait_until="domcontentloaded")
+            response = page.goto(url, timeout=15000, wait_until="domcontentloaded")
         except Exception as error:
             # A timeout does not mean the navigation failed -- heavy pages
             # routinely commit (URL changed, DOM building) while some
-            # long-poll request keeps the load state pending. Found live as
-            # "the browser opened but Elaina said she couldn't": treat a
-            # commit to the right destination as success and read whatever
-            # the page has, rather than reporting a page the user can SEE
-            # as unreachable.
+            # long-poll request keeps the load state pending. A commit lets
+            # us inspect this Page below; readable destination evidence is
+            # still required before reporting success.
+            navigation_error = str(error)
             if self._navigation_committed(page, url):
                 still_loading = True
             else:
@@ -798,17 +809,16 @@ class BrowserControl:
                     # not to wait out a site that is refusing us. A full
                     # second 15s made a blocked site cost 30 seconds of
                     # silence before the user heard anything.
-                    page.goto(url, timeout=8000, wait_until="domcontentloaded")
-                except Exception:
+                    response = page.goto(url, timeout=8000, wait_until="domcontentloaded")
+                    navigation_error = ""
+                except Exception as retry_error:
                     if self._navigation_committed(page, url):
                         still_loading = True
                     else:
-                        return BrowserActionResult(
-                            "failed",
-                            failure_message.format(error=error),
-                            url=page.url,
-                        )
-        if hasattr(self.observer, "prefer_page"):
+                        navigation_error = str(retry_error)
+        if hasattr(self.observer, "bind_page"):
+            self.observer.bind_page(page)
+        elif hasattr(self.observer, "prefer_page"):
             self.observer.prefer_page(str(page.url))
         try:
             page.bring_to_front()
@@ -817,23 +827,74 @@ class BrowserControl:
             # silently behind whatever the user is doing must never turn a
             # real, completed navigation into a reported failure.
             pass
+        # Inspect this exact Playwright Page, never resolve it again by URL
+        # or active-tab index. A timeout/URL commit by itself proves no arrival.
+        #
+        # Read more than once while there is nothing to read. ``domcontent
+        # loaded`` fires before a single-page app has put anything on the
+        # screen, so an immediate look at YouTube returns an empty title and
+        # an empty body -- and a verifier that (correctly) refuses to call
+        # that an arrival then reports a page the user can see as
+        # unverified. Measured: the same navigation gives a full title and
+        # 5,360 characters of text on one run and nothing at all on the
+        # next, so the single read was a race rather than a rule.
+        #
+        # A navigation that has not finished is not a navigation that
+        # failed. Bounded so a page that really is empty still resolves
+        # quickly.
+        observed = {}
+        for attempt in range(_EVIDENCE_READS):
+            if attempt:
+                try:
+                    page.wait_for_timeout(_EVIDENCE_SETTLE_MS)
+                except Exception:
+                    break
+            try:
+                observed = page.evaluate("""() => ({
+                    url: location.href, title: document.title,
+                    text: (document.body?.innerText || '').slice(0, 4000),
+                    ready: document.readyState !== 'loading'
+                })""")
+            except Exception:
+                observed = {}
+            if not isinstance(observed, dict):
+                observed = {}
+            if observed.get("title") or observed.get("text"):
+                break
+        if not isinstance(observed, dict):
+            observed = {}
+        # Timeouts with a readable destination are allowed. Explicit browser
+        # network failures are authoritative even if the omnibox kept the URL.
+        signal = re.search(r"(?:net::)?ERR_[A-Z_]+", navigation_error)
+        receipt = navigation.verify(navigation.start(url, url), (
+            navigation.PageEvidence(
+                url=str(observed.get("url") or page.url),
+                document_url=str(observed.get("url") or ""),
+                title=str(observed.get("title") or ""),
+                text=str(observed.get("text") or ""),
+                identity=f"cdp:{id(page)}", correlated=True,
+                readable=bool(observed.get("ready")) or bool(signal),
+                error_code=signal.group(0) if signal else "",
+                http_status=int(getattr(response, "status", 0) or 0),
+            ),
+        ))
         return BrowserActionResult(
-            "navigated",
-            success_message.format(url=page.url)
-            + (" The page is still loading parts of itself." if still_loading else ""),
-            url=page.url,
-            verified=True,
-            evidence=evidence,
+            "navigated" if receipt.arrived else ("failed" if receipt.checked else "navigate_unverified"),
+            (success_message.format(url=page.url)
+             + (" The page is still loading parts of itself." if still_loading else "")) if receipt.arrived
+            else f"I could not verify {url}: {receipt.detail}.",
+            url=page.url, verified=True if receipt.arrived else None,
+            evidence=evidence if receipt.arrived else receipt.detail,
+            navigation=receipt,
         )
 
     @staticmethod
     def _navigation_committed(page: Any, requested_url: str) -> bool:
-        """Whether the page actually reached the requested destination.
+        """Whether the URL committed, so its document is worth inspecting.
 
         Compares hosts only: redirects (http->https, m.-prefixes, consent
-        interstitials on the same site) are still the navigation the caller
-        asked for. A page still sitting on about:blank or the previous
-        site's host is a real failure.
+        interstitials on the same site) may have committed. This is only a
+        loading hint, never proof of arrival.
         """
         try:
             actual = urlsplit(str(getattr(page, "url", "") or ""))

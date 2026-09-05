@@ -164,7 +164,7 @@ class BrowserService:
         thread = self._thread
         return bool(thread is not None and thread.is_alive())
 
-    def open_url(self, url: str) -> bool:
+    def open_url(self, url: str) -> BrowserActionResult:
         """Open a validated URL in the actor-owned controlled browser.
 
         ``SafeBrowserControl`` already validates the public computer action
@@ -174,13 +174,15 @@ class BrowserService:
         """
         requested_url = str(url).strip()
 
-        def operation(observer: BrowserObserver, control: BrowserControl) -> bool:
+        def operation(observer: BrowserObserver, control: BrowserControl) -> BrowserActionResult:
             result = control.navigate(
                 None,
                 requested_url,
                 allow_isolated_launch=True,
             )
-            if not isinstance(result, BrowserActionResult) or not result.succeeded:
+            if not isinstance(result, BrowserActionResult) or (
+                not result.succeeded and result.navigation is None
+            ):
                 raise BrowserConnectionError(
                     getattr(result, "message", "")
                     or "I couldn't open that page in the controlled browser."
@@ -191,9 +193,9 @@ class BrowserService:
             # to the next response thread.
             self.connection.last_opened_url = final_url
             observer.prefer_page(final_url)
-            return True
+            return result
 
-        return bool(self._call(operation))
+        return self._call(operation)
 
     def close(self) -> None:
         """Stop the actor and disconnect its driver without closing tabs."""
@@ -308,4 +310,3 @@ class BrowserService:
         finally:
             self._worker_observer = None
             self._worker_control = None
-

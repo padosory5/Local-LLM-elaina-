@@ -111,6 +111,16 @@ class ScreenBrowserObserverAdapter:
             for position, window in enumerate(windows)
         )
 
+    def bind_navigation(self, result: BrowserActionResult) -> BrowserActionResult:
+        """Retain the dispatcher's HWND even if focus changed during loading."""
+        identity = getattr(getattr(result, "navigation", None), "observation_id", "")
+        parts = identity.split(":", 2)
+        if len(parts) == 3 and parts[0] == "hwnd" and parts[1].isdigit():
+            handle = int(parts[1])
+            if self._finder.window_for_handle(handle) is not None:
+                self._bound_handle = handle
+        return result
+
     def _handle_for(self, tab_index: int | None) -> int | None:
         if tab_index is None:
             if (
@@ -376,7 +386,9 @@ class ScreenBrowserControlAdapter:
         *,
         allow_isolated_launch: bool = False,
     ) -> BrowserActionResult:
-        return self._control.navigate(url, window=self._handle(tab_index))
+        return self._observer_adapter.bind_navigation(
+            self._control.navigate(url, window=self._handle(tab_index)),
+        )
 
     def search(
         self,
@@ -385,7 +397,9 @@ class ScreenBrowserControlAdapter:
         *,
         allow_isolated_launch: bool = False,
     ) -> BrowserActionResult:
-        return self._control.search(query, window=self._handle(tab_index))
+        return self._observer_adapter.bind_navigation(
+            self._control.search(query, window=self._handle(tab_index)),
+        )
 
 
 class ScreenBrowserService:
@@ -423,9 +437,7 @@ class ScreenBrowserService:
         return self.screen_control.available
 
     def open_url(self, url: str) -> BrowserActionResult:
-        return self.screen_control.navigate(
-            url, window=self.observer._handle_for(None),
-        )
+        return self.control.navigate(None, url)
 
     def close(self) -> None:
         """Nothing to tear down: no connection and no browser is owned.

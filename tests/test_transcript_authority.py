@@ -48,6 +48,8 @@ class TheTranscriptWinsTests(unittest.TestCase):
             ("Explain the voice input flow",
              "Inspect the codebase and explain how voice input reaches chat"),
             ("current time in Seattle", "what time is it over there in Seattle"),
+            ("Marathon official release date", "When was Marathon released?"),
+            ("guitar prices", "What is the price of that guitar?"),
         ):
             with self.subTest(paraphrase=paraphrase):
                 self.assertEqual(

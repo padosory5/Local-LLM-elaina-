@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ctypes
 import time
+from brain import browser_navigation as navigation
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -629,10 +630,7 @@ class ScreenBrowserControl:
             landed = last.url or ""
             readable = self._landing_is_readable(last)
             if readable and self._same_page(landed, url):
-                return BrowserActionResult(
-                    "navigated", f"Opened {landed or url}.", url=landed or url,
-                    verified=True, evidence=f"address bar reads {landed!r}",
-                )
+                return self._navigation_result(url, handle, last, before)
             if (
                 readable
                 and self._usable_web_url(landed)
@@ -640,27 +638,32 @@ class ScreenBrowserControl:
             ):
                 # Redirects are normal. The reported URL is always what the
                 # live address bar shows, never the requested value.
-                return BrowserActionResult(
-                    "navigated",
-                    f"Opened {url}; it ended up at {landed}.", url=landed,
-                    verified=True, evidence=f"address bar reads {landed!r}",
-                )
+                return self._navigation_result(url, handle, last, before)
             # Only a still-blank/unreadable landing receives the one retry.
 
-        landed = last.url if last.status == "observed" else ""
-        if last.status != "observed":
-            detail = last.message or last.status
-            return BrowserActionResult(
-                "navigate_unverified",
-                f"I sent the browser to {url}, but could not read the page "
-                f"back ({detail}).",
-                url=landed, verified=None,
-            )
+        return self._navigation_result(url, handle, last, before)
+
+    def _navigation_result(self, url, handle, page, before):
+        """Keep the observation made against the HWND that received Enter."""
+        receipt = navigation.verify(navigation.start(url, url), (
+            navigation.PageEvidence(
+                url=page.url, title=page.title,
+                text=" ".join((*page.headings, page.text_excerpt)),
+                identity=f"hwnd:{handle}:{page.scan_id}",
+                correlated=page.handle == handle,
+                readable=page.status == "observed",
+            ),
+        ), before=((before[0], before[1]),))
+        if self._page_signature(page) == before and receipt.arrived:
+            from dataclasses import replace
+            receipt = replace(receipt, status=navigation.UNVERIFIED,
+                              classification="stale_tab", detail="the page did not change")
         return BrowserActionResult(
-            "navigate_unverified",
-            f"I asked for {url} but the address bar still reads "
-            f"{landed or before[0] or 'a blank page'!r}.",
-            url=landed, verified=False,
+            "navigated" if receipt.arrived else "navigate_unverified",
+            f"Opened {receipt.actual_url}." if receipt.arrived
+            else f"I could not verify {url}: {receipt.detail}.",
+            url=receipt.actual_url, verified=True if receipt.arrived else (False if receipt.checked else None),
+            evidence=receipt.detail, navigation=receipt,
         )
 
     # ------------------------------------------------------------------

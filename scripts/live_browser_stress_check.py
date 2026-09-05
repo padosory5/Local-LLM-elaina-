@@ -90,7 +90,7 @@ def check_site(control: BrowserControl, observer: BrowserObserver, name: str, ur
     ):
         return False
 
-    _report(
+    elements_ok = _report(
         "elements found",
         len(observation.elements) >= 5,
         f"{len(observation.elements)} interactive elements",
@@ -101,7 +101,7 @@ def check_site(control: BrowserControl, observer: BrowserObserver, name: str, ur
         print("  [INFO] a dialog is still open; its controls are listed first")
 
     text = observer.read_text()
-    _report(
+    text_ok = _report(
         "readable text",
         getattr(text, "status", "") == "observed" and len(getattr(text, "text", "")) > 200,
         f"{len(getattr(text, 'text', ''))} characters",
@@ -119,7 +119,7 @@ def check_site(control: BrowserControl, observer: BrowserObserver, name: str, ur
     )
     if link is None:
         print("  [INFO] no ordinary link to click on this page; skipping click")
-        return True
+        return elements_ok and text_ok
     click = control.click(
         observation.tab_index, link.id,
         expected_label=link.label,
@@ -134,7 +134,7 @@ def check_site(control: BrowserControl, observer: BrowserObserver, name: str, ur
         f"{click.status} on {link.label[:40]!r}",
     )
     print(f"  [TIME] total {time.perf_counter() - started:.1f}s")
-    return ok
+    return ok and elements_ok and text_ok
 
 
 def main() -> int:

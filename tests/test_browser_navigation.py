@@ -25,6 +25,7 @@ places an honest recovery candidate can come from.
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 
 from brain import browser_navigation as nav
@@ -32,9 +33,11 @@ from brain import recommendation
 from brain.intent_router import IntentDecision
 
 
-def _tab(url: str, title: str = "", text: str = "", active: bool = True):
+def _tab(url: str, title: str = "", text=None, active: bool = True):
     return SimpleNamespace(
-        index=0, url=url, title=title, text=text, is_active=active,
+        index=0, url=url, title=title,
+        text=("Rendered destination content" if text is None and not nav._is_bare_address(title) else text or ""),
+        is_active=active, identity="test:dispatched-page", correlated=True,
     )
 
 
@@ -44,6 +47,7 @@ def _route(target: str, url: str = ""):
         normalized_request=f"open {target}", reason="session 7",
         computer_operation="open_url", action_target=target,
         computer_url=url or f"https://{target}", action_requested=True,
+        command_fused=target.startswith("openZillow"),
     )
 
 
@@ -231,7 +235,7 @@ class WhatSheSaysAfterOpeningSomethingTests(unittest.TestCase):
         self.engine.computer_control.execute = execute
 
         line, result = self.engine._handle_computer_action(
-            _route("openzillow.com"),
+            replace(_route("openzillow.com"), command_fused=True),
         )
 
         self.assertIn("zillow.com", line)
@@ -252,7 +256,7 @@ class WhatSheSaysAfterOpeningSomethingTests(unittest.TestCase):
             ),
             "I meant only one S.",
         )
-        self.assertEqual(corrected.action_target, "is.washington.edu")
+        self.assertEqual(corrected.action_target, "https://is.washington.edu")
 
         executed = self.engine.computer_control.execute
 
@@ -374,13 +378,13 @@ class WhatCountsAsArrivalTests(unittest.TestCase):
     def test_a_real_title_that_merely_contains_a_dot_still_arrives(self):
         # The over-correction to watch: plenty of sites have a dot in
         # their name. Only a title that is *nothing but* an address counts.
-        for title in (
-            "Zillow.com: Real Estate", "Booking.com | Official site",
-            "NAVER", "Amazon.co.jp: 通販",
+        for host, title in (
+            ("zillow.com", "Zillow.com: Real Estate"), ("booking.com", "Booking.com | Official site"),
+            ("naver.com", "NAVER"), ("amazon.co.jp", "Amazon.co.jp: 通販"),
         ):
             with self.subTest(title=title):
                 looked = self._looked(
-                    "zillow.com", "https://zillow.com", title, "text",
+                    host, f"https://{host}", title, "text",
                 )
                 self.assertTrue(looked.arrived, title)
 
@@ -433,7 +437,8 @@ class TheRecoveryRunsBecauseTheFailureIsSeenTests(unittest.TestCase):
             intent="computer_action", confidence=0.99,
             normalized_request=f"open {target}", reason="session 8",
             computer_operation="open_url", action_target=target,
-            computer_url=f"https://{target}", action_requested=True,
+            computer_url=target if "://" in target else f"https://{target}", action_requested=True,
+            command_fused=target.startswith("openZillow"),
         ))
 
     def test_the_whole_correction_and_recovery_without_a_second_correction(self):
@@ -449,7 +454,7 @@ class TheRecoveryRunsBecauseTheFailureIsSeenTests(unittest.TestCase):
             ),
             "I meant only one S.",
         )
-        self.assertEqual(corrected.action_target, "is.washington.edu")
+        self.assertEqual(corrected.action_target, "https://is.washington.edu")
 
         line, result = self._open(corrected.action_target)
 

@@ -52,7 +52,7 @@ class MoneyIsNotEveryNumberTests(unittest.TestCase):
     def test_real_budgets_are_untouched(self):
         for said, budget in (
             ("from $1000 to $1500", "$1000 to $1500"),
-            ("under 500,000 won", "500,000 won"),
+            ("under 500,000 won", "under 500,000 won"),
             ("500,000 to 800,000 won", "500,000 to 800,000 won"),
             ("around 1000-1500", "1000-1500"),
             ("2000-3000 dollars", "2000-3000 dollars"),

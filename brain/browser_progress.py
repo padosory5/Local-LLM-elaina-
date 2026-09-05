@@ -168,7 +168,7 @@ _A_LETTER_COUNT = re.compile(
     # subject called "only one S", the browser action was retired, and she
     # opened the misspelled address again.
     r"(?:so\s+)?(?:from\s+(?:my|the)\s+(?:previous|last)\s+\w+,?\s+)?"
-    r"(?:i\s+(?:mean|meant)\s+)?"
+    r"(?:actually[, ]+)?(?:i\s+(?:mean|meant)\s+)?"
     r"(?:i\s+(?:just\s+)?(?:want|wanted|need|needed)\s+)?"
     r"(?:(?:can|could|would)\s+(?:you|we|it)\s+"
     r"(?:just\s+|please\s+)?(?:only\s+)?"
@@ -193,6 +193,24 @@ _COUNTS = {
     "no": 0, "a": 1, "an": 1, "one": 1, "single": 1,
     "two": 2, "double": 2, "three": 3, "triple": 3,
 }
+_LETTER_DELTA = re.compile(
+    r"^(?:actually[, ]+|please\s+|i\s+meant\s+)*"
+    r"(?:(?P<verb>remove|add)\s+(?P<count>one|two|three)\s+"
+    r"|(?P<amount>one|two|three)\s+(?P<direction>fewer|less|more)\s+)"
+    r"(?P<letter>[a-z])(?:'s|s)?[.! ]*$", re.I,
+)
+_ACTION_DISPUTE = re.compile(
+    r"^(?:(?:no|but|well|actually|though)[,! .]+)*"
+    r"(?:(?:it|that|this|the\s+(?:website|site|page|browser|window))\s+)?"
+    r"(?:(?:didn'?t|did\s+not)\s+(?:open|load|work)|"
+    r"(?:isn'?t|is\s+not|wasn'?t|was\s+not)\s+(?:open(?:ed)?|loaded|it|right)|"
+    r"failed|wrong\s+(?:page|address|site)|that'?s\s+(?:not\s+it|the\s+wrong\s+(?:page|address)))"
+    r"(?:\s+(?:it|on\s+my\s+browser|though|again))*[.!? ]*$", re.I,
+)
+
+
+def disputes_last_action(text: str) -> bool:
+    return bool(_ACTION_DISPUTE.fullmatch(" ".join(str(text or "").split())))
 
 # Something with a dot in it and no spaces: the shape of a web address.
 _ADDRESS = re.compile(r"\b[\w-]+(?:\.[\w-]+)+\b")
@@ -236,18 +254,29 @@ def respelled_address(goal: str, text: str) -> str:
     that letter in it is the wrong length -- ambiguity is not guessed at.
     """
     said = " ".join(str(text or "").split())
+    # An explicit replacement address owns the turn, even if another clause
+    # also describes the old spelling. Never silently throw the new URL away.
+    if _ADDRESS.search(said):
+        return ""
     match = None
     for clause in reversed([part.strip() for part in _CLAUSE.split(said)]):
         if not clause:
             continue
-        match = _A_LETTER_COUNT.match(clause)
+        match = _A_LETTER_COUNT.match(clause) or _LETTER_DELTA.match(clause)
         if match is not None:
             break
     if match is None:
         return ""
-    wanted = _COUNTS.get(match.group("count").casefold())
+    delta = "direction" in match.re.groupindex
+    if delta:
+        number = match.group("count") or match.group("amount")
+        amount = _COUNTS[number.casefold()]
+        amount *= -1 if (match.group("verb") or match.group("direction")).casefold() in {"remove", "fewer", "less"} else 1
+        wanted = None
+    else:
+        wanted = _COUNTS.get(match.group("count").casefold())
     letter = match.group("letter").casefold()
-    if wanted is None:
+    if wanted is None and not delta:
         return ""
 
     addresses = {found.group(0) for found in _ADDRESS.finditer(str(goal or ""))}
@@ -276,17 +305,28 @@ def respelled_address(goal: str, text: str) -> str:
             rf"{re.escape(letter)}+", head, re.IGNORECASE,
         )
     ]
-    wrong = [run for run in runs if len(run.group(0)) != wanted]
+    wrong = runs if delta else [run for run in runs if len(run.group(0)) != wanted]
     if len(wrong) != 1:
         # More than one run of that letter in the name itself, both the
         # wrong length: "assess.com" with "only one S" could mean either,
         # so it means neither.
         return ""
     run = wrong[0]
+    if delta:
+        wanted = len(run.group(0)) + amount
+    if wanted < 0 or wanted > 63:
+        return ""
     corrected = (
         head[:run.start()] + letter * wanted + head[run.end():] + dot + tail
     )
-    return corrected if corrected and corrected != address else ""
+    if not corrected or corrected == address:
+        return ""
+    # Preserve an explicit URL's path, scheme and query. A sentence used as
+    # an old goal still contributes only its one address.
+    original = str(goal or "").strip()
+    if original.startswith(("https://", "http://")) and not re.search(r"\s", original):
+        return original.replace(address, corrected, 1)
+    return corrected
 
 
 def resolve_named_choice(text: str, *, said_before: str = "") -> str:

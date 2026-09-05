@@ -238,6 +238,10 @@ class _SlowPage:
     def bring_to_front(self):
         pass
 
+    def evaluate(self, script):
+        return {"url": self.url, "title": "Destination",
+                "text": "Visible destination content", "ready": True}
+
 
 class NavigationCommitTests(unittest.TestCase):
     """A page the user can SEE must never be reported as unreachable."""

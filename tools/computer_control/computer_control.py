@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from brain.browser_navigation import Navigation
+
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -191,6 +193,7 @@ class ComputerActionResult:
     url: str = ""
     error: str = ""
     prepared: PreparedComputerAction | None = None
+    navigation: Navigation | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -451,15 +454,20 @@ class ComputerControl:
                 )
 
             if operation in {"open_url", "open_search"}:
-                self.browser.open(prepared.url)
-                message = (
-                    f"Searching for {prepared.display_name}."
-                    if operation == "open_search"
-                    else f"Opened {prepared.url} in a new tab."
-                )
+                dispatched = self.browser.open(prepared.url)
+                receipt = getattr(dispatched, "navigation", None)
+                # A truthy failure object is not even a successful dispatch.
+                dispatch_status = str(getattr(dispatched, "status", ""))
+                if receipt is None and dispatch_status and dispatch_status != "navigated":
+                    return self._result(
+                        "failed", prepared.target, prepared.display_name,
+                        getattr(dispatched, "message", "") or "The browser action did not run.",
+                        operation=operation, url=prepared.url,
+                    )
                 return self._result(
-                    "url_opened", prepared.target, prepared.display_name,
-                    message, operation=operation, url=prepared.url,
+                    "url_dispatched", prepared.target, prepared.display_name,
+                    f"Sent the browser to {prepared.url}.",
+                    operation=operation, url=prepared.url, navigation=receipt,
                 )
 
             if operation == "create_file":
@@ -628,6 +636,7 @@ class ComputerControl:
         url: str = "",
         error: str = "",
         prepared: PreparedComputerAction | None = None,
+        navigation: Navigation | None = None,
     ) -> ComputerActionResult:
         audit = (
             f"[Computer Control] action={operation or '(none)'} "
@@ -648,4 +657,5 @@ class ComputerControl:
             url=url,
             error=error,
             prepared=prepared,
+            navigation=navigation,
         )

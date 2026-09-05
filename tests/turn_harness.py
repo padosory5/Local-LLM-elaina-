@@ -339,7 +339,7 @@ class RecordingBrowserObserver:
         self.page = None
         self.calls: list[str] = []
 
-    def showing(self, url: str, title: str = "", text: str = "") -> None:
+    def showing(self, url: str, title: str = "", text=None) -> None:
         """Put one page in the browser, as the active tab.
 
         ``text`` is the page's own words. A title that is only the address
@@ -347,8 +347,12 @@ class RecordingBrowserObserver:
         show, so a test about arrival has to be able to say whether there
         is anything there.
         """
+        from brain import browser_navigation as nav
+        if text is None:
+            text = "Rendered destination content" if title and not nav._is_bare_address(title) else ""
         self.tabs = (SimpleNamespace(
             index=0, title=title, url=url, text=text, is_active=True,
+            identity="test:dispatched-page", correlated=True,
         ),)
         self.page = SimpleNamespace(
             status="observed", url=url, title=title,
@@ -472,6 +476,9 @@ def build_engine(routes: dict[str, dict] | None = None) -> ChatEngine:
     # would look at the real one on the machine running the tests.
     engine.browser_observer = RecordingBrowserObserver()
     engine.browser_action_planner.observer = engine.browser_observer
+    # Structured acquisition holds its own callable and does not go through
+    # the ordinary search-enabled gate. Tie that network boundary too.
+    engine.research_agent._search_structured = lambda query, max_results: ()
     engine.cursor_driver = SilentCursor()
     # The speakers are part of the machine too.
     engine.audio = RecordingAudio()

@@ -52,6 +52,7 @@ RECOVERED = "recovered_target_verified"
 WRONG_DESTINATION = "wrong_destination"
 ERROR_PAGE = "error_page"
 FAILED = "navigation_failed"
+DISPUTED = "navigation_disputed"
 
 # Only these may be spoken as "it is open".
 ARRIVED = frozenset({VERIFIED, RECOVERED})
@@ -65,8 +66,7 @@ _FUSED_VERB = re.compile(
     re.IGNORECASE,
 )
 
-# What a browser puts on the screen when there is nothing to show. Title
-# and URL only: the page body is a different thing to read and a slow one.
+# Browser error signatures in the title, URL, and bounded visible text.
 _ERROR_TITLE = re.compile(
     r"\b(?:can'?t\s+be\s+reached|cannot\s+be\s+reached|site\s+can'?t|"
     r"not\s+found|no\s+such\s+host|server\s+not\s+found|"
@@ -77,6 +77,11 @@ _ERROR_TITLE = re.compile(
 )
 _ERROR_URL = re.compile(
     r"^(?:chrome-error|edge-error|about:neterror|neterror)", re.IGNORECASE,
+)
+_INTERSTITIAL = re.compile(
+    r"\b(?:your connection is not private|privacy error|security check|"
+    r"checking your browser|verify you are human|access denied|"
+    r"just a moment|captcha|domain (?:is )?for sale)\b", re.IGNORECASE,
 )
 _BLANK_URL = re.compile(
     r"^(?:about:blank|chrome://newtab|edge://newtab|about:newtab)",
@@ -121,8 +126,9 @@ def same_destination(expected: str, actual: str) -> bool:
         return False
     if wanted == got:
         return True
-    # One being a subdomain of the other is the same site.
-    return got.endswith(f".{wanted}") or wanted.endswith(f".{got}")
+    # A root may redirect into its subdomain. Losing a specifically named
+    # subdomain does not prove arrival at that service (e.g. ISS -> UW home).
+    return got.endswith(f".{wanted}")
 
 
 def reads_as_error(url: str, title: str, text: str = "") -> bool:
@@ -173,9 +179,8 @@ def title_names_another_host(title: str, expected: str) -> bool:
     the turn before. Two sources disagreeing about which page this is means
     neither of them has established it.
     """
-    if not _is_bare_address(title):
-        return False
-    return not same_destination(expected, title)
+    match = re.match(r"(?:https?://)?([\w-]+(?:\.[\w-]+)+)(?=[:/\s|]|$)", str(title).strip())
+    return bool(match and not same_destination(expected, match.group(1)))
 
 
 def reads_as_blank(url: str) -> bool:
@@ -206,6 +211,11 @@ class Navigation:
     # person themselves supplied or implied.
     history: tuple[str, ...] = field(default_factory=tuple)
     recovered_from: str = ""
+    classification: str = "unobserved"
+    observation_id: str = ""
+    # Set only when interpretation established a fused command, never from
+    # a hostname beginning with a verb by itself.
+    command_fused: bool = False
 
     @property
     def expected_host(self) -> str:
@@ -231,6 +241,8 @@ class Navigation:
         if self.title:
             lines.append(f"  title: {self.title[:60]}")
         lines.append(f"  status: {self.status}")
+        lines.append(f"  observation: {self.observation_id or '(uncorrelated)'}")
+        lines.append(f"  classification: {self.classification}")
         if self.recovered_from:
             lines.append(f"  recovered from: {self.recovered_from}")
         if self.detail:
@@ -238,7 +250,7 @@ class Navigation:
         return "\n".join(lines)
 
 
-def start(requested: str, url: str, *, history=()) -> Navigation:
+def start(requested: str, url: str, *, history=(), command_fused=False) -> Navigation:
     """A navigation that has been dispatched and not yet looked at."""
     seen = tuple(dict.fromkeys((*history, url)))
     return Navigation(
@@ -246,7 +258,23 @@ def start(requested: str, url: str, *, history=()) -> Navigation:
         url=str(url or "").strip(),
         status=DISPATCHED,
         history=seen,
+        command_fused=command_fused,
     )
+
+
+@dataclass(frozen=True)
+class PageEvidence:
+    """A read of the exact page/window used by the navigation dispatcher."""
+
+    url: str = ""
+    title: str = ""
+    text: str = ""
+    identity: str = ""
+    correlated: bool = False
+    readable: bool = True
+    error_code: str = ""
+    http_status: int = 0
+    document_url: str = ""
 
 
 def verify(navigation: Navigation, tabs, *, before=()) -> Navigation:
@@ -262,8 +290,8 @@ def verify(navigation: Navigation, tabs, *, before=()) -> Navigation:
     The observation is classified, and only one of the classes is
     arrival:
 
-    * the requested host, a page with a name of its own, no error
-      signature -- **arrived**;
+    * one correlated page with the requested host, its own title, readable
+      body and no error signature -- **arrived**;
     * a browser error page, or a search *for* the address -- **error**;
     * the requested host with a title that names a different site --
       **wrong destination**, or a stale reading when the browser was
@@ -274,9 +302,8 @@ def verify(navigation: Navigation, tabs, *, before=()) -> Navigation:
     * a different host -- **wrong destination**;
     * nothing readable -- **unverified**, which is the honest one.
 
-    ``before`` is what the browser was showing when the navigation was
-    dispatched. It is what tells a stale reading from a real arrival at
-    the wrong place.
+    Observations without dispatch correlation are ignored. ``before``
+    additionally distinguishes stale screen readings from a changed page.
     """
     expected = navigation.expected_host
     if not expected:
@@ -287,54 +314,72 @@ def verify(navigation: Navigation, tabs, *, before=()) -> Navigation:
         url = str(getattr(tab, "url", "") or "")
         title = str(getattr(tab, "title", "") or "")
         text = str(getattr(tab, "text", "") or "")
-        if url or title:
-            rows.append((url, title, text, bool(getattr(tab, "is_active", False))))
+        if (url or title) and getattr(tab, "correlated", False):
+            rows.append(tab)
     if not rows:
         return replace(
             navigation, status=UNVERIFIED,
-            detail="the browser did not report any tabs",
+            detail="no observation correlated to this navigation",
         )
 
-    matching = [row for row in rows if same_destination(navigation.url, row[0])]
-    if matching:
-        url, title, text, _active = matching[0]
-    else:
-        active = [row for row in rows if row[3]] or rows
-        url, title, text, _active = active[0]
+    if len(rows) != 1:
+        return replace(navigation, status=UNVERIFIED, classification="ambiguous",
+                       detail="more than one page claims the navigation")
+    row = rows[0]
+    url = str(getattr(row, "url", "") or "")
+    title = str(getattr(row, "title", "") or "")
+    text = str(getattr(row, "text", "") or "")
+    matching = same_destination(navigation.url, url)
 
     seen_before = any(
-        host_of(url) == host_of(str(getattr(row, "url", "") or row[0]))
-        and title == str(getattr(row, "title", "") or row[1])
+        host_of(url) == host_of(str(row[0] if isinstance(row, tuple) else row.url))
+        and title == str(row[1] if isinstance(row, tuple) else row.title)
         for row in (before or ())
         if isinstance(row, tuple) or hasattr(row, "url")
     ) if before else False
 
-    landed = replace(navigation, actual_url=url, title=title)
+    landed = replace(navigation, actual_url=url, title=title,
+                     observation_id=str(getattr(row, "identity", "") or ""))
+    if not landed.observation_id or not getattr(row, "readable", True):
+        return replace(landed, status=UNVERIFIED, classification="unreadable",
+                       detail="the dispatched page could not be inspected")
 
-    if reads_as_error(url, title, text):
+    error_code = str(getattr(row, "error_code", "") or "")
+    if reads_as_error(url, title, text) or error_code or getattr(row, "http_status", 0) >= 400:
         return replace(
             landed, status=ERROR_PAGE,
+            classification=("dns_error" if re.search(r"dns|name_not_resolved|nxdomain", error_code + text, re.I)
+                            else "connection_error"),
             detail="the browser reported it could not load that address",
         )
+    if _INTERSTITIAL.search(title + " " + text[:1200]):
+        return replace(landed, status=ERROR_PAGE, classification="interstitial",
+                       detail="a browser or site interstitial prevents checking the destination")
     if reads_as_search_results(url, navigation.url):
         return replace(
             landed, status=ERROR_PAGE,
+            classification="search_results",
             detail="the browser searched for the address instead of opening it",
         )
     if reads_as_blank(url):
-        return replace(landed, status=FAILED, detail="the tab is blank")
+        return replace(landed, status=FAILED, classification="blank", detail="the tab is blank")
     if not matching:
         return replace(
             landed, status=WRONG_DESTINATION,
+            classification="wrong_destination",
             detail="a different page is showing",
         )
 
     # The address is right. Whether a page is behind it is a second
     # question, and it is the one session 8 never asked.
-    if title_names_another_host(title, navigation.url):
+    document_url = str(getattr(row, "document_url", "") or "")
+    if title_names_another_host(title, navigation.url) or (
+        document_url and not same_destination(navigation.url, document_url)
+    ):
         if seen_before:
             return replace(
                 landed, status=UNVERIFIED,
+                classification="stale_tab",
                 detail=(
                     "the browser is still showing what it showed before, "
                     f"so this reading of {title} may be stale"
@@ -342,22 +387,29 @@ def verify(navigation: Navigation, tabs, *, before=()) -> Navigation:
             )
         return replace(
             landed, status=WRONG_DESTINATION,
+            classification="wrong_destination",
             detail=f"the address bar says {host_of(url)} and the page says {title}",
         )
     if _is_bare_address(title):
         if not text.strip():
             return replace(
                 landed, status=ERROR_PAGE,
+                classification="empty_destination",
                 detail="the address is in the bar and no page is behind it",
             )
         return replace(
             landed, status=UNVERIFIED,
+            classification="ambiguous",
             detail="the page has no name of its own, so it could not be checked",
         )
 
+    if not title.strip() or not text.strip():
+        return replace(landed, status=UNVERIFIED, classification="unreadable",
+                       detail="an address and title alone do not establish page content")
     return replace(
         landed,
         status=RECOVERED if navigation.recovered_from else VERIFIED,
+        classification="valid_destination",
     )
 
 
@@ -424,6 +476,8 @@ def spellings_between(first: str, tried: str) -> tuple[str, ...]:
         if len(differing) != 1:
             continue
         before, after = differing[0]
+        if was[:before.start()] != now[:after.start()] or was[before.end():] != now[after.end():]:
+            continue
         low, high = sorted((len(before.group(0)), len(after.group(0))))
         for count in range(low + 1, high):
             rebuilt = (
@@ -442,7 +496,7 @@ def recovery_candidates(navigation: Navigation) -> tuple[str, ...]:
     the honest answer and means asking rather than guessing.
     """
     found: list[str] = []
-    split = unfused(navigation.url)
+    split = unfused(navigation.url) if navigation.command_fused else ""
     if split:
         found.append(split)
     if navigation.history:

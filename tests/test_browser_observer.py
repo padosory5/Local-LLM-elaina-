@@ -569,7 +569,7 @@ class DescribePageTests(unittest.TestCase):
         self.assertFalse(tabs[0].is_active)
         self.assertTrue(tabs[1].is_active)
 
-    def test_prefers_the_newest_controlled_copy_of_an_identical_search(self):
+    def test_prefers_the_bound_copy_of_an_identical_search(self):
         pages = [
             _FakePage(url="https://google.example/search?q=guam", title="Old search"),
             _FakePage(url="https://other.example", title="Other"),
@@ -578,12 +578,18 @@ class DescribePageTests(unittest.TestCase):
         observer = BrowserObserver(
             connection=_FakeConnection(_connected(_FakeBrowser([_FakeContext(pages)]))),
         )
-        observer.prefer_page("https://google.example/search?q=guam")
+        observer.bind_page(pages[0])
 
         tabs = observer.list_tabs()
 
-        self.assertFalse(tabs[0].is_active)
-        self.assertTrue(tabs[2].is_active)
+        self.assertTrue(tabs[0].is_active)
+        self.assertFalse(tabs[2].is_active)
+
+        # Losing the connection also loses the Page identity. Creation order
+        # cannot identify which duplicate URL received the old command.
+        observer._preferred_page_ref = None
+        tabs = observer.list_tabs()
+        self.assertFalse(any(tab.is_active for tab in tabs))
 
     def test_keeps_a_redirected_search_page_as_the_preferred_page(self):
         self.assertTrue(BrowserObserver._urls_refer_to_same_page(
