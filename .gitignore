@@ -15,6 +15,8 @@ desktop/node_modules/
 desktop/dist/
 
 # Generated runtime state
+runtime/*.log
+runtime/*-metrics.json
 runtime/debug/
 runtime/data/visual_search_usage.json
 # What she has learned about this person -- which track they meant,
