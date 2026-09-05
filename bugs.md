@@ -3,15 +3,22 @@
 Issues found using Elaina for real, not from benchmarks. Benchmarks say the
 parts work; this says whether she is usable.
 
-**Status:** eight sessions run (logs in `runtime/session1.log` .. `session8.log`).
-**103 issues recorded.** 90 fixed and verified, 2 deferred capabilities,
+**Status:** nine sessions run (logs in `runtime/session1.log` .. `session9.log`).
+**113 issues recorded.** 100 fixed and verified, 2 deferred capabilities,
 3 accepted limitations, 2 open P3 (S4-06, S6-10), 3 open limitations
 (S5-06 retrieval, S7-10 geographic containment, S7-12 latency).
 
-**Session 8 failed the release gate** and its fixes changed code, so it
-is invalidated as a gate, as sessions 4 through 7 were. Session 9 is the
-next one: `docs/SESSION9_PLAN.md` -- seven checks, nothing else, per the
-user's instruction not to broaden until they pass.
+**Session 9 failed the release gate** and its fixes changed code, so it
+is invalidated as a gate, as sessions 4 through 8 were. Session 10 is the
+next one: `docs/SESSION10_PLAN.md` -- nine checks, nothing else.
+
+Session 9's cluster was not routing or state. It was that **normal speech
+produces targets nobody can act on**: "browser control" heard as "brass
+control", "open host.example" as "openhost.example", "naver.com" as
+"laver.com". The answer is not a homophone table. Two of the three belong
+to closed vocabularies -- her abilities are a list of eight, an address is
+a string with a grammar -- and a near-miss inside a closed set can be
+repaired where a near-miss of nothing must be asked about.
 
 Sessions 7 and 8 are one piece of work. Session 7 found that `open_url`
 returned `url_opened` -- Windows accepted the navigation command -- and
@@ -2547,6 +2554,207 @@ somewhere wrong.
   one of the two was parked, so answering the other did nothing. A
   sentence that offers to act is dropped before the guard's own offer goes
   on the end.
+
+---
+
+## Session 9 issues
+
+Release gate: **FAIL**. Ten issues, eight of them P1, and this time the
+cluster is not routing or state. It is that **normal speech produces
+targets nobody can act on**, and every layer downstream took the damaged
+version literally.
+
+**Confirmed working:** the electric-guitar lookup routing correctly with
+no redundant "electric or acoustic?", article and listicle candidates
+being rejected, "you didn't open it" resuming the previous URL action,
+the URL spelling correction reaching `open_url`, browser failures being
+reported honestly rather than as success, and quit.
+
+---
+
+### What the eight P1s share
+
+Three things were being misheard:
+
+    "browser control"   -> "brass control"
+    "open host.example" -> "openhost.example"
+    "naver.com"         -> "laver.com"
+
+and each failed differently. She said "I've opened the brass control",
+inventing an ability she does not have. The fused address was routed to a
+web search and then described as having been opened. The misheard domain
+was corrected -- "it's not an L, it's an N" -- and the correction became a
+web search for the phrase "correct entity from L to N".
+
+The answer is not a homophone table, which the user ruled out and which
+would break more than it fixed. It is that two of the three things being
+misheard belong to **closed vocabularies**. Elaina's own abilities are a
+list of eight. An address is a string with a grammar. A near-miss inside
+a closed set can be repaired; a near-miss of nothing must be asked about,
+never invented.
+
+The third thing is that a failed action left nothing behind to retry.
+
+---
+
+### [S9-01] The command verb was fused into the domain
+
+- **Status:** FIXED (with S9-08)
+- **Severity:** P1
+- **Root cause / note:** the recovery for this has existed since session
+  7 -- try the address as given, and if it does not resolve, try it with
+  the verb split off. What was missing is that a bare fused address never
+  reached the browser at all. See S9-08. The rule from session 7 is
+  unchanged: `openai.com` and `opentable.com` are real places, so the
+  split is a candidate offered after a failure and verified like any
+  other, never a rewrite.
+
+---
+
+### [S9-02] She invented an ability called brass control
+
+- **Status:** FIXED
+- **Severity:** P1
+- **I said:** "Yeah, I'm talking about the brass control."
+- **Actual:** "I've opened the brass control."
+- **Root cause / note:** her abilities are a closed list, so a
+  transcriber that mishears one produces something that is not in it.
+  Vowels are what a transcriber loses first, so the comparison is made on
+  consonants alone -- which is what separates a real mishearing from a
+  real request:
+
+      brass  -> browser  0.67       mouse  -> browser  0.29
+      desk   -> desktop  0.75       volume -> browser  0.00
+      scream -> screen   0.75       remote -> desktop  0.25
+
+  On the whole phrase these are indistinguishable, because "control" is
+  shared and dominates the score: "mouse control" and "brass control" both
+  come out at 0.79 against "browser control". Someone asking for mouse or
+  volume control is asking for something real and is left alone.
+
+  The repair runs before anything reads the turn, so every layer sees one
+  version of it. And separately -- because the repair cannot catch a
+  phrase close to nothing she has -- she may no longer say she used an
+  ability by a name she does not have. Being told a thing exists is worse
+  than being told she cannot do it.
+
+---
+
+### [S9-03] A letter correction became a research topic
+
+- **Status:** FIXED
+- **Severity:** P1
+- **I said:** "It's not an L, it's an N." on `laver.com`.
+- **Actual:** `[Router] Interpreted transcript as: correct entity from L
+  to N`, then `[Tool] Searching web for: correct entity from L to N`.
+- **Root cause / note:** the correction was understood and then
+  researched. An address is a string, and a correction to one of its
+  letters is an edit to that string. Bounded the way the count correction
+  already is: the site's own name only -- nobody respells the registry --
+  and only when exactly one letter there is the one being replaced.
+
+---
+
+### [S9-04] The correction did not resume the action it corrected
+
+- **Status:** FIXED with S9-03
+- **Severity:** P1
+- **Actual:** "Got it, I'll search for Naver.com. Let me open that in the
+  browser." -- and then nothing, until the person said "Do it."
+- **Root cause / note:** the correction now returns `open_url` on the
+  corrected address directly. The browser action was already authorised;
+  asking again for permission to do the thing that was already agreed is
+  friction with no purpose.
+
+---
+
+### [S9-05] "Try again" was not a request to try again
+
+- **Status:** FIXED
+- **Severity:** P1
+- **Actual:** `computer_action/unsupported`, and "I can't do that one."
+- **Root cause / note:** the continuation reader required an object --
+  "open it", "try it again" -- and "try again" has none, because it does
+  not need one. What it refers to is the action that just failed.
+
+---
+
+### [S9-06] She offered a retry and left nothing to accept
+
+- **Status:** FIXED
+- **Severity:** P1
+- **Actual:** "Zillow.com didn't open, try again?" then "Yeah." then
+  "I got it. Let me know what you need next."
+- **Root cause / note:** the failure line asked a question and parked
+  nothing, so the yes had nothing outstanding to answer and took the
+  bare-acknowledgement path. Every navigation failure parks the retry it
+  offers now. An offer whose goal is an address is a navigation, so
+  accepting one means going there rather than handing a planner a
+  sentence to interpret.
+
+---
+
+### [S9-07] A failed dispatch never reached the recovery lifecycle
+
+- **Status:** FIXED
+- **Severity:** P1
+- **Actual:** `isss.washington.edu` failed, "I meant only one S" gave
+  `is.washington.edu`, that failed too, and the run ended at "Moved
+  mouse, action failed for is.washington.edu" -- with `iss` sitting
+  unexamined in the correction history.
+- **Root cause / note:** the recovery hung off the verification path, and
+  verification only ran on a dispatch that *succeeded*. A dispatch that
+  failed outright is the case recovery exists for. It also carries no url
+  of its own, so the address now comes from what was asked for.
+
+---
+
+### [S9-08] A bare address was researched instead of opened
+
+- **Status:** FIXED
+- **Severity:** P1
+- **I said:** "openhost.example" -- the transcriber's rendering of "open
+  host.example".
+- **Actual:** `[Router] Interpreted transcript as: search for
+  openhost.example`, then "I've checked openhost.example", then "I've
+  opened openhost.example". A web search, described afterwards as an
+  opening.
+- **Root cause / note:** nobody says a bare domain to mean "tell me about
+  this website"; they say it to mean go there. A turn that is one address
+  and nothing else opens it now -- which is also what puts it in front of
+  the navigation lifecycle, the layer that can find out the address does
+  not resolve and try the unfused candidate. A sentence that merely
+  mentions a site is still a question.
+
+---
+
+### [S9-09] She promised to open something and did not
+
+- **Status:** FIXED
+- **Severity:** P2
+- **Actual:** "Let me correct that." and "Let me fix that and open
+  Naver.com for you." -- neither followed by anything opening.
+- **Root cause / note:** the commitment guard's verb list had no word for
+  repairing something, and it required the verb to follow "let me"
+  immediately, so an intervening clause hid it. Both are shape fixes: one
+  clause may sit between the promise and its verb, and fixing, correcting
+  and retrying are actions.
+
+---
+
+### [S9-10] A product was named after finding nothing
+
+- **Status:** FIXED
+- **Severity:** P2
+- **Actual:** `Candidates: 6 (0 fit, 6 mismatched)`, `Decision: no clear
+  fit`, and then "The Epiphone Les Paul SL is a great electric guitar
+  under 500,000 won." That model was in none of the six.
+- **Root cause / note:** the existing find guard fires when the answer
+  *says* it found something; this one simply named it. A search that ran
+  and came back with nothing may not still name the answer -- the model is
+  filling the gap from memory, and the result is indistinguishable from a
+  real recommendation. Only when a search actually ran: a conversation
+  that happens to mention a brand is untouched.
 
 ---
 

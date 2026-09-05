@@ -45,14 +45,23 @@ import re
 _ACTION_VERB = (
     r"(?:open|check|search|look(?:\s+up|\s+into|\s+at)?|find|browse|pull\s+up|"
     r"bring\s+up|go\s+to|visit|navigate|compare|verify|confirm|fetch|grab|"
-    r"get\s+you|see\s+what|take\s+a\s+look|dig\s+into|run|start|launch)"
+    r"get\s+you|see\s+what|take\s+a\s+look|dig\s+into|run|start|launch|"
+    # Repairing something is an action too, and it was the shape session 9
+    # used: "Let me correct that." and "Let me fix that and open Naver.com
+    # for you." -- neither followed by anything opening.
+    r"fix|correct|retry|redo|try(?:\s+again)?|sort\s+(?:that|it)\s+out)"
 )
+
+# One clause may sit between the promise and its verb. "Let me fix that
+# and open Naver.com" is a promise to open Naver.com; requiring the verb
+# to follow "let me" immediately missed it.
+_THEN = r"(?:[\w',]{1,20}(?:\s+[\w',]{1,20}){0,3}\s+(?:and|then)\s+)?"
 
 _PROMISE = re.compile(
     r"\b(?:"
-    r"let\s+me\s+" + _ACTION_VERB + r"|"
+    r"let\s+me\s+" + _THEN + _ACTION_VERB + r"|"
     r"i(?:'ll|\s+will|\s+am\s+going\s+to|'m\s+going\s+to|\s+can\s+go)\s+"
-    + _ACTION_VERB + r"|"
+    + _THEN + _ACTION_VERB + r"|"
     r"i'?m\s+(?:now\s+)?(?:going\s+to\s+)?(?:opening|checking|searching|"
     r"looking|browsing|pulling|fetching)|"
     r"(?:give\s+me|just)\s+a\s+(?:moment|second|sec|minute)|"

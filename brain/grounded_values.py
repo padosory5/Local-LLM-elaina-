@@ -504,6 +504,36 @@ def claims_a_find(text: str, *, named: tuple[str, ...] = ()) -> bool:
     return True
 
 
+def names_an_unfound_thing(
+    text: str, *, evidence: str = "", request: str = "",
+) -> tuple[str, ...]:
+    """Proper names offered as the answer that nothing actually found.
+
+    Narrower than :func:`unverified_entities`, which is about being sent
+    somewhere. This is about being handed a *thing* -- a product, a model,
+    a title -- after a search that came back with nothing. Measured live:
+    six candidates, none of them a fit, and the answer named an Epiphone
+    Les Paul SL that appeared in none of them.
+
+    A name the person themselves used is theirs, and a place is where you
+    look rather than what you find; both are left alone.
+    """
+    said = str(text or "")
+    if not said.strip():
+        return ()
+    seen = f"{evidence or ''} {request or ''}".casefold()
+    found: list[str] = []
+    for name in _proper_names(said):
+        if _is_a_place(name) or name.casefold() in seen:
+            continue
+        # One capitalised word is as often a sentence opening as a name.
+        if len(name.split()) < 2:
+            continue
+        if name not in found:
+            found.append(name)
+    return tuple(found)
+
+
 def claim_subjects(text: str) -> list[str]:
     """The nouns a claim is about, for re-checking it a different way.
 

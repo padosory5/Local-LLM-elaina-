@@ -148,9 +148,24 @@ _CONTINUES_THE_LAST_ACTION = re.compile(
     r"please)?[,. ]*"
     r"(?:(?:can|could|would|will)\s+you\s+)?"
     r"(?:just\s+|then\s+|please\s+|still\s+)*"
+    r"(?:"
     r"(?:open|try|do|retry|redo|run|go\s+to|load)\s+"
     r"(?:it|that|this|them|those)"
     r"(?:\s+(?:again|now|properly|for\s+me|please|one\s+more\s+time))*"
+    # The object can be left out entirely when the verb already says
+    # "the same thing". Measured live, session 9, one turn after a
+    # browser action came back failed:
+    #
+    #     You said: Can you try again?
+    #     [Rescue] computer_action/unsupported -> unsupported
+    #     Elaina: I can't do that one.
+    #
+    # "Try again" names no target because it does not need one. What it
+    # refers to is the action that just failed.
+    r"|(?:try|retry|do\s+it|go)\s+(?:again|once\s+more|one\s+more\s+time)"
+    r"(?:\s+(?:please|for\s+me|now))*"
+    r"|(?:again|one\s+more\s+time)"
+    r")"
     r"[.!? ]*$",
     re.IGNORECASE,
 )
@@ -236,6 +251,63 @@ def continues_the_last_action(text: str) -> bool:
     native window. The target was the address of the action before it.
     """
     return bool(_CONTINUES_THE_LAST_ACTION.match(" ".join(str(text or "").split())))
+
+
+# "It's not an L, it's an N." A substitution rather than a count: the
+# person is naming the letter that is wrong and the one that belongs
+# there. Measured live, session 9, on laver.com for naver.com:
+#
+#     [Router] Interpreted transcript as: correct entity from L to N
+#     [Tool] Searching web for: correct entity from L to N
+#
+# The correction was understood and then researched. An address is a
+# string, and a correction to one of its letters is an edit to that
+# string.
+_A_LETTER_SWAP = re.compile(
+    r"^(?:(?:no|nope|nah|hey|bro|dude)[,.!]?\s+)*"
+    r"(?:(?:i\s+)?(?:said|meant|mean|told\s+you)\s+)?"
+    r"(?:it(?:'s|s| is)?\s+)?"
+    r"(?:not\s+(?:an?\s+)?(?P<wrong>[A-Za-z])\b[,.!]?\s*)"
+    r"(?:(?:it(?:'s|s| is)?|its)\s+)?"
+    r"(?:an?\s+)?(?P<right>[A-Za-z])\b"
+    r"[.!, ]*$",
+    re.IGNORECASE,
+)
+
+
+def resubstituted_address(goal: str, text: str) -> str:
+    """The address in ``goal`` with one letter swapped for another.
+
+    "Not an L, an N" on ``laver.com`` gives ``naver.com``. Bounded the
+    same way the count correction is: the site's own name only, and only
+    when exactly one letter there is the one being replaced -- otherwise
+    which of them was meant is a guess.
+    """
+    said = " ".join(str(text or "").split())
+    match = None
+    for clause in reversed([part.strip() for part in _CLAUSE.split(said)]):
+        if not clause:
+            continue
+        match = _A_LETTER_SWAP.match(clause)
+        if match is not None:
+            break
+    if match is None:
+        return ""
+    wrong = match.group("wrong").casefold()
+    right = match.group("right").casefold()
+    if wrong == right:
+        return ""
+
+    addresses = {found.group(0) for found in _ADDRESS.finditer(str(goal or ""))}
+    if len(addresses) != 1:
+        return ""
+    address = addresses.pop()
+    head, dot, tail = address.partition(".")
+    if not dot or head.casefold().count(wrong) != 1:
+        return ""
+    index = head.casefold().index(wrong)
+    corrected = head[:index] + right + head[index + 1:] + dot + tail
+    return corrected if corrected != address else ""
 
 
 def respelled_address(goal: str, text: str) -> str:

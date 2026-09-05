@@ -257,6 +257,17 @@ _SIMPLE_GREETING = re.compile(
 # mentions a browser or an app ("I like using Chrome"). Paired with
 # CapabilityRegistry.match() so a conversational turn is only ever
 # escalated into a real action when the user actually asked for one.
+# Her saying she did something, as opposed to talking about it. Past tense
+# or a completion word, in the first person.
+_CLAIMS_TO_HAVE_ACTED = re.compile(
+    r"\bi(?:'ve| have| just)?\s+(?:already\s+)?"
+    r"(?:opened|started|launched|turned\s+on|enabled|used|ran|run|"
+    r"activated|switched\s+to)\b"
+    r"|\b(?:opened|started|launched|enabled|activated)\s+the\b"
+    r"|\bis\s+(?:now\s+)?(?:open|running|on|active)\b",
+    re.IGNORECASE,
+)
+
 _ACTION_REQUEST_SHAPE = re.compile(
     r"^\s*(?:please\s+|now\s+|just\s+|then\s+|and\s+)*"
     r"(?:open|check|search|look|find|go|click|fill|type|browse|compare|"
@@ -884,6 +895,11 @@ class ChatEngine:
         # instead of being read as a fresh, unsupported request.
         self._last_computer_action = ""
         self._last_computer_goal = ""
+        # Whether that action ended in a failure the person can ask to have
+        # tried again. "Try again" and a bare "yeah" after she asks "try
+        # again?" both need one recorded action to operate on rather than
+        # a target rebuilt out of the conversation each time.
+        self._last_action_failed = False
         self._turn_points_at_the_last_action = False
         # The last navigation and the addresses it has been through. The
         # history is what makes an honest recovery possible: a candidate
@@ -1071,6 +1087,7 @@ class ChatEngine:
     def _retire_machine_target(self):
         self._last_computer_action = ""
         self._last_computer_goal = ""
+        self._last_action_failed = False
         self._navigation = None
         self._navigation_history = ()
 
@@ -1488,7 +1505,10 @@ class ChatEngine:
             return f"I haven't started; I was waiting for you to say go{tail}."
         return "Nothing's running right now. Want me to start it?"
 
-    def _enforce_found_claim(self, reply: str, *, candidates=()) -> str:
+    def _enforce_found_claim(
+        self, reply: str, *, candidates=(), searched: bool = False,
+        evidence: str = "",
+    ) -> str:
         """Never say she found options she cannot name.
 
         Measured live, three times in a row against three requests for the
@@ -1519,6 +1539,51 @@ class ChatEngine:
         honest = (
             "I couldn't get actual listing names out of that search -- "
             "want me to open it in the browser and read them off?"
+        )
+        rebuilt = " ".join(kept).strip()
+        return f"{rebuilt} {honest}" if rebuilt else honest
+
+    def _enforce_named_recommendation(
+        self, reply: str, *, candidates=(), searched: bool = False,
+        evidence: str = "", request: str = "",
+    ) -> str:
+        """A search that found nothing may not still name the answer.
+
+        Measured live, session 9:
+
+            [Recommendation Reasoning] Candidates: 6 (0 fit, 6 mismatched)
+            Decision: no clear fit
+            Elaina: The Epiphone Les Paul SL is a great electric guitar
+                    under 500,000 won.
+
+        That model was in none of the six. The reasoning layer said it had
+        nothing and the answer named something anyway, which is the model
+        filling the gap from memory -- and it is indistinguishable from a
+        real recommendation, which is what makes it worth removing.
+
+        Only when a search actually ran and came back with nothing. A
+        conversation that happens to mention a brand is untouched.
+        """
+        text = str(reply or "").strip()
+        if not text or candidates or not searched:
+            return text
+        invented = grounded_values.names_an_unfound_thing(
+            text, evidence=evidence, request=request,
+        )
+        if not invented:
+            return text
+        print(
+            "[Grounding Guard] Named something the search did not find: "
+            f"{', '.join(invented)}."
+        )
+        kept = [
+            sentence.strip()
+            for sentence in _SENTENCE_SPLIT.split(text)
+            if sentence.strip()
+            and not any(name in sentence for name in invented)
+        ]
+        honest = (
+            "I couldn't verify a specific one from the sources I checked."
         )
         rebuilt = " ".join(kept).strip()
         return f"{rebuilt} {honest}" if rebuilt else honest
@@ -1644,6 +1709,39 @@ class ChatEngine:
             seen.add(key)
             words.append(word.strip(".,!?;:"))
         return " ".join(words)[:200]
+
+    def _refuse_invented_capability(self, reply: str, user_input: str) -> str:
+        """Never say she used an ability by a name she does not have.
+
+        Measured live, session 9:
+
+            You said: Yeah, I'm talking about the brass control.
+            Elaina:   I've opened the brass control.
+
+        The repair layer catches that one now, because "brass" is a
+        near-miss of "browser". This is the case it cannot catch -- a
+        phrase close to nothing she has -- and the answer there is to say
+        so, not to agree. Claiming an ability is worse than missing one:
+        the person is now told a thing exists.
+
+        Only fires when *she* repeats the phrase back as something she
+        did. Discussing a control she does not have is an ordinary
+        conversation and is left alone.
+        """
+        text = str(reply or "").strip()
+        invented = CapabilityRegistry.names_no_ability_she_has(user_input)
+        if not text or not invented:
+            return text
+        if invented.casefold() not in text.casefold():
+            return text
+        if not _CLAIMS_TO_HAVE_ACTED.search(text):
+            return text
+        print(f"[Capability] Refused an ability she has no such thing as: {invented!r}")
+        state = self._capability_state()
+        return (
+            f"I don't have a {invented}. "
+            + CapabilityRegistry.inventory_sentence(state)
+        ).strip()
 
     def _enforce_grounded_entities(
         self,
@@ -1811,11 +1909,18 @@ class ChatEngine:
                     action_requested=True, is_follow_up=True,
                     reason="The user disputes the last action; verify a new attempt.",
                 ), ""
-            corrected_address = browser_progress.respelled_address(
-                last_goal, user_input,
-            ) if last_action in {"open_url", "browser_action"} else ""
+            # Two ways to correct an address: how many of a letter it has,
+            # and which letter it is. Both are edits to the same string.
+            corrected_address = ""
+            if last_action in {"open_url", "browser_action"}:
+                corrected_address = (
+                    browser_progress.respelled_address(last_goal, user_input)
+                    or browser_progress.resubstituted_address(
+                        last_goal, user_input,
+                    )
+                )
             if corrected_address:
-                print(f"[Rescue] respelled the address -> {corrected_address}")
+                print(f"[Rescue] corrected the address -> {corrected_address}")
                 self._turn_points_at_the_last_action = True
                 return replace(
                     route,
@@ -4018,7 +4123,13 @@ class ChatEngine:
         genuinely there and the normal path may speak.
         """
         requested = str(route.action_target or result.target or "").strip()
-        opened = str(result.url or "").strip()
+        # A dispatch that failed outright carries no url of its own, so the
+        # address has to come from what was asked for. Without this the
+        # recovery had nothing to work from and the run ended at "action
+        # failed for is.washington.edu".
+        opened = str(
+            result.url or route.computer_url or requested or "",
+        ).strip()
         history = tuple(self._navigation_history)
         before = tuple(self._navigation_before)
         navigation = browser_navigation.start(
@@ -4038,6 +4149,7 @@ class ChatEngine:
         if navigation.arrived:
             self._navigation = navigation
             self._navigation_history = (navigation.url,)
+            self._last_action_failed = False
             return replace(result, status="url_opened", navigation=navigation), ""
 
         if navigation.status == browser_navigation.UNVERIFIED:
@@ -4066,6 +4178,17 @@ class ChatEngine:
                 message=f"Opened {recovered.url}.",
             ), line
         self._navigation_history = recovered.history
+        # She is about to say it did not load, and every one of those lines
+        # ends by asking. Park what answers it. Measured live, session 9:
+        #
+        #     Elaina: Zillow.com didn't open, try again?
+        #     You said: Yeah.
+        #     Elaina: I got it. Let me know what you need next.
+        #
+        # She offered a retry and left nothing outstanding for the yes to
+        # accept, so the person had to say "you didn't open it" before
+        # anything happened.
+        self._offer_a_retry(navigation.url or opened)
         if recovered.status == browser_navigation.UNVERIFIED:
             return replace(result, status="url_dispatched", navigation=recovered), line
         return replace(
@@ -4073,6 +4196,18 @@ class ChatEngine:
             navigation=recovered,
             message=f"{navigation.expected_host} did not load.",
         ), line
+
+    def _offer_a_retry(self, target: str) -> None:
+        """Make the retry she just offered something a "yeah" can accept."""
+        address = str(target or "").strip()
+        if not address:
+            return
+        self._last_action_failed = True
+        self.capability_offer.offer(
+            capability_id="browser_control",
+            goal=address,
+            offer_text=f"Want me to try {browser_navigation.host_of(address)} again?",
+        )
 
     def _recover_navigation(self, navigation, *, before=()):
         """Try the addresses the conversation itself supplied, or ask.
@@ -4283,12 +4418,28 @@ class ChatEngine:
             if target:
                 self._last_computer_action = route.computer_operation
                 self._last_computer_goal = target
+                self._last_action_failed = not getattr(
+                    result, "succeeded", False,
+                )
 
         # Dispatch is not arrival. ``url_opened`` means Windows accepted
         # the navigation command; whether the page the person asked for is
         # on their screen is a different question, and until session 7 it
         # was never asked. Ask it here, before anything speaks.
-        if result is not None and result.status in {"url_opened", "url_dispatched"}:
+        #
+        # ``failed`` comes here too. Measured live, session 9:
+        #
+        #     open_url isss.washington.edu status=failed
+        #     open_url is.washington.edu   status=failed
+        #     Elaina: Moved mouse, action failed for is.washington.edu.
+        #
+        # and the recovery that would have found iss.washington.edu never
+        # ran, because it hung off the verification path and a dispatch
+        # that failed outright never reached it. A failure to navigate is
+        # the case recovery exists for.
+        if result is not None and result.status in {
+            "url_opened", "url_dispatched", "failed",
+        } and route.computer_operation in {"open_url", "open_search"}:
             result, navigation_line = self._verify_navigation(result, route)
             if navigation_line:
                 return navigation_line, result
@@ -6072,6 +6223,15 @@ class ChatEngine:
                 searched="web_search" in timings,
             )
             active_problem = self.task_sessions.active_recommendation()
+            reply = self._enforce_named_recommendation(
+                reply,
+                candidates=(
+                    active_problem.candidates if active_problem else ()
+                ),
+                searched="web_search" in timings,
+                evidence=self._last_research_evidence,
+                request=user_input,
+            )
             reply = self._enforce_found_claim(
                 reply,
                 candidates=(
@@ -6085,6 +6245,7 @@ class ChatEngine:
                 evidence=self._last_research_evidence,
                 trusted_result=bool(effective_forced_response),
             )
+            reply = self._refuse_invented_capability(reply, user_input)
             # Last, so it also catches a footer a rewrite reintroduced. Her
             # personality file bans these outright and the model adds them
             # anyway, so the removal is code rather than more prompt wording.
@@ -6686,6 +6847,19 @@ class ChatEngine:
         """
         route_started = time.perf_counter()
         raw_transcript = user_input
+        # Her own abilities are a closed vocabulary, so a transcriber that
+        # mishears one produces something that is not in it. Repaired here,
+        # before anything reads the turn, so every layer downstream sees one
+        # version of it. Measured live, session 9, mid-way through a run of
+        # browser actions: "the brass control" -> "I've opened the brass
+        # control."
+        misheard, meant = CapabilityRegistry.repair_spoken_name(user_input)
+        if misheard and meant:
+            user_input = re.sub(
+                re.escape(misheard), meant, user_input, count=1,
+                flags=re.IGNORECASE,
+            )
+            print(f"[Speech Repair] {misheard!r} -> {meant!r}")
         previous_focus = self.task_sessions.focus()
         # One answer per turn to "is this turn about the thing she just
         # did?". Set by the repair layer, read by the focus layer, which
@@ -7529,6 +7703,16 @@ class ChatEngine:
                         "browser_control": "browser_action",
                         "ui_control": "ui_action",
                     }.get(pending_capability.capability_id, "")
+                # An offer whose goal is an address is a navigation, and
+                # accepting it means going there -- not handing the planner
+                # a sentence to work out. This is what makes "yeah" answer
+                # "Zillow.com didn't open, try again?".
+                retry_address = (
+                    goal if browser_navigation.looks_like_an_address(goal)
+                    else ""
+                )
+                if retry_address and not reuses_task:
+                    operation = "open_url"
                 route = IntentDecision(
                     intent=(
                         "web_search" if reuses_task
@@ -7542,6 +7726,7 @@ class ChatEngine:
                     action_requested=True,
                     action_target=goal,
                     computer_operation=operation,
+                    computer_url=retry_address,
                     requires_external_evidence=reuses_task,
                     recommendation_needed=reuses_task,
                     search_query=goal if reuses_task else "",

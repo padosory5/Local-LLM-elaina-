@@ -25,6 +25,7 @@ through its own existing consent, grounding, and risk checks downstream.
 
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass
 from typing import Mapping
@@ -302,12 +303,115 @@ _ABILITY_QUESTION = re.compile(
 )
 
 
+
+# ------------------------------------------------------- speech repair
+#
+# The names of Elaina's own abilities are a closed vocabulary, and a
+# transcriber that mishears one produces something that is not in it.
+# Measured live, session 9, in the middle of a run of browser actions:
+#
+#     You said: Yeah, I'm talking about the brass control.
+#     Elaina:   I've opened the brass control.
+#
+# There is no brass control. She invented a capability rather than
+# recognising a near-miss of one she has -- which is the worst of both
+# answers, because the person is now told a thing exists.
+#
+# Vowels are what a transcriber loses first, so the comparison is made on
+# consonants alone. Measured across the plausible confusions:
+#
+#     brass -> browser   0.67      mouse  -> browser   0.29
+#     desk  -> desktop   0.75      volume -> browser   0.00
+#     scream-> screen    0.75      remote -> desktop   0.25
+#
+# A real request to control the mouse, the volume or a remote is nowhere
+# near, and stays untouched.
+_SPOKEN_HEADS = ("control", "vision", "search", "access", "tasks", "memory")
+
+_SPOKEN_CAPABILITY = re.compile(
+    r"\b([A-Za-z][A-Za-z'-]*)\s+(" + "|".join(_SPOKEN_HEADS) + r")\b",
+    re.IGNORECASE,
+)
+
+# How alike two consonant skeletons must be before one is read as the
+# other. Set from the measurements above: it accepts brass/browser at
+# 0.67 and refuses keyboard/browser at 0.40.
+_NEARLY_THE_SAME_NAME = 0.6
+
+
+def _consonants(word: str) -> str:
+    """What survives a transcriber: the consonants, in order."""
+    letters = re.sub(r"[^a-z]", "", str(word or "").casefold())
+    return re.sub(r"[aeiou]", "", letters) or letters
+
+
+def _sounds_like(said: str, name: str) -> float:
+    return difflib.SequenceMatcher(
+        None, _consonants(said), _consonants(name),
+    ).ratio()
+
+
+def repair_spoken_name(text: str) -> tuple[str, str]:
+    """A misheard ability name and the one it must have been, or nothing.
+
+    Only ever within the closed set of names Elaina actually has, and only
+    when exactly one of them is close. Two near-misses mean the turn is
+    ambiguous and the caller should ask rather than choose.
+    """
+    said_text = " ".join(str(text or "").split())
+    if not said_text:
+        return "", ""
+    known = {item.name.casefold() for item in CAPABILITIES}
+    for match in _SPOKEN_CAPABILITY.finditer(said_text):
+        phrase = match.group(0)
+        modifier, head = match.group(1), match.group(2).casefold()
+        if phrase.casefold() in known:
+            return "", ""
+        scored = sorted(
+            (
+                (_sounds_like(modifier, item.name.split()[0]), item.name)
+                for item in CAPABILITIES
+                if item.name.casefold().endswith(head)
+                and len(item.name.split()) > 1
+            ),
+            reverse=True,
+        )
+        if not scored or scored[0][0] < _NEARLY_THE_SAME_NAME:
+            continue
+        if len(scored) > 1 and scored[1][0] >= _NEARLY_THE_SAME_NAME:
+            # Two of her own abilities are equally close. Guessing between
+            # them is worse than asking.
+            continue
+        return phrase, scored[0][1]
+    return "", ""
+
+
+def names_no_ability_she_has(text: str) -> str:
+    """An "<x> control" phrase that is not one of her abilities at all.
+
+    Separate from the repair above and needed even when it finds nothing:
+    the failure was not only that "brass control" went unrepaired, it was
+    that she went on to say she had opened it.
+    """
+    said_text = " ".join(str(text or "").split())
+    known = {item.name.casefold() for item in CAPABILITIES}
+    for match in _SPOKEN_CAPABILITY.finditer(said_text):
+        if match.group(0).casefold() not in known:
+            return match.group(0)
+    return ""
+
 class CapabilityRegistry:
     """Answer what Elaina can do, right now, from one place."""
 
     @staticmethod
     def all() -> tuple[Capability, ...]:
         return CAPABILITIES
+
+    # Reachable from the registry as well as at module level, because this
+    # is a question about the ability list and everything else that asks
+    # one goes through here.
+    repair_spoken_name = staticmethod(repair_spoken_name)
+    names_no_ability_she_has = staticmethod(names_no_ability_she_has)
 
     @staticmethod
     def get(capability_id: str) -> Capability | None:

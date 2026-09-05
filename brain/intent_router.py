@@ -281,6 +281,14 @@ _SPOKEN_URL = re.compile(
     r"(?:\.[a-z0-9][a-z0-9-]*)+)(?:/[^\s]*)?",
     flags=re.IGNORECASE,
 )
+# A whole utterance that is one address and nothing else. Anchored, so a
+# sentence mentioning a site is not one of these.
+_BARE_ADDRESS = re.compile(
+    r"(?:https?://)?(?:www\.)?[a-z0-9][a-z0-9-]*"
+    r"(?:\.[a-z0-9][a-z0-9-]*)+(?:/[^\s]*)?[.!?]?",
+    flags=re.IGNORECASE,
+)
+
 # How many tokens the router is allowed to emit. Not a target -- decode
 # stops at the stop token -- so headroom above the measured median is
 # free, and running out of it truncates the JSON irrecoverably.
@@ -942,6 +950,36 @@ class SemanticIntentRouter:
                 action_target="",
                 computer_operation="none",
                 memory_relevant=True,
+            )
+
+        # A turn that is nothing but an address is a request to go there.
+        # Measured live, session 9: "openhost.example" -- the transcriber's
+        # rendering of "open host.example" -- was routed as
+        #
+        #     [Router] Interpreted transcript as: search for openhost.example
+        #     Elaina: I've checked openhost.example
+        #     Elaina: I've opened openhost.example
+        #
+        # a web search, described afterwards as an opening. Nobody says a
+        # bare domain to mean "tell me about this website"; they say it to
+        # mean go there. Sending it to the browser is also what puts it in
+        # front of the navigation lifecycle, which is the layer that can
+        # discover the address does not resolve and try the unfused
+        # candidate.
+        if _BARE_ADDRESS.fullmatch(text) and decision.computer_operation in {
+            "none", "", "unsupported",
+        }:
+            address = text.rstrip(".!?")
+            return replace(
+                decision,
+                intent="computer_action",
+                computer_operation="open_url",
+                computer_url=address,
+                action_target=address,
+                action_requested=True,
+                speech_act="action_request",
+                normalized_request=f"open {address}",
+                reason="The turn is an address and nothing else.",
             )
 
         if decision.intent != "computer_action":

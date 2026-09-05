@@ -413,6 +413,20 @@ def verify(navigation: Navigation, tabs, *, before=()) -> Navigation:
     )
 
 
+def looks_like_an_address(text: str) -> bool:
+    """Whether this whole string is a web address rather than a sentence.
+
+    An offer whose goal is one of these is a navigation, so accepting it
+    means going there rather than handing a planner a sentence to
+    interpret.
+    """
+    said = " ".join(str(text or "").split())
+    if not said or " " in said:
+        return False
+    said = said.removeprefix("https://").removeprefix("http://").rstrip("/")
+    return bool(_ADDRESS_SHAPE.fullmatch(said))
+
+
 def unfused(url: str) -> str:
     """The address with a command verb the transcriber ran into it removed.
 
