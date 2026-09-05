@@ -207,6 +207,26 @@ class ThroughAWholeTurnTests(unittest.TestCase):
             self.engine.standing_orders.context_text(),
         )
 
+    def test_a_rule_beats_the_transcript_restorer(self):
+        # The two speech layers meet here. The restorer is allowed to put
+        # back a word the model swapped for a near-miss; the person's own
+        # rule is allowed to replace a word outright. Theirs wins, because
+        # they wrote it down precisely because this keeps happening.
+        self._say("Always make opennaver.com open naver.com.")
+
+        later = self._say("Use my browser control and opennaver.com")
+
+        self.assertIn("naver.com", later.user_input)
+        self.assertNotIn("opennaver", later.user_input)
+
+    def test_a_rule_runs_before_the_router_sees_the_turn(self):
+        self._say("Always make opennaver.com open naver.com.")
+
+        later = self._say("opennaver.com")
+
+        self.assertEqual(later.user_input, "naver.com")
+        self.assertNotIn("opennaver", later.route.normalized_request)
+
     def test_a_preference_still_belongs_to_the_preference_reader(self):
         # The over-correction to watch: preferences have a typed home with
         # their own standing and confidence, which is strictly better than

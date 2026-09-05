@@ -510,7 +510,25 @@ def recovery_candidates(navigation: Navigation) -> tuple[str, ...]:
     the honest answer and means asking rather than guessing.
     """
     found: list[str] = []
-    split = unfused(navigation.url) if navigation.command_fused else ""
+    # The fused verb is offered when the parse says so, and also when the
+    # browser has already been looked at and the address did not turn out
+    # to be a real page.
+    #
+    # Parse provenance alone is too strict. Measured live, session 10:
+    # "open naver.com" was transcribed "opennaver.com", one lowercase
+    # token, so there is no camel boundary and the router's own paraphrase
+    # said "open opennaver.com". Nothing in the words distinguishes it
+    # from somebody asking for a site that really is called that -- and
+    # nothing needs to, because by this point the site has been tried and
+    # observed, and it is not there.
+    #
+    # The session-7 rule is unchanged and is what keeps openai.com safe: a
+    # site that *works* never reaches recovery at all.
+    split = (
+        unfused(navigation.url)
+        if navigation.command_fused or navigation.observation_id
+        else ""
+    )
     if split:
         found.append(split)
     if navigation.history:

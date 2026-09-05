@@ -4194,9 +4194,25 @@ class ChatEngine:
             self._last_action_failed = False
             return replace(result, status="url_opened", navigation=navigation), ""
 
-        if navigation.status == browser_navigation.UNVERIFIED:
-            # True, and the sentence this whole lifecycle exists to make
-            # sayable. Better a hedge than a claim nothing checked.
+        # "I could not look" and "I looked and could not judge" are two
+        # different things, and treating them as one made the whole
+        # lifecycle inert. Measured live, session 10, twice:
+        #
+        #     actual: https://opennaver.com
+        #     title: opennaver.com
+        #     observation: hwnd:525894:50cfa6ff
+        #     status: page_loaded_unverified
+        #     classification: ambiguous
+        #
+        # The observer read the right window, the right address and the
+        # right title. What it could not do was tell whether a page was
+        # behind them -- and that went to the same dead end as a browser
+        # nobody could read, so the naver.com candidate sitting in the
+        # conversation was never tried.
+        #
+        # Recovery is for anything that was *observed* and did not arrive.
+        # Nothing here becomes a success that was not one.
+        if not navigation.observation_id:
             self._navigation = navigation
             self._navigation_history = navigation.history
             return replace(
@@ -4264,8 +4280,15 @@ class ChatEngine:
         candidates = browser_navigation.recovery_candidates(navigation)
         if not candidates:
             # Say what she saw, not just that it failed. "The browser is
-            # showing openzillow.com" is actionable; "it didn't load" is
-            # a shrug.
+            # showing openzillow.com" is actionable; "it didn't load" is a
+            # shrug -- and, when all that was wrong is that the page had no
+            # name of its own, it is also a claim the evidence does not
+            # support. Three states, three sentences.
+            if navigation.status == browser_navigation.UNVERIFIED:
+                return navigation, (
+                    f"I opened {host}, but I couldn't confirm the page that "
+                    "came up is really it."
+                )
             seen = (
                 f" The browser is showing {navigation.title}."
                 if navigation.status == browser_navigation.WRONG_DESTINATION
@@ -4317,8 +4340,18 @@ class ChatEngine:
         print(attempt.log_block())
         if attempt.arrived:
             return attempt, (
-                f"{host} didn't load, so I opened {candidate} instead -- "
-                "that one's up."
+                # What she says happened has to match what she saw. An
+                # address that came up with no page behind it is not the
+                # same claim as one that failed to load, and she has just
+                # been strict about that distinction two branches above.
+                (
+                    f"{host} didn't come up as itself, so I opened "
+                    f"{candidate} instead -- that one's up."
+                    if navigation.status == browser_navigation.UNVERIFIED
+                    else
+                    f"{host} didn't load, so I opened {candidate} instead -- "
+                    "that one's up."
+                )
             )
         if attempt.status == browser_navigation.UNVERIFIED:
             return attempt, (

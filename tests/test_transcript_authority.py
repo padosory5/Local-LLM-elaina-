@@ -71,5 +71,54 @@ class TheTranscriptWinsTests(unittest.TestCase):
         )
 
 
+class ASegmentationIsNotAMishearingTests(unittest.TestCase):
+    """The transcript is authoritative about what was heard.
+
+    It is not authoritative about where one word ends. Measured live,
+    session 10:
+
+        You said: Use my browser control and opennaver.com
+        [Router] restored 'Use my browser control and opennaver.com...'
+
+    The model had correctly written "open naver.com" and the restorer put
+    the fusion back, because "naver" scores 0.71 against "opennaver" and
+    a near-miss was assumed to mean a mishearing. It meant the opposite:
+    the model had repaired a run-together transcript, and this undid the
+    repair.
+    """
+
+    def test_a_split_command_is_not_recombined(self):
+        for paraphrase, transcript in (
+            ("open naver.com", "opennaver.com"),
+            ("Use my browser control and open naver.com",
+             "Use my browser control and opennaver.com"),
+            ("open host.example", "openhost.example"),
+        ):
+            with self.subTest(paraphrase=paraphrase):
+                self.assertEqual(
+                    _restore_misheard_words(paraphrase, transcript),
+                    paraphrase,
+                )
+
+    def test_a_real_mishearing_is_still_restored(self):
+        # The over-correction to watch: B-59 exists because the model
+        # reproduces its own earlier mistranscription, and one word being
+        # a near-miss of another is still the signal for that.
+        self.assertEqual(
+            _restore_misheard_words(
+                "Do you remember what kind of universe I'm going to?",
+                "Do you remember what kind of university I am going to?",
+            ),
+            "Do you remember what kind of university I'm going to?",
+        )
+        self.assertEqual(
+            _restore_misheard_words(
+                "Are there Cousinos in Seattle?",
+                "No, no, are there casinos in Seattle?",
+            ),
+            "Are there Casinos in Seattle?",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

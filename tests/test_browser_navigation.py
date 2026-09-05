@@ -531,5 +531,167 @@ class AnExplicitRequestIsNotAYesTests(unittest.TestCase):
             with self.subTest(said=said):
                 self.assertFalse(recommendation.names_its_own_errand(said), said)
 
+
+class LookingAndJudgingAreDifferentTests(unittest.TestCase):
+    """Session 10. The lifecycle was inert, and not for the reason it looked.
+
+        actual: https://opennaver.com
+        title: opennaver.com
+        observation: hwnd:525894:50cfa6ff
+        status: page_loaded_unverified
+        classification: ambiguous
+
+    The observer read the right window, the right address and the right
+    title. What it could not do was tell whether a page was behind them --
+    and that went to the same dead end as a browser nobody could read, so
+    the naver.com candidate sitting in the conversation was never tried.
+
+    "I could not look" and "I looked and could not judge" are two
+    different things. Only the first is a reason to stop.
+    """
+
+    def setUp(self):
+        from tests.turn_harness import build_engine
+
+        self.engine = build_engine()
+        self.engine.NAVIGATION_SETTLE_SECONDS = 0
+        self.real: dict[str, str] = {}
+        self.parked: set[str] = set()
+        base = self.engine.computer_control.execute
+
+        def execute(prepared, **kwargs):
+            outcome = base(prepared, **kwargs)
+            url = str(getattr(prepared, "url", "") or "")
+            host = url.replace("https://", "").rstrip("/")
+            if host in self.real:
+                self.engine.browser_observer.showing(
+                    url, self.real[host], "a real page with real words",
+                )
+            elif host in self.parked:
+                # An address in the bar with nothing recognisable behind
+                # it: the title is the host and the body is boilerplate.
+                self.engine.browser_observer.showing(
+                    url, host, "This domain may be for sale",
+                )
+            else:
+                self.engine.browser_observer.showing(url, host, "")
+            return outcome
+
+        self.engine.computer_control.execute = execute
+
+    def tearDown(self):
+        self.engine.close()
+
+    def _open(self, target):
+        from brain.intent_router import IntentDecision
+
+        return self.engine._handle_computer_action(IntentDecision(
+            intent="computer_action", confidence=0.99,
+            normalized_request=f"open {target}", reason="session 10",
+            computer_operation="open_url", action_target=target,
+            computer_url=f"https://{target}", action_requested=True,
+        ))
+
+    # A -------------------------------------------------------------
+    def test_a_real_site_verifies(self):
+        self.real["naver.com"] = "NAVER"
+
+        line, result = self._open("naver.com")
+
+        self.assertEqual(result.status, "url_opened")
+        self.assertNotIn("couldn't", line)
+
+    # B -------------------------------------------------------------
+    def test_a_host_that_does_not_exist_fails(self):
+        line, result = self._open("nosuchhost.example")
+
+        self.assertEqual(result.status, "navigation_failed")
+        self.assertNotIn("is open", line)
+
+    # C -------------------------------------------------------------
+    def test_an_observed_page_with_no_name_still_reaches_recovery(self):
+        # The session-10 case exactly.
+        self.real["naver.com"] = "NAVER"
+        self.parked.add("opennaver.com")
+
+        line, result = self._open("opennaver.com")
+
+        self.assertIn("naver.com", line)
+        self.assertIn("instead", line)
+        self.assertEqual(result.status, "url_opened")
+
+    def test_and_says_only_what_it_saw(self):
+        # It was observed and could not be judged, which is not the same
+        # claim as "it did not load".
+        self.parked.add("nowhere.example")
+
+        line, result = self._open("nowhere.example")
+
+        self.assertIn("couldn't confirm", line)
+        self.assertNotIn("didn't load", line)
+        self.assertEqual(result.status, "url_dispatched")
+
+    # D -------------------------------------------------------------
+    def test_a_browser_that_cannot_be_read_hedges_and_recovers_nothing(self):
+        # The honest hedge, and the one case where stopping is right.
+        # Nothing was observed, so nothing may be concluded -- including
+        # that a candidate would be better.
+        from brain.intent_router import IntentDecision
+
+        self.engine.computer_control.execute = (
+            lambda prepared, **kwargs: __import__(
+                "tools.computer_control.computer_control", fromlist=["x"],
+            ).ComputerActionResult(
+                "url_dispatched", "naver.com", "naver.com", "sent",
+                operation="open_url", url="https://naver.com",
+            )
+        )
+        self.engine.browser_observer.unreadable()
+
+        line, result = self.engine._handle_computer_action(IntentDecision(
+            intent="computer_action", confidence=0.99,
+            normalized_request="open naver.com", reason="t",
+            computer_operation="open_url", action_target="naver.com",
+            computer_url="https://naver.com", action_requested=True,
+        ))
+
+        self.assertEqual(result.status, "url_dispatched")
+        self.assertIn("couldn't check", line)
+        self.assertNotIn("instead", line)
+
+    # E -------------------------------------------------------------
+    def test_the_uw_typo_recovers_from_an_observed_dead_address(self):
+        from brain.intent_router import IntentDecision
+
+        self.real["iss.washington.edu"] = "International Student Services"
+        self.parked.update({"isss.washington.edu", "is.washington.edu"})
+
+        self._open("isss.washington.edu")
+        corrected, _ = self.engine._rescue_capability_route(
+            IntentDecision(
+                intent="conversation", confidence=0.9,
+                normalized_request="I meant only one S", reason="t",
+            ),
+            "I meant only one S.",
+        )
+        line, result = self._open(
+            corrected.action_target.replace("https://", ""),
+        )
+
+        self.assertIn("iss.washington.edu", line)
+        self.assertEqual(result.status, "url_opened")
+
+    # G -------------------------------------------------------------
+    def test_a_site_that_works_is_never_second_guessed(self):
+        # The rule the fused-verb split rests on. openai.com begins with
+        # "open" and is a real place, so it must never reach recovery.
+        self.real["openai.com"] = "OpenAI"
+
+        line, result = self._open("openai.com")
+
+        self.assertEqual(result.status, "url_opened")
+        self.assertNotIn("instead", line)
+        self.assertNotIn("ai.com", line)
+
 if __name__ == "__main__":
     unittest.main()
