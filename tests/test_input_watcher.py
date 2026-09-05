@@ -167,5 +167,94 @@ class CursorIntegrationTests(unittest.TestCase):
         self.watcher._record_real(mouse=False)  # the user types
         self.assertTrue(self.driver.user_took_over())
 
+class TheEvidenceForACancellationTests(unittest.TestCase):
+    """A takeover that blames somebody has to show its working.
+
+    From the acceptance run, the whole of what was known about six
+    cancelled browser actions:
+
+        [Input Watch] takeover reason=real_input event=mouse
+                      at=1072878.968 mark=1072877.171
+                      counters={'real_mouse': 4457, ...}
+
+    A timestamp and a lifetime tally cannot answer whether that was a
+    hand on a mouse. These fields can.
+    """
+
+    def setUp(self):
+        self.clock = _Clock()
+        self.watcher = InputWatcher(clock=self.clock)
+        self.watcher._installed.set()
+
+    def test_an_event_carries_what_it_actually_was(self):
+        self.watcher.note_self_input((500, 400))
+        self.clock.advance(2.0)
+        self.watcher._record_real(
+            mouse=True, what="move", x=931, y=502, flags=0x00,
+            at_tick=1000,
+        )
+
+        event = self.watcher.last_real_detail()
+        self.assertEqual(event.what, "move")
+        self.assertEqual((event.x, event.y), (931, 502))
+        self.assertFalse(event.lower_il)
+        self.assertEqual(event.self_point, (500, 400))
+        self.assertEqual(event.distance_from_self, 431)
+        self.assertAlmostEqual(event.since_self_ms, 2000.0)
+
+    def test_a_lower_integrity_injection_is_recorded_as_one(self):
+        # The flag that separates "something else automated this" from "a
+        # person did it". Blaming the person needs it clear.
+        self.watcher._record_real(
+            mouse=True, what="move", flags=0x02, lower_il=True,
+        )
+        self.assertTrue(self.watcher.last_real_detail().lower_il)
+
+    def test_a_button_held_down_shows_in_the_next_move(self):
+        self.watcher._buttons_down = 0x1
+        self.watcher._record_real(mouse=True, what="move")
+        self.assertEqual(self.watcher.last_real_detail().buttons_down, 0x1)
+
+    def test_counters_can_be_scoped_to_one_action(self):
+        # 4457 across a session says nothing. The same number during one
+        # click says the hook is seeing something it should not.
+        for _ in range(5):
+            self.watcher._record_real(mouse=True, what="move")
+        self.watcher.begin_action("click_element:about")
+        self.watcher._record_real(mouse=True, what="move")
+
+        self.assertEqual(self.watcher.counters()["real_mouse"], 6)
+        self.assertEqual(self.watcher.action_counters()["real_mouse"], 1)
+        self.assertEqual(self.watcher.last_real_detail().action,
+                         "click_element:about")
+
+    def test_only_events_after_the_mark_are_the_evidence(self):
+        self.watcher._record_real(mouse=True, what="move")
+        mark = self.watcher.mark()
+        self.clock.advance(0.5)
+        self.watcher._record_real(mouse=True, what="left_down")
+
+        after = self.watcher.real_events_since(mark)
+        self.assertEqual(len(after), 1)
+        self.assertEqual(after[0].what, "left_down")
+
+    def test_the_line_names_what_the_hook_saw(self):
+        mark = self.watcher.mark()
+        self.clock.advance(0.5)
+        self.watcher._record_real(mouse=True, what="left_down", x=12, y=34)
+
+        line = self.watcher.evidence_since(mark)
+        self.assertIn("left_down", line)
+        self.assertIn("(12,34)", line)
+        self.assertIn("action_counters", line)
+
+    def test_a_self_echo_is_not_evidence_of_anything(self):
+        self.watcher.note_self_input((10, 10))
+        self.watcher._record_real(mouse=True, what="move", x=10, y=10)
+
+        self.assertEqual(self.watcher.real_events_since(0.0), ())
+        self.assertEqual(self.watcher.counters()["self_echo"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

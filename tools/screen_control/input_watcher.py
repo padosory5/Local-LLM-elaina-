@@ -27,6 +27,22 @@ Two consequences shape the implementation:
   reports that plainly through :attr:`available` rather than returning
   "user is idle" forever, so the layer above can fall back to pointer-drift
   detection and say that it is doing so.
+
+Two later measurements on this machine, kept because they bound what the
+hook can and cannot see:
+
+* ``SendInput`` moves arrive flagged, 20 of 20, and an idle machine
+  produces no callbacks at all.  So a recorded unflagged event is a real
+  event; the counters are not background noise.
+* ``SetCursorPos`` produces **no low-level hook events whatsoever**, while
+  still moving the pointer (measured: 946,499 -> 740,400, zero callbacks).
+  Anything that moves the cursor that way -- pywinauto's ``set_focus``
+  does, to (-10000, 500) -- is invisible here and shows up only as pointer
+  drift.  That is why drift is a separate branch that must not claim to
+  know who moved anything.
+
+What the hook records is therefore evidence, and :class:`RealEvent` keeps
+enough of it to argue with.
 """
 
 from __future__ import annotations
@@ -35,11 +51,35 @@ import ctypes
 import ctypes.wintypes as wintypes
 import threading
 import time
+from collections import deque
+from dataclasses import dataclass
 
 _WH_KEYBOARD_LL = 13
 _WH_MOUSE_LL = 14
 _LLMHF_INJECTED = 0x00000001
+# Set when the injector was a lower-integrity process. Recorded separately:
+# it is the one flag that distinguishes "something else automated this" from
+# "a person did it", and a cancellation that blames the person should have
+# to show it is clear.
+_LLMHF_LOWER_IL_INJECTED = 0x00000002
 _LLKHF_INJECTED = 0x00000010
+_LLKHF_LOWER_IL_INJECTED = 0x00000020
+
+# Mouse messages, so a recorded event can say what it actually was rather
+# than only that "the mouse" did something.
+_MOUSE_MESSAGES = {
+    0x0200: "move", 0x0201: "left_down", 0x0202: "left_up",
+    0x0203: "left_double", 0x0204: "right_down", 0x0205: "right_up",
+    0x0206: "right_double", 0x0207: "middle_down", 0x0208: "middle_up",
+    0x0209: "middle_double", 0x020A: "wheel", 0x020E: "hwheel",
+    0x020B: "x_down", 0x020C: "x_up", 0x020D: "x_double",
+}
+_BUTTON_DOWN_MESSAGES = {0x0201: 1, 0x0204: 2, 0x0207: 4, 0x020B: 8}
+_BUTTON_UP_MESSAGES = {0x0202: 1, 0x0205: 2, 0x0208: 4, 0x020C: 8}
+
+# How many recent unflagged events to keep for diagnosis. Small: this is
+# evidence for the last cancellation, not a log.
+_EVIDENCE_DEPTH = 32
 
 # How long the message pump waits between drains. Low-level hooks are
 # delivered to the installing thread's queue, so it only has to stay
@@ -56,6 +96,22 @@ except Exception:  # pragma: no cover - non-Windows host
     _user32 = None
 
 
+def _tick_count() -> int:
+    """The same clock a hook event stamps itself with, so they compare."""
+    if _user32 is None:
+        return int(time.monotonic() * 1000)
+    try:
+        return int(ctypes.windll.kernel32.GetTickCount())
+    except Exception:  # pragma: no cover - platform failure
+        return int(time.monotonic() * 1000)
+
+
+def _signed_word(value: int) -> int:
+    """mouseData carries a signed wheel delta in its high word."""
+    value &= 0xFFFF
+    return value - 0x10000 if value >= 0x8000 else value
+
+
 class _MSLLHOOKSTRUCT(ctypes.Structure):
     _fields_ = [
         ("pt", wintypes.POINT), ("mouseData", wintypes.DWORD),
@@ -70,6 +126,69 @@ class _KBDLLHOOKSTRUCT(ctypes.Structure):
         ("flags", wintypes.DWORD), ("time", wintypes.DWORD),
         ("dwExtraInfo", ctypes.POINTER(wintypes.ULONG)),
     ]
+
+
+@dataclass(frozen=True)
+class RealEvent:
+    """One unflagged input event, with enough detail to argue about it.
+
+    Cancelling a browser action and telling somebody they moved the mouse
+    is a claim about them. This is the evidence for it, captured at the
+    moment the hook saw the event, because none of it can be recovered
+    afterwards.
+
+    ``at_tick`` is the event's own Windows timestamp and ``seen_tick`` is
+    when this process got round to it. Low-level hooks are delivered to the
+    installing thread's message queue, so those are not the same number,
+    and the gap decides whether an event that looks like it happened during
+    an action actually happened before it.
+    """
+
+    kind: str            # "mouse" | "key"
+    what: str            # "move", "left_down", "wheel", "key_down", ...
+    x: int
+    y: int
+    extra: int           # mouseData: wheel delta or which X button
+    flags: int           # raw hook flags, injected bits included
+    lower_il: bool       # injected by a lower-integrity process
+    at_tick: int         # the event's own time, GetTickCount ms
+    seen_tick: int       # when this process processed it
+    at: float            # processing time on the watcher's clock
+    buttons_down: int    # physical buttons held, from the message stream
+    since_self_ms: float | None    # ms since Elaina last injected
+    self_point: tuple[int, int] | None  # where she injected it
+    action: str          # the action id in flight, if any
+
+    @property
+    def queue_lag_ms(self) -> int:
+        """How late this process saw an event that had already happened."""
+        return max(0, self.seen_tick - self.at_tick)
+
+    @property
+    def distance_from_self(self) -> int | None:
+        """How far this event is from where Elaina last put the pointer."""
+        if self.self_point is None or self.kind != "mouse":
+            return None
+        return max(
+            abs(self.x - self.self_point[0]), abs(self.y - self.self_point[1]),
+        )
+
+    def describe(self) -> str:
+        since = (
+            "never" if self.since_self_ms is None
+            else f"{self.since_self_ms:.0f}ms"
+        )
+        distance = self.distance_from_self
+        return (
+            f"{self.kind}/{self.what} at=({self.x},{self.y}) "
+            f"flags=0x{self.flags:02x} lower_il={self.lower_il} "
+            f"buttons=0x{self.buttons_down:x} extra={self.extra} "
+            f"queue_lag={self.queue_lag_ms}ms "
+            f"since_injection={since} "
+            f"injected_at={self.self_point} "
+            f"distance_from_injection={distance} "
+            f"action={self.action or 'none'}"
+        )
 
 
 # LRESULT is LONG_PTR; declaring it (and the argtypes) matters on 64-bit --
@@ -105,7 +224,15 @@ class InputWatcher:
         self._injected_events = 0
         self._self_echo_events = 0
         self._last_self_input: float | None = None
+        self._last_self_point: tuple[int, int] | None = None
         self._last_real_kind = ""
+        self._last_real: RealEvent | None = None
+        self._recent_real: deque[RealEvent] = deque(maxlen=_EVIDENCE_DEPTH)
+        self._buttons_down = 0
+        self._action = ""
+        self._action_started = 0.0
+        self._action_counts = {"real_mouse": 0, "real_key": 0,
+                               "injected": 0, "self_echo": 0}
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._installed = threading.Event()
@@ -192,7 +319,7 @@ class InputWatcher:
                     except Exception:
                         pass
 
-    def note_self_input(self) -> None:
+    def note_self_input(self, point: tuple[int, int] | None = None) -> None:
         """Elaina is about to inject something. Remember when.
 
         The injected flag is the primary test and it is the right one --
@@ -210,36 +337,94 @@ class InputWatcher:
         """
         with self._lock:
             self._last_self_input = self._clock()
+            if point is not None:
+                self._last_self_point = (int(point[0]), int(point[1]))
 
-    def _record_real(self, *, mouse: bool) -> None:
-        now = self._clock()
+    def begin_action(self, action: str) -> None:
+        """Name the action now in flight and scope the counters to it.
+
+        The lifetime tallies are the wrong number to reason about. Four
+        thousand mouse events across a session says nothing; four thousand
+        during one click says the hook is seeing something it should not.
+        """
         with self._lock:
+            self._action = str(action or "")
+            self._action_started = self._clock()
+            self._action_counts = {"real_mouse": 0, "real_key": 0,
+                                   "injected": 0, "self_echo": 0}
+
+    def end_action(self) -> None:
+        with self._lock:
+            self._action = ""
+
+    def _record_real(self, *, mouse: bool, what: str = "", x: int = 0, y: int = 0,
+                     extra: int = 0, flags: int = 0, lower_il: bool = False,
+                     at_tick: int = 0) -> None:
+        now = self._clock()
+        seen_tick = _tick_count()
+        with self._lock:
+            since_self = (
+                None if self._last_self_input is None
+                else (now - self._last_self_input) * 1000.0
+            )
             recent_self = (
-                self._last_self_input is not None
-                and now - self._last_self_input < SELF_ECHO_SECONDS
+                since_self is not None
+                and since_self < SELF_ECHO_SECONDS * 1000.0
             )
             if recent_self:
                 self._self_echo_events += 1
+                self._action_counts["self_echo"] += 1
                 return
+            kind = "mouse" if mouse else "key"
+            event = RealEvent(
+                kind=kind, what=what or kind, x=x, y=y,
+                extra=extra, flags=flags, lower_il=lower_il,
+                at_tick=at_tick, seen_tick=seen_tick, at=now,
+                buttons_down=self._buttons_down, since_self_ms=since_self,
+                self_point=self._last_self_point, action=self._action,
+            )
             self._last_real_input = now
-            self._last_real_kind = "mouse" if mouse else "key"
+            self._last_real_kind = kind
+            self._last_real = event
+            self._recent_real.append(event)
             if mouse:
                 self._real_mouse_events += 1
+                self._action_counts["real_mouse"] += 1
             else:
                 self._real_key_events += 1
+                self._action_counts["real_key"] += 1
 
     def _on_mouse(self, code, wparam, lparam):
         # Deliberately minimal: this runs for every mouse event on the
-        # machine, ahead of the application that will receive it.
+        # machine, ahead of the application that will receive it. Reading
+        # the struct's own fields is free -- it is already mapped -- so the
+        # cost here is the same as it was before it recorded anything.
         if code >= 0:
             try:
                 data = ctypes.cast(
                     lparam, ctypes.POINTER(_MSLLHOOKSTRUCT),
                 ).contents
+                message = int(wparam)
+                # Physical button state comes from the message stream
+                # rather than a syscall per event: a move while a button is
+                # held is a drag, and a person is doing it.
+                if message in _BUTTON_DOWN_MESSAGES:
+                    self._buttons_down |= _BUTTON_DOWN_MESSAGES[message]
+                elif message in _BUTTON_UP_MESSAGES:
+                    self._buttons_down &= ~_BUTTON_UP_MESSAGES[message]
                 if data.flags & _LLMHF_INJECTED:
                     self._injected_events += 1
+                    self._action_counts["injected"] += 1
                 else:
-                    self._record_real(mouse=True)
+                    self._record_real(
+                        mouse=True,
+                        what=_MOUSE_MESSAGES.get(message, f"0x{message:04x}"),
+                        x=int(data.pt.x), y=int(data.pt.y),
+                        extra=_signed_word(int(data.mouseData) >> 16),
+                        flags=int(data.flags),
+                        lower_il=bool(data.flags & _LLMHF_LOWER_IL_INJECTED),
+                        at_tick=int(data.time),
+                    )
             except Exception:
                 pass
         return _user32.CallNextHookEx(None, code, wparam, lparam)
@@ -252,8 +437,15 @@ class InputWatcher:
                 ).contents
                 if data.flags & _LLKHF_INJECTED:
                     self._injected_events += 1
+                    self._action_counts["injected"] += 1
                 else:
-                    self._record_real(mouse=False)
+                    self._record_real(
+                        mouse=False,
+                        what=f"vk_0x{int(data.vkCode):02x}",
+                        flags=int(data.flags),
+                        lower_il=bool(data.flags & _LLKHF_LOWER_IL_INJECTED),
+                        at_tick=int(data.time),
+                    )
             except Exception:
                 pass
         return _user32.CallNextHookEx(None, code, wparam, lparam)
@@ -314,3 +506,48 @@ class InputWatcher:
         """
         with self._lock:
             return self._last_real_kind, self._last_real_input
+
+    def last_real_detail(self) -> RealEvent | None:
+        """The whole record of the last unflagged event."""
+        with self._lock:
+            return self._last_real
+
+    def real_events_since(self, marker: float) -> tuple[RealEvent, ...]:
+        """Every recorded unflagged event after a checkpoint.
+
+        A run that cancels six times over one event and a run interrupted
+        six times look identical from a single timestamp. They do not look
+        alike here.
+        """
+        with self._lock:
+            return tuple(e for e in self._recent_real if e.at > marker)
+
+    def action_counters(self) -> dict[str, int]:
+        """Tallies since :meth:`begin_action`, and how long that has been.
+
+        The lifetime numbers cannot answer "is this traffic normal?"
+        because they include every minute the person spent using their own
+        machine. These only count what happened while Elaina was working.
+        """
+        with self._lock:
+            counts = dict(self._action_counts)
+            counts["elapsed_ms"] = int(
+                (self._clock() - self._action_started) * 1000
+            ) if self._action_started else 0
+            return counts
+
+    def evidence_since(self, marker: float) -> str:
+        """One line naming what the hook actually saw, for the log."""
+        events = self.real_events_since(marker)
+        counts = self.action_counters()
+        if not events:
+            last = self.last_real_detail()
+            seen = f"last_recorded=({last.describe()})" if last else "none recorded"
+            return f"no events after mark; {seen}; action_counters={counts}"
+        first = events[0]
+        return (
+            f"{len(events)} unflagged event(s) after mark; "
+            f"first=({first.describe()}); "
+            f"kinds={sorted({e.what for e in events})}; "
+            f"action_counters={counts}"
+        )

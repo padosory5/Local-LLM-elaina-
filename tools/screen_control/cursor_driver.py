@@ -171,7 +171,8 @@ class CursorDriver:
     # ------------------------------------------------------------------
     # platform primitives
 
-    def _send(self, inputs: list[_INPUT]) -> int:
+    def _send(self, inputs: list[_INPUT],
+              point: tuple[int, int] | None = None) -> int:
         """Inject, having told the watcher that what follows is ours.
 
         Every one of Elaina's own events goes through here. The watcher's
@@ -182,7 +183,7 @@ class CursorDriver:
         watcher = self.input_watcher
         if watcher is not None:
             try:
-                watcher.note_self_input()
+                watcher.note_self_input(point)
             except Exception:
                 pass
         return self._sender(inputs)
@@ -216,14 +217,24 @@ class CursorDriver:
     # ------------------------------------------------------------------
     # Run-scoped emergency-stop tracking
 
-    def begin_run(self) -> None:
-        """Mark the start of a batch of actions and remember the pointer."""
+    def begin_run(self, action: str = "") -> None:
+        """Mark the start of a batch of actions and remember the pointer.
+
+        ``action`` names what the run is for, so a recorded event can say
+        which action it interrupted rather than only when it happened.
+        """
         try:
             self._restore_to = self._cursor_reader()
         except Exception:
             self._restore_to = None
         self._parked_at = None
         self._input_mark = self._watcher_mark()
+        watcher = self.input_watcher
+        if watcher is not None:
+            try:
+                watcher.begin_action(action)
+            except Exception:
+                pass
 
     def end_run(self, *, restore: bool = True) -> None:
         """Hand the pointer back where the user left it."""
@@ -231,6 +242,12 @@ class CursorDriver:
         self._restore_to = None
         self._parked_at = None
         self._input_mark = None
+        watcher = self.input_watcher
+        if watcher is not None:
+            try:
+                watcher.end_action()
+            except Exception:
+                pass
         if restore and target is not None:
             try:
                 self._move_to(target)
@@ -264,13 +281,9 @@ class CursorDriver:
         ):
             try:
                 if watcher.user_input_since(self._input_mark):
-                    kind, when = watcher.last_real_event()
-                    counts = watcher.counters()
                     self.last_takeover = "real_input"
-                    self.last_takeover_detail = (
-                        f"event={kind or 'unknown'} "
-                        f"at={when} mark={self._input_mark} "
-                        f"counters={counts}"
+                    self.last_takeover_detail = self._real_input_evidence(
+                        watcher,
                     )
                     return True
             except Exception:
@@ -297,6 +310,30 @@ class CursorDriver:
                 f"tolerance={_TAKEOVER_TOLERANCE_PIXELS}"
             )
         return drifted
+
+    def _real_input_evidence(self, watcher) -> str:
+        """Everything the hook recorded about why this fired.
+
+        A takeover that cancels a browser action has to be arguable after
+        the fact, and a timestamp is not an argument. What is: which
+        message it was, where the pointer was, whether a button was held,
+        whether it carried an injected flag from a lower-integrity
+        process, how long after Elaina's own last injection it arrived,
+        how far from where she put the pointer, and how late this process
+        saw an event that had already happened.
+        """
+        try:
+            evidence = watcher.evidence_since(self._input_mark)
+        except Exception:
+            evidence = "evidence unavailable"
+        try:
+            counts = watcher.counters()
+        except Exception:
+            counts = {}
+        return (
+            f"mark={self._input_mark} parked_at={self._parked_at} "
+            f"{evidence} lifetime_counters={counts}"
+        )
 
     def _guard(self) -> InputResult | None:
         if not self.available:
@@ -362,7 +399,7 @@ class CursorDriver:
         self._send([self._mouse_event(
             _MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE | _MOUSEEVENTF_VIRTUALDESK,
             absolute,
-        )])
+        )], point=point)
         self._parked_at = point
 
     def move(self, point: tuple[int, int]) -> InputResult:
@@ -408,9 +445,11 @@ class CursorDriver:
         blocked = self._guard()
         if blocked is not None:
             return blocked
-        self._send([self._mouse_event(_MOUSEEVENTF_LEFTDOWN)])
+        self._send([self._mouse_event(_MOUSEEVENTF_LEFTDOWN)],
+                   point=self._parked_at)
         self._sleep(_CLICK_HOLD_SECONDS)
-        self._send([self._mouse_event(_MOUSEEVENTF_LEFTUP)])
+        self._send([self._mouse_event(_MOUSEEVENTF_LEFTUP)],
+                   point=self._parked_at)
         return InputResult("done")
 
     def double_click(self, point: tuple[int, int]) -> InputResult:
@@ -434,9 +473,11 @@ class CursorDriver:
         for press in range(2):
             if press:
                 self._sleep(_DOUBLE_CLICK_GAP_SECONDS)
-            self._send([self._mouse_event(_MOUSEEVENTF_LEFTDOWN)])
+            self._send([self._mouse_event(_MOUSEEVENTF_LEFTDOWN)],
+                   point=self._parked_at)
             self._sleep(_CLICK_HOLD_SECONDS)
-            self._send([self._mouse_event(_MOUSEEVENTF_LEFTUP)])
+            self._send([self._mouse_event(_MOUSEEVENTF_LEFTUP)],
+                   point=self._parked_at)
         return InputResult("done")
 
     def scroll(self, point: tuple[int, int], notches: int) -> InputResult:

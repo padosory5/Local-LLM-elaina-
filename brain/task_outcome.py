@@ -82,6 +82,10 @@ _VERIFICATION_FAILED = frozenset({
     "shuffle_not_observed",
     "collection_not_observed",
     "goal_operation_incomplete",
+    # The run stopped cleanly without doing the thing that was asked for.
+    # Not a retry decision on its own: the same goal may well work, but
+    # reporting it as success is the failure this code exists to stop.
+    "request_unsatisfied",
 })
 
 # Plausibly transient: the same goal, attempted again or differently, could

@@ -21,6 +21,7 @@ from brain import capability_selection
 from brain import browser_outcome
 from brain import browser_navigation
 from brain import browser_progress
+from brain.browser_interaction import BrowserInteraction
 from brain import progress_question
 from brain import world_clock
 from brain.capability_selection import CapabilityChoice
@@ -265,6 +266,19 @@ _CLAIMS_TO_HAVE_ACTED = re.compile(
     r"activated|switched\s+to)\b"
     r"|\b(?:opened|started|launched|enabled|activated)\s+the\b"
     r"|\bis\s+(?:now\s+)?(?:open|running|on|active)\b",
+    re.IGNORECASE,
+)
+
+# A progressive verb phrase says something is going on right now. After a
+# launch, the only ones with evidence behind them are the ones that mean
+# "open" -- everything else is a claim about what the application is doing,
+# and nothing looked. The exclusion list is the closed set of ways English
+# says "it is open", not a list of activities to catch.
+_CLAIMS_AN_ACTIVITY = re.compile(
+    r"\b(?:is|are|'s|'re|was|were)\s+(?:now\s+|already\s+|currently\s+)?"
+    r"(?!open|opened|opening|running|up|on|active|ready|available|"
+    r"launched|started|starting|loaded\b)"
+    r"[a-z]+ing\b",
     re.IGNORECASE,
 )
 
@@ -918,11 +932,17 @@ class ChatEngine:
         # What the most recent search actually returned, so a named
         # shop in the reply can be checked against it.
         self._last_research_evidence = ""
+        # Set for one turn when a structured browser result is the answer.
+        self._browser_result_is_final = False
         # What she last actually did on the machine, so a complaint about
         # it ("you're showing me nothing") reaches that surface again
         # instead of being read as a fresh, unsupported request.
         self._last_computer_action = ""
         self._last_computer_goal = ""
+        # The page interaction now standing: what was asked for, on which
+        # page, and what became of it. A retry repeats this, never the
+        # transcript of whatever was said in between.
+        self._browser_interaction: BrowserInteraction | None = None
         # Whether that action ended in a failure the person can ask to have
         # tried again. "Try again" and a bare "yeah" after she asks "try
         # again?" both need one recorded action to operate on rather than
@@ -1118,6 +1138,7 @@ class ChatEngine:
     def _retire_machine_target(self):
         self._last_computer_action = ""
         self._last_computer_goal = ""
+        self._browser_interaction = None
         self._last_action_failed = False
         self._machine_target_reprieved = False
         self._navigation = None
@@ -1827,6 +1848,40 @@ class ChatEngine:
         rebuilt = " ".join(kept).strip()
         return f"{rebuilt} {honest}".strip() if rebuilt else honest
 
+    def _refuse_unobserved_app_activity(self, reply: str) -> str:
+        """Opening an app is evidence that it is open, and nothing more.
+
+        Measured in the acceptance run:
+
+            open_app target=Spotify status=opened
+            Elaina: Spotify's now playing your favorite tunes.
+
+        Nothing was playing, and nothing had looked. This is the same rule
+        as "a text read cannot say what is not pictured": a launch result
+        licenses exactly one predicate -- that the application is open --
+        so a sentence putting it in the middle of doing something is a
+        claim with no observation behind it.
+
+        The test is grammatical rather than a list of activities: a
+        progressive verb phrase asserts something in progress, and the
+        only ones a launch supports are the ones that mean "open".
+        """
+        text = str(reply or "").strip()
+        if not text or self._last_computer_action != "open_app":
+            return text
+        if not _CLAIMS_AN_ACTIVITY.search(text):
+            return text
+        name = spoken_label(self._last_computer_goal) or "It"
+        print("[Action Guard] A launch does not report what an app is doing.")
+        kept = [
+            sentence.strip()
+            for sentence in _SENTENCE_SPLIT.split(text)
+            if sentence.strip() and not _CLAIMS_AN_ACTIVITY.search(sentence)
+        ]
+        honest = f"{name} is open."
+        rebuilt = " ".join(kept).strip()
+        return f"{rebuilt} {honest}".strip() if rebuilt else honest
+
     def _refuse_invented_capability(self, reply: str, user_input: str) -> str:
         """Never say she used an ability by a name she does not have.
 
@@ -2057,6 +2112,30 @@ class ChatEngine:
             if browser_progress.continues_the_last_action(user_input):
                 print(f"[Rescue] continue the last action -> {last_action}")
                 self._turn_points_at_the_last_action = True
+                # A retry repeats the structured action, not the last
+                # thing that happened to be in a variable. Measured in the
+                # acceptance run: "click about on this page" was followed
+                # by an acknowledgement, and "can you try again?" retried
+                # the word "Yes."
+                standing = self._browser_interaction
+                if last_action == "browser_action" and standing is not None:
+                    standing = standing.retried()
+                    self._browser_interaction = standing
+                    print(f"[Page Action] again: {standing.describe()}")
+                    return replace(
+                        route,
+                        intent="computer_action",
+                        computer_operation="browser_action",
+                        normalized_request=(
+                            f"{standing.operation.split('_')[0]} "
+                            f"{standing.target}"
+                        ),
+                        action_target=standing.target,
+                        action_requested=True,
+                        reason=(
+                            "The turn asks for the last page action again."
+                        ),
+                    ), ""
                 return replace(
                     route,
                     intent="computer_action",
@@ -5132,14 +5211,32 @@ class ChatEngine:
                 )
                 self.cursor_driver.end_run(restore=not reclaimed)
 
+        plan_result = self._bind_result_to_request(
+            plan_result,
+            requested_goal=(
+                clarified_goal if clarified_goal is not None
+                else str(route.normalized_request or original_request or "")
+            ),
+        )
         self._last_computer_action = "browser_action"
-        self._last_computer_goal = route.action_target or ""
+        self._remember_browser_interaction(
+            route.action_target or "",
+            plan_result=plan_result,
+            requested_goal=(
+                clarified_goal if clarified_goal is not None
+                else str(route.normalized_request or original_request or "")
+            ),
+        )
         print(
             "[Computer Control] action=browser_action target="
             f"{route.action_target or '(none)'} status={plan_result.status} "
             f"rounds={plan_result.model_rounds} "
             f"failure={plan_result.failure_code or '(none)'}"
         )
+        if self._browser_interaction is not None:
+            print(
+                f"[Page Action] {self._browser_interaction.describe()}"
+            )
 
         if plan_result.status == "needs_clarification":
             # A booking cannot be researched, let alone made, without the
@@ -5195,7 +5292,13 @@ class ChatEngine:
         if not succeeded:
             message = self._spoken_browser_failure(
                 plan_result.failure_code, message,
+                interaction=getattr(plan_result, "interaction", None),
             )
+            # A machine result is the last word on what the machine did.
+            # The search-grounding guards exist to stop an unbacked claim
+            # about listings; a page-click failure is not one, and letting
+            # them rewrite it replaced the answer with search language.
+            self._browser_result_is_final = True
 
         # Both routes into this handler -- the capability layer's and the
         # router's own computer_action label -- end here, so the reading
@@ -5250,14 +5353,132 @@ class ChatEngine:
         )
 
     @staticmethod
-    def _spoken_browser_failure(failure_code: str, summary: str) -> str:
+    def _bind_result_to_request(plan_result, *, requested_goal: str):
+        """A run that finished is not the same as the request being met.
+
+        Measured in the acceptance run, retrying an interrupted "click
+        About": two clicks, several page descriptions, ``status=done``,
+        and a summary of the ISS page -- with no evidence anywhere that
+        About had been clicked. "Interact with the page until something
+        happens, then describe it" is not what was asked for.
+
+        So when the request named an element, finishing means that element
+        was clicked. Anything else is honest uncertainty, which is a thing
+        the person can act on; a false success is not.
+        """
+        if plan_result is None or plan_result.status != "done":
+            return plan_result
+        element = BrowserActionPlanner._direct_click_target(requested_goal)
+        if not element:
+            return plan_result
+        interaction = getattr(plan_result, "interaction", None)
+        if interaction is not None and interaction.satisfied:
+            return plan_result
+        # The model-driven path leaves no structured record, so what it
+        # said it did is the evidence -- its own summary and its step log
+        # both count. Something naming the element is enough; nothing
+        # naming it anywhere is not.
+        wanted = element.casefold()
+        reported = [str(plan_result.summary), *map(str, plan_result.steps_taken)]
+        if any(wanted in line.casefold() for line in reported):
+            return plan_result
+        print(
+            "[Page Action] the run finished without doing what was asked: "
+            f"{element!r} was never clicked."
+        )
+        return replace(
+            plan_result,
+            status="failed",
+            summary=(
+                f"I worked through the page but couldn't confirm I clicked "
+                f"{spoken_label(element)}."
+            ),
+            failure_code="request_unsatisfied",
+        )
+
+    def _remember_browser_interaction(
+        self, target: str, *, plan_result, requested_goal: str,
+    ) -> None:
+        """Keep what was asked for, not what was last said.
+
+        Measured in the acceptance run. "Click about on this page" was
+        followed by an offer, the person said "Yes.", and the planner's
+        target became the word "Yes." -- so "can you try again?" retried
+        an acknowledgement, clicked several unrelated things, and read the
+        page back as though that had been the request.
+
+        An acknowledgement carries no target. It cannot become one, and it
+        cannot overwrite the one already standing.
+        """
+        proposed = " ".join(str(target or "").split())
+        if proposed and recommendation_state.is_acknowledgement(proposed):
+            # Do not let "Yes." become the thing to do again.
+            print(
+                "[Page Action] an acknowledgement is not a target; "
+                f"keeping {self._last_computer_goal!r}."
+            )
+            return
+        finished = getattr(plan_result, "interaction", None)
+        if finished is not None:
+            self._browser_interaction = finished
+            self._last_computer_goal = finished.target
+            return
+        element = BrowserActionPlanner._direct_click_target(requested_goal)
+        if element:
+            self._browser_interaction = BrowserInteraction(
+                operation="click_element", target=element,
+                source=requested_goal,
+                status=(
+                    "clicked" if plan_result.status == "done" else "failed"
+                ),
+            )
+        elif proposed:
+            # Not a page interaction -- a navigation or a whole-goal run.
+            # Nothing structured to keep, so the record is retired rather
+            # than left pointing at the previous page's element.
+            self._browser_interaction = None
+        self._last_computer_goal = proposed
+
+    @staticmethod
+    def _spoken_browser_failure(
+        failure_code: str, summary: str, *,
+        interaction: BrowserInteraction | None = None,
+    ) -> str:
         """Say what went wrong, not what the planner said to itself.
 
         Found live: a failed browser step spoke its own internal
         instruction aloud -- "That element was not in the latest live page
         scan. Call describe page before acting." That sentence is addressed
         to the model, not the user, and means nothing to them.
+
+        When the failure has a structured interaction behind it, the
+        sentence is built from that -- the element the person named, and
+        the choices when there were several. Measured in the acceptance
+        run: "click calendar" came back ``direct_target_ambiguous`` and was
+        spoken as "I couldn't get actual listing names out of that search
+        -- want me to open it in the browser and read them off?", which
+        belongs to a different layer entirely and answers nothing.
         """
+        if interaction is not None:
+            named = spoken_label(interaction.target) or "that"
+            if interaction.status == "not_found":
+                return f"I couldn't find a {named} element on this page."
+            if interaction.status == "ambiguous":
+                choices = [c for c in interaction.candidates if c]
+                if len(choices) > 1:
+                    listed = ", ".join(choices[:4])
+                    return (
+                        f"I found more than one {named} item -- {listed}. "
+                        "Which one do you mean?"
+                    )
+                return (
+                    f"I found more than one {named} item. "
+                    "Which one do you mean?"
+                )
+            if interaction.status == "user_took_over":
+                return "You took control, so I stopped."
+            if interaction.status and interaction.status != "clicked":
+                return f"I couldn't click {named}."
         spoken = {
             "unobserved": (
                 "I lost track of that element on the page -- want me to "
@@ -5270,6 +5491,9 @@ class ChatEngine:
             "unavailable": "I couldn't reach the browser.",
             "user_took_over": "You took control, so I stopped.",
             "planner_unavailable": "I couldn't reach the browser planner.",
+            "request_unsatisfied": (
+                "I couldn't confirm I did the thing you asked for."
+            ),
             "missing_tab_identity": (
                 "I lost track of which page that was, so I stopped."
             ),
@@ -6587,21 +6811,27 @@ class ChatEngine:
                 searched="web_search" in timings,
             )
             active_problem = self.task_sessions.active_recommendation()
-            reply = self._enforce_named_recommendation(
-                reply,
-                candidates=(
-                    active_problem.candidates if active_problem else ()
-                ),
-                searched="web_search" in timings,
-                evidence=self._last_research_evidence,
-                request=user_input,
-            )
-            reply = self._enforce_found_claim(
-                reply,
-                candidates=(
-                    active_problem.candidates if active_problem else ()
-                ),
-            )
+            # A structured browser result is the last word on what the
+            # machine did. These two guards read a reply as an answer about
+            # listings; a page-click failure is not one, and rewriting it
+            # as though it were replaced the answer with search language.
+            if not self._browser_result_is_final:
+                reply = self._enforce_named_recommendation(
+                    reply,
+                    candidates=(
+                        active_problem.candidates if active_problem else ()
+                    ),
+                    searched="web_search" in timings,
+                    evidence=self._last_research_evidence,
+                    request=user_input,
+                )
+            if not self._browser_result_is_final:
+                reply = self._enforce_found_claim(
+                    reply,
+                    candidates=(
+                        active_problem.candidates if active_problem else ()
+                    ),
+                )
             reply = self._enforce_grounded_entities(
                 reply,
                 user_input=user_input,
@@ -6613,6 +6843,7 @@ class ChatEngine:
             reply = self._refuse_unearned_success(
                 reply, action_performed=action_performed,
             )
+            reply = self._refuse_unobserved_app_activity(reply)
             # Last, so it also catches a footer a rewrite reintroduced. Her
             # personality file bans these outright and the model adds them
             # anyway, so the removal is code rather than more prompt wording.
@@ -6664,9 +6895,13 @@ class ChatEngine:
                     research_evidence=self._last_research_evidence,
                     trusted_result=False, searched="web_search" in timings,
                 )
-                reply = self._enforce_found_claim(
-                    reply, candidates=active_problem.candidates if active_problem else (),
-                )
+                if not self._browser_result_is_final:
+                    reply = self._enforce_found_claim(
+                        reply,
+                        candidates=(
+                            active_problem.candidates if active_problem else ()
+                        ),
+                    )
                 reply = self._enforce_grounded_entities(
                     reply, user_input=user_input, action_performed=action_performed,
                     evidence=self._last_research_evidence, trusted_result=False,
@@ -7220,6 +7455,10 @@ class ChatEngine:
         nothing else -- which is what made it safe to move.
         """
         route_started = time.perf_counter()
+        # Authority over this turn's wording starts unclaimed. Only a
+        # structured machine result takes it, and only for the turn it
+        # belongs to.
+        self._browser_result_is_final = False
         raw_transcript = user_input
         # Her own abilities are a closed vocabulary, so a transcriber that
         # mishears one produces something that is not in it. Repaired here,
@@ -7340,6 +7579,16 @@ class ChatEngine:
         #
         # Neither was an acceptance. There was no offer worth accepting in
         # the first one, and the second was a correction to an address.
+        # A turn that is nothing but a web address carries its own
+        # destination, so there is nothing for a pending question to
+        # decide. Measured in the acceptance run: "opennaver.com" went
+        # straight to deterministic navigation and recovered, and
+        # "openiss.washington.edu" one turn later became "the user
+        # accepted the offered ability" and went to the planner. The only
+        # difference between them was that an offer happened to be open.
+        speaks_an_address = browser_navigation.looks_like_an_address(
+            user_input,
+        )
         has_machine_target = bool(
             self._last_computer_action and self._last_computer_goal
         )
@@ -7371,6 +7620,7 @@ class ChatEngine:
         )
         if not continuing_agent_flow and (
             names_its_own_errand(user_input)
+            or speaks_an_address
             or disputed_machine
             or confirmed_machine
             or corrects_machine

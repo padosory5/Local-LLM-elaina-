@@ -322,6 +322,64 @@ class ABareReferenceToASiteResolvesTests(unittest.TestCase):
         self.assertEqual(route.action_target, "Zillow.com")
 
 
+class AnAddressIsItsOwnErrandTests(unittest.TestCase):
+    """A turn that is entirely a web address cannot be an answer.
+
+    Measured in the acceptance run, with an offer pending:
+
+        You said: openiss.washington.edu
+        Current subject: Use browser_control to handle: openiss...
+        [Router] computer_action (0.00): The user accepted the offered
+                 ability.  -> Browser Planner
+
+    "opennaver.com" one turn earlier went straight to deterministic
+    navigation and recovered. The only difference was that an offer
+    happened to be open, and a pending question is not allowed to decide
+    what a sentence carrying its own destination means.
+    """
+
+    def _engine(self):
+        from tests.turn_harness import build_engine
+
+        engine = build_engine()
+        engine.NAVIGATION_SETTLE_SECONDS = 0
+        engine.capability_offer.offer(
+            capability_id="browser_control", goal="the calendar",
+            offer_text="Want me to use browser control for that?",
+        )
+        return engine
+
+    def test_a_fused_address_goes_to_navigation_not_the_offer(self):
+        engine = self._engine()
+        try:
+            routing = engine._route_turn("openiss.washington.edu", timings={})
+        finally:
+            engine.close()
+
+        self.assertEqual(routing.route.computer_operation, "open_url")
+        self.assertNotIn("accepted the offered", routing.route.reason)
+
+    def test_a_bare_address_does_too(self):
+        engine = self._engine()
+        try:
+            routing = engine._route_turn("naver.com", timings={})
+        finally:
+            engine.close()
+
+        self.assertEqual(routing.route.computer_operation, "open_url")
+
+    def test_a_plain_yes_still_accepts_the_offer(self):
+        # The half that has to keep working: an offer she made stays
+        # answerable, or every question she asks is unanswerable.
+        engine = self._engine()
+        try:
+            routing = engine._route_turn("Yes please.", timings={})
+        finally:
+            engine.close()
+
+        self.assertIn("accepted the offered", routing.route.reason)
+
+
 class AContradictoryFrameGetsASecondLookTests(unittest.TestCase):
     """A-06/A-07. The address bar commits before the title follows.
 

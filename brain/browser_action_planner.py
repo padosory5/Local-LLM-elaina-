@@ -29,6 +29,10 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from brain import browser_progress
 from brain import references
+from brain.browser_interaction import (
+    BrowserInteraction,
+    strip_surface_context,
+)
 from brain.deliberation import Decision, Goal, decide, interpret
 from tools.browser_control.browser_connection import BrowserConnectionResult
 from tools.browser_control.browser_control import (
@@ -77,6 +81,12 @@ class ActionPlanResult:
     # Set only when status == "needs_clarification": what was asked, and
     # what answering it would complete.
     clarification: Decision | None = None
+    # The structured page interaction this result is about, when there was
+    # one. What was asked for, what matched, and what became of it -- so
+    # the sentence the user hears is built from the result rather than
+    # paraphrased from it and then rewritten by a layer that thinks this
+    # was a search.
+    interaction: BrowserInteraction | None = None
 
 
 _TOOLS = [
@@ -542,9 +552,10 @@ _DIRECT_ORDINAL_RESULT_PATTERN = re.compile(
     r"(?P<tail>.+?)\s*[.!?]?\s*$",
     flags=re.IGNORECASE,
 )
+# The surface-locating tail is removed by strip_surface_context before
+# this ever sees the string, so it only has to know about results.
 _RESULT_TAIL_PATTERN = re.compile(
-    r"^(?P<qualifier>.*?)\s*(?:search\s+)?(?:result|listing)s?"
-    r"(?:\s+(?:on|in)\s+(?:this\s+)?(?:page|screen|window|here))?\s*$",
+    r"^(?P<qualifier>.*?)\s*(?:search\s+)?(?:result|listing)s?\s*$",
     flags=re.IGNORECASE,
 )
 # The counting vocabulary is shared with brain/references.py, which resolves
@@ -1796,6 +1807,11 @@ class BrowserActionPlanner:
                 observation.message or "I couldn't inspect the current page well enough.",
                 failure_code="direct_target_not_found",
             )
+        requested = BrowserInteraction(
+            operation="click_element", target=target, source=goal,
+            tab_identity=str(getattr(observation, "tab_identity", "") or ""),
+            page_url=str(getattr(observation, "url", "") or ""),
+        )
         matches = self._matching_elements(observation.elements, target)
         if not matches:
             # A direct request like "click Images" must not fall through to
@@ -1806,16 +1822,29 @@ class BrowserActionPlanner:
                 "failed",
                 f"I couldn't find {target!r} in the current live page scan.",
                 failure_code="direct_target_not_found",
+                interaction=requested.finished("not_found"),
             )
         if len(matches) > 1:
+            # The candidates are the useful half of an ambiguous match: a
+            # person can answer "which one" only if they are told what the
+            # choices were.
+            found = tuple(
+                str(getattr(match, "label", "") or "").strip()
+                for match in matches
+            )
             return ActionPlanResult(
                 "failed",
                 f"I found multiple controls named {target!r}, so I didn't choose one.",
                 failure_code="direct_target_ambiguous",
+                interaction=requested.finished(
+                    "ambiguous",
+                    candidates=tuple(name for name in found if name),
+                ),
             )
         element = matches[0]
         return self._click_direct_element(
             observation, element, allowed_hosts=allowed_hosts,
+            requested=requested,
         )
 
     def _try_direct_ordinal_result(
@@ -1883,7 +1912,13 @@ class BrowserActionPlanner:
         *,
         success_summary: str = "",
         allowed_hosts: tuple[str, ...] = (),
+        requested: BrowserInteraction | None = None,
     ) -> ActionPlanResult:
+        def outcome(status: str, **fields) -> BrowserInteraction | None:
+            return None if requested is None else requested.finished(
+                status, **fields,
+            )
+
         if allowed_hosts and element.href and not _url_in_source_scope(
             element.href, allowed_hosts,
         ):
@@ -1892,6 +1927,7 @@ class BrowserActionPlanner:
                 f"{spoken_label(element.label)!r} is outside the specialised "
                 "sources selected for this task, so I did not click it.",
                 failure_code="source_scope_violation",
+                interaction=outcome("refused", evidence="outside source scope"),
             )
         result = self.control.click(
             observation.tab_index,
@@ -1921,6 +1957,13 @@ class BrowserActionPlanner:
                 "done", success_summary or result.message,
                 steps_taken=(result.message,),
                 verified=result.verified,
+                interaction=outcome(
+                    "clicked",
+                    resolved=str(
+                        result.element_label or element.label or element.id
+                    ),
+                    evidence=result.message,
+                ),
             )
         failure_code = (
             "verification_failed"
@@ -1930,6 +1973,7 @@ class BrowserActionPlanner:
         return ActionPlanResult(
             "failed", result.message, steps_taken=(result.message,),
             failure_code=failure_code,
+            interaction=outcome(failure_code, evidence=result.message),
         )
 
     def _describe_page(self, tab_index: int | None, query: str = "") -> PageObservation:
@@ -2067,18 +2111,15 @@ class BrowserActionPlanner:
         match = _DIRECT_CLICK_PATTERN.match(" ".join(goal.split()))
         if match is None:
             return ""
-        label = _DIRECT_CLICK_SUFFIX.sub("", match.group("label")).strip()
-        # Voice follow-ups commonly say "click Images in here" rather than
-        # "on this page".  Those words locate the current controlled page;
-        # they are not part of Google's real link label.
-        label = re.sub(
-            r"\s+(?:on|in)\s+(?:this\s+)?(?:page|screen|window|here)\s*$",
-            "",
-            label,
-            flags=re.IGNORECASE,
-        )
-        label = re.sub(r"\s+here\s*$", "", label, flags=re.IGNORECASE)
-        label = label.strip(" .!?")
+        # A click command is ACTION, ELEMENT, and CONTEXT: "click calendar
+        # on this webpage" asks for Calendar, and says where to look for
+        # it. The context words locate the page Elaina is already working
+        # on and are never part of a control's own name, so they are read
+        # off as their own part of the command rather than searched for.
+        # Context first: "the About link on the current screen" only ends
+        # in the word "link" once the locative phrase after it is gone.
+        label, _context = strip_surface_context(match.group("label"))
+        label = _DIRECT_CLICK_SUFFIX.sub("", label).strip(" .!?")
         # A real control label is short. A task-planner-generated sub_goal
         # like "Click on a hotel listing... to view more details" matches
         # the same surface pattern as a terse "click Images" follow-up,
@@ -2098,7 +2139,11 @@ class BrowserActionPlanner:
         match = _DIRECT_ORDINAL_RESULT_PATTERN.match(" ".join(goal.split()))
         if match is None:
             return None
-        tail = _RESULT_TAIL_PATTERN.match(match.group("tail"))
+        # The same locative the click path reads off, read off here too,
+        # so the two cannot drift apart about what "on this webpage"
+        # means.
+        located, _context = strip_surface_context(match.group("tail"))
+        tail = _RESULT_TAIL_PATTERN.match(located)
         if tail is None:
             return None
         return (

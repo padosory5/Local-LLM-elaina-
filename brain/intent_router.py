@@ -545,6 +545,24 @@ class SemanticIntentRouter:
                 reason="Highlighted text is attached to this request.",
             )
 
+        # A turn that is one web address and nothing else needs nothing
+        # interpreted, so it does not wait on a model to say so. Measured
+        # in the browser acceptance run: "opennaver.com" reached
+        # deterministic navigation and recovered, while
+        # "openiss.washington.edu" was read as accepting a pending offer
+        # and handed to the browser planner. The address path existed --
+        # it just sat downstream of the model answering, and of every
+        # gate that runs when the model does not.
+        #
+        # The reading is the one already settled below: people do not say
+        # a bare domain to mean "tell me about this website", they say it
+        # to mean go there. This only moves where that is decided.
+        bare = self._address_only_turn(
+            user_input, computer_control_enabled=computer_control_enabled,
+        )
+        if bare is not None:
+            return bare
+
         state = conversation_state or {}
         spelled_entity = self._extract_spelled_entity(user_input)
         if spelled_entity:
@@ -2145,6 +2163,35 @@ class SemanticIntentRouter:
             computer_operation=computer_operation,
             computer_location=computer_location,
             computer_url=computer_url,
+        )
+
+    @staticmethod
+    def _address_only_turn(
+        user_input: str, *, computer_control_enabled: bool,
+    ) -> IntentDecision | None:
+        """The turn as a navigation, when the turn is only an address.
+
+        Returns ``None`` for everything else, including when computer
+        control is off -- with no browser to send it to, a bare address is
+        just something the person said.
+        """
+        if not computer_control_enabled:
+            return None
+        text = " ".join(str(user_input or "").split())
+        if not text or not _BARE_ADDRESS.fullmatch(text):
+            return None
+        address = text.rstrip(".!?")
+        return IntentDecision(
+            intent="computer_action",
+            confidence=1.0,
+            normalized_request=f"open {address}",
+            reason="The turn is an address and nothing else.",
+            speech_act="action_request",
+            action_requested=True,
+            action_target=address,
+            computer_operation="open_url",
+            computer_url=address,
+            request_explicitness="explicit",
         )
 
     @staticmethod
