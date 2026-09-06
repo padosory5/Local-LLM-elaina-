@@ -18,6 +18,8 @@ from brain.deliberation import ClarificationGate, Goal
 from brain.deliberation import goal_intent, interaction, supersession
 from brain.deliberation.goal_intent import SemanticGoal
 from brain import capability_selection
+from brain import result_state
+from brain import references
 from brain import browser_outcome
 from brain import browser_navigation
 from brain import browser_progress
@@ -290,6 +292,17 @@ _RESULT_FOLLOW_UP = re.compile(
     r"(?:\s+(?:then|though|really|actually))?"
     r"\s*[.?!]*\s*$",
     flags=re.IGNORECASE,
+)
+
+# Asking for one of them to be opened. The position is resolved by
+# brain/references.py, which owns the counting vocabulary; this is only the
+# other half of the sentence -- the part that says to go there rather than
+# to talk about it.
+_OPEN_REQUEST = re.compile(
+    r"\b(?:open|pull\s+(?:it|that|them|those)?\s*up|bring\s+"
+    r"(?:it|that|them|those)?\s*up|show\s+(?:me\s+)?|go\s+to|visit|"
+    r"take\s+me\s+to|let'?s\s+see)\b",
+    re.IGNORECASE,
 )
 
 # A bare greeting needs no model, locale, capability inventory, or service
@@ -3274,9 +3287,21 @@ class ChatEngine:
                 else "insufficient evidence to rank confidently"
             ),
         ))
+        # The whole fit, not its name. The URL, the ranking reason and the
+        # verdict were all worked out a line above and used to be dropped
+        # here -- which is why a later "open the second one" could count to
+        # a position and find nothing to open.
         self.task_sessions.record_candidates(
-            [fit.name for fit in fitting]
-            or [fit.name for fit in candidate_fit.viable(fits)],
+            result_state.from_fits(
+                fitting or candidate_fit.viable(fits),
+                kind=(
+                    result_state.PLACE if shape == candidate_fit.PLACE
+                    else result_state.PRODUCT if shape == candidate_fit.PRODUCT
+                    else result_state.UNKNOWN
+                ),
+                source="web_search",
+                query=query,
+            ).items,
             evidence=(candidate_fit.shortlist_text(fits),),
         )
 
@@ -8743,6 +8768,54 @@ class ChatEngine:
                 ))
             ):
                 return None
+            # "Open the second tab" counts against the browser's tabs, not
+            # against her shortlist, and the page layers own that. The
+            # counting vocabulary is identical for both, so the noun beside
+            # it is the only thing that tells them apart.
+            names_a_surface = re.search(
+                r"\b(?:tab|tabs|page|window|windows|screen|browser|app|"
+                r"apps|folder|file|files|result|results|link|links)\b",
+                transcript, re.IGNORECASE,
+            )
+            if (
+                active_problem is not None
+                and _OPEN_REQUEST.search(transcript)
+                and not names_a_surface
+            ):
+                # "Open the second one." The position counts against what
+                # she actually listed, and what gets opened is that result's
+                # own address -- never its label, because Phase 4E is a long
+                # record of labels and identities coming apart.
+                held = self.task_sessions.results()
+                reference = references.resolve(transcript, held.names())
+                if reference.resolved:
+                    chosen = held.at(reference.index)
+                    if chosen is not None and chosen.openable:
+                        print(
+                            f"[Reference] {reference.log_line()} -> "
+                            f"[{chosen.id}] {chosen.url}"
+                        )
+                        return IntentDecision(
+                            intent="computer_action",
+                            confidence=1.0,
+                            normalized_request=f"open {chosen.url}",
+                            reason="A position in the results she listed.",
+                            speech_act="action_request",
+                            action_requested=True,
+                            action_target=chosen.url,
+                            computer_operation="open_url",
+                            computer_url=chosen.url,
+                            is_follow_up=True,
+                        )
+                    # Resolved to something with nowhere to go, or to a
+                    # position that is not in hand. Neither is a guess to
+                    # make: the router sees the turn as it is.
+                    print(
+                        "[Reference] a position was named but nothing there "
+                        "can be opened."
+                    )
+                elif reference.reason:
+                    print(f"[Reference] {reference.reason}.")
             if (
                 active_problem is not None
                 and _RESULT_FOLLOW_UP.fullmatch(transcript)

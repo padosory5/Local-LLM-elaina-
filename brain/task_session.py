@@ -16,6 +16,7 @@ from typing import Any
 from brain import conversation_focus
 from brain import recommendation_state
 from brain import references
+from brain import result_state
 from brain.recommendation_state import RecommendationProblem
 
 
@@ -227,22 +228,57 @@ class TaskSessionStore:
 
         So a follow-up ranks the candidates already in hand rather than
         searching a second time for the same list.
+
+        Accepts either bare names or whole
+        :class:`~brain.result_state.Candidate` records, and stores records
+        either way. Names were all this used to keep, which meant the URL,
+        the ranking reason and the verdict were computed by the fit layer
+        and thrown away in the same breath -- so "open the second one" had
+        a position to count to and nothing to open.
         """
         problem = self.active_recommendation()
         if problem is None:
             return
-        names = tuple(
-            str(name).strip() for name in items if str(name).strip()
-        )[:8]
-        if not names and not evidence:
+        kept: list[result_state.Candidate] = []
+        for rank, item in enumerate(items or ()):
+            if isinstance(item, result_state.Candidate):
+                kept.append(replace(item, rank=rank))
+                continue
+            name = " ".join(str(item).split()).strip()
+            if name:
+                kept.append(result_state.Candidate(name=name, rank=rank))
+            if len(kept) >= 8:
+                break
+        found = tuple(kept[:8])
+        if not found and not evidence:
             return
         self._problem = replace(
             problem,
-            candidates=names or problem.candidates,
+            candidates=found or problem.candidates,
             evidence=(
                 tuple(str(value) for value in evidence)[-4:]
                 or problem.evidence
             ),
+        )
+
+    def results(self) -> "result_state.ResultSet":
+        """The candidates in hand, as a result set rather than a list.
+
+        A view rather than a second store: the problem still owns them, and
+        this is what gives a caller positions, identities and the ability to
+        ask whether any of them can actually be opened.
+        """
+        problem = self.active_recommendation()
+        held = tuple(getattr(problem, "candidates", ()) or ())
+        items = tuple(
+            item if isinstance(item, result_state.Candidate)
+            else result_state.Candidate(name=str(item), rank=rank)
+            for rank, item in enumerate(held)
+        )
+        return result_state.ResultSet(
+            items=items,
+            query=str(getattr(problem, "subject", "") or ""),
+            source="web_search",
         )
 
     def resolve_reference(self, text: str):
