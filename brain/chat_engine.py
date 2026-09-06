@@ -4592,27 +4592,21 @@ class ChatEngine:
         separator = " " if text.endswith((".", "!", "?")) else ". "
         return f"{text}{separator}{offer.text}"
 
-    _DECLINED_LINES = (
-        "Okay, I'll leave it.",
-        "Sure, no problem.",
-        "Alright, forget it then.",
-        "No worries, leaving it.",
-    )
-
     def _generic_declined(self) -> str:
         """Acknowledge a refusal, and vary it without losing the meaning.
 
         The status bank's bare acknowledgements ("Sure.", "Yeah.") read as
         agreement rather than as dropping something, which is the opposite
-        of what a refusal deserves.
+        of what a refusal deserves -- so a refusal has a bank of its own.
+
+        It used to be a private tuple here with a two-deep memory that
+        always took the first survivor, which is a weaker rotation than the
+        one every other line already gets. Same words, one selector: the
+        anti-repetition is now shared with everything else she says.
         """
-        recent = getattr(self, "_recent_declines", None)
-        if recent is None:
-            recent = self._recent_declines = deque(maxlen=2)
-        options = [line for line in self._DECLINED_LINES if line not in recent]
-        chosen = (options or list(self._DECLINED_LINES))[0]
-        recent.append(chosen)
-        return chosen
+        return self.action_status.select(StatusContext(
+            phase="declined", force=True,
+        )) or "Okay, I'll leave it."
 
     def _run_browser_capability(self, route, routing, user_input: str):
         """Drive the browser because the capability layer chose it.
@@ -8535,7 +8529,11 @@ class ChatEngine:
                     reason="The user closed the previous task.",
                 ),
                 user_input=user_input,
-                locked_response="You're welcome.",
+                # One hard-coded string meant every "thanks" in a session
+                # got the identical reply back.
+                locked_response=self.action_status.select(StatusContext(
+                    phase="closing", force=True,
+                )) or "You're welcome.",
             )
         if (
             _CANCELLATION.fullmatch(user_input)
@@ -9275,6 +9273,13 @@ class ChatEngine:
                 )
                 locked_response = (
                     pending_capability.offer_text
+                    # A parked offer normally carries the words the person
+                    # actually heard. When it does not, this used to be one
+                    # fixed question -- so an unclear reply got the same
+                    # sentence back however many times it happened.
+                    or self.action_status.select(StatusContext(
+                        phase="offer", force=True,
+                    ))
                     or "Want me to go ahead with that?"
                 )
         elif pending_offer is not None and not has_explicit_attachment:

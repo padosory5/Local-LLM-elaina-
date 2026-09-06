@@ -21,6 +21,8 @@ a new feature breaking an old behaviour, so it has to be cheap to extend.
 from __future__ import annotations
 
 import unittest
+
+from brain.action_status import ActionStatusSelector, StatusContext
 from dataclasses import dataclass, field
 
 from tests.turn_harness import build_engine, machine_actions, reset
@@ -270,7 +272,14 @@ class SequenceTests(unittest.TestCase):
 
         reply, actions = self._say("thanks")
 
-        self.assertEqual(reply, "You're welcome.")
+        # What this test is about is the two assertions below it: the old
+        # task is closed rather than restarted. The wording is chosen from
+        # the closing bank now -- it used to be one hard-coded string, so
+        # every thanks in a session got the identical reply back.
+        self.assertIn(
+            reply,
+            ActionStatusSelector()._options(StatusContext(phase="closing")),
+        )
         self.assertEqual(actions, [])
         self.assertIsNone(_ENGINE.task_sessions.current())
         self.assertEqual(_ENGINE._grounded_context, {})

@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 from brain.action_status import (
+    _BANKS,
     ACTION_BY_INTENT,
     ACTIONS,
     PHASES,
@@ -467,3 +468,165 @@ class RendererContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheConversationalCategoriesTests(unittest.TestCase):
+    """4F.1 made an offer and a commitment structured facts about a turn.
+
+    The status layer had no words for either, so both came out of banks
+    written for a different job -- an offer borrowed the recommendation
+    lines and a commitment borrowed execution_started. They are the brief's
+    own categories, and they now have banks of their own.
+    """
+
+    def test_an_offer_and_a_commitment_sound_different(self):
+        selector = ActionStatusSelector(rng=random.Random(1), min_seconds=0.0)
+
+        offers = {
+            selector.select(StatusContext(phase="offer", force=True))
+            for _ in range(4)
+        }
+        commitments = {
+            selector.select(
+                StatusContext(phase="commitment", action="searching"),
+            )
+            for _ in range(4)
+        }
+
+        self.assertFalse(offers & commitments)
+
+    def test_a_commitment_resolves_to_the_execution_bank(self):
+        # Named separately because the brief names it, and resolved rather
+        # than duplicated: "Give me a sec, I'll check" commits to the work
+        # and says it is starting. Two banks of the same lines would be two
+        # things that can drift.
+        selector = ActionStatusSelector(rng=random.Random(1), min_seconds=0.0)
+
+        line = selector.select(
+            StatusContext(phase="commitment", action="searching"),
+        )
+
+        self.assertIn(line, _BANKS["en"][0]["searching"])
+
+    def test_an_offer_asks_and_a_commitment_does_not(self):
+        # The 4F.1 distinction, in the words themselves: an offer is a
+        # question awaiting an answer; a commitment says the work is
+        # starting. Reading one as the other is what the whole phase's
+        # structured state exists to prevent.
+        selector = ActionStatusSelector(rng=random.Random(2))
+
+        for _ in range(5):
+            line = selector.select(
+                StatusContext(phase="commitment", action="searching",
+                              force=True),
+            )
+            with self.subTest(line=line):
+                self.assertFalse(line.rstrip().endswith("?"), line)
+
+    def test_every_new_phase_answers(self):
+        selector = ActionStatusSelector()
+
+        for phase in ("offer", "commitment", "declined", "closing"):
+            with self.subTest(phase=phase):
+                self.assertTrue(
+                    selector.select(StatusContext(
+                        phase=phase, action="searching", force=True,
+                    )),
+                )
+
+
+class TheOnceHardCodedLinesTests(unittest.TestCase):
+    """Two lines that never varied, now rationed like everything else."""
+
+    def test_thanks_does_not_get_the_same_reply_every_time(self):
+        # "You're welcome." was one string, so every thanks in a session
+        # came back identical.
+        selector = ActionStatusSelector(rng=random.Random(5))
+
+        said = [
+            selector.select(StatusContext(phase="closing", force=True))
+            for _ in range(4)
+        ]
+
+        self.assertEqual(len(set(said)), 4, said)
+
+    def test_a_refusal_varies_too(self):
+        # This bank lived in chat_engine with a two-deep memory that always
+        # took the first survivor -- a weaker rotation than the one every
+        # other line gets.
+        selector = ActionStatusSelector(rng=random.Random(6))
+
+        said = [
+            selector.select(StatusContext(phase="declined", force=True))
+            for _ in range(4)
+        ]
+
+        self.assertEqual(len(set(said)), 4, said)
+
+    def test_a_refusal_never_reads_as_agreement(self):
+        selector = ActionStatusSelector(rng=random.Random(7))
+        agreeing = {"yeah", "sure", "okay", "ok", "got it", "alright", "mm-hm"}
+
+        for _ in range(5):
+            line = selector.select(StatusContext(phase="declined", force=True))
+            with self.subTest(line=line):
+                self.assertNotIn(line.strip().rstrip(".").casefold(), agreeing)
+
+
+class ContinuingIsDecidedByTheInteractionTests(unittest.TestCase):
+    """4F.2 says the turn continues. The words should say so too.
+
+    The continuation bank existed and was reachable only through a
+    hard-coded set of two router labels, so picking a shortlist back up
+    announced itself as though it were a fresh search.
+    """
+
+    def test_the_continue_mode_reaches_the_continuation_bank(self):
+        selector = ActionStatusSelector(min_seconds=0.0, rng=random.Random(3))
+
+        line = selector.select(
+            StatusContext(action="searching", mode="continue"),
+        )
+
+        self.assertIn(line, _BANKS["en"][0]["continuing"])
+
+    def test_an_ordinary_turn_still_sounds_fresh(self):
+        selector = ActionStatusSelector(min_seconds=0.0, rng=random.Random(3))
+
+        line = selector.select(StatusContext(action="searching"))
+
+        self.assertIn(line, _BANKS["en"][0]["searching"])
+
+    def test_the_old_flag_still_works(self):
+        selector = ActionStatusSelector(min_seconds=0.0, rng=random.Random(3))
+
+        line = selector.select(
+            StatusContext(action="searching", continuing=True),
+        )
+
+        self.assertIn(line, _BANKS["en"][0]["continuing"])
+
+
+class ThirtyMixedLinesTests(unittest.TestCase):
+    """Criterion 6, with the new categories in the mix."""
+
+    def test_a_long_session_does_not_read_as_repetitive(self):
+        selector = ActionStatusSelector(min_seconds=0.0, rng=random.Random(9))
+        plan = (
+            [StatusContext(action=a, phase="execution_started")
+             for a in ("searching", "opening", "checking", "reading",
+                       "analyzing", "executing", "comparing")] * 3
+            + [StatusContext(phase=p, force=True)
+               for p in ("offer", "commitment", "declined", "closing",
+                         "success", "failure", "acknowledgement")]
+            + [StatusContext(action="searching", phase="execution_started")] * 2
+        )
+
+        said = [selector.select(context) for context in plan]
+        said = [line for line in said if line]
+
+        self.assertGreaterEqual(len(said), 28)
+        for index in range(1, len(said)):
+            with self.subTest(index=index):
+                self.assertNotEqual(said[index], said[index - 1])
+        self.assertGreaterEqual(len(set(said)), int(len(said) * 0.7))

@@ -55,6 +55,19 @@ PHASES = (
     "thinking",
     "recommendation",
     "permission_request",
+    # 4F.1 made an offer a structured fact about a turn -- ``speech_act:
+    # offer``, with something really parked behind it -- and the status
+    # layer had no contentless words for one, so the unclear-consent path
+    # fell back to a single hard-coded question.
+    "offer",
+    # Named because the brief names it, and resolved to execution_started
+    # rather than duplicated: "Give me a sec, I'll check" is both.
+    "commitment",
+    # Said when something is dropped or closed. Both lived as hard-coded
+    # lines elsewhere -- "You're welcome." was a single string, so every
+    # thanks in a session got the identical reply.
+    "declined",
+    "closing",
     "execution_started",
     "success",
     "failure",
@@ -209,6 +222,27 @@ _EN_PHASES = {
         "Want me to?",
         "Okay to go ahead?",
     ),
+    "offer": (
+        "Want me to pull it up?",
+        "I can look into that if you want.",
+        "Want me to check?",
+        "I could go and find out, if that helps.",
+        "Say the word and I'll have a look.",
+    ),
+    "declined": (
+        "Okay, I'll leave it.",
+        "Sure, no problem.",
+        "Alright, forget it then.",
+        "No worries, leaving it.",
+        "Fair enough.",
+    ),
+    "closing": (
+        "You're welcome.",
+        "Anytime.",
+        "No problem.",
+        "Sure thing.",
+        "Glad that helped.",
+    ),
     "success": (
         "Done.",
         "All set.",
@@ -319,6 +353,27 @@ _KO_PHASES = {
         "해도 될까?",
         "그럼 할게, 괜찮지?",
     ),
+    "offer": (
+        "띄워줄까?",
+        "원하면 한번 찾아볼게.",
+        "확인해볼까?",
+        "필요하면 알아봐줄게.",
+        "말만 하면 찾아볼게.",
+    ),
+    "declined": (
+        "알겠어, 그럼 놔둘게.",
+        "그래, 괜찮아.",
+        "응, 넘어가자.",
+        "알았어, 안 할게.",
+        "그럼 됐어.",
+    ),
+    "closing": (
+        "천만에.",
+        "별거 아니야.",
+        "언제든지.",
+        "도움이 됐다니 다행이야.",
+        "응, 괜찮아.",
+    ),
     "success": (
         "다 됐어.",
         "끝났어.",
@@ -354,6 +409,12 @@ class StatusContext:
     phase: str = "execution_started"
     subject: str = ""
     continuing: bool = False
+    # What 4F.2 decided this turn is. ``continue`` means the work carries
+    # on from results already in hand, and it should sound like it -- the
+    # continuation bank existed but was reachable only through a hard-coded
+    # set of two router labels, so picking a monitor back up out of a
+    # shortlist announced itself as though it were a fresh search.
+    mode: str = ""
     expected_seconds: float = 0.0
     confidence: float = 1.0
     force: bool = False
@@ -441,13 +502,24 @@ class ActionStatusSelector:
     def _options(self, context: StatusContext) -> tuple[str, ...]:
         execution, phases, hedged = _BANKS[self.language]
 
-        if context.phase != "execution_started":
-            return tuple(phases.get(context.phase, ()))
+        # A commitment and the start of execution are the same sentence:
+        # "Give me a sec, I'll check" commits to the work *and* says it is
+        # starting. The brief names them separately and 4F.1 distinguishes
+        # them in structured state, but a second bank of the same lines
+        # would be a duplicate that could drift, so the name resolves here
+        # instead of being written out twice.
+        phase = (
+            "execution_started" if context.phase == "commitment"
+            else context.phase
+        )
+        if phase != "execution_started":
+            return tuple(phases.get(phase, ()))
 
         if context.confidence < self.HEDGE_BELOW_CONFIDENCE:
             return tuple(hedged)
 
-        action = "continuing" if context.continuing else context.action
+        carrying_on = context.continuing or context.mode == "continue"
+        action = "continuing" if carrying_on else context.action
         return tuple(execution.get(action, execution["executing"]))
 
     def _choose(self, options: tuple[str, ...]) -> str:
