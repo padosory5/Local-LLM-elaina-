@@ -13,6 +13,7 @@ import unittest
 
 from brain.deliberation.interaction import (
     ANSWER,
+    CONTINUE,
     ASK_PERMISSION,
     CLARIFY,
     CONSEQUENTIAL,
@@ -99,7 +100,11 @@ class FollowUpTests(unittest.TestCase):
         )
 
         self.assertEqual(decision.need, NEED_RECALLED)
-        self.assertEqual(decision.mode, ANSWER)
+        # CONTINUE, not ANSWER: the turn works on a result set that already
+        # exists. What this test is really about -- nothing runs again --
+        # is the assertion below it, and that is unchanged.
+        self.assertEqual(decision.mode, CONTINUE)
+        self.assertTrue(decision.continues)
         self.assertTrue(decision.reuses_existing_results)
         self.assertFalse(decision.acts)
 
@@ -376,7 +381,7 @@ class EngineIntegrationTests(unittest.TestCase):
                        normalized_request="which one would you choose"),
                 has_usable_context=True,
             )
-            self.assertEqual(decision.mode, ANSWER)
+            self.assertEqual(decision.mode, CONTINUE)
             self.assertFalse(decision.acts)
         finally:
             self.engine.task_sessions.clear()

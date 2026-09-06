@@ -58,13 +58,27 @@ NEEDS = (NEED_NONE, NEED_RECALLED, NEED_FRESH, NEED_VERIFIED, NEED_MACHINE)
 
 # ------------------------------------------------------------------- modes
 
-ANSWER = "answer"                  # reply now, touch nothing
+ANSWER = "answer"                  # reply now, from what she knows
+CONTINUE = "continue"              # work on what this session already found
 EXECUTE = "execute"                # do it, no further permission needed
 RECOMMEND = "recommend"            # offer it; the user has not asked yet
 ASK_PERMISSION = "ask_permission"  # needs a yes before it happens
 CLARIFY = "clarify"                # needs a question answered first
 
-MODES = (ANSWER, EXECUTE, RECOMMEND, ASK_PERMISSION, CLARIFY)
+MODES = (ANSWER, CONTINUE, EXECUTE, RECOMMEND, ASK_PERMISSION, CLARIFY)
+
+# ``continue`` is the one 4F.2 adds, and it is not a nicety. The need was
+# already computed -- NEED_RECALLED, "this session already found it" -- and
+# then collapsed into ``answer``, so every consumer saw the same word for
+# two different jobs:
+#
+#     "Which one would you choose?"  -> reply from the set in hand
+#     "Anything cheaper?"            -> re-rank the set in hand
+#     "What's the capital of France?" -> reply from what she knows
+#
+# The first two work on a result set; the third does not. Nothing
+# downstream could tell them apart, which is why "anything cheaper" could
+# only ever be answered rather than acted on.
 
 
 # ------------------------------------------------------- permission levels
@@ -180,6 +194,18 @@ _DIRECT_INTENTS = frozenset({
     "agent_offer",
 })
 
+# What each need expects of the ability layer. Not a tool choice --
+# capability_selection makes that, reading the same need -- but a statement
+# of what this decision assumes will happen, so the two can be compared in
+# a log or a test instead of being assumed to agree.
+_ACTION_FOR_NEED = {
+    NEED_NONE: "",
+    NEED_RECALLED: "recall",
+    NEED_FRESH: "web_search",
+    NEED_VERIFIED: "live_verification",
+    NEED_MACHINE: "machine_action",
+}
+
 # Freshness values that mean "training knowledge is not good enough".
 _STALE_FRESHNESS = frozenset({"live", "current", "recent"})
 
@@ -192,10 +218,25 @@ class InteractionDecision:
     need: str = NEED_NONE
     intent: str = ""
     topic: str = ""
+    # What the person is actually trying to get done, in their own terms.
+    # ``topic`` is a filing label the classifier chose; this is the goal.
+    user_goal: str = ""
+    # What is not known yet and would change the answer. Empty is the
+    # normal case: asking for something that would not change anything is
+    # the friction this layer exists to avoid.
+    missing_information: tuple[str, ...] = ()
+    # The ability this decision implies, when it implies one. Tool *choice*
+    # stays with capability_selection; this is what the decision expects it
+    # to conclude, so the two can be compared instead of assumed equal.
+    proposed_action: str = ""
     can_answer_directly: bool = True
     action_would_help: bool = False
     has_usable_context: bool = False
     permission_level: int = INFORMATIONAL
+    # Whether this turn replaces something already outstanding. Stated here
+    # so it is one testable conclusion rather than a judgement each caller
+    # makes for itself.
+    supersedes_pending: bool = False
     confidence: float = 1.0
     result_surface: str = "none"
     reason: str = ""
@@ -212,6 +253,16 @@ class InteractionDecision:
         return self.mode in {ASK_PERMISSION, CLARIFY}
 
     @property
+    def continues(self) -> bool:
+        """Whether this turn works on results this session already has."""
+        return self.mode == CONTINUE
+
+    @property
+    def permission_required(self) -> bool:
+        """Whether anything has to be agreed before this happens."""
+        return self.mode in {ASK_PERMISSION, RECOMMEND}
+
+    @property
     def needs_external_information(self) -> bool:
         return self.need in {NEED_FRESH, NEED_VERIFIED}
 
@@ -220,14 +271,39 @@ class InteractionDecision:
         """The answer is already in this session; running a tool would repeat it."""
         return self.need == NEED_RECALLED
 
+    def as_dict(self) -> dict:
+        """The decision as data, for a log line or a test to read whole."""
+        return {
+            "user_goal": self.user_goal or self.topic,
+            "interaction_mode": self.mode,
+            "need": self.need,
+            "missing_information": list(self.missing_information),
+            "can_answer_directly": self.can_answer_directly,
+            "external_information_useful": self.action_would_help,
+            "proposed_action": self.proposed_action,
+            "permission_required": self.permission_required,
+            "reuse_existing_context": self.has_usable_context,
+            "supersedes_pending": self.supersedes_pending,
+            "response_surface": self.result_surface,
+            "confidence": round(float(self.confidence), 2),
+        }
+
     def log_block(self) -> str:
         """The debugging view. Console only -- never the conversation UI."""
+        missing = ", ".join(self.missing_information) or "(nothing)"
         return (
             "[Interaction]\n"
+            f"  Goal: {self.user_goal or self.topic or '(none)'}\n"
             f"  Need: {self.need}\n"
             f"  Decision: {self.mode}\n"
-            f"  Permission: level {self.permission_level}\n"
-            f"  Confidence: {self.confidence:.2f}\n"
+            f"  Missing: {missing}\n"
+            f"  Permission: level {self.permission_level}"
+            f"{' (must be agreed)' if self.permission_required else ''}\n"
+            + (
+                "  Supersedes what was pending: yes\n"
+                if self.supersedes_pending else ""
+            )
+            + f"  Confidence: {self.confidence:.2f}\n"
             f"  Why: {self.reason or '(none)'}"
         )
 
@@ -336,12 +412,51 @@ def _worth_offering(route: Any) -> bool:
         return False
 
 
+def _missing_for(route: Any, goal: Any, problem: Any) -> tuple[str, ...]:
+    """What is not known yet and would change which answer is right.
+
+    Deliberately almost always empty. A question whose answer would not
+    change anything is friction, and five questions before a suggestion is
+    worse than a suggestion that turns out to be slightly off -- which is
+    the rule ``RecommendationProblem.missing_dimension`` already applies.
+    This reads that rather than inventing a second opinion about it.
+    """
+    if problem is None:
+        return ()
+    try:
+        dimension = str(problem.missing_dimension() or "").strip()
+    except Exception:
+        return ()
+    return (dimension,) if dimension else ()
+
+
+def _goal_in_their_words(route: Any, goal: Any) -> str:
+    """What they are trying to get done, rather than what it was filed as.
+
+    The router's topic is a label -- "monitor purchase consideration" --
+    and reading it back as the goal is how a search box ended up with a
+    filing label in it. The semantic goal's own subject comes first, then
+    the normalised request, and the label is the last resort.
+    """
+    for candidate in (
+        str(getattr(goal, "subject", "") or ""),
+        str(_value(route, "normalized_request", "")),
+        str(_value(route, "topic", "")),
+    ):
+        cleaned = " ".join(candidate.split()).strip()
+        if cleaned:
+            return cleaned
+    return ""
+
+
 def decide(
     route: Any,
     *,
     goal: Any = None,
     has_usable_context: bool = False,
     explicitly_requested: bool | None = None,
+    problem: Any = None,
+    supersedes_pending: bool = False,
 ) -> InteractionDecision:
     """Read the routing signals once and say what should happen.
 
@@ -349,7 +464,10 @@ def decide(
     answer the request -- from ``TaskSessionStore.context_for_followup``.
     ``explicitly_requested`` overrides the router's own reading of whether
     the user asked for the action outright; left unset, ``action_requested``
-    decides.
+    decides. ``problem`` is the open recommendation, read only for what it
+    already knows is missing. ``supersedes_pending`` is what
+    :mod:`brain.deliberation.supersession` concluded about this turn; it is
+    reported rather than re-derived, so there is one answer to it.
     """
     intent = str(_value(route, "intent", ""))
     confidence = float(_value(route, "confidence", 1.0) or 1.0)
@@ -368,6 +486,10 @@ def decide(
         return InteractionDecision(
             mode=mode,
             need=need,
+            user_goal=_goal_in_their_words(route, goal),
+            missing_information=_missing_for(route, goal, problem),
+            proposed_action=_ACTION_FOR_NEED.get(need, ""),
+            supersedes_pending=bool(supersedes_pending),
             intent=(
                 str(getattr(goal, "intent", "")) if goal is not None
                 else intent
@@ -395,8 +517,12 @@ def decide(
         return built(CLARIFY, "the request cannot proceed until this is answered")
 
     if need == NEED_RECALLED:
+        # Not ``answer``. The turn is about a result set that already
+        # exists -- ranking it, narrowing it, pointing into it -- and a
+        # consumer that cannot tell that from "reply from what she knows"
+        # cannot act on it either.
         return built(
-            ANSWER,
+            CONTINUE,
             "this session already found it; searching again would repeat work",
         )
 

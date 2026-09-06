@@ -566,5 +566,59 @@ class ANameSaidAloudMustBeAboutTheSubjectTests(unittest.TestCase):
         self.assertTrue(engine._candidate_is_about("Anything at all", ""))
 
 
+class AQualityIsNotANewSubjectTests(unittest.TestCase):
+    """"Mechanical" describes a keyboard. It is not a different thing.
+
+    Measured live, three turns into a conversation about keyboards:
+
+        You said: I'm thinking about mechanical
+        [Active Task] id: 0c5cccd108e4  Subject: keyboards
+                      Constraints: (none)
+
+    "mechanical" was read as a new named thing, so the problem restarted
+    and ``preference=keyboards`` went with it. Every turn after that
+    carried no constraints at all -- which is why the conversation
+    accumulated nothing, no search was ever warranted, and six turns of
+    keyboard talk produced no options.
+    """
+
+    def test_a_bare_quality_is_not_a_thing(self):
+        for word in ("mechanical", "tactile", "wireless", "curved", "gaming"):
+            with self.subTest(word=word):
+                self.assertFalse(rs.names_a_thing(word))
+
+    def test_a_noun_still_is(self):
+        for word in (
+            "keyboard", "monitor", "laptop", "guitar",
+            "mechanical keyboard", "electric guitar",
+        ):
+            with self.subTest(word=word):
+                self.assertTrue(rs.names_a_thing(word))
+
+    def test_the_quality_is_filed_as_one(self):
+        found = rs.read_constraints("I'm thinking about mechanical")
+
+        self.assertEqual(
+            [(slot.name, slot.value) for slot in found],
+            [(rs.ATTRIBUTE, "mechanical")],
+        )
+
+    def test_the_conversation_keeps_what_it_learns(self):
+        store = TaskSessionStore()
+        for said in (
+            "Let's look at keyboards instead",
+            "I'm thinking about mechanical",
+            "tactile",
+            "gaming",
+        ):
+            problem = store.note_recommendation_turn(said, subject="keyboards")
+
+        query = problem.search_query("what do you think").casefold()
+
+        for word in ("keyboard", "mechanical", "tactile", "gaming"):
+            with self.subTest(word=word):
+                self.assertIn(word, query)
+
+
 if __name__ == "__main__":
     unittest.main()

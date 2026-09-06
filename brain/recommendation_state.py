@@ -69,7 +69,20 @@ CONTEXT_ONLY = (SITUATION, EXCLUSION)
 
 # Said when the person is replacing what they asked for, not adding to it.
 _REVISION = re.compile(
-    r"\b(?:actually|instead|on second thought|second thoughts|"
+    # "Actually" is the one ambiguous marker in this list. It opens a
+    # revision -- "Actually, something soft" -- and it also intensifies an
+    # adjective in the middle of a question. Unanchored it did both:
+    #
+    #     You said: Is it actually good?
+    #     before: preference=new monitor
+    #     after : (none)    superseded: preference=new monitor
+    #
+    # A question *about* a candidate retired the very thing being asked
+    # about. Every other marker here is unambiguous and is left alone --
+    # "instead" in particular has to keep matching at the end of a clause
+    # ("let's look at keyboards instead").
+    r"^\s*(?:(?:no|nope|nah|so|well|wait|ok(?:ay)?)[,!.]?\s+)?actually\b"
+    r"|\b(?:instead|on second thought|second thoughts|"
     r"changed my mind|never\s?mind|scratch that|forget (?:that|it)|"
     r"rather than that|no wait)\b"
     r"|아니(?:요|다)?\s|그냥\s+말고",
@@ -809,6 +822,15 @@ def revises(text: str) -> bool:
     return bool(_REVISION.search(str(text or "")))
 
 
+# Endings that describe a kind rather than name one: "mechanical",
+# "tactile", "wireless", "curved", "gaming", "electronic". A noun that
+# ends this way is rare, and the cost of being wrong is only that the
+# word is filed as a quality of the thing already under discussion.
+_READS_AS_A_QUALITY = re.compile(
+    r"(?:al|ic|ile|less|ous|ive|ish|ed|ing)$", re.IGNORECASE,
+)
+
+
 def names_a_thing(phrase: str) -> bool:
     """Whether this is a thing, or only a word standing in for one.
 
@@ -846,10 +868,31 @@ def names_a_thing(phrase: str) -> bool:
     except Exception:
         return True
     empty = _DETERMINERS | _VAGUE_ADJECTIVES | _NOT_A_SUBJECT
-    return any(
-        word not in empty
+    content = [
+        word
         for word in re.findall(r"[a-z0-9가-힣']+", text)
-    )
+        if word not in empty
+    ]
+    if not content:
+        return False
+    # One word, and it describes a kind rather than naming one. Measured
+    # live, three turns into a conversation about keyboards:
+    #
+    #     You said: I'm thinking about mechanical
+    #     [Active Task] id: 0c5cccd108e4   Subject: keyboards
+    #                   Constraints: (none)
+    #
+    # "mechanical" was read as a new thing, so the problem restarted and
+    # ``preference=keyboards`` went with it. Every turn after that carried
+    # no constraints at all, which is why the conversation accumulated
+    # nothing and no search was ever warranted.
+    #
+    # The asymmetry is what makes a heuristic safe here: reading a quality
+    # as a thing throws the whole problem away, while reading a thing as a
+    # quality only files it in the other slot on a problem that survives.
+    if len(content) == 1 and _READS_AS_A_QUALITY.search(content[0]):
+        return False
+    return True
 
 
 def read_constraints(

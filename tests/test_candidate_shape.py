@@ -123,7 +123,18 @@ class ArticlesAreNotCandidatesTests(unittest.TestCase):
 
         self.assertFalse(fits[0].shape_problem)
 
-    def test_the_shape_check_is_off_when_nothing_particular_is_expected(self):
+    def test_a_round_up_is_still_an_article_when_no_shape_is_expected(self):
+        # The *kind* check has nothing to say here -- "something relaxing"
+        # expects neither a product nor a place, so no price or opening
+        # hours are required. The article check is a different question,
+        # and its answer does not depend on what kind of thing was wanted:
+        # a round-up is writing about things either way.
+        #
+        # Measured live, on "find me a good monitor": a monitor is in no
+        # variants table and "find me" names no buying verb, so the shape
+        # came out ANY -- and four round-ups and category pages ranked as
+        # viable candidates, which is why the answer named a monitor from
+        # the model's own memory instead of from the search.
         store = TaskSessionStore()
         problem = store.note_recommendation_turn(
             "I want something relaxing.", subject="evening",
@@ -131,7 +142,27 @@ class ArticlesAreNotCandidatesTests(unittest.TestCase):
 
         fits = cf.evaluate([LISTICLE], problem)
 
+        self.assertEqual(fits[0].verdict, "OFF-TARGET")
+        self.assertFalse(fits[0].viable)
+
+    def test_the_kind_specific_check_is_still_off(self):
+        # A real thing with no price on it is not excluded when nothing
+        # particular was expected -- that check belongs to `looks_like`,
+        # and it is the one the shape genuinely governs.
+        store = TaskSessionStore()
+        problem = store.note_recommendation_turn(
+            "I want something relaxing.", subject="evening",
+        )
+
+        fits = cf.evaluate(
+            [{"title": "Quiet Corner Tea House",
+              "url": "https://example.com/place/quiet-corner",
+              "summary": "a small place"}],
+            problem,
+        )
+
         self.assertEqual(fits[0].shape_problem, "")
+        self.assertTrue(fits[0].viable)
 
 
 class UncheckedIsNotPermissionTests(unittest.TestCase):

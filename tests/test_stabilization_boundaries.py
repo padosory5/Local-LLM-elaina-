@@ -359,7 +359,10 @@ class TypeAndQueryBoundaryTests(unittest.TestCase):
         ]
         fits = cf.evaluate(candidates, problem)
         self.assertEqual([fit.name for fit in fits if fit.viable], ["Cort Electric Guitar"])
-        self.assertEqual(cf.off_target("85 Easy Electric Guitar Songs", "", "", cf.ANY), "")
+        # A listicle is writing about guitars whatever kind of thing was
+        # expected. It used to pass here only because ANY switched the
+        # article test off along with the kind-specific ones.
+        self.assertTrue(cf.off_target("85 Easy Electric Guitar Songs", "", "", cf.ANY))
 
     def test_bare_metadata_does_not_discard_a_valid_retrieved_product(self):
         problem = TaskSessionStore().note_recommendation_turn("Find me an electric guitar under 500,000 won")

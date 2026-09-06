@@ -607,12 +607,31 @@ def off_target(name: str, url: str, summary: str, shape: str) -> str:
 
     Only ever used to *exclude*: something that survives this is not
     thereby a match, it is merely the right kind of thing to check.
+
+    The article tests below run whatever the expected shape is. They say
+    "this page is writing *about* things, not one of them", which is true
+    of a round-up regardless of what kind of thing was wanted -- and the
+    ``shape == ANY`` early-out used to switch them off along with the
+    kind-specific checks. Measured live, on "find me a good monitor":
+
+        [Recommendation Reasoning] Candidates: 6 (0 fit, 4 unchecked)
+        Candidates: All Computer Monitor Options - Best Buy,
+                    Amazon Best Sellers: Best Computer Monit,
+                    The 7 Best Gaming Monitors of 2026 - RTI,
+                    The Best Monitors We've Tested for 2026
+
+    Four articles and category pages, every one of them "viable". A
+    monitor is not in ``_VARIANTS`` and "find me" names no buying verb, so
+    ``expected_shape`` returned ANY and nothing was filtered at all. The
+    answer that came back named a monitor from the model's own memory,
+    because the search had supplied none.
     """
-    if shape == ANY:
-        return ""
     host = _host(url)
     if any(host.endswith(article) for article in _ARTICLE_HOSTS):
-        return f"{host} publishes articles, not {shape}s"
+        return (
+            f"{host} publishes articles, not {shape}s" if shape != ANY
+            else f"{host} publishes writing about these, not one of them"
+        )
     if _ARTICLE_PATH.search(str(url or "")):
         return "the page is an article"
     if _ARTICLE_TITLE.search(str(name or "")):

@@ -22,6 +22,8 @@ from brain.deliberation.interaction import (
 )
 from brain.deliberation.interpreter import interpret
 from brain.deliberation.pending import ClarificationGate, PendingClarification
+from brain.deliberation.supersession import Supersession
+from brain.deliberation.supersession import read as read_supersession
 
 # Two different decisions, both named ``decide`` in their own module and
 # deliberately not sharing a name here. ``decide`` answers "do I know enough
@@ -37,8 +39,10 @@ __all__ = [
     "Goal",
     "InteractionDecision",
     "PendingClarification",
+    "Supersession",
     "Slot",
     "decide",
     "decide_interaction",
     "interpret",
+    "read_supersession",
 ]

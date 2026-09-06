@@ -15,7 +15,7 @@ from memory.consolidator import MemoryConsolidator
 from memory.context_builder import ContextBuilder
 from brain.prompt_builder import PromptBuilder
 from brain.deliberation import ClarificationGate, Goal
-from brain.deliberation import goal_intent, interaction
+from brain.deliberation import goal_intent, interaction, supersession
 from brain.deliberation.goal_intent import SemanticGoal
 from brain import capability_selection
 from brain import browser_outcome
@@ -915,6 +915,10 @@ class ChatEngine:
         # without parking anything. Reset with the ledger, for the same
         # reason: it describes this turn and nothing beyond it.
         self._invitation_stands = False
+        # What this turn does to anything outstanding. Read once per turn
+        # by the routing phase, and reported by the interaction decision.
+        self._supersedes = supersession.Supersession()
+        self._last_interaction = interaction.InteractionDecision()
         self.brief_responses = BriefResponseGenerator(
             self.client,
             self.model,
@@ -8330,6 +8334,12 @@ class ChatEngine:
             has_machine_target
             and browser_progress.continues_the_last_action(user_input)
         )
+        # One reading of "does this turn beat what is pending", made here
+        # and carried into the interaction decision below, so the answer is
+        # stated once rather than re-derived by every layer that cares.
+        self._supersedes = supersession.read(user_input)
+        if self._supersedes:
+            print(self._supersedes.log_line())
         if not continuing_agent_flow and (
             names_its_own_errand(user_input)
             or speaks_an_address
@@ -9493,7 +9503,13 @@ class ChatEngine:
             route,
             goal=goal,
             has_usable_context=has_context,
+            problem=self.task_sessions.active_recommendation(),
+            supersedes_pending=bool(getattr(self, "_supersedes", None)),
         )
+        # Kept so the turn's conclusion can be read back -- by a test, and
+        # by any later phase that needs what this turn decided rather than
+        # deciding it again.
+        self._last_interaction = decision
         problem = self._track_recommendation(
             route,
             goal,
@@ -9784,6 +9800,9 @@ class ChatEngine:
         # arrives on the next one. Only the action state is cleared.
         self.action_ledger.begin_turn()
         self._invitation_stands = False
+        # Replaced by the routing phase; reset here so a turn that returns
+        # early cannot leave the last turn's reading behind it.
+        self._supersedes = supersession.Supersession()
 
         ####################################################
         # Retrieve Memories

@@ -230,7 +230,10 @@ class DecisionTests(unittest.TestCase):
         choice = caps.select(goal, decision, route=route)
 
         self.assertEqual(decision.need, interaction.NEED_RECALLED)
-        self.assertEqual(decision.mode, interaction.ANSWER)
+        # The recalled turn continues the session's own results rather than
+        # answering from general knowledge. Both touch nothing, which is
+        # what the capability assertions below are checking.
+        self.assertEqual(decision.mode, interaction.CONTINUE)
         self.assertTrue(decision.has_usable_context)
         self.assertEqual(choice.capability, caps.DIRECT_ANSWER)
         self.assertFalse(choice.needs_agent)

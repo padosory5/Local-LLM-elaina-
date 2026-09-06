@@ -83,7 +83,16 @@ _CORRECTIONS = (
         r"(.+)$",
         re.IGNORECASE,
     ),
-    re.compile(r"\bactually[,]?\s+(.+)$", re.IGNORECASE),
+    # Anchored, and to the sentence rather than the string. A
+    # correction opens with "actually" -- "Actually, let's look at
+    # keyboards" -- while a mid-sentence one is an intensifier, and
+    # reading that as a correction made "Is it actually good?" a
+    # request to change the subject to "good".
+    re.compile(
+        r"^\s*(?:(?:no|nope|nah|so|well|wait|ok(?:ay)?)[,!.]?\s+)?"
+        r"actually[,]?\s+([^.?!]+)",
+        re.IGNORECASE,
+    ),
 )
 
 # Background facts worth carrying: where, and when. Deliberately two, and
