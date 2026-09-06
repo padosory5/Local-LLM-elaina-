@@ -76,6 +76,30 @@ _REVISION = re.compile(
     re.IGNORECASE,
 )
 
+# Giving something up. Not a revision of the whole request -- "I'm going to
+# quit gaming" leaves the monitor entirely intact -- but it does retire the
+# one preference that was about the thing being given up.
+#
+# Measured live: "since I'm going to quit gaming now so let's say coding"
+# left ``preference=gaming monitor`` standing, and the next turn's search
+# went out as "new monitor gaming" for someone who had just said they were
+# done with gaming.
+_DROPPING = re.compile(
+    r"\b(?:quit|quitting|stop|stopped|stopping|give\s+up|giving\s+up|"
+    r"done\s+with|no\s+longer\s+(?:doing|into|playing)|not\s+into)\s+"
+    r"(?:doing\s+|playing\s+)?"
+    r"([a-z][a-z-]{2,20})\b",
+    re.IGNORECASE,
+)
+
+# "Let's say coding." Settling a choice the conversation was weighing, in
+# the one phrase that means exactly that and nothing else.
+_SETTLES_ON = re.compile(
+    r"\b(?:let'?s\s+say|let'?s\s+go\s+with|make\s+it|say)\s+"
+    r"([a-z][a-z-]{2,20})\b",
+    re.IGNORECASE,
+)
+
 # A situation is a fact about the person that shapes what suits them. Read
 # narrowly and verbatim: the architecture's job is to carry "sore throat"
 # into the reasoning, never to decide what a sore throat implies.
@@ -114,6 +138,11 @@ _SITUATIONS = (
 # summer 2027" leaves "internship" -- a phrase that can go in a search box.
 _WANTED = re.compile(
     r"\b(?:want|wanted|looking for|prefer|feel like|craving|"
+    # "Actually let's look at keyboards instead." A correction that names
+    # what to look at instead has to register the new thing, or the old
+    # subject is retired and nothing replaces it -- measured in the 4F.1
+    # edge-case pass, which left the problem with an empty subject.
+    r"look(?:ing)?\s+at|check\s+out|"
     r"in the mood for|fancy|after|find(?:\s+me)?|recommend(?:\s+me)?)\s+"
     r"(?:to\s+[a-z]+\s+)?"
     r"(?:some\s+|a\s+|an\s+|the\s+)?"
@@ -134,6 +163,27 @@ _SOMETHING = re.compile(
     r"(?=[,.;!?]|$|\s+(?:and|but|or|because|since|so|that|which))",
     re.IGNORECASE,
 )
+
+# "a gaming one" -- the qualifier is a quality of whatever is already being
+# discussed, and "one" is the thing itself. This is the other half of
+# ``names_a_thing``: that stops the pair being read as a subject, and this
+# keeps the half of it that does say something.
+#
+# Measured live, answering her own question ("a gaming one or something for
+# work?"): "like a gaming one but I do work with coding sometimes" put
+# nothing at all into the problem, so the search went out generic.
+_QUALIFIED_PRO_FORM = re.compile(
+    r"\b(?:a|an|the)\s+([a-z][a-z-]{2,20})\s+ones?\b", re.IGNORECASE,
+)
+
+# Words that pick a member out of a set rather than describing one. "the
+# last one" is a position, not a quality, and searching for a "last monitor"
+# finds nothing.
+_POSITIONAL = frozenset({
+    "first", "second", "third", "fourth", "fifth", "sixth", "last", "next",
+    "other", "another", "same", "right", "wrong", "only", "previous",
+    "latter", "former", "each", "every", "certain", "particular", "wrong",
+})
 
 # A recommendation about something that exists in the world and can be
 # bought or visited -- as opposed to "what should I cook tonight". The
@@ -420,6 +470,35 @@ _WEAK_SUBJECTS = frozenset({
     "store", "stores", "one", "ones",
 })
 
+def without_filing_words(subject: str) -> str:
+    """A topic label, said the way a person would search for it.
+
+    The router names a topic the way a clerk names a folder -- "monitor
+    purchase consideration" -- and that string went into the search box
+    whole, and into ``_thing()``, which then decided the conversation was
+    about a "consideration".
+
+    ``brain.recommendation`` already strips these to phrase an offer out
+    loud. The query has the same problem and gets the same list, rather
+    than a second copy of it that can drift.
+
+    Returns "" when nothing survives, so every caller can decide whether
+    the stripped version is an improvement on what it had.
+    """
+    text = " ".join(str(subject or "").split())
+    if not text:
+        return ""
+    try:
+        from brain.recommendation import _FILING_WORDS
+    except Exception:
+        return text
+    kept = [
+        word for word in text.split()
+        if word.casefold().strip(".,!?") not in _FILING_WORDS
+    ]
+    return " ".join(kept)
+
+
 _FILLER = re.compile(
     r"^(?:the|a|an|some|any|me|my|of|for|that|this)\b\s*", re.IGNORECASE,
 )
@@ -602,16 +681,43 @@ def _as_phrase(value: str) -> str:
 
 
 # A multi-word capitalised name -- an organisation, an institution, a
-# place. Single capitalised words are excluded: too many of them are just
-# sentence openings, and a one-word name is usually already in the subject.
+# place.
 _NAMED_ENTITY = re.compile(
     r"\b([A-Z][A-Za-z0-9&'’-]*"
     r"(?:\s+(?:of|the|and|de|del|van|von)\s+[A-Z][A-Za-z0-9&'’-]*"
     r"|\s+[A-Z][A-Za-z0-9&'’-]*){1,4})\b"
 )
 
+# And a single one. This used to be excluded, on the grounds that a one-word
+# name is usually already in the subject -- which is true right up until it
+# is a brand the person has just introduced. Measured live:
+#
+#     You said: Do you have like any like Samsung monitors for gaming?
+#     [Router] Interpreted transcript as: recommend Samsung monitors for
+#              gaming
+#     [Query] source: active_task  text: about it monitor
+#
+# The router read it correctly and the held problem overwrote it. The one
+# word the person had actually specified was the one word dropped, which is
+# the same failure this function was written for.
+#
+# Sentence-initial capitals are grammar and are dropped by the caller. What
+# is left to exclude is the handful of words that open a request without
+# naming anything.
+_LONE_NAME = re.compile(r"\b([A-Z][A-Za-z0-9'’-]{2,})\b")
 
-def _with_named_entities(core: str, request: str) -> str:
+_NOT_A_NAME = frozenset({
+    "i", "i'm", "do", "does", "did", "can", "could", "would", "should",
+    "shall", "will", "what", "when", "where", "why", "how", "which", "who",
+    "please", "also", "but", "and", "or", "if", "so", "the", "this", "that",
+    "there", "these", "those", "find", "get", "show", "give", "recommend",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday", "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+})
+
+
+def _with_named_entities(core: str, request: str, *, retired=()) -> str:
     """Keep a name the request introduced that the subject does not have.
 
     The held subject is usually the better search term -- it survives
@@ -619,21 +725,40 @@ def _with_named_entities(core: str, request: str) -> str:
     is know about an organisation the person named for the first time in
     this turn, and dropping that turns a question about an office into a
     question about a form.
+
+    ``retired`` is what the conversation has already moved on from. The
+    router still sees the whole history, so the request carrying "actually,
+    something else" still contains the thing being retracted -- and a name
+    carried forward from it would put back exactly what was just given up.
+    Word by word, because a retired "Korean BBQ" has to stop a lone "BBQ".
     """
     core = " ".join(str(core or "").split())
     request = " ".join(str(request or "").split())
     if not request:
         return core
+    gone = {
+        word
+        for value in (retired or ())
+        for word in re.findall(r"[a-z0-9가-힣']+", str(value).casefold())
+    }
     lowered = core.casefold()
-    for match in _NAMED_ENTITY.finditer(request):
-        name = match.group(1).strip()
-        if name.casefold() in lowered:
-            continue
-        # Sentence-initial capitals are grammar, not names.
-        if match.start() == 0:
-            continue
-        core = f"{core} {name}".strip() if core else name
-        lowered = core.casefold()
+    for pattern in (_NAMED_ENTITY, _LONE_NAME):
+        for match in pattern.finditer(request):
+            name = match.group(1).strip()
+            if name.casefold() in lowered:
+                continue
+            # Sentence-initial capitals are grammar, not names.
+            if match.start() == 0:
+                continue
+            if name.casefold() in _NOT_A_NAME:
+                continue
+            if any(
+                word in gone
+                for word in re.findall(r"[a-z0-9가-힣']+", name.casefold())
+            ):
+                continue
+            core = f"{core} {name}".strip() if core else name
+            lowered = core.casefold()
     return core
 
 
@@ -646,6 +771,20 @@ def _clean(value: str) -> str:
         value = stripped
 
 
+# An attribute is a quality of the thing. A phrase that opens with a
+# preposition is pointing somewhere instead of describing something.
+#
+# Measured live: "do you have anything about it" left the constraint
+# ``attribute=about it`` on an open monitor problem, and it stayed there.
+# Two turns later the query went out as "about it monitor", the results
+# were about IT monitoring, and "What is IT Monitoring?" was recommended
+# to someone asking about Samsung gaming monitors.
+_NOT_A_QUALITY = frozenset({
+    "about", "of", "for", "with", "from", "to", "in", "on", "at", "by",
+    "near", "around", "under", "over", "into", "onto", "like",
+})
+
+
 def _slot(name: str, value: str, source: str) -> Slot | None:
     value = _clean(value)
     if not value or value.casefold() in _EMPTY_SUBJECTS:
@@ -654,12 +793,63 @@ def _slot(name: str, value: str, source: str) -> Slot | None:
         # "Find some places" names no new object. Keep the active task;
         # qualified objects such as "guitar shops" still carry meaning.
         return None
+    if name == ATTRIBUTE:
+        words = value.casefold().split()
+        # Only the opening word, and only prepositions. A vague adjective
+        # is still a quality -- "anything cheaper?" is a real refinement
+        # and has to survive -- so this may not reach for the wider
+        # "names nothing" test that guards a preference.
+        if words and (words[0] in _NOT_A_QUALITY or words[0] == "else"):
+            return None
     return Slot(name=name, value=value, source=source)
 
 
 def revises(text: str) -> bool:
     """Whether this turn replaces what was asked for rather than adding."""
     return bool(_REVISION.search(str(text or "")))
+
+
+def names_a_thing(phrase: str) -> bool:
+    """Whether this is a thing, or only a word standing in for one.
+
+    "a good one" is not a preference. "one" points back at whatever is
+    already being discussed and "good" is how they feel about it, so
+    reading the pair as a subject swaps a monitor for an adjective.
+
+    Measured live, two turns into a conversation about buying a monitor:
+
+        You said: like a gaming one but I do work with coding sometimes
+                  so can you find me a good one for it?
+        [Active Task] Subject: good
+        [Query] source: active_task  text: good
+        [Tool] Searching web for: good
+        Elaina: The one I actually found is GOOD Definition & Meaning,
+                Merriam-Webster.
+
+    The router had read the turn correctly -- "find a good monitor for
+    gaming and coding" -- and this layer overwrote it, because a preference
+    with any words in it outranked the subject already held.
+
+    The word lists are ``brain.recommendation``'s, not a second copy: that
+    module already has to know which words name nothing in order to phrase
+    an offer, and two tables of vague adjectives would drift apart.
+    """
+    text = str(phrase or "").casefold()
+    if not text.strip():
+        return False
+    try:
+        from brain.recommendation import (
+            _DETERMINERS,
+            _NOT_A_SUBJECT,
+            _VAGUE_ADJECTIVES,
+        )
+    except Exception:
+        return True
+    empty = _DETERMINERS | _VAGUE_ADJECTIVES | _NOT_A_SUBJECT
+    return any(
+        word not in empty
+        for word in re.findall(r"[a-z0-9가-힣']+", text)
+    )
 
 
 def read_constraints(
@@ -704,10 +894,31 @@ def read_constraints(
                 slot = _slot(ATTRIBUTE, raw, source)
             elif lowered.startswith(("something ", "anything ")):
                 slot = _slot(ATTRIBUTE, raw.split(" ", 1)[1], source)
+            elif not names_a_thing(raw):
+                # "find me a good one" names nothing. Reading it as the
+                # preference replaced the subject with "good" and searched
+                # the web for the word; a quality with no noun is at most
+                # an attribute of whatever is already being discussed.
+                slot = _slot(ATTRIBUTE, lowered, source)
             else:
                 slot = _slot(PREFERENCE, raw, source)
             if slot is not None:
                 found.append(slot)
+
+    for match in _SETTLES_ON.finditer(text):
+        slot = _slot(ATTRIBUTE, match.group(1).casefold(), source)
+        if slot is not None:
+            found.append(slot)
+
+    for match in _QUALIFIED_PRO_FORM.finditer(text):
+        quality = match.group(1).casefold()
+        if quality in _POSITIONAL:
+            # "the last one" picks a member out of a set. It is a reference,
+            # not a quality, and resolving it belongs to the candidate layer.
+            continue
+        slot = _slot(ATTRIBUTE, quality, source)
+        if slot is not None:
+            found.append(slot)
 
     for pattern in _EXCLUSIONS:
         for match in pattern.finditer(text):
@@ -811,6 +1022,90 @@ def read_short_reply(text: str) -> tuple[Slot, ...]:
     # duplicates "electric" from the router topic in a query.
     slot = _slot(ATTRIBUTE, text.casefold(), SOURCE_ASKED)
     return (slot,) if slot is not None else ()
+
+
+# What opens a noun phrase. Reaching one while walking back from the noun
+# is what proves the words in between belong to it.
+_DETERMINER_WORDS = frozenset({
+    "a", "an", "the", "some", "any", "my", "your", "our", "this", "that",
+    "these", "those", "another",
+})
+
+# Words that pad a spoken noun phrase without describing anything in it.
+# Hitting one stops the walk: they mark where the phrase ends.
+_PHRASE_PADDING = frozenset({
+    "just", "really", "quite", "pretty", "very", "kind", "sort", "like",
+    "maybe", "probably", "guess", "think", "something", "anything",
+    "one", "ones", "im", "i", "am", "is", "was", "be", "talking", "about",
+    "of", "for", "with", "to", "in", "on", "at", "and", "or", "but",
+})
+
+
+def qualities_named_with(text: str, thing: str) -> tuple[Slot, ...]:
+    """Adjectives the turn hangs on the thing already being discussed.
+
+    "Just a good curved monitor I guess." parses as no request at all --
+    no verb, no marker, nothing any reader above recognises -- and it is
+    exactly how someone narrows a choice out loud. Measured live, six
+    turns into a conversation about buying one:
+
+        You said: Just a good curved monitor I guess.
+        [Active Task] Constraints: (none)
+        Elaina:   A curved monitor can be great for coding ... Let me know
+                  what size and resolution you're thinking about.
+
+    The turn contributed nothing to the problem, so the next request had
+    no more to go on than the first one did, and she asked for the size
+    again.
+
+    Only the words immediately before the thing the problem already holds.
+    A turn that names something else is a different problem, and that is
+    settled before this is reached.
+    """
+    thing = str(thing or "").strip().casefold()
+    words = re.findall(r"[a-z0-9\uac00-\ud7a3'-]+", str(text or "").casefold())
+    if not thing or not words:
+        return ()
+    try:
+        from brain.recommendation import _singular
+    except Exception:
+        return ()
+    where = next(
+        (
+            index for index, word in enumerate(words)
+            if _singular(word) == _singular(thing)
+        ),
+        -1,
+    )
+    if where <= 0:
+        return ()
+    # A noun phrase is bounded by its determiner, and that boundary is the
+    # whole safety of this reader: the modifiers are what sits between "a"
+    # and the noun. It is what separates "just a good curved monitor" from
+    # "I'm talking about monitors" -- the second has no determiner in front
+    # of the noun, and taking its words gave the query "i'm talking".
+    window = words[max(0, where - 4):where]
+    opener = next(
+        (
+            index for index in range(len(window) - 1, -1, -1)
+            if window[index] in _DETERMINER_WORDS
+        ),
+        -1,
+    )
+    if opener < 0:
+        return ()
+    kept = [
+        word for word in window[opener + 1:]
+        if word not in _PHRASE_PADDING
+        and word not in _POSITIONAL
+        and len(word) >= 3
+    ][:2]
+    found = [
+        slot for slot in (
+            _slot(ATTRIBUTE, word, SOURCE_UTTERANCE) for word in kept
+        ) if slot is not None
+    ]
+    return tuple(found)
 
 
 # A reply that is only an amount, said in answer to a question about one.
@@ -1006,7 +1301,10 @@ class RecommendationProblem:
             if slot.name == PREFERENCE:
                 return slot.value.split()[-1].casefold()
         words = [
-            word for word in self.subject.split()
+            word
+            for word in (
+                without_filing_words(self.subject) or self.subject
+            ).split()
             if word.casefold() not in _WEAK_SUBJECTS
         ]
         return words[-1].casefold() if words else ""
@@ -1160,13 +1458,18 @@ class RecommendationProblem:
         # task in a different bucket.
         head = " ".join(self.values(ATTRIBUTE, PREFERENCE, HOUSING_TYPE))
         core = self.strip_retired(self.subject) or self.domain
+        # "monitor purchase consideration" is how a classifier files a
+        # topic, not how anyone searches for one.
+        core = without_filing_words(core) or core
         # A name this turn introduced is not optional. Measured live: the
         # request was "find contact information for the University of
         # Washington regarding I-20 verification" and the query went out as
         # "I-20 form processing" -- the held subject outranked the entity
         # the person had just named, and the search was about the form
         # rather than about the office that issues it.
-        core = _with_named_entities(core, fallback)
+        core = _with_named_entities(
+            core, fallback, retired=self.retired_values,
+        )
         if not core or core.casefold() in _EMPTY_SUBJECTS:
             # The turn's own words are the last resort, and only their
             # content half: "pull up some spots for me" contributes
@@ -1318,7 +1621,7 @@ def _fits(
     }
     if not known:
         return True
-    return bool(words & known)
+    return _shares_a_word(words, known)
 
 
 def update(
@@ -1343,6 +1646,11 @@ def update(
     incoming = read_constraints(text, source=source, said_before=said_before)
     if not incoming and problem.constraints:
         incoming = read_short_reply(text)
+    if not incoming:
+        # A bare noun phrase naming the thing already under discussion:
+        # "just a good curved monitor". No reader above recognises it, and
+        # it is how a choice actually gets narrowed out loud.
+        incoming = qualities_named_with(text, problem._thing())
 
     constraints = problem.constraints
     superseded = problem.superseded
@@ -1362,6 +1670,22 @@ def update(
             )
             superseded = superseded + retiring
             previous = ""
+
+    # Giving something up retires the preference that names it, and only
+    # that one. A revision above retires every preference; this is the
+    # narrower case, where the person drops one part of what they wanted
+    # and keeps the rest.
+    for match in _DROPPING.finditer(text):
+        dropped = match.group(1).casefold()
+        going = tuple(
+            slot for slot in constraints
+            if slot.name == PREFERENCE and dropped in slot.value.casefold()
+        )
+        if going:
+            constraints = tuple(
+                slot for slot in constraints if slot not in going
+            )
+            superseded = superseded + going
 
     constraints = _merge(constraints, incoming)
     # Stripped against what has *just* been retired, and applied to the
@@ -1516,6 +1840,36 @@ def starts_a_recommendation(text: str) -> bool:
         thing in _VARIANTS or is_purchase(text) or category_for(text)
     )
 
+def _stems(words) -> set[str]:
+    """Words reduced so a plural and its singular are the same word.
+
+    Measured live, five turns into a conversation about buying a monitor:
+
+        You said: Now I'm talking about monitors.
+        [Conversation State] No longer the focus: monitor purchase
+                             consideration
+        [Active Task] id: 44c074d9a824   Constraints: (none)
+
+    The problem was known by "monitor" and the turn said "monitors", so the
+    two sets did not intersect and a conversation that had been about
+    monitors for four turns started over with nothing. It happened again on
+    the next turn, and the one after that.
+
+    ``brain.recommendation`` already reduces a plural for the same reason,
+    and reusing it is what stops the two drifting apart.
+    """
+    try:
+        from brain.recommendation import _singular
+    except Exception:
+        return set(words)
+    return {_singular(str(word)).casefold() for word in words}
+
+
+def _shares_a_word(left, right) -> bool:
+    """Whether two sets of words are about anything in common."""
+    return bool(_stems(left) & _stems(right))
+
+
 def about_the_same_thing(
     problem: RecommendationProblem,
     text: str,
@@ -1551,10 +1905,19 @@ def about_the_same_thing(
     # A revision is by definition about the problem it revises.
     if revises(text):
         return True
-    if problem.lookup_requested and (
-        wants_to_see_options(text)
-        or complains_about_missing_results(text)
+    if wants_to_see_options(text) or (
+        problem.lookup_requested and complains_about_missing_results(text)
     ):
+        # Asking to see options continues whatever is open. This used to
+        # require the problem to have been asked for options once already,
+        # which meant the *first* such request could start a fresh problem
+        # and throw away everything the conversation had established.
+        #
+        # Measured live, after four turns about monitors: "Can you just
+        # give me like any recommendation for coding?" opened a new problem
+        # whose subject was "coding", and the monitor was gone. A turn that
+        # names a different *thing* is already refused above, so nothing
+        # here can hijack an unrelated problem.
         return True
 
     bare = {
@@ -1596,7 +1959,9 @@ def about_the_same_thing(
         # A new thing by name: the same problem only if it is the thing
         # already under discussion.
         return any(
-            set(re.findall(r"[a-z0-9가-힣]+", slot.value.casefold())) & known
+            _shares_a_word(
+                re.findall(r"[a-z0-9가-힣]+", slot.value.casefold()), known,
+            )
             for slot in named
         )
     if incoming:
@@ -1623,7 +1988,7 @@ def about_the_same_thing(
             for word in re.findall(r"[a-z0-9가-힣]+", slot.value.casefold())
         }
         residual = bare - stated - _FUNCTION_WORDS
-        return not residual or bool(residual & known)
+        return not residual or _shares_a_word(residual, known)
 
     # Nothing was stated at all. A bare follow-up ("show me some places")
     # continues; a whole unrelated sentence does not.
@@ -1644,4 +2009,4 @@ def about_the_same_thing(
     subject_words = {
         word for word in re.findall(r"[a-z0-9가-힣]+", _clean(subject).casefold())
     }
-    return bool((words | subject_words) & known)
+    return _shares_a_word(words | subject_words, known)

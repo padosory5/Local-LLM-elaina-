@@ -182,3 +182,81 @@ class TextFilterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpokenDashTests(unittest.TestCase):
+    """A dash is punctuation on a page and a stumble in a voice.
+
+    Measured live, on a turn about buying a monitor:
+
+        Elaina: I don't want to send you somewhere I haven't checked --
+                want me to look up real ones?
+
+    Spoken, that is two sentences shoved together with a gap in the middle.
+    The dashes are not all the model's either -- plenty are written into her
+    own lines -- so a prompt instruction could not have fixed this one.
+    """
+
+    def test_a_parenthetical_dash_becomes_a_pause(self):
+        self.assertEqual(
+            TextFilter.natural_dashes(
+                "I don't want to send you somewhere I haven't checked -- "
+                "want me to look up real ones?"
+            ),
+            "I don't want to send you somewhere I haven't checked, "
+            "want me to look up real ones?",
+        )
+
+    def test_every_dash_character_is_covered(self):
+        for dash in ("--", "---", "–", "—"):
+            with self.subTest(dash=dash):
+                self.assertEqual(
+                    TextFilter.natural_dashes(f"Got it{dash}Spotify is open."),
+                    "Got it, Spotify is open.",
+                )
+
+    def test_a_spaced_hyphen_is_a_dash_too(self):
+        self.assertEqual(
+            TextFilter.natural_dashes("Wait - what?"), "Wait, what?",
+        )
+
+    def test_a_hyphenated_word_is_left_alone(self):
+        for text in (
+            "A 27-inch panel.",
+            "Force-quit is off.",
+            "Send me an e-mail.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(TextFilter.natural_dashes(text), text)
+
+    def test_a_number_range_is_said_as_a_range(self):
+        self.assertEqual(
+            TextFilter.natural_dashes("It runs 200,000-350,000 won."),
+            "It runs 200,000 to 350,000 won.",
+        )
+
+    def test_a_currency_range_is_said_as_a_range(self):
+        self.assertEqual(
+            TextFilter.natural_dashes("Prices are $100 – $200."),
+            "Prices are $100 to $200.",
+        )
+
+    def test_a_comma_is_not_stacked_on_existing_punctuation(self):
+        self.assertEqual(
+            TextFilter.natural_dashes("Two sentences. -- And more."),
+            "Two sentences. And more.",
+        )
+
+    def test_a_list_marker_survives_the_speech_filter(self):
+        # The bullet strip runs first on purpose: a leading "- " is a list
+        # marker, and turning that into a comma would be wrong.
+        self.assertEqual(TextFilter.for_speech("- first item"), "first item")
+
+    def test_the_speech_filter_applies_it(self):
+        self.assertEqual(
+            TextFilter.for_speech("I could check monitors for you -- worth it?"),
+            "I could check monitors for you, worth it?",
+        )
+
+    def test_empty_text_is_unchanged(self):
+        self.assertEqual(TextFilter.natural_dashes(""), "")

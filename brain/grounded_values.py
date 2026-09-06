@@ -345,6 +345,17 @@ def _proper_names(text: str) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+def names_something_specific(text: str) -> bool:
+    """Whether this answer points at a particular thing at all.
+
+    Not whether the thing is real -- that is what the guards below are for.
+    Only whether the sentence gets as far as naming one, so a layer whose
+    job is to supply a missing name can tell "she named nothing" from "she
+    named something".
+    """
+    return bool(_proper_names(text))
+
+
 def _grounded_names(*texts: str) -> set[str]:
     """Names that appear in something real -- evidence, or the user's words."""
     grounded: set[str] = set()

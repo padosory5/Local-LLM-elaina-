@@ -309,7 +309,10 @@ def evaluate(
         matches, conflicts, unknown = _check(f"{name} {summary}", problem)
         score = len(matches) - 2.0 * len(conflicts) - 0.25 * len(unknown)
         kind = acquisition.classify(url, surface_hosts=surface_hosts)
-        if kind == acquisition.CANDIDATE and _COLLECTION_TITLE.search(name):
+        if kind == acquisition.CANDIDATE and (
+            _COLLECTION_TITLE.search(name)
+            or restates_the_search(name, url, problem)
+        ):
             kind = acquisition.SOURCE_SURFACE
         problem_shape = (
             "" if kind != acquisition.CANDIDATE
@@ -448,6 +451,21 @@ _ARTICLE_TITLE = re.compile(
     r"(?=[^,;]{0,44}\b[A-Za-z]{3,}s\b)"
     r"[A-Za-z]"
     r"|\b(?:top|best)\s+\d+\b"
+    # "Best Gaming Monitors 2026: Budget, Curved..." -- a round-up with no
+    # number in front of it, which the rule above needs. Measured live: it
+    # was chosen as the recommendation for "recommend a specific model",
+    # and read out as though Tom's Hardware were a monitor.
+    #
+    # The superlative has to open the title, and it has to be followed by
+    # the round-up's own punctuation -- a year or a colon introducing the
+    # list. "Best Buy" is a shop, and stays one.
+    r"|^\s*(?:the\s+)?(?:\d+\s+)?(?:best|top|cheapest|greatest|worst)\b"
+    r"[^:]{0,60}(?::|\b20\d\d\b)"
+    r"|\bfor\s+the\s+best\b"
+    # "What is IT Monitoring?" -- a definition page, recommended live as a
+    # gaming monitor. A title that opens by asking what something is, is
+    # writing about the thing by construction.
+    r"|^\s*what\s+(?:is|are|was|were)\b"
     r"|\b(?:recipes?|ideas|guide|guides|tips|how\s+to|why\s+you|"
     r"everything\s+you|explained|tutorials?|lessons?|review\s+round[- ]?up|listicle|"
     r"vs\.?\b|versus)\b"
@@ -522,6 +540,66 @@ def expected_shape(problem) -> str:
 def _host(url: str) -> str:
     match = re.search(r"https?://([^/]+)", str(url or ""), re.IGNORECASE)
     return (match.group(1) if match else "").casefold().lstrip("www.")
+
+
+def restates_the_search(name: str, url: str, problem) -> bool:
+    """Whether the title is the search terms handed straight back.
+
+    A page called "Gaming Monitors" answering a search for a gaming monitor
+    is the shop's aisle, not something on the shelf. Measured live, on a
+    turn that asked for a specific model:
+
+        [Active Task] Candidates: Amazon.com: Gaming Monitor,
+                      Gaming Monitors - Best Buy,
+                      Gaming Monitors for the Best Gaming Expe,
+                      Gaming monitor
+
+    Four category pages, ranked as things to recommend, and one of them was
+    read out to the person as a result.
+
+    A real candidate says something the query did not: a model number, a
+    brand, a street. If every content word in the title was already in the
+    search, the page is the search -- so it is a surface, which is a
+    perfectly good thing to have found and never a recommendation.
+
+    The site's own name is not content: it is on every page it publishes,
+    so tokens that appear in the host are dropped before the comparison.
+    """
+    if not str(url or "").strip():
+        # No page, nothing to call a listing page. A caller comparing bare
+        # titles is asking a different question, and "Guitars" with nothing
+        # behind it is an unchecked candidate rather than an aisle -- which
+        # is what the fit layer has always said about it.
+        return False
+    words = re.findall(r"[a-z0-9가-힣][a-z0-9가-힣'-]*", str(name or "").casefold())
+    if not words:
+        return False
+    host = _host(url)
+    known = " ".join((
+        str(getattr(problem, "subject", "") or ""),
+        str(problem.search_query() if hasattr(problem, "search_query") else ""),
+    )).casefold()
+    if not known.strip():
+        return False
+    content = [
+        word for word in words
+        if word not in _TITLE_FILLER
+        and "." not in word
+        and word not in host
+    ]
+    if not content:
+        # Nothing but the site's own name and joining words.
+        return True
+    return all(_names(word, known) or _names(f"{word}s", known) for word in content)
+
+
+# Words a title uses to join its real content together. Dropping them is
+# what lets "Gaming Monitors - Best Buy" be compared as "gaming monitors".
+_TITLE_FILLER = frozenset({
+    "the", "a", "an", "for", "of", "and", "or", "in", "on", "at", "to",
+    "with", "your", "our", "best", "top", "shop", "buy", "online", "store",
+    "official", "site", "com", "co", "kr", "us",
+})
 
 
 def off_target(name: str, url: str, summary: str, shape: str) -> str:

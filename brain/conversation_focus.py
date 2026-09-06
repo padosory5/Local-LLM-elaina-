@@ -40,17 +40,29 @@ DEFAULT_TTL_SECONDS = 30 * 60
 # "No, I mean X." The correction is the clause after the marker, and it is
 # taken whole: whatever they just said is a better description of what they
 # meant than anything already held.
+#
+# Whole, but not past the end of the sentence. Measured live, after a search
+# went astray and answered with a dictionary entry:
+#
+#     You said: I was talking about getting me a new monitor. Where is
+#               Merriam-West Webster?
+#     [Conversation State] Correction applied: getting me a new monitor.
+#                          Where is Merriam-West Webster
+#
+# Two sentences: a correction, and a question about the wrong result. Taking
+# both as the corrected subject made the subject a paragraph, and the thing
+# they were putting right was lost inside it.
 _CORRECTIONS = (
     re.compile(
-        r"\bno[,!.]?\s+(?:i\s+)?mean(?:t)?\s+(?:that\s+)?(.+)$",
+        r"\bno[,!.]?\s+(?:i\s+)?mean(?:t)?\s+(?:that\s+)?([^.?!]+)",
         re.IGNORECASE,
     ),
-    re.compile(r"\bi\s+mean(?:t)?\s+(?:that\s+)?(.+)$", re.IGNORECASE),
+    re.compile(r"\bi\s+mean(?:t)?\s+(?:that\s+)?([^.?!]+)", re.IGNORECASE),
     re.compile(
-        r"\bi(?:'m| am|\s+was)\s+talking\s+about\s+(.+)$", re.IGNORECASE,
+        r"\bi(?:'m| am|\s+was)\s+talking\s+about\s+([^.?!]+)", re.IGNORECASE,
     ),
     re.compile(
-        r"\bnot\s+[\w' -]{2,30},\s*(?:i\s+mean\s+)?(.+)$", re.IGNORECASE,
+        r"\bnot\s+[\w' -]{2,30},\s*(?:i\s+mean\s+)?([^.?!]+)", re.IGNORECASE,
     ),
     # Bare "No, X" is the one form here with no correction marker in it, so
     # it has to earn the reading from X's own shape. A correction names a

@@ -142,10 +142,16 @@ class RecommendationPolicy:
 
     # ------------------------------------------------------------ decide
 
-    def should_offer(self, decision, capability_id: str) -> bool:
-        """Whether an offer now would add something rather than nag."""
-        if str(getattr(decision, "mode", "")) != "recommend":
-            return False
+    def rationing_allows(self, capability_id: str) -> bool:
+        """Whether the cooldowns leave room for an offer at all.
+
+        Split from :meth:`should_offer` because the two questions are
+        different. "Should she raise this unprompted?" needs the strong
+        signal of ``mode == recommend``. "May she say the offer she has
+        already written into a natural reply?" needs only the rationing --
+        the judgement that an offer belongs here was made when the sentence
+        was written, and the cooldowns are what stop it becoming a habit.
+        """
         if not str(capability_id or "").strip():
             return False
         if self._declined_until is not None and self._turn < self._declined_until:
@@ -158,6 +164,40 @@ class RecommendationPolicy:
         last = self._last_by_capability.get(capability_id)
         if last is not None and self._turn - last < self.capability_gap:
             return False
+        return True
+
+    def should_offer(self, decision, capability_id: str) -> bool:
+        """Whether an offer now would add something rather than nag."""
+        if str(getattr(decision, "mode", "")) != "recommend":
+            return False
+        return self.rationing_allows(capability_id)
+
+    def claim_her_own(self, capability_id: str) -> bool:
+        """Take the offer slot for words she has already written.
+
+        The mode gate does not apply: she is not raising this unprompted,
+        she is finishing a sentence. Only the rationing does.
+        """
+        if not self.rationing_allows(capability_id):
+            return False
+        self._last_offer_turn = self._turn
+        self._last_by_capability[capability_id] = self._turn
+        return True
+
+    def claim(self, decision, capability_id: str) -> bool:
+        """Take this turn's offer slot, or refuse it.
+
+        Split out of :meth:`offer` because an offer she phrased herself
+        still has to be rationed. The words differ; the cooldown must not.
+        Without this, a model-authored offer that the composer grounds
+        would be free, and "she offers every single turn" -- the complaint
+        this policy exists for -- would come straight back through the
+        other door.
+        """
+        if not self.should_offer(decision, capability_id):
+            return False
+        self._last_offer_turn = self._turn
+        self._last_by_capability[capability_id] = self._turn
         return True
 
     def offer(
@@ -177,8 +217,7 @@ class RecommendationPolicy:
             return None
 
         text = self._phrase(what)
-        self._last_offer_turn = self._turn
-        self._last_by_capability[capability_id] = self._turn
+        self.claim(decision, capability_id)
         return Recommendation(
             capability=capability_id,
             text=text,
@@ -430,8 +469,8 @@ _PREPOSITIONS = frozenset({
 
 # Nothing anyone could act on.
 _NOT_A_SUBJECT = frozenset({
-    "it", "that", "this", "them", "one", "some", "thing", "things",
-    "stuff", "something", "anything",
+    "it", "that", "this", "them", "one", "ones", "some", "thing", "things",
+    "stuff", "something", "anything", "those", "these",
 })
 
 

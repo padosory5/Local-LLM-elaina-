@@ -55,6 +55,13 @@ class ResponseLimits:
         if recommendation:
             rules.extend([
                 "Give a direct, friendly recommendation before background.",
+                # Asked live for "any specific model you recommend?", the
+                # answer named a category and then narrated the search. Both
+                # halves are the same mistake: the person asked what to get,
+                # not what the shelf is called or where you looked.
+                "Name the specific product, model, or place; never a category, a brand's whole range, or a shop.",
+                "Say why in terms of one concrete feature or number that matters for what they asked for.",
+                "Never describe where the information came from, what the search returned, or how many results there were.",
                 "Include an action the user can take now and only one essential caution.",
                 "Never make a referral the whole answer; give useful guidance first.",
                 "Do not append a doctor, expert, or professional referral to routine advice; reserve outside help for a concrete immediate danger.",
@@ -185,10 +192,14 @@ class ClosingOfferGuard:
         r"anything\s+(?:i|else\s+i)\s+can\s+(?:help|do|assist)",
         r"feel\s+free\s+to\s+(?:ask|reach)",
         r"happy\s+to\s+help",
-        # "Let me know if you want help finding a good deal!" -- a
-        # generic closer that survived, and then suppressed the
-        # specific offer that would have replaced it.
-        r"let\s+me\s+know\s+if\s+you\s+(?:need|want|would\s+like)\s+help",
+        # "Let me know if you need help." on its own is filler. "Let me
+        # know if you want help narrowing down options or finding local
+        # shops" is not -- it names two things she would actually do, and
+        # stripping it as filler deleted the most useful sentence in the
+        # reply. The generic form ends right after "help", or trails off
+        # into "with anything"; anything else has a referent and is content.
+        r"let\s+me\s+know\s+if\s+you\s+(?:need|want|would\s+like)\s+help"
+        r"(?:\s+with\s+(?:anything|that|this|it))?\s*[.!?]*\s*$",
         r"here\s+(?:to|if\s+you\s+need)\s+help",
         r"here\s+to\s+help\s+with\s+anything",
         r"with\s+anything\s+you\s+need",

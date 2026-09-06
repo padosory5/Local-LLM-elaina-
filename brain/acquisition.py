@@ -76,6 +76,38 @@ _PUBLISHING_SUBDOMAIN = re.compile(
     r"^(?:m\.)?(?:blog|blogs|post|posts|news|magazine|cafe)\.", re.IGNORECASE,
 )
 
+# Reference works. They publish writing *about* words, which is the same
+# thing a blog does about a product, and never something anyone can buy or
+# visit. Wikipedia was already above; the dictionaries were not, and one of
+# them was ranked as a real candidate. Measured live, on a turn asking for a
+# monitor:
+#
+#     [Recommendation Reasoning] Candidates: 4 (0 fit, 3 unchecked)
+#     [Grounding Guard] Naming what was found: GOOD Definition & Meaning -
+#                       Merriam-Webster
+#     Elaina: The one I actually found is GOOD Definition & Meaning,
+#             Merriam-Webster.
+#
+# The degenerate query behind it is fixed in brain/recommendation_state.py.
+# This is the second line of defence: whatever the query, a dictionary entry
+# is never the thing.
+# Deliberately no market-specific sites: a local dictionary is still market
+# knowledge, and that lives in brain/user_locale.py. The host list is the
+# international reference works; the URL shape below is what catches the
+# rest of them in any market, which is the same trade this module already
+# makes for surfaces and entities.
+_REFERENCE = (
+    "merriam-webster.com", "dictionary.com", "thesaurus.com",
+    "britannica.com", "wiktionary.org", "wordreference.com",
+    "collinsdictionary.com", "oxfordlearnersdictionaries.com",
+    "vocabulary.com",
+)
+_REFERENCE_URL = re.compile(
+    r"/(?:dictionary|thesaurus|define|definition|meaning)s?[/._?]"
+    r"|\bdict\.",
+    re.IGNORECASE,
+)
+
 # One thing, identified. A path segment naming a single record, or an id in
 # the query string.
 _ENTITY_URL = re.compile(
@@ -134,6 +166,10 @@ def is_publishing(url: str) -> bool:
     """Whether this host publishes writing about things."""
     host = host_of(url)
     if _PUBLISHING_SUBDOMAIN.search(host):
+        return True
+    if any(host.endswith(platform) for platform in _REFERENCE):
+        return True
+    if _REFERENCE_URL.search(str(url or "")):
         return True
     return any(host.endswith(platform) for platform in _PUBLISHING)
 

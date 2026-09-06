@@ -77,7 +77,13 @@ from brain import semantic_fit
 from brain.media_target import classify_media_request
 from brain.user_locale import UserLocale
 from brain.capabilities import CapabilityRegistry
-from brain.action_commitment import ActionCommitmentGuard
+from brain.action_commitment import (
+    OFFER,
+    ActionCommitmentGuard,
+    ActionLedger,
+    offered_action,
+    speech_act_of,
+)
 from brain.recommendation import (
     RecommendationPolicy,
     names_its_own_errand,
@@ -898,6 +904,17 @@ class ChatEngine:
                 required=False,
             ))
         )
+        # What is actually true about this turn's action, which is what
+        # every "I'll check" and "want me to?" is now checked against. It
+        # reads the offer gate above rather than copying it: two records of
+        # the same fact is two things that can disagree.
+        self.action_ledger = ActionLedger(
+            pending_offer=self.capability_offer.peek,
+        )
+        # Whether this turn's reply carries an invitation she may keep
+        # without parking anything. Reset with the ledger, for the same
+        # reason: it describes this turn and nothing beyond it.
+        self._invitation_stands = False
         self.brief_responses = BriefResponseGenerator(
             self.client,
             self.model,
@@ -1979,7 +1996,12 @@ class ChatEngine:
         # the first is the one the reasoning layer picked.
         already_found = ""
         if active_problem is not None and active_problem.candidates:
-            already_found = str(active_problem.candidates[0] or "").strip()
+            first = str(active_problem.candidates[0] or "").strip()
+            # Same rule as the report guard: a stored candidate sharing no
+            # word with the subject is not the answer to this question,
+            # whatever the ranking said.
+            if self._candidate_is_about(first, active_problem.subject):
+                already_found = first
         if already_found:
             print(f"[Grounding Guard] Naming what was found: {already_found}")
             offer = f"The one I actually found is {already_found}."
@@ -2414,9 +2436,23 @@ class ChatEngine:
           replaced with the honest reason.
         """
         text = str(reply or "").strip()
-        if not text or action_performed:
+        if not text:
             return text
         if not ActionCommitmentGuard.promises_action(text):
+            return text
+
+        # The structured state is what decides, not the sentence. "I'll
+        # check" is true when something really is queued or running, and of
+        # the shape she named -- promising to *open* a page while only a
+        # lookup ran is the mismatch this catches that a bare
+        # ``action_performed`` never could.
+        promised = ActionCommitmentGuard.promised_action(text) or text
+        if self.action_ledger.supports_commitment(promised):
+            return text
+        if action_performed and self.action_ledger.state == "idle":
+            # Something acted without telling the ledger. Trusting the older
+            # signal is the safe direction: a missing bookkeeping call must
+            # not delete an honest sentence.
             return text
 
         state = self._capability_state()
@@ -4007,6 +4043,463 @@ class ChatEngine:
         # Keep the question, but say what it is about.
         return f"{subject} {request}".strip()
 
+    def _offerable_capability(self, capability, goal) -> str:
+        """Which ability an unprompted offer would actually use.
+
+        Split out of ``_append_recommendation`` so the grounding path below
+        cannot drift from it. When the turn was answered from what she knew,
+        the capability layer says ``direct_answer`` -- and the offer is the
+        extra effort on top, so the ability has to be named here instead.
+
+        Search first, deliberately. Driving the browser is the heavier, more
+        disruptive ability and it needs a real page to go to -- offered as
+        the default it produced "Happy to dig into a Dinner if that helps",
+        and accepting it ran browser control on nothing.
+        """
+        capability_id = str(getattr(capability, "capability", "") or "")
+        if capability_id not in {"direct_answer", "none", ""}:
+            return capability_id
+        state = self._capability_state()
+        wants_browser = goal_intent.names_a_surface(
+            str(getattr(goal, "subject", "") or "")
+        )
+        preference = (
+            ("browser_control", "web_search") if wants_browser
+            else ("web_search",)
+        )
+        return next(
+            (
+                option
+                for option in preference
+                if CapabilityRegistry.is_available(option, state)
+            ),
+            "",
+        )
+
+    def _offerable_subject(self, goal) -> tuple[str, str]:
+        """What the offer is about, or the reason there is nothing to offer.
+
+        Without a distinct topic the goal's subject falls back to the whole
+        utterance, and the offer becomes "Want me to look into i am thinking
+        about getting a new monitor?". Better to say nothing than to say
+        that -- so the refusal is returned rather than raised, and every
+        caller reports why it stayed quiet.
+        """
+        subject = str(getattr(goal, "subject", "") or "").strip()
+        if len(subject.split()) > 6:
+            # The router named no topic, so the goal's subject is the whole
+            # utterance. Try to name the thing itself before giving up.
+            subject = subject_phrase(subject)
+        if not subject:
+            return "", "no subject to name"
+        if not subject_is_offerable(subject):
+            return "", f"{subject!r} is about them, not a thing to look up"
+        if len(subject.split()) > 6:
+            return "", f"the subject is a whole sentence ({subject!r})"
+        return subject, ""
+
+    def _one_offer_per_reply(self, reply: str) -> str:
+        """Two offers in one answer is one offer too many.
+
+        Measured live on the monitor turn:
+
+            Elaina: That sounds fun! Monitors can make a big difference.
+                    Would you like help finding specific models or prices?
+                    I don't want to send you somewhere I haven't checked,
+                    want me to look up real ones?
+
+        Two questions, one answer. Only the second one was real: the entity
+        guard had retracted two unverified brands and parked an offer to go
+        and check. The first was the model offering in its own words, and
+        ``keep_offers`` had waved the whole reply through because *an* offer
+        was open, without asking whether it was *this* one.
+
+        So the parked offer is the one that survives, and any other
+        offer-shaped sentence goes. The gate holds exactly one thing; the
+        reply may ask exactly one question about it.
+
+        Deliberately the *wider* reader here. ``speech_act_of`` is narrow
+        because everything it matches gets a real action parked behind it;
+        this is the opposite question -- "does this read as a second call to
+        action?" -- and a false positive costs a redundant sentence rather
+        than an honest one. Measured live, the narrow reader missed "Let me
+        know if you'd like help finding something specific!" purely on the
+        apostrophe in "you'd", and the reply carried it *and* a real offer.
+        """
+        text = str(reply or "").strip()
+        if not text:
+            return text
+        pending = self.capability_offer.peek()
+        if pending is None:
+            return text
+        protected = " ".join(str(pending.offer_text or "").split())
+        if not protected:
+            return text
+        sentences = [
+            sentence.strip()
+            for sentence in _SENTENCE_SPLIT.split(text)
+            if sentence.strip()
+        ]
+        if len(sentences) < 2:
+            return text
+        spoken = TextFilter.natural_dashes
+        protected_said = spoken(protected)
+        whole = spoken(" ".join(sentences))
+        if protected_said not in whole:
+            # The reply no longer carries the parked offer -- a rewrite
+            # replaced it, or a guard phrased it differently. Dropping the
+            # other offers would leave the gate holding a question nobody
+            # was asked, which is the failure this whole area exists to
+            # prevent.
+            return text
+
+        kept: list[str] = []
+        dropped: list[str] = []
+        for sentence in sentences:
+            said = spoken(sentence)
+            if said in protected_said or protected_said in said:
+                kept.append(sentence)
+            elif (
+                speech_act_of(sentence) == OFFER
+                or ClosingOfferGuard.offers_to_act(sentence)
+            ):
+                dropped.append(sentence)
+            else:
+                kept.append(sentence)
+        rebuilt = " ".join(kept).strip()
+        if not dropped or not rebuilt:
+            return text
+        print(f"[Offer] Dropped a second offer: {dropped[0][:60]!r}")
+        return rebuilt
+
+    @staticmethod
+    def _spoken_list(names) -> str:
+        """A list said the way a person says one, not comma-separated."""
+        items = [name for name in names if name]
+        if not items:
+            return ""
+        if len(items) == 1:
+            return items[0]
+        return f"{', '.join(items[:-1])} and {items[-1]}"
+
+    @staticmethod
+    def _short_name(name: str, *, max_words: int = 7) -> str:
+        """Enough of a result title to recognise it, and no more.
+
+        Search results arrive with tails a person would never say out loud
+        ("... | Best Buy", "- Reviews, Specs and Prices"). The head is the
+        thing; the tail is the site.
+        """
+        cleaned = " ".join(str(name or "").split())
+        for separator in (" | ", " - ", " – ", " — ", " : "):
+            head = cleaned.split(separator)[0].strip()
+            if len(head.split()) >= 2:
+                cleaned = head
+        words = cleaned.split()
+        return " ".join(words[:max_words]) if words else ""
+
+    @staticmethod
+    def _candidate_is_about(name: str, about: str) -> bool:
+        """Whether this result has anything to do with what was asked for.
+
+        The fit layer keeps a candidate that contradicts nothing, which is
+        the right call for ranking and the wrong one for reading a name out
+        loud. Measured live, four turns into a conversation about monitors:
+
+            [Recommendation Reasoning] Candidates: 6 (0 fit, 2 unchecked)
+            [Grounding Guard] The search found 2 and the answer named
+                              nothing; naming '2027 Car Prices In South
+                              Korea'.
+            Elaina: ... 2027 Car Prices In South Korea is the one I'd
+                    start with.
+
+        Nothing had contradicted it, because nothing in a conversation
+        about monitors says anything about cars. Silence is the right
+        failure here: a name that shares no word with the subject is worse
+        than no name at all.
+        """
+        subject = str(about or "").strip()
+        if not subject:
+            return True
+        from brain import recommendation_state
+
+        word = r"[a-z0-9\uac00-\ud7a3']+"
+        return recommendation_state._shares_a_word(
+            re.findall(word, str(name or "").casefold()),
+            re.findall(word, subject.casefold()),
+        )
+
+    @staticmethod
+    def _names_the_same_thing(name: str, lowered_reply: str) -> bool:
+        """Whether the reply already points at this result.
+
+        A stored result title is longer than the way anyone refers to it, so
+        the test is the head of the name rather than all of it: "LG UltraGear
+        27GP850-B" identifies the thing whose title continues "27in QHD
+        Gaming Monitor". Two words is the floor -- one shared word is a
+        coincidence, and "monitor" appears in every title here.
+        """
+        words = str(name or "").casefold().split()
+        if not words:
+            return False
+        if " ".join(words) in lowered_reply:
+            return True
+        for width in (4, 3, 2):
+            if len(words) >= width and " ".join(words[:width]) in lowered_reply:
+                return True
+        return False
+
+    def _report_what_was_found(
+        self, reply: str, *, candidates=(), searched: bool = False,
+        about: str = "",
+    ) -> str:
+        """A search that found things may not be answered with nothing.
+
+        The mirror of :meth:`_enforce_found_claim`. That one stops her
+        claiming a find she cannot name; this one stops her burying a find
+        she can. Measured live on the turn this was written for:
+
+            [Recommendation Reasoning] Candidates: 6 (0 fit, 5 unchecked)
+            [Recommendation] Removed the model's own offer: 'Let me check
+                             some options for you; Would you like me to
+                             search for the best ones'
+            Elaina: I think you're looking for a monitor that fits your
+                    needs.
+
+        Six results were in hand and the evidence block told the model to
+        offer them as unverified options. It offered to go and search
+        instead -- on the turn whose search had already run -- so the offer
+        was stripped, correctly, and what was left said nothing at all.
+
+        Only the candidates the fit layer already called viable reach here:
+        real items of the right kind that contradict nothing the person
+        said. Articles, round-ups and places-to-search are excluded before
+        this sees them, so naming these is safe. Nothing is claimed about
+        whether they *fit* -- that judgement stays where it is made.
+        """
+        text = str(reply or "").strip()
+        if not searched:
+            return text
+        names = [
+            short for short in (
+                self._short_name(name) for name in candidates
+            )
+            if short and self._candidate_is_about(short, about)
+        ][:3]
+        if not names:
+            return text
+        lowered = text.casefold()
+        # Named, not quoted. A reply that says "the LG UltraGear 27GP850-B
+        # is a solid pick" has named the result whose stored title runs on
+        # into "27in QHD Gaming Monitor", and a whole-string test called
+        # that unnamed and listed it back at the person.
+        if any(self._names_the_same_thing(name, lowered) for name in names):
+            return text
+        if grounded_values.names_something_specific(text):
+            # She named a particular thing. Whether it is the right one is
+            # the grounding guards' question, not this one's -- and adding
+            # a second product underneath the first is the "unnecessary
+            # last sentence" this guard was reported for. It exists to
+            # supply a missing name, never to argue with one.
+            return text
+        print(
+            f"[Grounding Guard] The search found {len(names)} and the "
+            f"answer named nothing; naming {names[0][:40]!r}."
+        )
+        # One name, said as an answer rather than as a receipt. Measured
+        # live: three long titles listed after a perfectly good
+        # recommendation -- "What came up was Best Gaming Monitors 2026:
+        # Budget, Curved... and Gaming monitor." Reading the result set back
+        # to someone who asked for a recommendation is a different sentence
+        # from answering them, and it is the wrong one.
+        return f"{text} {names[0]} is the one I'd start with.".strip()
+
+    def _refuse_redundant_permission(
+        self,
+        reply: str,
+        *,
+        decision,
+        route,
+        action_performed: bool,
+    ) -> str:
+        """Never ask to do the thing that was already asked for, or done.
+
+        Exit criterion 6 of Phase 4F.1, and the mirror image of the broken
+        promise: that one claims an action nothing is doing, this one asks
+        permission for an action already under way. Both are the reply
+        disagreeing with the record, and the record wins.
+
+        ``ClosingOfferGuard`` almost covers it and stops one case short --
+        it never touches a single-sentence reply, because deleting the only
+        sentence would leave silence. So the whole-reply case is handled
+        here, where there is a true thing to say instead.
+
+        A question is left alone whenever something really is waiting on an
+        answer: an open offer, an outstanding clarification, or any consent
+        gate. Those questions are the honest ones, and this must not eat
+        them.
+        """
+        text = str(reply or "").strip()
+        if not text:
+            return text
+        if not (
+            action_performed
+            or bool(getattr(decision, "acts", False))
+            or bool(getattr(route, "action_requested", False))
+        ):
+            return text
+        if any(
+            gate.peek() is not None
+            for gate in (
+                self.capability_offer,
+                self.clarification,
+                self.computer_consent,
+                self.task_consent,
+                self.task_strategy_consent,
+                self.agent_consent,
+            )
+        ):
+            return text
+        if not offered_action(text):
+            return text
+
+        kept = ClosingOfferGuard.strip(text, keep_offers=False).strip()
+        if kept and kept != text:
+            print(
+                "[Permission] Dropped a question about something already "
+                "requested."
+            )
+            return kept
+        if kept == text and speech_act_of(text) != OFFER:
+            # Multi-sentence, and the offer is not the closing line -- the
+            # strip could not reach it and the rest is real content.
+            return text
+        # The question was the whole reply. Saying nothing is not an option
+        # and repeating the question is not true, so report the work.
+        print("[Permission] Replaced a redundant permission question.")
+        return self._generic_outcome(succeeded=True)
+
+    def _ground_offer_language(
+        self,
+        reply: str,
+        *,
+        decision,
+        capability,
+        goal,
+        route,
+        action_performed: bool,
+    ) -> str:
+        """Make her own offer real, instead of deleting it for being hers.
+
+        Phase 4F.1. ``ClosingOfferGuard`` used to strip every "I can pull up
+        a few current options if you want" that had no parked offer behind
+        it -- which was all of them, because nothing ever parked one for a
+        sentence the model wrote itself. The rule was right and the remedy
+        was backwards: an offer is only dishonest when the user's "yeah"
+        would land on nothing. So park something for it to land on, and the
+        sentence becomes true rather than deleted.
+
+        Refuses in four cases, each of which is a reason the offer should
+        not have been made:
+
+        * the user already asked outright -- asking again is friction, and
+          exit criterion 6 of this phase names it;
+        * a question of her own is already outstanding, so a second one
+          makes the next reply ambiguous;
+        * no ability is available to do it, so the yes could not be kept;
+        * the offer cooldown is still running -- ``RecommendationPolicy``
+          stays the single layer deciding how often she may offer at all.
+
+        A refusal changes nothing here; ``ClosingOfferGuard`` still strips
+        the sentence a moment later, exactly as before.
+        """
+        text = str(reply or "").strip()
+        if not text:
+            return text
+        sentence = offered_action(text)
+        if not sentence:
+            return text
+        if self.capability_offer.peek() is not None:
+            # A guard already parked one this turn -- the grounded-value or
+            # grounded-entity repair does exactly that when it retracts an
+            # unchecked claim -- and the reply carries its words. Nothing to
+            # ground, and _one_offer_per_reply below makes sure the parked
+            # one is the only question that survives.
+            #
+            # Said out loud because the silence here cost a debugging pass:
+            # a live run showed no grounding line and looked broken, when
+            # the offer had simply come from somewhere else.
+            print(
+                "[Offer] Already grounded by another guard this turn; "
+                "standing down."
+            )
+            return text
+
+        def quiet(why: str) -> str:
+            print(f"[Offer] Left her own offer ungrounded: {why}.")
+            return text
+
+        if (
+            action_performed
+            or bool(getattr(decision, "acts", False))
+            or bool(getattr(route, "action_requested", False))
+        ):
+            return quiet("the user asked for this outright")
+        if self.clarification.peek() is not None:
+            return quiet("a question of her own is already outstanding")
+
+        capability_id = self._offerable_capability(capability, goal)
+        if not capability_id:
+            return quiet("no ability is available behind it")
+        state = self._capability_state()
+        if not CapabilityRegistry.is_available(capability_id, state):
+            return quiet(f"{capability_id} is not available")
+
+        subject, refusal = self._offerable_subject(goal)
+        if refusal:
+            return quiet(refusal)
+        if not self.recommendations.claim_her_own(capability_id):
+            # The rationing, not the mode gate. Deciding an offer belongs
+            # here was done when the sentence was written; all that is left
+            # is whether she has offered too recently.
+            #
+            # An invitation survives the refusal. "Let me know if you want
+            # help narrowing down options" leaves nothing pending -- there
+            # is no question waiting on an answer, so there is nothing to
+            # be dishonest about, and deleting it took the only useful
+            # sentence out of the reply. A *question* still goes: "want me
+            # to?" with nothing parked is the failure this phase exists for.
+            if not sentence.rstrip().endswith("?"):
+                self._invitation_stands = True
+                print(
+                    "[Offer] Kept her invitation without parking it: "
+                    f"{sentence[:60]!r}"
+                )
+                return text
+            return quiet("the offer cooldown is still running")
+
+        active_problem = self.task_sessions.active_recommendation()
+        self.capability_offer.offer(
+            capability_id=capability_id,
+            goal=subject,
+            # Her own words, not a generated substitute: the user heard
+            # this sentence, so this is the offer they are answering.
+            offer_text=sentence,
+            # She raised it herself, so anything short of a clear yes drops
+            # it rather than being read as one.
+            proactive=True,
+            task_id=(active_problem.id if active_problem is not None else ""),
+            task_query=(
+                active_problem.search_query()
+                if active_problem is not None else ""
+            ),
+        )
+        print(
+            f"[Offer] Grounded her own offer for {capability_id}: "
+            f"{sentence[:80]!r}"
+        )
+        return text
+
     def _append_recommendation(
         self, reply: str, *, decision, capability, goal,
     ) -> str:
@@ -4040,32 +4533,15 @@ class ChatEngine:
             # makes the next reply ambiguous -- measured live, the answer
             # to hers was consumed as a "no" to this one.
             return quiet("a question of her own is already outstanding")
-        capability_id = str(getattr(capability, "capability", "") or "")
-        if capability_id in {"direct_answer", "none", ""}:
-            # She answered from what she knew, and the offer is the extra
-            # effort on top. Name the ability that would actually provide
-            # it: the live browser when it is switched on, a search when it
-            # is not.
-            state = self._capability_state()
-            # Search first, deliberately. Driving the browser is the heavier,
-            # more disruptive ability and it needs a real page to go to --
-            # offered as the default it produced "Happy to dig into a Dinner
-            # if that helps", and accepting it ran browser control on nothing.
-            wants_browser = goal_intent.names_a_surface(
-                str(getattr(goal, "subject", "") or "")
-            )
-            preference = (
-                ("browser_control", "web_search") if wants_browser
-                else ("web_search",)
-            )
-            capability_id = next(
-                (
-                    option
-                    for option in preference
-                    if CapabilityRegistry.is_available(option, state)
-                ),
-                "",
-            )
+        if text.rstrip().endswith("?"):
+            # The same rule, for a question she asked in her own words
+            # rather than through the gate. Measured live: "Are you looking
+            # for a gaming one or something for work? Want me to look into
+            # a monitor?" -- and the person answered the first one, which
+            # is the right thing to do with two questions and exactly why
+            # there should only be one.
+            return quiet("she ended on a question of her own")
+        capability_id = self._offerable_capability(capability, goal)
         if not capability_id:
             return quiet("no ability is available to offer")
         # She may have offered in her own words already.
@@ -4078,21 +4554,9 @@ class ChatEngine:
         if self.capability_offer.peek() is not None:
             return quiet("an offer is already waiting for an answer")
 
-        # Without a distinct topic the goal's subject falls back to the whole
-        # utterance, and the offer becomes "Want me to look into i am
-        # thinking about getting a new monitor?". Better to say nothing than
-        # to say that.
-        subject = str(getattr(goal, "subject", "") or "").strip()
-        if len(subject.split()) > 6:
-            # The router named no topic, so the goal's subject is the whole
-            # utterance. Try to name the thing itself before giving up.
-            subject = subject_phrase(subject)
-        if not subject:
-            return quiet("no subject to name")
-        if not subject_is_offerable(subject):
-            return quiet(f"{subject!r} is about them, not a thing to look up")
-        if len(subject.split()) > 6:
-            return quiet(f"the subject is a whole sentence ({subject!r})")
+        subject, refusal = self._offerable_subject(goal)
+        if refusal:
+            return quiet(refusal)
 
         state = self._capability_state()
         if not CapabilityRegistry.is_available(capability_id, state):
@@ -5980,6 +6444,7 @@ class ChatEngine:
                 capability_selection.note_success(
                     self._capability_failures, capability.capability,
                 )
+                self.action_ledger.settled(succeeded=True)
             except Exception as error:
                 # Recorded, not just reported: a search that keeps failing
                 # should stop being the first choice.
@@ -5994,6 +6459,13 @@ class ChatEngine:
                 forced_response = (
                     "I couldn't complete that web search: "
                     f"{type(error).__name__}: {error}"
+                )
+                # The commitment stands -- she did go and look -- but the
+                # record must not say the lookup returned anything. Phase
+                # 4E's distinction between dispatch, execution and goal
+                # completion is only worth having if a failure reaches it.
+                self.action_ledger.failed(
+                    f"the search raised {type(error).__name__}",
                 )
             finally:
                 timings["web_search"] = (
@@ -6989,16 +7461,41 @@ class ChatEngine:
                 reply, action_performed=action_performed,
             )
             reply = self._refuse_unobserved_app_activity(reply)
+            # Before the strip, deliberately. An offer she made in her own
+            # words is not filler -- it is only dishonest when nothing is
+            # waiting for the answer. Park something, and it survives the
+            # strip below on its own merits.
+            reply = self._ground_offer_language(
+                reply,
+                decision=decision,
+                capability=capability,
+                goal=goal_intent_result,
+                route=route,
+                action_performed=action_performed,
+            )
+            # And the mirror image: a question about something the user
+            # already asked for is the same disagreement with the record.
+            reply = self._refuse_redundant_permission(
+                reply,
+                decision=decision,
+                route=route,
+                action_performed=action_performed,
+            )
             # Last, so it also catches a footer a rewrite reintroduced. Her
             # personality file bans these outright and the model adds them
             # anyway, so the removal is code rather than more prompt wording.
             before_strip = reply
             reply = ClosingOfferGuard.strip(
                 reply,
-                # A repair guard or the ability answer may have just parked
-                # an offer whose text is in this reply. Removing it would
-                # leave the gate holding an offer the user never saw.
-                keep_offers=self.capability_offer.peek() is not None,
+                # A repair guard, the ability answer or the grounding pass
+                # above may have parked an offer whose text is in this
+                # reply. Removing it would leave the gate holding an offer
+                # the user never saw. Read from the ledger, which is the
+                # one authority on whether an offer is genuinely open.
+                keep_offers=(
+                    self.action_ledger.offer_pending
+                    or self._invitation_stands
+                ),
             )
             if reply != before_strip:
                 removed = before_strip[len(reply):].strip()
@@ -7008,6 +7505,20 @@ class ChatEngine:
                     # there to bound.
                     print(f"[Recommendation] Removed the model's own offer: "
                           f"{removed[:80]!r}")
+            # After the strip: it removes trailing filler, and what is
+            # left may still hold a second question about the same offer.
+            reply = self._one_offer_per_reply(reply)
+            if not self._browser_result_is_final:
+                reply = self._report_what_was_found(
+                    reply,
+                    candidates=(
+                        active_problem.candidates if active_problem else ()
+                    ),
+                    searched="web_search" in timings,
+                    about=(
+                        active_problem.subject if active_problem else ""
+                    ),
+                )
             # After the guard, deliberately: a real offer names a capability
             # and a subject, and stripping it as filler would remove the one
             # useful thing this phase adds.
@@ -7052,8 +7563,25 @@ class ChatEngine:
                     evidence=self._last_research_evidence, trusted_result=False,
                 )
                 reply = ClosingOfferGuard.strip(
-                    reply, keep_offers=self.capability_offer.peek() is not None,
+                    reply,
+                    keep_offers=(
+                        self.action_ledger.offer_pending
+                        or self._invitation_stands
+                    ),
                 )
+                reply = self._one_offer_per_reply(reply)
+                if not self._browser_result_is_final:
+                    reply = self._report_what_was_found(
+                        reply,
+                        candidates=(
+                            active_problem.candidates if active_problem else ()
+                        ),
+                        searched="web_search" in timings,
+                        about=(
+                            active_problem.subject if active_problem else ""
+                        ),
+                    )
+            reply = TextFilter.natural_dashes(reply)
             speech_buffer = reply
             if reply:
                 print(
@@ -7386,6 +7914,12 @@ class ChatEngine:
         action_performed = (
             routing.decision.acts and routing.capability.needs_agent
         )
+        if action_performed:
+            self.action_ledger.dispatching(
+                routing.capability.capability or route.intent,
+                goal=route.normalized_request or user_input,
+                reason="an agent capability was dispatched",
+            )
         # Capability-keyed execution.
         #
         # The browser handler was reachable through exactly one door:
@@ -7406,13 +7940,24 @@ class ChatEngine:
             and routing.capability.capability == capability_selection.BROWSER_CONTROL
             and route.intent != "computer_action"
         ):
+            self.action_ledger.dispatching(
+                capability_selection.BROWSER_CONTROL,
+                goal=route.normalized_request or user_input,
+                reason="the capability layer chose browser control",
+            )
             locked_response, computer_result = self._run_browser_capability(
                 route, routing, user_input,
             )
             action_performed = bool(locked_response)
+            self.action_ledger.settled(succeeded=action_performed)
 
         if route.intent == "computer_action" and not locked_response:
             action_performed = True
+            self.action_ledger.dispatching(
+                "computer_action",
+                goal=route.action_target or route.normalized_request,
+                reason=f"computer operation {route.computer_operation or '(none)'}",
+            )
             locked_response, computer_result = self._handle_computer_action(
                 route,
                 approved_action=approved_computer_action,
@@ -7421,6 +7966,12 @@ class ChatEngine:
                 assumption=assumed_aloud,
             )
 
+            self.action_ledger.settled(
+                succeeded=(
+                    computer_result.succeeded
+                    if computer_result is not None else True
+                ),
+            )
             if computer_result is not None:
                 if (
                     computer_result.succeeded
@@ -7460,6 +8011,11 @@ class ChatEngine:
             and not locked_response
         ):
             action_performed = True
+            self.action_ledger.dispatching(
+                capability_selection.TASK_PLANNING,
+                goal=route.normalized_request or user_input,
+                reason="the task planner was chosen for this request",
+            )
             locked_response = self._handle_task_action(
                 route,
                 approved_task=approved_task_action,
@@ -7569,6 +8125,17 @@ class ChatEngine:
             context_prompt += (
                 "\n\nAGENT PERMISSION STATE\n"
                 f"{agent_permission_context}"
+            )
+
+        # The dispatch phase is over. This says the capability returned --
+        # deliberately not that the person got what they wanted, which is a
+        # different question the outcome guards below answer.
+        self.action_ledger.settled(succeeded=True)
+        if self.action_ledger.state != "idle":
+            # One line, not a block: this fires on every acting turn.
+            print(
+                f"[Act] {self.action_ledger.action or '(none)'} "
+                f"-> {self.action_ledger.state}"
             )
 
         return {
@@ -7978,6 +8545,9 @@ class ChatEngine:
             self.capability_offer.clear()
             self.task_sessions.clear()
             self.recommendations.note_declined()
+            # Nothing may now claim this action is coming. The gates are
+            # empty; the ledger says why.
+            self.action_ledger.cancelled("the user called it off")
             self._grounded_context = {}
             timings["route"] = time.perf_counter() - route_started
             return TurnRouting(
@@ -9210,6 +9780,10 @@ class ChatEngine:
         # pauses for lunch should not become a licence to start offering
         # again.
         self.recommendations.begin_turn()
+        # A parked offer deliberately outlives the turn -- the user's "yeah"
+        # arrives on the next one. Only the action state is cleared.
+        self.action_ledger.begin_turn()
+        self._invitation_stands = False
 
         ####################################################
         # Retrieve Memories

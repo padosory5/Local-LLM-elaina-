@@ -12,6 +12,7 @@ honestly what is possible instead -- never a canned refusal.
 import threading
 import unittest
 
+from brain.action_commitment import ActionLedger
 from brain.chat_engine import ChatEngine
 from brain.intent_router import IntentDecision
 from security.capability_offer import CapabilityOfferGate
@@ -34,6 +35,9 @@ def _engine(*, control_mode=True, browser=True):
     engine.screen_monitor = _Screen()
     engine.project_mcp = None
     engine.capability_offer = CapabilityOfferGate()
+    # The commitment guard reads the ledger, not a bare bool: a promise is
+    # kept only when the structured state says an action is really running.
+    engine.action_ledger = ActionLedger(pending_offer=engine.capability_offer.peek)
     engine._desktop_surface_lock = threading.Lock()
     return engine
 

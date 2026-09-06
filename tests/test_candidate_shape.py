@@ -444,3 +444,128 @@ class SurfacesAreNotCandidatesTests(unittest.TestCase):
 
         self.assertIn("Surfaces:", block)
         self.assertIn("never recommended", block)
+
+
+class TheAisleIsNotOnTheShelfTests(unittest.TestCase):
+    """A category page is where things are, not one of them.
+
+    Measured live, answering "do you have any specific model that you
+    recommend?" two turns into a conversation about gaming monitors:
+
+        [Active Task] Candidates: Amazon.com: Gaming Monitor,
+                      Gaming Monitors - Best Buy,
+                      Gaming Monitors for the Best Gaming Expe,
+                      Gaming monitor
+        [Recommendation Reasoning]
+          Decision: recommend
+          Selected: Best Gaming Monitors 2026: Budget, Curved... |
+                    Tom's Hardware
+
+    Every one of those is a page about buying a monitor. None is a monitor.
+    The round-up was chosen as the recommendation, and two of the category
+    pages were read out to the person as results.
+
+    A real candidate says something the search did not: a model number, a
+    brand, a street. If every content word in the title was already in the
+    query, the page is the query.
+    """
+
+    def _monitors(self):
+        store = TaskSessionStore()
+        store.note_recommendation_turn(
+            "I'm thinking about getting a new monitor.",
+            subject="monitor purchase consideration",
+        )
+        return store.note_recommendation_turn(
+            "like a gaming one, find me a good one",
+            subject="monitor purchase consideration",
+        )
+
+    def _verdict(self, title, url, summary=""):
+        fits = cf.evaluate(
+            [{"title": title, "url": url, "summary": summary}],
+            self._monitors(),
+            shape=cf.PRODUCT,
+        )
+        return fits[0].verdict
+
+    def test_a_retailers_category_page_is_a_surface(self):
+        for title, url in (
+            ("Amazon.com: Gaming Monitor", "https://amazon.com/s?k=gaming+monitor"),
+            ("Gaming Monitors - Best Buy", "https://bestbuy.com/site/shop/gaming-monitors"),
+            ("Gaming monitor", "https://example.com/gaming-monitor"),
+        ):
+            with self.subTest(title=title):
+                self.assertEqual(self._verdict(title, url), "SOURCE")
+
+    def test_a_round_up_without_a_number_is_still_a_round_up(self):
+        self.assertEqual(
+            self._verdict(
+                "Best Gaming Monitors 2026: Budget, Curved, 4K | Tom's Hardware",
+                "https://tomshardware.com/best-picks/best-gaming-monitors",
+            ),
+            "OFF-TARGET",
+        )
+
+    def test_a_marketing_range_page_is_not_a_candidate(self):
+        self.assertEqual(
+            self._verdict(
+                "Gaming Monitors for the Best Gaming Experience",
+                "https://example.com/gaming-monitors",
+            ),
+            "OFF-TARGET",
+        )
+
+    def test_a_real_model_survives_all_of_it(self):
+        for title, url in (
+            ("LG UltraGear 27GP850-B 27in QHD Gaming Monitor",
+             "https://bestbuy.com/site/lg-ultragear/6467884.p"),
+            ("Dell S2722DGM Curved Gaming Monitor",
+             "https://dell.com/product/s2722dgm"),
+        ):
+            with self.subTest(title=title):
+                self.assertIn(self._verdict(title, url), {"FITS", "UNCHECKED"})
+
+    def test_only_the_models_are_left_to_recommend(self):
+        results = [
+            {"title": "Best Gaming Monitors 2026: Budget, Curved, 4K | Tom's Hardware",
+             "url": "https://tomshardware.com/best-picks/best-gaming-monitors",
+             "summary": "our picks"},
+            {"title": "Amazon.com: Gaming Monitor",
+             "url": "https://amazon.com/s?k=gaming+monitor", "summary": "shop"},
+            {"title": "Gaming monitor",
+             "url": "https://example.com/gaming-monitor", "summary": "category"},
+            {"title": "LG UltraGear 27GP850-B 27in QHD Gaming Monitor",
+             "url": "https://bestbuy.com/site/lg/6467884.p",
+             "summary": "165Hz, $349"},
+        ]
+
+        viable = cf.viable(
+            cf.evaluate(results, self._monitors(), shape=cf.PRODUCT),
+        )
+
+        self.assertEqual([fit.name for fit in viable], [results[-1]["title"]])
+
+    def test_a_bare_title_with_no_page_is_judged_on_its_own_terms(self):
+        # A caller comparing titles alone is asking a different question,
+        # and "Guitars" with nothing behind it is an unchecked candidate
+        # rather than an aisle -- which is what the fit layer has always
+        # said about it.
+        self.assertFalse(
+            cf.restates_the_search("Gaming monitor", "", self._monitors()),
+        )
+
+    def test_a_definition_page_is_not_a_product(self):
+        # "What is IT Monitoring?" was recommended live to someone asking
+        # about Samsung gaming monitors. A title that opens by asking what
+        # something is, is writing about the thing by construction.
+        for title in (
+            "What is IT Monitoring?",
+            "What is a Monitor? - GeeksforGeeks",
+            "What are QHD monitors",
+        ):
+            with self.subTest(title=title):
+                self.assertEqual(
+                    self._verdict(title, "https://example.com/page"),
+                    "OFF-TARGET",
+                )

@@ -71,6 +71,51 @@ class TextFilter:
         ),
     )
 
+    # Dashes as punctuation. People do not speak them, and a voice reads
+    # them as a stumble or as the word itself: "I haven't checked -- want me
+    # to look up real ones?" came out of a live turn sounding like two
+    # sentences jammed together with a gap in the middle.
+    #
+    # Only the *parenthetical* dash is touched. A dash inside a word is part
+    # of the word ("27-inch", "force-quit", "2025-01-02") and a dash between
+    # two numbers is a range, which is said "to". Both are left alone, which
+    # is why this cannot simply delete the character.
+    _NUMBER_RANGE = re.compile(
+        # A currency mark may sit on the far side of the dash: "$100 - $200"
+        # is one range, and reading it as a pause loses the "to".
+        r"(?<=\d)\s*(?:--+|[–—]|-)\s*(?=[$₩€£¥]?\s?\d)",
+    )
+    _PARENTHETICAL_DASH = re.compile(
+        r"\s*(?:--+|[–—])\s*|\s+-\s+",
+    )
+    # What the substitution leaves behind: a comma next to punctuation that
+    # already does the same job, or one at the very start of the line.
+    _COMMA_TIDY = (
+        (re.compile(r"\s+,"), ","),
+        (re.compile(r",\s*,+"), ","),
+        (re.compile(r"(?<=[.!?;:])\s*,\s*"), " "),
+        (re.compile(r",\s*(?=[.!?;:])"), ""),
+        (re.compile(r"^\s*,\s*"), ""),
+    )
+
+    @classmethod
+    def natural_dashes(cls, text: str) -> str:
+        """Say a dash the way a person would: as a pause, or as "to".
+
+        Deterministic rather than a prompt instruction, per this project's
+        standing rule -- and because the dashes are not all the model's.
+        Plenty of them are written into her own lines, so telling the model
+        to stop would not have fixed the sentence that prompted this.
+        """
+        said = str(text or "")
+        if not said:
+            return said
+        said = cls._NUMBER_RANGE.sub(" to ", said)
+        said = cls._PARENTHETICAL_DASH.sub(", ", said)
+        for pattern, replacement in cls._COMMA_TIDY:
+            said = pattern.sub(replacement, said)
+        return said.strip(" ,\t")
+
     @classmethod
     def clean(cls, text: str) -> str:
         text = cls.EMOJI_PATTERN.sub("", text)
@@ -119,6 +164,10 @@ class TextFilter:
             text,
         )
         text = re.sub(r"(?m)^\s*\d+[.)]\s+", "", text)
+
+        # After the bullet strip above, deliberately: a leading "- " is a
+        # list marker, and turning that into a comma would be wrong.
+        text = cls.natural_dashes(text)
 
         # Underscores are useful on screen for identifiers, but a speech
         # engine should pause between their words instead of saying "underscore."
