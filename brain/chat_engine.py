@@ -251,6 +251,47 @@ _CANCELLATION = re.compile(
     flags=re.IGNORECASE,
 )
 
+# A follow-up about a result set that already exists. Measured on a
+# dogfooding-shaped workload, these were 3 of 20 turns and every one paid a
+# full ~2.2s routing call to be told it was conversation -- which is all
+# the router can say about them, because the answer is in the session
+# rather than in the sentence.
+#
+# The closed class is deliberately narrow: comparison, evaluation and
+# refinement, none of which authorises anything. "Can you pull it up?" is
+# also a follow-up and is deliberately *not* here, because it asks for an
+# action and the router has to say so.
+#
+# Only ever taken while a recommendation is open. With nothing to refer
+# back to, "anything cheaper?" is a question about nothing and belongs to
+# the router.
+_RESULT_FOLLOW_UP = re.compile(
+    r"^\s*(?:so\s+|and\s+|ok(?:ay)?[,\s]+|well\s+)?"
+    r"(?:"
+    # refinement, and nothing after it: "anything cheaper?", "got anything
+    # quieter?". The tail is bounded on purpose -- "anything cheaper in
+    # Seoul that has parking?" carries a place and a facility, and those
+    # have to be read by something that can put them in the problem.
+    r"(?:(?:got|is\s+there|are\s+there|do\s+you\s+have)\s+)?"
+    r"any(?:thing)?\s+\w+er"
+    r"(?:\s+than\s+(?:that|this|it|those|these))?"
+    # a choice among what is already there
+    r"|which\s+(?:one\s+)?(?:would|do)\s+you\s+"
+    r"(?:choose|pick|recommend|go\s+with|prefer)"
+    # an opinion on one of them
+    r"|is\s+(?:it|that|this)\s+(?:actually\s+|really\s+)?"
+    r"(?:any\s+)?(?:good|worth\s+it|better|ok(?:ay)?)"
+    # a position in the list
+    r"|what\s+about\s+the\s+"
+    r"(?:first|second|third|fourth|fifth|last|other)(?:\s+one)?"
+    # approval of one of them
+    r"|(?:that|this)\s+one\s+(?:sounds|looks|seems)\s+\w+"
+    r")"
+    r"(?:\s+(?:then|though|really|actually))?"
+    r"\s*[.?!]*\s*$",
+    flags=re.IGNORECASE,
+)
+
 # A bare greeting needs no model, locale, capability inventory, or service
 # pitch. Full-match-only means "hello, can you check Zillow?" still reaches
 # the request behind the greeting.
@@ -8622,14 +8663,20 @@ class ChatEngine:
                 pending_capability,
                 pending_clarification,
             ))
-            and active_problem is None
+            and not (active_problem is not None and active_problem.evidence)
             and not has_explicit_attachment
             and not continuing_agent_flow
         ):
             # Nothing is outstanding, so this authorises nothing and asks
             # nothing. Every branch that would give it meaning -- a pending
-            # offer, a consent question, an open recommendation -- is checked
-            # above and returns before this point.
+            # offer, a consent question, delivered results to react to -- is
+            # checked above and returns before this point.
+            #
+            # An open problem with *no evidence yet* used to block this, so
+            # "ok" two turns into a conversation about monitors paid a full
+            # routing call. It cannot mean "yes, go ahead": every gate that
+            # could have asked something is empty, and there are no results
+            # to be reacting to either.
             timings["route"] = time.perf_counter() - route_started
             return TurnRouting(
                 route=IntentDecision(
@@ -8674,9 +8721,48 @@ class ChatEngine:
         resumed_problem_id = ""
         answered_recommendation = False
 
+        def tier0(transcript: str) -> IntentDecision | None:
+            """The answer, when the sentence already contains it.
+
+            A closed grammatical class with nothing outstanding leaves the
+            router nothing to classify. This returns the decision the model
+            would have produced, so everything after it -- recall, the
+            interaction decision, capability selection -- runs exactly as
+            it does on a routed turn. Returning a whole ``TurnRouting``
+            instead would skip all of that, and measured, it did: the
+            follow-up stopped reaching 4F.2's ``continue`` and answered
+            from general knowledge instead of the session's own results.
+            """
+            if (
+                has_explicit_attachment
+                or continuing_agent_flow
+                or any((
+                    pending_offer, pending_computer, pending_task,
+                    pending_strategy, pending_capability,
+                    pending_clarification,
+                ))
+            ):
+                return None
+            if (
+                active_problem is not None
+                and _RESULT_FOLLOW_UP.fullmatch(transcript)
+            ):
+                print("[Router] Tier 0: a follow-up about what was found.")
+                return IntentDecision(
+                    intent="conversation",
+                    confidence=1.0,
+                    normalized_request=transcript,
+                    reason="A follow-up about results this session found.",
+                    is_follow_up=True,
+                )
+            return None
+
         def route_current(
             transcript: str,
         ) -> IntentDecision:
+            settled = tier0(transcript)
+            if settled is not None:
+                return settled
             return self._resolve_named_choice(self._escalate_disputed_claim(
                 self.intent_router.route(
                     transcript,

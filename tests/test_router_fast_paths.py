@@ -12,7 +12,12 @@ the turn it was written for, it is the turn that happens to match it.
 
 import unittest
 
-from brain.chat_engine import _BARE_ACKNOWLEDGEMENT, _CANCELLATION
+from brain.chat_engine import (
+    _BARE_ACKNOWLEDGEMENT,
+    _CANCELLATION,
+    _RESULT_FOLLOW_UP,
+)
+from tests.turn_harness import build_engine
 
 
 class BareAcknowledgementTests(unittest.TestCase):
@@ -151,3 +156,134 @@ class PendingStateStillWinsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResultFollowUpTests(unittest.TestCase):
+    """A question about the set she already found.
+
+    The router can only answer "conversation, and it is a follow-up" --
+    the answer is in the session rather than in the sentence. Measured on a
+    dogfooding-shaped workload these were 3 of 20 turns, each paying a full
+    ~2.2s call to be told that.
+    """
+
+    def test_a_follow_up_about_results_is_recognised(self):
+        for said in (
+            "anything cheaper?",
+            "anything quieter?",
+            "got anything better?",
+            "is there anything cheaper",
+            "anything cheaper than that?",
+            "which one would you choose?",
+            "which would you pick?",
+            "which do you recommend?",
+            "is it actually good?",
+            "is that any good?",
+            "what about the second one?",
+            "that one sounds nice",
+        ):
+            with self.subTest(said=said):
+                self.assertTrue(_RESULT_FOLLOW_UP.fullmatch(said))
+
+    def test_a_follow_up_carrying_new_constraints_is_not_one(self):
+        # The whole risk of this path. A refinement that names a place, a
+        # budget or a use is a request whose words have to be read by
+        # something that can put them into the problem -- not waved past
+        # as "conversation, follow-up".
+        for said in (
+            "anything cheaper in Seoul that has parking?",
+            "is it good for gaming under 500?",
+            "which one would you choose for a 4K workflow?",
+            "what about the second one in Gangnam?",
+            "find me a cheaper one",
+            "can you pull it up?",
+            "open the second one",
+            "book the second one",
+            "what about Seattle",
+            "is it going to rain tomorrow?",
+            "which hotel is in Gangnam?",
+        ):
+            with self.subTest(said=said):
+                self.assertIsNone(_RESULT_FOLLOW_UP.fullmatch(said))
+
+
+class TierZeroReachesNoModelTests(unittest.TestCase):
+    """Counted, not inspected: these turns cost zero routing calls."""
+
+    class _Counting:
+        def __init__(self, inner):
+            self._inner, self.calls = inner, 0
+
+        def chat(self, **kwargs):
+            self.calls += 1
+            return self._inner.chat(**kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def _engine_with_results(self):
+        engine = build_engine(routes={
+            "find me a good monitor": {
+                "intent": "web_search", "confidence": 0.95,
+                "normalized_request": "find a good monitor",
+                "topic": "monitor", "speech_act": "action_request",
+                "action_requested": True, "requires_external_evidence": True,
+                "recommendation_needed": True, "reason": "asked outright",
+            },
+        })
+        engine._web_search_enabled = True
+        engine.research_agent._search = lambda q, m=5: "LG UltraGear, 165Hz."
+        engine.client.reply = "The LG UltraGear looks good."
+        engine.chat("Find me a good monitor")
+        # Only the router's client is counted. The engine's own client
+        # answers the turn as well, and counting that would measure
+        # generation rather than routing.
+        counting = self._Counting(engine.client)
+        engine.intent_router.client = counting
+        return engine, counting
+
+    def test_a_follow_up_costs_no_routing_call(self):
+        engine, counting = self._engine_with_results()
+        engine.client.reply = "I'd take the LG."
+
+        engine.chat("which one would you choose?")
+
+        self.assertEqual(
+            counting.calls, 0,
+            "a follow-up about known results still paid for routing",
+        )
+
+    def test_and_still_reaches_the_interaction_decision(self):
+        # A fast path that returned a whole routing result would skip the
+        # decision layer entirely -- measured, it did, and the follow-up
+        # answered from general knowledge instead of the session's own
+        # results. Tier 0 substitutes for the model call and nothing else.
+        engine, _counting = self._engine_with_results()
+        engine.client.reply = "I'd take the LG."
+
+        engine.chat("which one would you choose?")
+
+        self.assertTrue(engine._last_interaction.continues)
+
+    def test_a_refinement_with_new_content_still_routes(self):
+        engine, counting = self._engine_with_results()
+        engine.client.reply = "Sure."
+
+        engine.chat("anything cheaper in Seoul that has parking?")
+
+        self.assertGreater(counting.calls, 0)
+
+    def test_an_acknowledgement_with_an_open_problem_costs_nothing(self):
+        # An open recommendation used to block this, so "ok" two turns into
+        # a conversation about monitors paid a full routing call. It cannot
+        # mean "yes, go ahead": every gate that could have asked is empty.
+        engine = build_engine(routes={})
+        engine.task_sessions.note_recommendation_turn(
+            "I'm thinking about getting a new monitor.", subject="monitor",
+        )
+        counting = self._Counting(engine.client)
+        engine.intent_router.client = counting
+
+        engine.chat("ok")
+
+        self.assertEqual(counting.calls, 0)
