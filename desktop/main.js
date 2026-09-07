@@ -2,11 +2,38 @@ const {
     app,
     BrowserWindow,
     ipcMain,
-    screen
+    screen,
+    shell
 } = require("electron");
 
 const { spawn } = require("child_process");
 const path = require("path");
+const fs = require("fs");
+
+/*
+ * Where the renderer's console goes.
+ *
+ * On Windows a GUI process has no console attached, so console.log from this
+ * process is written to a handle nobody is reading -- which is why a window
+ * that silently fails looks exactly like a backend that sent nothing. A file
+ * is readable afterwards, from any terminal, without DevTools.
+ */
+const RENDERER_LOG_PATH = path.resolve(
+    __dirname,
+    "..",
+    "runtime",
+    "renderer.log"
+);
+
+function writeRendererLine(line) {
+    console.log(line);
+    try {
+        fs.mkdirSync(path.dirname(RENDERER_LOG_PATH), { recursive: true });
+        fs.appendFileSync(RENDERER_LOG_PATH, `${line}\n`, "utf8");
+    } catch (error) {
+        // Logging must never be the reason the window stops working.
+    }
+}
 
 const WINDOW_WIDTH = 420;
 const WINDOW_HEIGHT = 650;
@@ -165,6 +192,39 @@ function createWindow() {
     );
 
     /*
+     * Carry the renderer's console into this process's stdout.
+     *
+     * Without this the only way to see what the window is doing is to open
+     * DevTools by hand, so a renderer that silently fails is indistinguishable
+     * from a backend that sent nothing. Electron's stdout is inherited from
+     * whatever started it, which means `python main.py` in a terminal now
+     * shows the backend and the window in one stream.
+     */
+    try {
+        fs.mkdirSync(path.dirname(RENDERER_LOG_PATH), { recursive: true });
+        fs.writeFileSync(RENDERER_LOG_PATH, "", "utf8");
+    } catch (error) {
+        // Not fatal; appending to a stale log is still better than nothing.
+    }
+    writeRendererLine(
+        `[Renderer] console attached; renderer log at ${RENDERER_LOG_PATH}`
+    );
+
+    mainWindow.webContents.on(
+        "console-message",
+        (...args) => {
+            // Electron 35 replaced the positional signature with one event
+            // object. Accept both so this keeps working across upgrades.
+            const details = args[0] && typeof args[0].message === "string"
+                ? args[0]
+                : { message: args[2], level: args[1] };
+
+            const stamp = new Date().toISOString().slice(11, 23);
+            writeRendererLine(`[Renderer ${stamp}] ${details.message}`);
+        }
+    );
+
+    /*
      * Place Elaina near the bottom-right corner
      * of the primary monitor.
      */
@@ -279,6 +339,27 @@ ipcMain.on("window-close", () => {
 
 ipcMain.on("window-minimize", () => {
     mainWindow?.minimize();
+});
+
+/*
+ * Open a card's page in the user's own browser.
+ *
+ * The address originates in the backend -- a candidate a real search
+ * returned -- and is checked once more here rather than trusted, because
+ * this process is the one that can actually launch things. Anything that is
+ * not a plain web address is dropped without comment: there is no reason
+ * for a card to point at a file, a script, or an application.
+ */
+ipcMain.on("open-external", (_event, url) => {
+    const address = String(url || "").trim();
+
+    if (!/^https?:\/\//i.test(address) || address.length > 2048) {
+        writeRendererLine(`[Renderer] refused to open ${address.slice(0, 80)}`);
+        return;
+    }
+
+    writeRendererLine(`[Renderer] opening externally: ${address}`);
+    shell.openExternal(address);
 });
 
 ipcMain.on("open-screen-selector", () => {

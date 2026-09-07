@@ -4,6 +4,7 @@ import json
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 import ollama
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -19,6 +20,10 @@ from brain.deliberation import goal_intent, interaction, supersession
 from brain.deliberation.goal_intent import SemanticGoal
 from brain import capability_selection
 from brain import result_state
+from brain import response_surface as surfaces
+from brain import entity_discovery
+from brain import surface_images
+from brain import surface_log
 from brain import references
 from brain import browser_outcome
 from brain import browser_navigation
@@ -891,6 +896,10 @@ class ChatEngine:
         # existing desktop/browser ones -- same ResearchAgent instance the
         # plain web_search intent path already uses, not a second one.
         self.web_search_tool = WebSearchTool()
+        # Pictures for the cards. Held here rather than called
+        # directly so the network boundary is one a test can tie,
+        # exactly like the structured search above it.
+        self.illustrate_surface = surface_images.illustrate
         # Which market the user actually buys in. Resolved once, then used
         # by every recommendation path (router prompt, task planner, web
         # search) so a Korean user is not quietly sent to US-only sites.
@@ -3255,6 +3264,48 @@ class ChatEngine:
                         surface_hosts=self._surface_hosts_for(problem, query),
                     )
 
+        # Pages about several things are sources; the things themselves are
+        # what a recommendation is made of. When the search has not returned
+        # enough of the latter, read them out of the former rather than
+        # searching a third time for more pages.
+        if len(candidate_fit.viable(fits)) < 3:
+            surface_log.note("[Acquisition]")
+            surface_log.note(f"  Query: {first[:70]!r}   shape={shape}")
+            surface_log.note("  [Search Result]")
+            for fit in fits:
+                # SOURCE and CANDIDATE are the distinction that matters
+                # here: a page about several things is somewhere to read,
+                # never something to recommend.
+                if fit.kind == acquisition.SOURCE_SURFACE:
+                    reading = "SOURCE   "
+                elif fit.kind == acquisition.OFF_TARGET:
+                    reading = "DROP     "
+                elif self._is_a_page_about_things(fit, problem):
+                    reading = "SOURCE   "
+                else:
+                    reading = "CANDIDATE"
+                surface_log.note(f"    {reading} {fit.name[:58]}")
+            entities = self._entities_from(fits, problem, shape)
+            if entities:
+                queries.append("entity discovery")
+                fits = candidate_fit.evaluate(
+                    [
+                        {
+                            "title": entity["title"],
+                            "url": entity["url"],
+                            "summary": entity["summary"],
+                        }
+                        for entity in entities
+                    ] + [
+                        {"title": fit.name, "url": fit.url,
+                         "summary": fit.summary}
+                        for fit in fits
+                    ],
+                    problem,
+                    shape=shape,
+                    surface_hosts=self._surface_hosts_for(problem, query),
+                )
+
         if not fits:
             return None
 
@@ -3291,19 +3342,71 @@ class ChatEngine:
         # verdict were all worked out a line above and used to be dropped
         # here -- which is why a later "open the second one" could count to
         # a position and find nothing to open.
-        self.task_sessions.record_candidates(
-            result_state.from_fits(
-                fitting or candidate_fit.viable(fits),
+        # Only things, never pages.
+        #
+        # This used to be ``fitting or viable(fits)``, and the fallback was
+        # how every source reached recommendation state: measured live, all
+        # three of "find me some good hotels in Seoul", "recommend me some
+        # mechanical keyboards" and "find me a good gaming monitor" came
+        # back with FITS=0, so ``viable`` was recorded instead -- and
+        # ``viable`` only means "the right kind of thing, contradicting
+        # nothing", which an aggregator's front page satisfies.
+        #
+        # A source is still kept as evidence; it simply is not a candidate.
+        # Fewer real ones is the better failure: an honest two beats two
+        # plus a magazine article.
+        # Everything of the right kind that contradicts nothing, whether or
+        # not a source happened to state a quality about it.
+        #
+        # This used to prefer ``fitting`` and drop the rest, which meant one
+        # result confirming a constraint discarded every other real thing
+        # found alongside it. Measured live on "recommend me some 1440p
+        # monitors": eight results, two confirmed, and the ASUS ROG Swift
+        # PG27AQWP-W and Alienware AW2524HF -- both read out of round-ups,
+        # both verified to their own pages -- were thrown away for being
+        # merely unchecked. Not having had its price confirmed is not a
+        # reason to pretend a monitor was never found.
+        #
+        # They are already ranked with the confirmed ones first, and the
+        # page filter is what keeps sources out. Verification decides the
+        # order and what may be *claimed*, never what exists.
+        recordable = [
+            fit for fit in candidate_fit.viable(fits)
+            if not self._is_a_page_about_things(fit, problem)
+        ]
+        found_set = result_state.from_fits(
+            recordable,
                 kind=(
                     result_state.PLACE if shape == candidate_fit.PLACE
                     else result_state.PRODUCT if shape == candidate_fit.PRODUCT
                     else result_state.UNKNOWN
                 ),
-                source="web_search",
-                query=query,
-            ).items,
+            source="web_search",
+            query=query,
+        )
+        # Where each one came from, and how far it got. A name read out of a
+        # round-up carries that round-up's address as well as its own page,
+        # so a later turn can say "these are the ones I found" without
+        # implying anything was checked that was not.
+        origins = getattr(self, "_entity_origins", {}) or {}
+        self.task_sessions.record_candidates(
+            tuple(
+                replace(
+                    item,
+                    source_urls=tuple(dict.fromkeys(
+                        item.source_urls
+                        + ((origins[item.name.casefold()][0],)
+                           if origins.get(item.name.casefold(), ("", ""))[0]
+                           else ())
+                    )),
+                    state=origins[item.name.casefold()][1],
+                )
+                if item.name.casefold() in origins else item
+                for item in found_set.items
+            ),
             evidence=(candidate_fit.shortlist_text(fits),),
         )
+        self._entity_origins = {}
 
         if settled:
             instruction = (
@@ -3330,6 +3433,237 @@ class ChatEngine:
             evidence=f"{instruction}\n{candidate_fit.shortlist_text(fits)}",
             queries=tuple(queries),
         )
+
+    # How many discovered names are worth chasing. Reading them is free --
+    # it is text a search already returned -- and verifying each is one more
+    # search, run in parallel, so this bounds the only part that costs
+    # anything. Four is two more than a shortlist needs.
+    ENTITY_LIMIT = 4
+
+    def _discovery_query(self, problem) -> str:
+        """A query whose answers *name* things, rather than sell them.
+
+        The other queries in this layer look for the thing itself, which is
+        right when the thing has a page of its own -- a hotel does. A
+        keyboard usually does not, at least not one a search will rank
+        above the shop that sells it, and "mechanical keyboards price buy"
+        returns five storefronts and no model. What names models is the
+        round-up: the pages the surface layer refuses to put on cards are
+        exactly the pages that say "the one we picked is the Keychron Q5
+        Max".
+
+        So this asks for those on purpose. It is discovery, not
+        verification: what comes back is expected to be writing about
+        several things, and what is wanted from it is their names.
+        """
+        thing = str(getattr(problem, "subject", "") or "").strip()
+        try:
+            thing = problem.search_query() or thing
+        except Exception:
+            pass
+        thing = " ".join(str(thing).split())
+        if not thing:
+            return ""
+        # Its own qualities stay; the shape words a listing query needs
+        # ("price buy", "reviews address") would pull this back towards
+        # shops, which is what it exists to avoid.
+        for noise in (" price buy", " reviews address"):
+            thing = thing.replace(noise, "")
+        if re.search(r"\b(?:best|top)\b", thing, re.IGNORECASE):
+            return thing
+        return f"best {thing}".strip()
+
+    def _is_a_page_about_things(self, fit, problem) -> bool:
+        """Whether this result is a way of finding things, not one of them.
+
+        The last check before something becomes a candidate, and it asks
+        the acquisition layer's question rather than the surface layer's:
+        the surface refuses a *card*, which is a rendering decision, while
+        this refuses a *candidate*, which is what Elaina will talk about.
+        Both boundaries are wanted; neither replaces the other.
+        """
+        if fit.kind != acquisition.CANDIDATE:
+            return True
+        if re.match(r"^\s*(?:https?://|www\.)", str(fit.name or "")):
+            # An address is where a thing is, not what it is called.
+            # Measured live: a raw Naver Map link arrived as a restaurant's
+            # name and would have been read out as one.
+            return True
+        if candidate_fit.restates_the_search(fit.name, fit.url, problem):
+            return True
+        if candidate_fit.off_target(
+            fit.name, fit.url, fit.summary,
+            candidate_fit.expected_shape(problem),
+        ):
+            return True
+        # And the acquisition layer's own question. Measured live: "The
+        # Best Hotels in Seoul, From Gangnam to Hongdae" carries no colon
+        # and no year, so the round-up title pattern did not match it, and
+        # it entered candidate state as a hotel. It is plural where the
+        # request was singular, which is the whole of what is wrong with it.
+        return entity_discovery.names_the_category(
+            fit.name, self._subject_words(problem),
+        )
+
+    def _subject_words(self, problem) -> str:
+        """What this turn is about, in the words it is actually about it in.
+
+        The stored subject alone is not enough. Measured live: a turn asking
+        for restaurants in Gangnam still held "gaming monitor" as its
+        subject from the turn before, so "The 10 Best Korean Restaurants in
+        Gangnam-gu" did not look like the category to anything checking
+        against it, and two round-ups entered candidate state. The query
+        that was actually sent is the more current of the two, and using
+        both costs nothing.
+        """
+        parts = [
+            str(getattr(problem, "subject", "") or ""),
+            str(getattr(problem, "location", "") or ""),
+        ]
+        try:
+            parts.append(str(problem.search_query() or ""))
+        except Exception:
+            pass
+        return " ".join(part for part in parts if part)
+
+    def _entities_from(self, fits, problem, shape):
+        """The individual things named inside pages that are about several.
+
+        A source is not a candidate, but it is full of candidates' names: a
+        round-up says which keyboard it picked, a listing page says which
+        hotel it is showing. This reads those out of evidence already
+        retrieved -- never inventing one, only ever taking a literal span of
+        text that came back -- and then searches for each so it arrives with
+        a page of its own instead of borrowing the article's.
+
+        Discovery and verification are deliberately separate. A name whose
+        own page cannot be found is still returned: being named in real
+        evidence is enough to exist, and throwing away a real hotel for want
+        of a price is the failure this layer was built to stop.
+        """
+        subject = self._subject_words(problem).strip()
+        known = {str(fit.name or "").casefold() for fit in fits}
+        # A round-up is a source worth reading -- "The 16 Best Seoul Hotels"
+        # is sixteen hotel names -- but a video platform is not. What is on
+        # a channel page is the channel: measured live, discovery on YouTube
+        # results produced "Gyan Therapy585K" and "LakhVenom's Tech464K",
+        # which are subscriber counts wearing a name.
+        readable = [
+            fit for fit in fits
+            if not acquisition.is_publishing(fit.url)
+        ]
+        found = [
+            (name, source) for name, source in entity_discovery.from_results(
+                [
+                    {"title": fit.name, "url": fit.url, "summary": fit.summary}
+                    for fit in readable
+                ],
+                subject=subject,
+            )
+            if name.casefold() not in known
+        ][:self.ENTITY_LIMIT]
+        if len(found) < 2:
+            # Nothing named in what came back. One more search, worded to
+            # find pages that *name* things rather than pages that sell
+            # them: a round-up says which keyboard it picked, where a
+            # storefront query returns the storefront. This is the second
+            # of the two bounded attempts, and it is a different strategy
+            # rather than the same query again.
+            discovery = self._discovery_query(problem)
+            if discovery:
+                surface_log.note(f"  discovery query: {discovery!r}")
+                try:
+                    more = self.research_agent.research_structured(
+                        search_query=discovery, max_results=6,
+                        query_is_resolved=True,
+                    )
+                except Exception:
+                    more = ()
+                extra = [
+                    (name, source)
+                    for name, source in entity_discovery.from_results(
+                        [
+                            result for result in (more or ())
+                            if not acquisition.is_publishing(
+                                str(result.get("url", "") or ""),
+                            )
+                        ],
+                        subject=subject,
+                    )
+                    if name.casefold() not in known
+                ]
+                for pair in extra:
+                    if pair[0].casefold() not in {
+                        name.casefold() for name, _ in found
+                    }:
+                        found.append(pair)
+                found = found[:self.ENTITY_LIMIT]
+        if not found:
+            return ()
+
+        for name, source in found:
+            surface_log.note(
+                f"  read {name!r} out of {acquisition.host_of(source)}"
+            )
+
+        def verify(pair):
+            """One search, for one name, to find its own page."""
+            name, source = pair
+            try:
+                results = self.research_agent.research_structured(
+                    search_query=name, max_results=3, query_is_resolved=True,
+                )
+            except Exception:
+                results = ()
+            for result in results or ():
+                url = str(result.get("url", "") or "")
+                if acquisition.classify(url) != acquisition.CANDIDATE:
+                    continue
+                if not entity_discovery.is_about(
+                    name, f"{result.get('title', '')} {url}",
+                ):
+                    continue
+                # The name stays the one that was discovered. The page is
+                # the page; its title is a title, and titles are how a
+                # round-up got in here in the first place.
+                return {
+                    "title": name,
+                    "url": url,
+                    "summary": str(result.get("summary", "") or ""),
+                    "source_url": source,
+                    "state": result_state.VERIFIED,
+                }
+            return {
+                "title": name, "url": "", "summary": "",
+                "source_url": source, "state": result_state.DISCOVERED,
+            }
+
+        try:
+            with ThreadPoolExecutor(max_workers=self.ENTITY_LIMIT) as pool:
+                entities = list(pool.map(verify, found))
+        except Exception:
+            entities = [
+                {"title": name, "url": "", "summary": "",
+                 "source_url": source, "state": result_state.DISCOVERED}
+                for name, source in found
+            ]
+        for entity in entities:
+            surface_log.note("  [Candidate]")
+            surface_log.note(f"    {entity['title']}")
+            origin = acquisition.host_of(entity["source_url"])
+            surface_log.note(f"    origin: {origin or 'search result'}")
+            surface_log.note(f"    state: {entity['state']}")
+            if entity["url"]:
+                surface_log.note(f"    page: {entity['url'][:64]}")
+        # Kept so provenance survives the trip through the fit layer, which
+        # knows about pages and not about where a name was read.
+        self._entity_origins = {
+            str(entity["title"]).casefold(): (
+                entity["source_url"], entity["state"],
+            )
+            for entity in entities
+        }
+        return tuple(entities)
 
     def _candidates_for(
         self, query: str, problem, shape: str, *, preferred_source: str = "",
@@ -3949,6 +4283,7 @@ class ChatEngine:
             request,
             subject=subject,
             topic_shift=bool(getattr(route, "topic_shift", False)),
+            follow_up=bool(getattr(route, "is_follow_up", False)),
             location=(
                 self.task_sessions.focus().background.get("location", "")
                 if self.task_sessions.focus() is not None else ""
@@ -3966,6 +4301,26 @@ class ChatEngine:
         self._recommendation_restarted = (
             before is not None and problem.turns <= 1
         )
+        if before is not None and problem.id != before.id:
+            # The conversation has moved to a different problem, so an
+            # offer made about the old one is no longer answerable.
+            #
+            # "Want me to look up some monitors?" -- then "actually find me
+            # restaurants in Gangnam" -- then "yeah". Without this the
+            # "yeah" reaches back past the restaurants and runs the monitor
+            # lookup, which is consent given for one thing spent on
+            # another. The 90-second expiry was the only thing standing
+            # between the two, and time is not the boundary that matters.
+            pending = self.capability_offer.peek()
+            if pending is not None and not self.capability_offer.belongs_to(
+                problem.id,
+            ):
+                surface_log.note("[Task Lifecycle]")
+                surface_log.note(
+                    f"  dropped offer: {pending.capability_id or pending.goal} "
+                    f"(offered for task {pending.task_id[:8] or '?'})"
+                )
+                self.capability_offer.clear()
         if before is None:
             why = "first turn of a new recommendation"
         elif problem.subject != before.subject and not problem.constraints:
@@ -4112,6 +4467,165 @@ class ChatEngine:
             return request
         # Keep the question, but say what it is about.
         return f"{subject} {request}".strip()
+
+    # Turns that are asking for the set to be weighed rather than listed.
+    _WANTS_COMPARISON = re.compile(
+        r"\bcompare\b|\bside\s+by\s+side\b|\bwhich\s+is\s+better\b"
+        r"|\bdifference\s+between\b|\bversus\b|\bvs\.?\b",
+        re.IGNORECASE,
+    )
+
+    def _surface_for(self, user_input: str, *, searched: bool) -> "surfaces.Surface":
+        """The structured half of this reply, or nothing at all.
+
+        Decided here rather than in Electron, and that is the whole point of
+        the protocol: the layer that knows whether a real result set exists
+        is the layer that found it. A renderer inferring cards from the word
+        "hotel" in a sentence is how a UI starts disagreeing with the
+        conversation it is attached to.
+
+        Conservative by construction. A surface appears only when this turn
+        genuinely has several checkable things in hand -- so ordinary
+        conversation, a single recommendation and a failed search all stay
+        exactly as they were, which is what keeps ``none`` the common case.
+        """
+        def no(reason: str) -> "surfaces.Surface":
+            # Every way of staying flat says so. Silence and "the code never
+            # ran" look identical from outside, and telling them apart by
+            # reading the source cost a whole debugging pass once already.
+            surface_log.note(f"[Surface] none: {reason}.")
+            return surfaces.NOTHING
+
+        # Recorded before any decision, so that "nothing about this turn in
+        # the log" means something definite: the surface layer was never
+        # reached, rather than reached and declined.
+        surface_log.note(
+            f"[Surface] considering: said={str(user_input or '')[:70]!r} "
+            f"searched={searched} held={len(self.task_sessions.results())} "
+            f"recommendation="
+            f"{self.task_sessions.active_recommendation() is not None}"
+        )
+        held_now = self.task_sessions.results().items
+        subject_now = str(getattr(
+            self.task_sessions.active_recommendation(), "subject", "",
+        ) or "") or str(user_input or "")
+        for candidate, (card, refused) in zip(
+            held_now, surfaces.refusals(held_now, subject_now),
+        ):
+            surface_log.note(
+                f"[Surface]   {candidate.verdict or '(none)':<10} "
+                f"{('DROP: ' + refused) if refused else 'card':<28} "
+                f"{card[:64]!r}"
+            )
+
+        if self._browser_result_is_final:
+            # A live page is already its own surface, and a shortlist drawn
+            # over it would describe a different moment.
+            return no("a live page is already the surface")
+        held = self.task_sessions.results()
+        if len(held) < 2:
+            return no(f"{len(held)} candidate(s) in hand; a shortlist needs 2")
+        wants_comparison = bool(self._WANTS_COMPARISON.search(str(user_input or "")))
+        if not searched and not wants_comparison and not (
+            self._last_interaction.continues
+        ):
+            # Results are in hand but this turn was about something else.
+            return no(
+                f"{len(held)} in hand but this turn neither searched nor "
+                f"continued (mode={self._last_interaction.mode})"
+            )
+        if wants_comparison:
+            chosen = references.resolve(user_input, held.names())
+            picked = [
+                held.at(index) for index in (
+                    range(len(held)) if not chosen.resolved
+                    else [held.names().index(name) for name in chosen.values]
+                )
+            ]
+            built = surfaces.from_candidates(
+                [item for item in picked if item is not None][:3],
+                kind=surfaces.COMPARISON,
+                title="Side by side",
+                subject=subject_now,
+            )
+            return built or no(
+                "nothing chosen for comparison names a thing a card can show"
+            )
+        built = surfaces.from_candidates(
+            held.items, kind=surfaces.SHORTLIST,
+            title=str(getattr(
+                self.task_sessions.active_recommendation(), "subject", "",
+            ) or "").strip()[:60],
+            # What was asked for, so a result that only repeats the request
+            # back ("Seoul", "Seoul Hotels") can be told from one of the
+            # things it was asking about.
+            subject=subject_now,
+        )
+        # Refusing every candidate and never building are different things,
+        # and both end in an empty window. Say which one happened.
+        return built or no(
+            f"{len(held)} in hand, but fewer than 2 of them name a thing a "
+            f"card could show"
+        )
+
+    def surface_opened(self, candidate_id: str) -> str:
+        """Note which floating card the person opened.
+
+        Electron opens the page itself, because following a link is not a
+        decision and routing it through a turn would make Elaina narrate a
+        click. But the conversation still has to know *which* one, or the
+        window and the reasoning end up describing different things.
+
+        Resolving by identity rather than by label is also what catches a
+        stale card: one left over from a result set that has since been
+        replaced names nothing here, and is ignored.
+        """
+        held = self.task_sessions.results()
+        chosen = held.by_id(str(candidate_id or "").strip())
+        if chosen is None:
+            print("[Surface] a card was opened for something no longer held.")
+            return ""
+        print(f"[Surface] opened [{chosen.id}] {chosen.name} -> {chosen.url}")
+        return chosen.name
+
+    def surface_action(self, action: str, candidate_id: str) -> str:
+        """Run a card press as an ordinary turn.
+
+        The whole point of the protocol's identity rule arrives here. The
+        card sends the candidate's id, never its label, so this resolves
+        against the result set actually in hand and then says the sentence
+        the person would have said -- which goes through the router, the
+        interaction decision and every guard, exactly as if they had typed
+        it. No decision is taken in Electron, and none is taken here either.
+
+        An id that resolves to nothing is dropped. A stale card from a
+        result set that has since been replaced must not open something the
+        conversation has moved on from.
+        """
+        held = self.task_sessions.results()
+        chosen = held.by_id(str(candidate_id or "").strip())
+        if chosen is None:
+            print("[Surface] a card was pressed for something no longer held.")
+            return ""
+        wanted = str(action or "").strip()
+        if wanted == "open":
+            if not chosen.openable:
+                print(f"[Surface] {chosen.name!r} has nowhere to open.")
+                return ""
+            # The address on its own. A bare address is already the
+            # deterministic navigation path -- the one with the browser
+            # recovery and verification behind it -- and wrapping it in a
+            # verb sends it to the page planner instead.
+            said = chosen.url
+        elif wanted == "compare":
+            said = f"compare {chosen.name} with the others"
+        elif wanted == "tell_me_more":
+            said = f"tell me more about {chosen.name}"
+        else:
+            print(f"[Surface] unknown card action {wanted!r}.")
+            return ""
+        print(f"[Surface] {wanted} on [{chosen.id}] -> {said!r}")
+        return self.chat(said)
 
     def _offerable_capability(self, capability, goal) -> str:
         """Which ability an unprompted offer would actually use.
@@ -7723,6 +8237,26 @@ class ChatEngine:
             "assistant_finished",
             text=reply,
         )
+
+        # And the optional structured half of it. A separate event, so a
+        # client that has never heard of surfaces -- and every reply that
+        # does not have one -- behaves exactly as it did before.
+        surface = self._surface_for(user_input, searched="web_search" in timings)
+        if surface:
+            # Pictures are added here rather than inside the decision, which
+            # stays pure: whether there is a surface is reasoning, what it
+            # looks like is not. This runs after the reply has been sent, so
+            # a slow image index delays nothing anybody is waiting on.
+            surface = self.illustrate_surface(surface)
+            payload = surface.payload()
+            surface_log.note(surface.log_line())
+            surface_log.note(
+                f"[Surface] emitting assistant_surface: type={payload['type']} "
+                f"items={len(payload['items'])} "
+                f"names={[item['name'][:34] for item in payload['items']]} "
+                f"images={sum(1 for item in payload['items'] if item['image'])}"
+            )
+            self.events.emit("assistant_surface", **payload)
 
         # Speak any remaining text that did not end in punctuation.
         remaining_text = speech_buffer.strip()

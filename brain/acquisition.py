@@ -71,6 +71,10 @@ _PUBLISHING = (
     "medium.com", "wikipedia.org", "facebook.com", "x.com", "twitter.com",
     "brunch.co.kr", "tistory.com", "blogspot.com", "wordpress.com",
     "vimeo.com", "dailymotion.com", "substack.com",
+    # Measured live during the entity-acquisition work: four separate
+    # verification searches landed on grokipedia pages, which are the same
+    # kind of thing as the wikipedia entry two lines up.
+    "grokipedia.com", "linkedin.com", "threads.net",
 )
 _PUBLISHING_SUBDOMAIN = re.compile(
     r"^(?:m\.)?(?:blog|blogs|post|posts|news|magazine|cafe)\.", re.IGNORECASE,
@@ -174,6 +178,30 @@ def is_publishing(url: str) -> bool:
     return any(host.endswith(platform) for platform in _PUBLISHING)
 
 
+def _is_front_page(url: str) -> bool:
+    """Whether this address is a site's door rather than a room in it."""
+    without_scheme = re.sub(r"^https?://", "", str(url or ""), flags=re.I)
+    path = without_scheme.split("?")[0].split("#")[0]
+    _, _, tail = path.partition("/")
+    return not tail.strip("/")
+
+
+# Click trackers and ad redirects. The address belongs to the network that
+# sold the placement, not to the thing at the other end -- measured live, a
+# verification search for a real hotel returned bing.com/aclick?ld=... and
+# would have put that on the card.
+_REDIRECT = re.compile(
+    r"/aclick\?|/y\.js\?|googleadservices\.|doubleclick\.|"
+    r"/url\?q=|utm_medium=cpc",
+    re.IGNORECASE,
+)
+
+
+def is_a_redirect(url: str) -> bool:
+    """Whether this address only points at the thing, rather than being it."""
+    return bool(_REDIRECT.search(str(url or "")))
+
+
 def classify(url: str, *, surface_hosts=()) -> str:
     """Read a result as a candidate, a place to find candidates, or neither.
 
@@ -186,6 +214,8 @@ def classify(url: str, *, surface_hosts=()) -> str:
         return CANDIDATE
     if is_publishing(url):
         return OFF_TARGET
+    if is_a_redirect(url):
+        return OFF_TARGET
     host = host_of(url)
     known = any(
         host == known_host or host.endswith(f".{known_host}")
@@ -196,6 +226,13 @@ def classify(url: str, *, surface_hosts=()) -> str:
     if _ENTITY_URL.search(url):
         return CANDIDATE
     if _SURFACE_URL.search(url) or known:
+        return SOURCE_SURFACE
+    if _is_front_page(url):
+        # Nothing is *at* a domain root. A site's front door is a way of
+        # finding what it sells, never one of the things it sells, and this
+        # is where the aggregators were coming in: measured live,
+        # hotelscombined.com and keychron.com were both classified as
+        # things to recommend, and both reached the shortlist.
         return SOURCE_SURFACE
     return CANDIDATE
 

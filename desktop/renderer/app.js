@@ -1,6 +1,18 @@
 "use strict";
 
 /*
+ * Proof of identity, printed before anything else can go wrong. When the
+ * window shows nothing, the first question is whether this file is the one
+ * running: Electron caches, a copied asset looks identical from outside,
+ * and every later checkpoint is worthless if the answer is no.
+ */
+const RENDERER_BUILD = "4F.6-surface-trace";
+console.log(
+    `[Surface UI] renderer loaded: build=${RENDERER_BUILD} src=` +
+    `${(document.currentScript && document.currentScript.src) || "unknown"}`
+);
+
+/*
  * ================================================================
  * SETTINGS: these are the values you will most likely want to change
  * ================================================================
@@ -30,6 +42,7 @@ const elements = {
     activityText: document.getElementById("activity-text"),
     chatHistory: document.getElementById("chat-history"),
     chatDrawer: document.getElementById("chat-drawer"),
+    ambientSurface: document.getElementById("ambient-surface"),
     computerControlButton: document.getElementById("computer-control-button"),
     computerControlText: document.getElementById("computer-control-text"),
     screenButton: document.getElementById("screen-button"),
@@ -653,6 +666,249 @@ function addObservationMessage(text) {
     elements.chatHistory.scrollTop = elements.chatHistory.scrollHeight;
 }
 
+/* ------------------------- Structured surfaces ------------------------- */
+/*
+ * The optional structured half of a reply. Elaina's backend decides whether
+ * one exists and what goes in it; this file renders what it is given and
+ * makes no judgement of its own. It must never read a reply, notice the word
+ * "hotel" and produce cards, because the layer that knows whether a real
+ * result set exists is the layer that found it.
+ *
+ * Validation here is not politeness, it is the contract: anything malformed
+ * is dropped and the turn stays a plain-text reply, which is exactly what it
+ * would have been before surfaces existed.
+ */
+
+const SURFACE_TYPES = ["shortlist", "comparison", "ambient_images"];
+const SURFACE_ACTIONS = ["open", "compare", "tell_me_more"];
+const SURFACE_ACTION_LABELS = {
+    open: "Open",
+    compare: "Compare",
+    tell_me_more: "Tell me more"
+};
+const SURFACE_MAX_ITEMS = 6;
+
+function safeSurfaceText(value, limit) {
+    if (typeof value !== "string") return "";
+    const text = value.replace(/\s+/g, " ").trim();
+    if (!text || /[<>]|javascript:|data:text\/html/i.test(text)) return "";
+    return text.slice(0, limit || 240);
+}
+
+function safeSurfaceLink(value) {
+    const url = safeSurfaceText(value, 2048);
+    return /^https?:\/\//i.test(url) ? url : "";
+}
+
+function validateSurface(message) {
+    if (!message || typeof message !== "object") return null;
+    if (SURFACE_TYPES.indexOf(message.type) === -1) return null;
+    if (!Array.isArray(message.items)) return null;
+
+    const items = [];
+    for (const raw of message.items.slice(0, SURFACE_MAX_ITEMS)) {
+        if (!raw || typeof raw !== "object") continue;
+        const id = safeSurfaceText(raw.id, 64);
+        const name = safeSurfaceText(raw.name, 120);
+        if (!id || !name) continue;
+        items.push({
+            id,
+            name,
+            image: safeSurfaceLink(raw.image),
+            subtitle: safeSurfaceText(raw.subtitle, 90),
+            description: safeSurfaceText(raw.description, 240),
+            metadata: Array.isArray(raw.metadata)
+                ? raw.metadata
+                    .filter((pair) => Array.isArray(pair) && pair.length === 2)
+                    .map((pair) => [
+                        safeSurfaceText(pair[0], 40),
+                        safeSurfaceText(pair[1], 60)
+                    ])
+                    .filter((pair) => pair[0])
+                : [],
+            actions: Array.isArray(raw.actions)
+                ? raw.actions.filter((a) => SURFACE_ACTIONS.indexOf(a) !== -1)
+                : [],
+            url: safeSurfaceLink(raw.url)
+        });
+    }
+
+    if (message.type !== "ambient_images" && items.length < 2) return null;
+    if (!items.length) return null;
+
+    return {
+        type: message.type,
+        title: safeSurfaceText(message.title, 90),
+        items
+    };
+}
+
+/*
+ * At most four. The window is 422 pixels wide and they float beside her,
+ * not in a list -- a fifth has nowhere to go that is not on top of a fourth.
+ */
+const AMBIENT_MAX = 4;
+
+/*
+ * Why a payload was refused. validateSurface stays a pure yes/no -- this
+ * runs only on the failure path, because "rejected" and "never called" look
+ * identical from the outside and telling them apart cost a debugging pass.
+ */
+function surfaceRejection(message) {
+    if (!message || typeof message !== "object") return "not an object";
+    if (SURFACE_TYPES.indexOf(message.type) === -1) {
+        return `unknown type ${JSON.stringify(message.type)}`;
+    }
+    if (!Array.isArray(message.items)) return "items is not an array";
+    return `no item survived validation of ${message.items.length} sent`;
+}
+
+/*
+ * A shortlist describes one moment. Leaving it floating through the next
+ * question would turn it into a claim about a turn it has nothing to do
+ * with, so the conversation moving on takes it down.
+ */
+function clearAmbientSurface(why) {
+    if (!elements.ambientSurface) return;
+    if (elements.ambientSurface.children.length) {
+        console.log(`[Surface UI] cleared (${why})`);
+    }
+    elements.ambientSurface.textContent = "";
+}
+
+/*
+ * Open what a card points at.
+ *
+ * The address is the backend's: it came from a candidate a search actually
+ * returned, and it was validated on the way out and again on the way in.
+ * Electron only carries it to the operating system's browser -- it decides
+ * nothing -- and the backend is told which card was opened so the window
+ * and the conversation cannot end up with different ideas of what the
+ * person is looking at.
+ */
+function openCandidate(item) {
+    if (!item.url) return;
+    console.log(`[Surface UI] opening [${item.id}] ${item.url}`);
+    if (window.elainaDesktop && window.elainaDesktop.openExternal) {
+        window.elainaDesktop.openExternal(item.url);
+    }
+    if (
+        state.pythonSocket &&
+        state.pythonSocket.readyState === WebSocket.OPEN
+    ) {
+        state.pythonSocket.send(JSON.stringify({
+            command: "surface_opened",
+            candidate_id: item.id
+        }));
+    }
+}
+
+/* No picture came back. The name is the part that matters, and an empty
+ * frame reads as something broken rather than as something plain. */
+function ambientPlaceholder(name) {
+    const mark = document.createElement("div");
+    mark.className = "ambient-placeholder";
+    mark.textContent = String(name || "?").trim().charAt(0).toUpperCase();
+    return mark;
+}
+
+function ambientCard(item) {
+    const card = document.createElement("div");
+    card.className = item.url ? "ambient-card" : "ambient-card ambient-flat";
+    card.title = item.url ? `Open ${item.name}` : item.name;
+
+    const inner = document.createElement("div");
+    inner.className = "ambient-inner";
+
+    const frame = document.createElement("div");
+    frame.className = "ambient-frame";
+
+    if (item.image) {
+        const image = document.createElement("img");
+        image.className = "ambient-image";
+        image.alt = "";
+        // A search-index thumbnail can be gone, blocked, or slow by the
+        // time it is asked for. Both outcomes say so: a blank card and a
+        // card that never got a picture look the same from outside.
+        image.addEventListener("load", () => {
+            console.log(
+                `[Surface UI] picture loaded for ${item.name}: ` +
+                `${image.naturalWidth}x${image.naturalHeight}`
+            );
+        });
+        image.addEventListener("error", () => {
+            console.log(`[Surface UI] picture failed for ${item.name}`);
+            if (frame.contains(image)) frame.removeChild(image);
+            frame.appendChild(ambientPlaceholder(item.name));
+        });
+        image.src = item.image;
+        frame.appendChild(image);
+    } else {
+        frame.appendChild(ambientPlaceholder(item.name));
+    }
+
+    const name = document.createElement("div");
+    name.className = "ambient-name";
+    name.textContent = item.name;
+
+    inner.appendChild(frame);
+    inner.appendChild(name);
+    card.appendChild(inner);
+
+    if (item.url) {
+        card.addEventListener("click", () => openCandidate(item));
+    }
+    return card;
+}
+
+/* Where the cards actually ended up, once the arrival animation has run.
+ * Kept because "I see nothing" is not a diagnosis, and last time telling a
+ * hidden card from an absent one took a whole pass. */
+function reportAmbientLayout() {
+    const first = elements.ambientSurface.firstElementChild;
+    if (!first) return;
+    const box = first.getBoundingClientRect();
+    const style = window.getComputedStyle(first);
+    console.log(
+        `[Surface UI] layout: firstCard=${Math.round(box.left)},` +
+        `${Math.round(box.top)} ${Math.round(box.width)}x` +
+        `${Math.round(box.height)} opacity=${style.opacity} ` +
+        `visibility=${style.visibility} ` +
+        `window=${window.innerWidth}x${window.innerHeight}`
+    );
+}
+
+function renderSurface(message) {
+    const surface = validateSurface(message);
+    if (!surface) {
+        console.log(
+            `[Surface UI] validation rejected reason=${surfaceRejection(message)}`
+        );
+        return;
+    }
+    console.log(
+        `[Surface UI] validation accepted type=${surface.type} ` +
+        `items=${surface.items.length}`
+    );
+    if (!elements.ambientSurface) {
+        console.log("[Surface UI] #ambient-surface MISSING; nothing to draw");
+        return;
+    }
+
+    clearAmbientSurface("a newer surface arrived");
+    const shown = surface.items.slice(0, AMBIENT_MAX);
+    for (const item of shown) {
+        elements.ambientSurface.appendChild(ambientCard(item));
+    }
+
+    console.log(
+        `[Surface UI] floating cards=${elements.ambientSurface.children.length}` +
+        ` withImage=${shown.filter((item) => item.image).length}` +
+        ` openable=${shown.filter((item) => item.url).length}`
+    );
+    setTimeout(reportAmbientLayout, 500);
+}
+
 /* ---------------------------- Live2D model --------------------------- */
 
 async function loadElaina() {
@@ -820,6 +1076,7 @@ function handlePythonMessage(event) {
             case "user_message":
                 addUserMessage(message.text);
                 setActivity("thinking", "Thinking...");
+                clearAmbientSurface("a new turn started");
                 break;
             case "assistant_status":
                 // Status lines are part of Elaina's side of the conversation,
@@ -834,6 +1091,15 @@ function handlePythonMessage(event) {
             case "assistant_finished":
                 addAssistantMessage(message.text);
                 setActivity("speaking", "Speaking...");
+                break;
+            case "assistant_surface":
+                // Optional and additive. A reply without one never sends
+                // this, and a malformed one draws nothing at all.
+                console.log(
+                    `[Surface UI] event received type=${message.type} ` +
+                    `items=${(message.items || []).length}`
+                );
+                renderSurface(message);
                 break;
             case "input_mode_changed":
                 applyInputMode(message.mode);

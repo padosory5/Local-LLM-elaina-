@@ -70,6 +70,18 @@ def identity_of(name: str, url: str = "") -> str:
     return hashlib.sha1(basis.encode("utf-8")).hexdigest()[:10]
 
 
+# How far a candidate has got. Discovery and verification are separate:
+# being named in retrieved evidence is enough to exist, and a name that has
+# not had its price or availability checked is still a real hotel.
+DISCOVERED = "discovered"
+UNCHECKED = "unchecked"
+VERIFIED = "verified"
+MISMATCHED = "mismatched"
+REJECTED = "rejected"
+
+STATES = (DISCOVERED, UNCHECKED, VERIFIED, MISMATCHED, REJECTED)
+
+
 @dataclass(frozen=True)
 class Candidate:
     """One thing a search found, and what is known about it."""
@@ -87,6 +99,22 @@ class Candidate:
     rank: int = 0
     attributes: tuple[str, ...] = ()
     id: str = ""
+    # What kind of thing this is meant to be -- "place", "product" -- as
+    # the acquisition layer understood the request. Kept so a later turn
+    # can tell an air-quality site from a monitor without re-reading the
+    # words that were searched for.
+    entity_type: str = ""
+    # Where it came from. A candidate found in a search result carries its
+    # own address; one read out of a round-up carries the round-up's, and
+    # both are true things worth being able to say. This is what lets her
+    # answer "these are the ones I found" without implying she checked
+    # more than she did.
+    source_urls: tuple[str, ...] = ()
+    # How far it has got: DISCOVERED (named in evidence, nothing checked)
+    # through VERIFIED (its own page was found). Discovery and verification
+    # are separate, and a legitimate named hotel is not thrown away for
+    # lacking a price.
+    state: str = ""
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -209,10 +237,18 @@ def from_fits(fits, *, kind: str = UNKNOWN, source: str = "", query: str = "",
     into a recommendation later.
     """
     items: list[Candidate] = []
+    seen: set[str] = set()
     for rank, fit in enumerate(list(fits)[:limit]):
         name = str(getattr(fit, "name", "") or "").strip()
         if not name:
             continue
+        # One thing, once. The same hotel reaches a shortlist twice as
+        # easily as it reaches it once -- a listing page and the hotel's
+        # own page are two results and one place -- and measured live that
+        # put "LOTTE HOTEL SEOUL" on two of the two cards.
+        if name.casefold() in seen:
+            continue
+        seen.add(name.casefold())
         why = ""
         try:
             why = str(fit.because() or "")
@@ -226,6 +262,15 @@ def from_fits(fits, *, kind: str = UNKNOWN, source: str = "", query: str = "",
             verdict=str(getattr(fit, "verdict", "") or ""),
             rank=rank,
             attributes=tuple(getattr(fit, "matches", ()) or ()),
+            entity_type=kind,
+            source_urls=tuple(getattr(fit, "source_urls", ()) or ()) or (
+                (str(getattr(fit, "url", "") or "").strip(),)
+                if getattr(fit, "url", "") else ()
+            ),
+            state=str(getattr(fit, "state", "") or "") or (
+                VERIFIED if str(getattr(fit, "verdict", "")) == "FITS"
+                else UNCHECKED
+            ),
         ))
     return ResultSet(items=tuple(items), kind=kind, source=source, query=query)
 

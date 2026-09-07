@@ -104,6 +104,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_task_discovery_policy",
             "test_research_recall",
             "test_task_contamination",
+            "test_task_boundaries",
             "test_world_clock",
             "test_pointer_targets",
             "test_frustration_reply",
@@ -237,6 +238,9 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
         "what Electron is told, and what it may send back",
         (
             "test_desktop_control_ui",
+            "test_response_surface",
+            "test_entity_discovery",
+            "test_surface_images",
             "test_phase3a_controls",
             "test_failure_recovery",
             "test_runtime_lifecycle",

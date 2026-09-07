@@ -158,6 +158,16 @@ _WANTED = re.compile(
     r"look(?:ing)?\s+at|check\s+out|"
     r"in the mood for|fancy|after|find(?:\s+me)?|recommend(?:\s+me)?)\s+"
     r"(?:to\s+[a-z]+\s+)?"
+    # How many is not what. "find me 3 good hotels in Seoul" and "find me
+    # some good hotels in Seoul" are the same request, but without a count
+    # here the pattern failed outright -- the captured thing cannot begin
+    # with a digit -- so the turn named no preference at all, no
+    # recommendation problem opened, and the three hotels the search
+    # actually found were dropped instead of becoming a shortlist. Measured
+    # live in the 4F.6 acceptance run, where she named them out loud and
+    # the window stayed empty.
+    r"(?:a\s+few\s+|a\s+couple\s+(?:of\s+)?|\d{1,2}\s+|"
+    r"(?:two|three|four|five|six)\s+)?"
     r"(?:some\s+|a\s+|an\s+|the\s+)?"
     r"(?!(?:in|on|at|about|for|with|from|to|of|near|around|under)\b)"
     r"(something\s+[a-z][a-z ]{1,30}?|anything\s+[a-z][a-z ]{1,30}?"
@@ -1913,12 +1923,93 @@ def _shares_a_word(left, right) -> bool:
     return bool(_stems(left) & _stems(right))
 
 
+def _head_noun(value: str) -> str:
+    """The last real word of a named thing, singular: "good hotels" -> hotel."""
+    words = [
+        word for word in str(value or "").split()
+        if word.casefold() not in _EMPTY_SUBJECTS
+        and word.casefold() not in _WEAK_SUBJECTS
+    ]
+    if not words:
+        return ""
+    try:
+        from brain.recommendation import _singular
+    except Exception:
+        return words[-1].casefold()
+    return _singular(words[-1].casefold())
+
+
+def names_another_thing(problem, named) -> bool:
+    """Whether this turn is about a different kind of thing entirely.
+
+    The one question that decides a task boundary, and it used to be asked
+    of two lookup tables instead of of the words. ``category_for`` knows
+    hotels and restaurants; ``_VARIANTS`` is thirteen nouns and does not
+    contain "monitor". So a monitor problem had no category and no variant,
+    neither clause could fire, and "find me some good restaurants in
+    Gangnam" was read as *the same problem* -- keeping two monitors as its
+    candidates and "good gaming monitor" as one of its constraints.
+
+    Both sides already expose the noun. ``problem._thing()`` returned
+    "monitor" the whole time; nothing compared it to "restaurants". This
+    compares them, so a task boundary no longer depends on either table
+    covering the domain.
+
+    Deliberately conservative in one direction: a turn that names nothing,
+    or names only a pro-form or a vague word ("one", "place"), says nothing
+    about identity and is left to the continuation rules below.
+    """
+    held = _head_noun(getattr(problem, "_thing", lambda: "")() or "")
+    if not held:
+        return False
+    for value in named:
+        head = _head_noun(value)
+        if not head:
+            continue
+        if head == held or head in held or held in head:
+            # The same thing, or a longer way of saying it.
+            return False
+        return True
+    return False
+
+
+# "Actually, back to those hotels." An explicit return, and deliberately
+# only an explicit one: a task that comes back because a later turn happened
+# to share a word with it is the contamination this whole boundary exists to
+# stop, wearing a friendlier name.
+_BACK_TO = re.compile(
+    # Only the explicit forms. "about the" was here once and matched
+    # "what about the second one?", turning an ordinal reference into a
+    # request to resurrect a task the conversation had left.
+    r"\b(?:back\s+to|back\s+on|returning\s+to|return\s+to|go\s+back\s+to)\s+"
+    r"(?:those|that|the|my|our|earlier|previous)?\s*"
+    r"([^\s,.;!?]{2,24}(?:\s+[^\s,.;!?]{2,24}){0,2})",
+    re.IGNORECASE,
+)
+
+
+def returns_to_earlier(text: str) -> str:
+    """What earlier subject this turn asks to go back to, or nothing.
+
+    Returns the words the person used, for the caller to match against the
+    tasks it actually holds. Nothing is resurrected on a resemblance.
+    """
+    match = _BACK_TO.search(str(text or ""))
+    if match is None:
+        return ""
+    named = " ".join(match.group(1).split())
+    if not named or named.casefold() in _EMPTY_SUBJECTS:
+        return ""
+    return named
+
+
 def about_the_same_thing(
     problem: RecommendationProblem,
     text: str,
     *,
     subject: str = "",
     topic_shift: bool = False,
+    follow_up: bool = False,
 ) -> bool:
     """Whether a new turn continues this problem or starts another.
 
@@ -1941,12 +2032,22 @@ def about_the_same_thing(
     named = [slot.value for slot in incoming if slot.name == PREFERENCE]
     if named and (
         (new_category and problem.category and new_category != problem.category)
-        or any(value.split()[-1].casefold() in _VARIANTS
-               and value.split()[-1].casefold() != problem._thing() for value in named)
+        or names_another_thing(problem, named)
     ):
         return False
     # A revision is by definition about the problem it revises.
     if revises(text):
+        return True
+
+    # The router -- or a fast path standing in for it -- already read this
+    # turn as continuing. That outranks the word-overlap test below, which
+    # has no way to see it: "which one would you choose?" shares not one
+    # word with "gaming monitors", so it started a fresh problem and the
+    # candidates that were the entire subject of the question went with it.
+    #
+    # Only after the different-named-thing check above, so a follow-up that
+    # names something else still starts a new problem.
+    if follow_up and not topic_shift:
         return True
     if wants_to_see_options(text) or (
         problem.lookup_requested and complains_about_missing_results(text)

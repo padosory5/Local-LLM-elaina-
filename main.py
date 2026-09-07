@@ -193,6 +193,29 @@ def handle_desktop_command(message):
         _begin_stop()
         return
 
+    if command == "surface_opened":
+        # A floating card was clicked. Electron has already opened the page;
+        # this only keeps the conversation's idea of what the user is
+        # looking at in step with the window's.
+        candidate_id = message.get("candidate_id")
+        if not isinstance(candidate_id, str):
+            print("[Surface] Invalid opened card.")
+            return
+        engine.surface_opened(candidate_id)
+        return
+
+    if command == "surface_action":
+        # A card in the reply was pressed. Electron sends which card and
+        # which action; everything about what that means is decided here,
+        # so a surface can never become a second place decisions are made.
+        action = message.get("action")
+        candidate_id = message.get("candidate_id")
+        if not isinstance(action, str) or not isinstance(candidate_id, str):
+            print("[Surface] Invalid card action.")
+            return
+        engine.surface_action(action, candidate_id)
+        return
+
     if command == "get_computer_control_mode":
         engine.publish_computer_control_mode()
         return

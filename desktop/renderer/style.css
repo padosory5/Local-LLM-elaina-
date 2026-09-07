@@ -998,3 +998,211 @@ body.position-locked #live2d-canvas {
 }
 
 #status-message.hidden { display: none; }
+
+/* ------------------------- Structured surfaces ------------------------- */
+
+.surface {
+    margin: 8px 0 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.surface-title {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    opacity: 0.65;
+    margin-bottom: 8px;
+}
+
+.surface-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.surface-comparison .surface-items {
+    flex-wrap: nowrap;
+}
+
+.surface-card {
+    flex: 1 1 180px;
+    min-width: 160px;
+    padding: 10px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.surface-image {
+    width: 100%;
+    height: 84px;
+    object-fit: cover;
+    border-radius: 6px;
+    margin-bottom: 8px;
+}
+
+.surface-name {
+    font-weight: 600;
+    line-height: 1.3;
+    margin-bottom: 4px;
+}
+
+.surface-subtitle {
+    font-size: 12px;
+    opacity: 0.75;
+    margin-bottom: 4px;
+}
+
+.surface-description {
+    font-size: 12px;
+    opacity: 0.6;
+    line-height: 1.4;
+}
+
+.surface-meta {
+    font-size: 11px;
+    opacity: 0.55;
+    margin-top: 6px;
+}
+
+.surface-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.surface-action {
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+
+.surface-action:hover {
+    background: rgba(255, 255, 255, 0.12);
+}
+
+/* ---------------------- Ambient surface around Elaina ------------------ */
+
+/*
+ * What she found, floating beside her instead of inside the conversation.
+ *
+ * The layer itself is transparent to the mouse, so when there is nothing to
+ * show it does not exist as far as clicking and dragging are concerned --
+ * only the cards take pointer events back. It sits above the model and
+ * below the window controls and the drawer, which stay reachable.
+ */
+#ambient-surface {
+    position: absolute;
+    inset: 0;
+    z-index: 70;
+    pointer-events: none;
+}
+
+.ambient-card {
+    position: absolute;
+    width: 104px;
+    opacity: 0;
+    cursor: pointer;
+    pointer-events: auto;
+    -webkit-app-region: no-drag;
+    animation: ambient-arrive 380ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* Around her, not over her face: the model is centred and bottom-anchored,
+   so the free space is the upper left and upper right, then lower down the
+   two sides. Four is the most this window fits without them touching. */
+.ambient-card:nth-child(1) { left: 6px;  top: 92px;  animation-delay: 0ms; }
+.ambient-card:nth-child(2) { right: 6px; top: 128px; animation-delay: 90ms; }
+.ambient-card:nth-child(3) { left: 12px; top: 288px; animation-delay: 180ms; }
+.ambient-card:nth-child(4) { right: 12px; top: 324px; animation-delay: 270ms; }
+
+@keyframes ambient-arrive {
+    from { opacity: 0; transform: translateY(12px) scale(0.94); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* The drift lives on an inner element so it cannot fight the arrival
+   animation for the same transform. */
+.ambient-inner {
+    animation: ambient-drift 5.5s ease-in-out infinite;
+}
+
+.ambient-card:nth-child(2) .ambient-inner { animation-duration: 6.4s; animation-delay: -1.2s; }
+.ambient-card:nth-child(3) .ambient-inner { animation-duration: 5.9s; animation-delay: -2.4s; }
+.ambient-card:nth-child(4) .ambient-inner { animation-duration: 6.8s; animation-delay: -3.1s; }
+
+@keyframes ambient-drift {
+    0%, 100% { transform: translateY(0); }
+    50%      { transform: translateY(-7px); }
+}
+
+.ambient-frame {
+    position: relative;
+    width: 104px;
+    height: 78px;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid rgb(255 255 255 / 22%);
+    background: rgb(30 24 42 / 88%);
+    box-shadow: 0 10px 26px rgb(0 0 0 / 45%);
+    transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.ambient-card:hover .ambient-frame {
+    transform: scale(1.06);
+    border-color: rgb(180 150 235 / 70%);
+    box-shadow: 0 14px 32px rgb(0 0 0 / 55%);
+}
+
+.ambient-image {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+/* No picture came back. The card is still a card -- the name is the thing
+   that matters, and an empty frame would read as a broken image. */
+.ambient-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    color: rgb(255 255 255 / 78%);
+    font-size: 26px;
+    font-weight: 700;
+    background: linear-gradient(135deg, rgb(96 74 140 / 92%), rgb(58 46 84 / 92%));
+}
+
+.ambient-name {
+    margin-top: 5px;
+    padding: 3px 6px;
+    border-radius: 8px;
+    color: var(--white);
+    background: rgb(22 18 32 / 78%);
+    font-size: 10.5px;
+    font-weight: 600;
+    line-height: 1.28;
+    text-align: center;
+    text-shadow: 0 1px 2px rgb(0 0 0 / 60%);
+
+    /* Two lines, then an ellipsis: a hotel name can be very long and a card
+       that grows to fit one would collide with the card below it. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* Nothing to open -- no page came with this candidate. Say so by not
+   pretending it is a button. */
+.ambient-card.ambient-flat { cursor: default; }
+.ambient-card.ambient-flat:hover .ambient-frame { transform: none; }

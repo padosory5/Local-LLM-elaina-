@@ -28,6 +28,7 @@ from types import SimpleNamespace
 from pathlib import Path
 from dataclasses import dataclass, field, replace
 
+from brain import surface_log
 from brain.chat_engine import ChatEngine
 from brain.deliberation.profile import UserProfile
 from brain.standing_orders import StandingOrders
@@ -480,6 +481,9 @@ def build_engine(routes: dict[str, dict] | None = None) -> ChatEngine:
     # Structured acquisition holds its own callable and does not go through
     # the ordinary search-enabled gate. Tie that network boundary too.
     engine.research_agent._search_structured = lambda query, max_results: ()
+    # Cards are illustrated by a live image index. A test must never reach
+    # it: the surface it would decorate is the same surface either way.
+    engine.illustrate_surface = lambda surface: surface
     engine.cursor_driver = SilentCursor()
     # The speakers are part of the machine too.
     engine.audio = RecordingAudio()
@@ -492,6 +496,11 @@ def build_engine(routes: dict[str, dict] | None = None) -> ChatEngine:
     # Her real profile lives in runtime/data and reflects what this person
     # actually plays. A test must neither read it nor write to it.
     test_state = Path(tempfile.mkdtemp(prefix="elaina-turns-"))
+    # Why there were or were not cards is a real diagnostic file in the
+    # user's runtime directory, read after a live session to answer "I saw
+    # nothing". A suite of two thousand turns must not be what it contains.
+    surface_log.PATH = test_state / "surface.log"
+    surface_log._opened = False
     engine.user_profile = UserProfile(path=test_state / "profile.json")
     # Her standing rules and the facts about the person live in the user's
     # own runtime/data. A test must neither read those nor write to them.

@@ -439,6 +439,64 @@ class AskingToSeeOptionsTests(unittest.TestCase):
                 self.assertFalse(rs.wants_to_see_options(said))
 
 
+class HowManyIsNotWhatTests(unittest.TestCase):
+    """A count in front of the thing must not hide the thing.
+
+    Measured live in the 4F.6 acceptance run. "find me 3 good hotels in
+    Seoul" named no preference at all, so no recommendation problem opened,
+    so the three hotels the search actually found were never recorded --
+    and Elaina read them out loud while the window stayed empty. The same
+    sentence with "some" in place of "3" worked. One digit was the whole
+    difference between a shortlist and nothing.
+    """
+
+    def test_a_count_does_not_hide_the_thing(self):
+        found = rs.read_constraints("find me 3 good hotels in Seoul")
+
+        self.assertIn(
+            (rs.PREFERENCE, "good hotels"),
+            [(slot.name, slot.value) for slot in found],
+        )
+
+    def test_counted_and_uncounted_ask_for_the_same_thing(self):
+        for counted in (
+            "find me 3 good hotels in Seoul",
+            "find me a few good hotels in Seoul",
+            "find me a couple of good hotels in Seoul",
+        ):
+            with self.subTest(said=counted):
+                self.assertEqual(
+                    [(s.name, s.value) for s in rs.read_constraints(counted)],
+                    [(s.name, s.value) for s in rs.read_constraints(
+                        "find me some good hotels in Seoul",
+                    )],
+                )
+
+    def test_a_spelled_count_reads_the_same_way(self):
+        found = rs.read_constraints("I want three monitors for my desk")
+
+        self.assertEqual(
+            [(s.name, s.value) for s in found], [(rs.PREFERENCE, "monitors")],
+        )
+
+    def test_a_counted_request_opens_a_recommendation(self):
+        # The whole point: this is what makes the candidates get recorded,
+        # which is what a shortlist is built from.
+        self.assertTrue(
+            rs.starts_a_recommendation("find me 3 good hotels in Seoul"),
+        )
+
+    def test_a_bare_count_still_names_nothing(self):
+        # "I want 3" says how many of something already being discussed.
+        # Reading it as a preference would make the number the subject.
+        self.assertEqual(rs.read_constraints("I want 3"), ())
+
+    def test_a_number_that_is_not_a_count_of_things_is_left_alone(self):
+        for said in ("what is 3 times 4", "wake me in 3 hours"):
+            with self.subTest(said=said):
+                self.assertEqual(rs.read_constraints(said), ())
+
+
 class LogTests(unittest.TestCase):
 
     def test_the_context_block_names_every_part(self):

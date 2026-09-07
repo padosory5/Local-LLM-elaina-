@@ -466,9 +466,15 @@ _ARTICLE_TITLE = re.compile(
     # gaming monitor. A title that opens by asking what something is, is
     # writing about the thing by construction.
     r"|^\s*what\s+(?:is|are|was|were)\b"
-    r"|\b(?:recipes?|ideas|guide|guides|tips|how\s+to|why\s+you|"
+    r"|\b(?:recipes?|ideas|guide|guides|tips|advice|how\s+to|why\s+you|"
+    r"where\s+to\s+(?:stay|eat|go|buy)|"
     r"everything\s+you|explained|tutorials?|lessons?|review\s+round[- ]?up|listicle|"
     r"vs\.?\b|versus)\b"
+    r"|\breviews?\b[^.]{0,20}\b20\d\d\b"
+    # "Get a premium 27-inch 1440p 240 Hz OLED gaming monitor for only..."
+    # A sentence selling one, which is an advert and not a name. Measured
+    # live: it reached a card.
+    r"|^\s*(?:get|buy|shop|save|grab|score)\s+(?:a|an|the|this)\b"
     r"|\bin\s+20\d\d\s*$"
     r"|\b(?:blog|article|youtube|vlog)\b"
     r"|추천\s*\d+|정리|후기\s*모음",

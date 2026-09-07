@@ -15,6 +15,12 @@
         <!-- PixiJS draws the Live2D model inside this canvas. -->
         <canvas id="live2d-canvas"></canvas>
 
+        <!-- What Elaina found, floating around her rather than buried in the
+             conversation. Filled only by the backend's assistant_surface
+             event; empty the rest of the time, and transparent to the mouse
+             so an empty layer never sits between the user and the window. -->
+        <div id="ambient-surface" aria-live="polite"></div>
+
         <!-- Small indicator that does not cover the avatar. -->
         <div id="activity-status" class="offline" aria-live="polite">
             <span id="activity-dot"></span>

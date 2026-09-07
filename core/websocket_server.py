@@ -47,6 +47,10 @@ class WebSocketServer:
             "assistant_interrupted",
             "assistant_stream",
             "assistant_finished",
+            # The optional structured half of a reply. Additive: a reply
+            # without one emits nothing here, and a client that ignores it
+            # sees exactly the conversation it saw before.
+            "assistant_surface",
             "screen_region_ready",
             "screen_region_error",
             "visual_match_found",
@@ -188,7 +192,18 @@ class WebSocketServer:
     def _on_event(self, event: Event) -> None:
 
         if self._loop is None:
+            # Silent for ordinary traffic -- a stopped server must not spam
+            # on its way down -- but a dropped surface looks identical to
+            # "never emitted" from anywhere upstream, and that cost a whole
+            # tracing pass to tell apart.
+            if event.name == "assistant_surface":
+                print("[WebSocket] assistant_surface dropped: no event loop.")
             return
+        if event.name == "assistant_surface":
+            print(
+                f"[WebSocket] forwarding assistant_surface to "
+                f"{len(self._clients)} client(s)."
+            )
 
         message = {
             "event": event.name,

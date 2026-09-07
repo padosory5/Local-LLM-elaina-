@@ -88,6 +88,19 @@ class CapabilityOfferGate:
         )
         return self._pending
 
+    def belongs_to(self, task_id: str) -> bool:
+        """Whether the offer in hand was made about this task.
+
+        An offer with no task attached belongs to the conversation rather
+        than to any one problem, and stays answerable.
+        """
+        pending = self.peek()
+        if pending is None:
+            return False
+        if not pending.task_id or not str(task_id or "").strip():
+            return True
+        return pending.task_id == str(task_id).strip()
+
     def peek(self) -> PendingCapabilityOffer | None:
         if self._pending is None:
             return None

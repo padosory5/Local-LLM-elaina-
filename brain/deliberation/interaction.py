@@ -36,6 +36,7 @@ which is the mistake this module exists to undo.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 
 from brain.deliberation import goal_intent
@@ -327,6 +328,33 @@ def permission_level_for(intent: str, operation: str = "") -> int:
     return _LEVEL_BY_INTENT.get(str(intent or "").strip(), VISIBLE)
 
 
+# An errand, not a remark: an imperative that names something to be found.
+_ASKS_FOR = re.compile(
+    r"^\s*(?:hey\s+\w+[,\s]+)?(?:can|could|would)?\s*(?:you\s+)?"
+    r"(?:please\s+)?"
+    r"\b(?:find|show|recommend|suggest|get|give|look\s+up|pull\s+up|"
+    r"search\s+for)\b",
+    re.IGNORECASE,
+)
+
+
+def _asks_for_things(route: Any) -> bool:
+    """Whether this turn asks to be shown real things, by name or by kind."""
+    request = str(_value(route, "normalized_request", "") or "")
+    if not request.strip():
+        return False
+    from brain import recommendation_state
+
+    if recommendation_state.wants_to_see_options(request):
+        return True
+    if not _ASKS_FOR.search(request):
+        return False
+    return any(
+        slot.name == recommendation_state.PREFERENCE
+        for slot in recommendation_state.read_constraints(request)
+    )
+
+
 def _need_for(
     route: Any, *, has_usable_context: bool, goal: Any = None,
 ) -> str:
@@ -372,6 +400,38 @@ def _need_for(
 
         if world_clock.read_place(_value(route, "normalized_request", "")):
             return NEED_NONE
+
+    # Asking for real things to buy or visit is a lookup, whatever the
+    # router made of the sentence.
+    #
+    # Measured live during the entity-acquisition work: "recommend me some
+    # mechanical keyboards" came back as
+    #
+    #     [Router] conversation (0.95): ...falls under general conversation
+    #     Decision: answer -- she can answer this from what she already knows
+    #
+    # and she answered out of the model's memory. Nothing was searched, so
+    # nothing could enter candidate state, and the names she gave were
+    # recalled rather than found. It is the same mechanism that invented
+    # "144Hz" for a monitor nobody had looked up: what can be bought or
+    # visited changes, and recommending one has to be a lookup.
+    #
+    # Both halves are required. The imperative is what makes it an errand --
+    # "I'm thinking about getting a new monitor" opens the same
+    # recommendation and is a remark, and she offers to look rather than
+    # going, which is the recommendation policy's whole point. The named
+    # thing is what stops "find my keys" reaching the web.
+    # Going back to an earlier task is a recall, whatever else the sentence
+    # looks like. Measured live: "actually, back to those monitors" restored
+    # the monitor task correctly and then searched again anyway, replacing
+    # the very candidates the person had asked to come back to.
+    from brain import recommendation_state as _rs
+
+    if _rs.returns_to_earlier(_value(route, "normalized_request", "")):
+        return NEED_RECALLED
+
+    if not has_usable_context and _asks_for_things(route):
+        return NEED_FRESH
 
     if wants == goal_intent.VERIFY or _value(route, "verification_required", False):
         return NEED_VERIFIED

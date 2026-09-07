@@ -17,6 +17,7 @@ from brain import conversation_focus
 from brain import recommendation_state
 from brain import references
 from brain import result_state
+from brain import surface_log
 from brain.recommendation_state import RecommendationProblem
 
 
@@ -61,6 +62,13 @@ class TaskSessionStore:
         # about", and a second one would only be a place for the two to
         # disagree. See brain/recommendation_state.py.
         self._problem: RecommendationProblem | None = None
+        # Tasks the conversation has moved on from, most recent first. They
+        # are superseded rather than destroyed: "back to those hotels" is a
+        # real thing to say, and answering it needs the hotels to still
+        # exist somewhere. Nothing here is ever consulted unless the person
+        # explicitly asks to go back -- historical state must never
+        # silently take part in the current turn.
+        self._history: list[RecommendationProblem] = []
         # The one answer to "what are we talking about", so the layers
         # downstream read it instead of each deriving their own.
         self._focus: conversation_focus.Focus | None = None
@@ -132,6 +140,7 @@ class TaskSessionStore:
         *,
         subject: str = "",
         topic_shift: bool = False,
+        follow_up: bool = False,
         location: str = "",
         anchor: str = "",
         said_before: str = "",
@@ -143,13 +152,39 @@ class TaskSessionStore:
         problem current is not, because the turn that needs it ("pull up
         some spots") is never the turn that establishes it.
         """
+        # Asking to go back to something is answered before anything else:
+        # it is neither a continuation of what is open nor a new problem,
+        # and reading it as either loses the task being returned to.
+        restored = self.reactivate(text)
+        if restored is not None:
+            return restored
+
         problem = self.active_recommendation()
         same_problem = bool(
             problem is not None
             and recommendation_state.about_the_same_thing(
                 problem, text, subject=subject, topic_shift=topic_shift,
+                follow_up=follow_up,
             )
         )
+        if problem is not None:
+            surface_log.note("[Task Continuity]")
+            surface_log.note(f"  previous_task: {problem.id[:8]}")
+            surface_log.note(f"  previous_thing: {problem._thing() or '(none)'}")
+            surface_log.note(
+                f"  current_thing: "
+                f"{recommendation_state._head_noun(subject or text) or '(none)'}"
+            )
+            surface_log.note(f"  follow_up: {bool(follow_up)}")
+            surface_log.note(
+                f"  decision: {'CONTINUE' if same_problem else 'NEW_TASK'}"
+            )
+            surface_log.note(
+                "  reason: "
+                + ("the turn refines or refers to what is open"
+                   if same_problem
+                   else "current thing differs from the active thing")
+            )
         if (
             same_problem
             and problem is not None
@@ -163,6 +198,15 @@ class TaskSessionStore:
             if not problem.anchor:
                 anchor = ""
         if problem is None or not same_problem:
+            # The task being left keeps everything it had -- candidates,
+            # constraints, evidence, verification -- but keeps it *out of
+            # the way*. A new problem starts empty by construction, which
+            # is what makes "old state must not survive a switch" true of
+            # the structure rather than of a filter downstream.
+            if problem is not None:
+                self._supersede(problem)
+                surface_log.note("[Task Lifecycle]")
+                surface_log.note(f"  superseded: {problem.id[:8]}")
             if not recommendation_state.references_conversation_anchor(text):
                 location = ""
                 anchor = ""
@@ -173,6 +217,9 @@ class TaskSessionStore:
             problem = recommendation_state.start(
                 subject or text, now=time.monotonic(),
             )
+        was_new = problem.id != getattr(
+            self._problem, "id", None,
+        ) if problem is not None else True
         self._problem = recommendation_state.update(
             problem,
             text,
@@ -182,6 +229,8 @@ class TaskSessionStore:
             said_before=said_before,
             now=time.monotonic(),
         )
+        if was_new:
+            surface_log.note(f"  activated: {self._problem.id[:8]}")
         for slot in self._problem.constraints:
             self._answered[(self._problem._thing(), slot.name)] = slot.value
         return self._problem
@@ -324,12 +373,72 @@ class TaskSessionStore:
             problem, asked=problem.asked + (dimension,),
         )
 
+    HISTORY_LIMIT = 4
+
+    def _supersede(self, problem) -> None:
+        """Move a task out of the way of the one replacing it."""
+        if problem is None:
+            return
+        self._history = [
+            held for held in self._history if held.id != problem.id
+        ][:self.HISTORY_LIMIT - 1]
+        self._history.insert(0, problem)
+
+    def _historical_match(self, named: str):
+        """The superseded task the person means, or nothing.
+
+        Matched on the thing itself, not on any word in the sentence. A
+        turn has to name what it is going back to.
+        """
+        wanted = recommendation_state._head_noun(named)
+        if not wanted:
+            return None
+        for held in self._history:
+            thing = recommendation_state._head_noun(held._thing() or "")
+            subject = str(getattr(held, "subject", "") or "").casefold()
+            if thing and (thing == wanted or wanted in subject):
+                return held
+        return None
+
+    def reactivate(self, text: str):
+        """Bring back a task the person explicitly asked to return to.
+
+        The one path by which historical state may become current again,
+        and it needs the person to have said so. The task being left is
+        superseded in its turn, so a return is a switch like any other and
+        the same one rule holds throughout: exactly one task is active.
+        """
+        named = recommendation_state.returns_to_earlier(text)
+        if not named:
+            return None
+        restored = self._historical_match(named)
+        if restored is None:
+            return None
+        surface_log.note("[Task Continuity]")
+        surface_log.note("  decision: REACTIVATE")
+        surface_log.note(f"  task: {restored.id[:8]} ({restored._thing()})")
+        surface_log.note(f"  reason: explicit reference to {named!r}")
+        leaving = self._problem
+        if leaving is not None and leaving.id != restored.id:
+            self._supersede(leaving)
+        self._history = [
+            held for held in self._history if held.id != restored.id
+        ]
+        # A task coming back gets a fresh lease; it expired only because
+        # the conversation was elsewhere.
+        self._problem = replace(
+            restored,
+            expires_at=time.monotonic() + float(self.ttl_seconds),
+        )
+        return self._problem
+
     def clear_recommendation(self) -> None:
         self._problem = None
 
     def clear(self) -> None:
         self._context = None
         self._problem = None
+        self._history = []
         self._focus = None
         self._answered.clear()
 

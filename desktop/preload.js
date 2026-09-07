@@ -16,6 +16,13 @@ contextBridge.exposeInMainWorld("elainaDesktop", {
         );
     },
 
+    openExternal: (url) => {
+        // Only carries the address. The main process is what decides
+        // whether it is allowed to be opened, because a renderer is the
+        // one place in this app that touches remote content.
+        ipcRenderer.send("open-external", String(url || ""));
+    },
+
     getCursorState: () => {
         return ipcRenderer.invoke("get-cursor-state");
     },
