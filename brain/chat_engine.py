@@ -1715,6 +1715,79 @@ class ChatEngine:
         rebuilt = " ".join(kept).strip()
         return f"{rebuilt} {honest}" if rebuilt else honest
 
+    def _enforce_named_candidates(
+        self, reply: str, *, candidates=(), searched: bool = False,
+        request: str = "",
+    ) -> str:
+        """What she names as the answer has to be one of the results.
+
+        The two guards above ask whether the search found *anything*, and
+        both step aside the moment it did:
+
+            if not text or candidates:
+                return text
+
+        So a turn that retrieved four real hotels and then named two
+        different ones from memory passed every check there was. Measured
+        live, in one eight-turn conversation:
+
+            cards:  5K2K OLED, GX9 39
+            Elaina: "The LG 45GX950A-B is the best fit... 165Hz..."
+
+            cards:  Seoul DDJ STAY, Hotel Inspiroom Jongro, Sofitel Ambassador
+            Elaina: "L'Escape offers luxury..., while the JW Marriott
+                     Dongdaemun feels more intimate"
+
+        Both replies are indistinguishable from real ones, and both were
+        contradicted by the cards on screen beside them -- the structured
+        state and the words disagreeing about what the turn had found,
+        which is the one thing this architecture exists to prevent.
+
+        The sentence naming something absent is removed rather than
+        rewritten. Nothing here invents a replacement, and nothing here
+        relaxes when removal leaves little behind: fewer honest words are
+        better than a confident wrong name, and the cards are still there.
+        """
+        text = str(reply or "").strip()
+        if not text or not searched or not candidates:
+            return text
+        outside = grounded_values.names_outside_the_results(
+            text, candidates=candidates, request=request,
+        )
+        if not outside:
+            return text
+        surface_log.note(
+            "[Grounding Guard] Named what the search did not return: "
+            f"{', '.join(outside)}."
+        )
+        surface_log.note(
+            f"  in hand: {[str(item)[:34] for item in candidates][:4]}"
+        )
+        kept = [
+            sentence.strip()
+            for sentence in _SENTENCE_SPLIT.split(text)
+            if sentence.strip()
+            and not any(name in sentence for name in outside)
+        ]
+        rebuilt = " ".join(kept).strip()
+        if rebuilt and grounded_values.names_something_specific(rebuilt):
+            return rebuilt
+        # Everything that named anything named something absent. Say what
+        # was actually found instead, which is the honest half of the same
+        # sentence -- and if that cannot be said either, say nothing was
+        # confirmed rather than keeping the invented one.
+        real = [
+            str(item) for item in candidates
+            if str(item).strip()
+        ][:2]
+        if real:
+            honest = (
+                f"From what I actually found: {' and '.join(real)}."
+            )
+        else:
+            honest = "I couldn't confirm a specific one from what I found."
+        return f"{rebuilt} {honest}".strip() if rebuilt else honest
+
     def _enforce_named_recommendation(
         self, reply: str, *, candidates=(), searched: bool = False,
         evidence: str = "", request: str = "",
@@ -8018,6 +8091,17 @@ class ChatEngine:
                     ),
                     searched="web_search" in timings,
                     evidence=self._last_research_evidence,
+                    request=user_input,
+                )
+            if not self._browser_result_is_final:
+                # After the "did it find anything" guards, and asking the
+                # question they do not: is what she named one of them.
+                reply = self._enforce_named_candidates(
+                    reply,
+                    candidates=(
+                        active_problem.candidates if active_problem else ()
+                    ),
+                    searched="web_search" in timings,
                     request=user_input,
                 )
             if not self._browser_result_is_final:

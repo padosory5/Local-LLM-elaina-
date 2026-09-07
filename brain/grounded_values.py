@@ -545,6 +545,127 @@ def names_an_unfound_thing(
     return tuple(found)
 
 
+# A brand and the model it sells: "LG 45GX950A-B", "Samsung Odyssey G55C".
+#
+# _PROPER_NAME cannot see these. Its multi-word branch needs every word to
+# start with a capital, and a model number starts with a digit as often as
+# not -- so "The LG 45GX950A-B is the best fit" yielded "LG", one word, and
+# the guards that skip single words skipped it. That is the shape most
+# product recommendations arrive in, which is how a monitor from the model's
+# memory was offered beside cards showing two different ones.
+#
+# Used only by names_outside_the_results: the older guards keep the older
+# reading, because widening what counts as a name changes what they remove.
+_LEADING = frozenset({"the", "a", "an", "this", "that", "my", "our", "its"})
+_BRAND_AND_MODEL = re.compile(
+    r"\b((?:[A-Z][\w&'\u2019-]*\s+){1,4}"
+    r"(?=[\w-]*\d)(?=[\w-]*[A-Za-z])[A-Za-z0-9][\w-]*)\b"
+)
+
+
+def _brand_models(text: str) -> list[str]:
+    """Brand-plus-model names, which _PROPER_NAME is not shaped to catch."""
+    found: list[str] = []
+    for match in _BRAND_AND_MODEL.finditer(str(text or "")):
+        words = match.group(1).split()
+        while words and words[0].casefold() in _LEADING:
+            words = words[1:]
+        while words and words[0].casefold() in _NOT_A_BUSINESS:
+            words = words[1:]
+        if len(words) < 2:
+            continue
+        name = " ".join(words)
+        if name not in found:
+            found.append(name)
+    return found
+
+
+def _distinctive_words(name: str) -> list[str]:
+    """The words of a name that could only belong to this one thing."""
+    return [
+        word for word in re.findall(r"[^\W_]{2,}", str(name or "").casefold())
+        if word not in _NOT_A_BUSINESS
+    ]
+
+
+def _matches_a_candidate(name: str, candidates) -> bool:
+    """Whether this name is one of the things actually in hand.
+
+    Deliberately generous about *form*: "the Sofitel" is the candidate
+    "Sofitel Ambassador Seoul Hotel", and a reply is allowed to shorten a
+    name it is naming. It is not generous about *identity* -- something has
+    to be shared, and the shared part has to be a word that distinguishes
+    the thing rather than the category it belongs to.
+    """
+    words = set(_distinctive_words(name))
+    if not words:
+        return False
+    # A word the whole set shares is the category, not an identity. Every
+    # hotel in a set of hotels contains "hotel", so matching on it made
+    # "Lotte Hotel World" -- which nothing found -- indistinguishable from
+    # "Hotel Inspiroom Jongro", which something did. Worked out from the
+    # candidates themselves rather than from a list of category nouns,
+    # because the categories are not knowable in advance.
+    shared: dict[str, int] = {}
+    for candidate in candidates or ():
+        for word in set(_distinctive_words(str(candidate))):
+            shared[word] = shared.get(word, 0) + 1
+    for candidate in candidates or ():
+        held = set(_distinctive_words(str(candidate)))
+        if not held:
+            continue
+        for word in (words & held):
+            if shared.get(word, 0) < 2:
+                return True
+    return False
+
+
+def names_outside_the_results(
+    text: str, *, candidates=(), request: str = "",
+) -> tuple[str, ...]:
+    """Things named as the answer that are not among the results in hand.
+
+    The other guards in this module ask whether *anything* was found. This
+    asks whether the thing she named is one of them, which is a different
+    question and the one that was never being asked.
+
+    Measured live, in a single eight-turn conversation:
+
+        cards:  5K2K OLED, GX9 39
+        Elaina: "The LG 45GX950A-B is the best fit, it's a 5K2K OLED
+                 curved gaming monitor with 165Hz refresh rate..."
+
+        cards:  Seoul DDJ STAY, Hotel Inspiroom Jongro, Sofitel Ambassador
+        Elaina: "L'Escape offers luxury..., while the JW Marriott
+                 Dongdaemun feels more intimate"
+
+    Every named thing came out of the model's memory, and every one was
+    offered as though the search had returned it -- alongside cards showing
+    entirely different things. The refresh rate was invented too, which is
+    the same failure wearing a number.
+
+    A name the person used themselves is theirs and is left alone, as is a
+    place, which is where you look rather than what you find.
+    """
+    said = str(text or "")
+    if not said.strip() or not candidates:
+        return ()
+    theirs = str(request or "").casefold()
+    outside: list[str] = []
+    seen_names = list(dict.fromkeys(_brand_models(said) + _proper_names(said)))
+    for name in seen_names:
+        if _is_a_place(name) or name.casefold() in theirs:
+            continue
+        # One capitalised word is as often a sentence opening as a name.
+        if len(name.split()) < 2:
+            continue
+        if _matches_a_candidate(name, candidates):
+            continue
+        if name not in outside:
+            outside.append(name)
+    return tuple(outside)
+
+
 def claim_subjects(text: str) -> list[str]:
     """The nouns a claim is about, for re-checking it a different way.
 
