@@ -1,0 +1,113 @@
+{
+  "arc": "korean",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "오늘은 어떻게 지내고?",
+      "statuses": [],
+      "seconds": 3.73
+    },
+    {
+      "turn": 2,
+      "arc": "korean",
+      "user": "방금 퇴근했어",
+      "act": "react",
+      "reply": "퇴근하셨습니다. 오늘 하루 힘들었나 보죠.",
+      "statuses": [],
+      "seconds": 3.98
+    },
+    {
+      "turn": 3,
+      "arc": "korean",
+      "user": "좀 피곤하네",
+      "act": "react",
+      "reply": "지금 피곤하시군요. 퇴근 후에는 편안히 쉬시는 게 좋습니다.",
+      "statuses": [],
+      "seconds": 3.87
+    },
+    {
+      "turn": 4,
+      "arc": "korean",
+      "user": "오늘 길었어. 84의 15%가 얼마야?",
+      "act": "answer",
+      "reply": "15%의 84는 12.60입니다. 피곤하시면 편안히 쉬시는 게 좋습니다.",
+      "statuses": [],
+      "seconds": 4.7
+    },
+    {
+      "turn": 5,
+      "arc": "korean",
+      "user": "고마워",
+      "act": "receipt",
+      "reply": "도움이 되었다면 다행입니다.",
+      "statuses": [],
+      "seconds": 0.43
+    },
+    {
+      "turn": 6,
+      "arc": "korean",
+      "user": "지금 런던 몇 시야?",
+      "act": "answer",
+      "reply": "런던 시간은 현재 16:41입니다. 한국 시간보다 8시간 빠릅니다.",
+      "statuses": [],
+      "seconds": 4.04
+    },
+    {
+      "turn": 7,
+      "arc": "korean",
+      "user": "콜드브루 만드는 법 알아?",
+      "act": "answer",
+      "reply": "지금 런던 시간은 16시 41분입니다. 한국 시간보다 8시간 빠릅니다.",
+      "statuses": [],
+      "seconds": 4.89
+    },
+    {
+      "turn": 8,
+      "arc": "korean",
+      "user": "얼마나 우려야 돼?",
+      "act": "answer",
+      "reply": "런던 시간은 16:41이고, 한국 시간보다 8시간 빠릅니다.",
+      "statuses": [],
+      "seconds": 4.55
+    },
+    {
+      "turn": 9,
+      "arc": "korean",
+      "user": "알겠어 해볼게",
+      "act": "receipt",
+      "reply": "알겠습니다. 해보겠습니다.",
+      "statuses": [],
+      "seconds": 3.85
+    },
+    {
+      "turn": 10,
+      "arc": "korean",
+      "user": "커피는 됐고, 오늘 볼 만한 영화 뭐 있어?",
+      "act": "answer",
+      "reply": "오늘 볼 만한 영화는 '다크 나이트'와 '인셉션'이 있습니다. 영화를 보시려면 스트리밍 플랫폼에서 검색하시면 됩니다.",
+      "statuses": [],
+      "seconds": 4.26
+    },
+    {
+      "turn": 11,
+      "arc": "korean",
+      "user": "좀 더 가벼운 걸로",
+      "act": "answer",
+      "reply": "가벼운 영화 추천이 필요하시군요. '라이브 루트'나 '로스트' 같은 작품이 좋습니다. 감상이 있으시면 말씀해 주십시오.",
+      "statuses": [],
+      "seconds": 5.68
+    },
+    {
+      "turn": 12,
+      "arc": "korean",
+      "user": "아니야",
+      "act": "receipt",
+      "reply": "네, 알겠습니다. 가벼운 영화 추천을 더 해드릴 수 있습니다. '미니멀'이나 '카이로 템페스트' 같은 영화도 좋습니다. 감상이 있으시면 언제든지 말씀해 주십시오.",
+      "statuses": [],
+      "seconds": 5.71
+    }
+  ]
+}

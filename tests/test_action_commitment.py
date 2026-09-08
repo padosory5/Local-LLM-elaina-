@@ -133,3 +133,83 @@ class PromiseRewritingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheHonestyGuardReadsKoreanTests(unittest.TestCase):
+    """Korean drops the subject, so a promise has no "I" in it.
+
+    The module carried one Korean alternative and it required 제가. Every
+    promise she actually makes -- "확인해 보겠습니다", straight out of her
+    own status bank -- has no subject pronoun at all, so none of them were
+    ever checked against whether anything ran.
+
+    The endings it looked for were 볼게 / 드릴게, which are 해요체 and
+    반말. A2 moved her to 습니다체, so the guard was reading for a register
+    she no longer speaks.
+    """
+
+    def test_a_korean_promise_is_a_promise(self):
+        for said in (
+            "확인해 보겠습니다.",
+            "바로 찾아보겠습니다.",
+            "지금 열겠습니다.",
+            "잠시만 기다려 주십시오.",
+            "검색 중입니다.",
+            "제가 한번 확인해 볼게요.",
+        ):
+            with self.subTest(said=said):
+                self.assertTrue(
+                    ActionCommitmentGuard.promises_action(said), said)
+
+    def test_a_korean_offer_is_an_offer(self):
+        for said in ("확인해 드릴까요?", "한번 알아볼까요?", "띄워 드릴까요?"):
+            with self.subTest(said=said):
+                self.assertTrue(
+                    ActionCommitmentGuard.offers_action(said), said)
+
+    def test_an_ordinary_korean_answer_is_neither(self):
+        # The half that matters most: a guard that fires on plain answers
+        # deletes honest sentences.
+        for said in (
+            "15%의 84는 12.60입니다.",
+            "런던 시간은 오후 3시입니다.",
+            "콜드브루는 12시간 우려냅니다.",
+            "도움이 되었다면 다행입니다.",
+            # Conversational verbs are satisfied by the reply itself, the
+            # same reason English excludes "tell" and "explain".
+            "말씀드리겠습니다.",
+            "알려드리겠습니다.",
+        ):
+            with self.subTest(said=said):
+                self.assertFalse(
+                    ActionCommitmentGuard.promises_action(said), said)
+                self.assertFalse(
+                    ActionCommitmentGuard.offers_action(said), said)
+
+    def test_a_korean_promise_with_nothing_run_is_broken(self):
+        self.assertTrue(
+            ActionCommitmentGuard.broken_promise(
+                "확인해 보겠습니다.", action_performed=False,
+            )
+        )
+        self.assertFalse(
+            ActionCommitmentGuard.broken_promise(
+                "확인해 보겠습니다.", action_performed=True,
+            )
+        )
+
+    def test_the_promise_sentence_can_be_named_and_stripped(self):
+        reply = "런던 시간은 오후 3시입니다. 지금 열겠습니다."
+
+        self.assertEqual(
+            ActionCommitmentGuard.promised_action(reply), "지금 열겠습니다.")
+        self.assertEqual(
+            ActionCommitmentGuard.strip_promise(reply),
+            "런던 시간은 오후 3시입니다.",
+        )
+
+    def test_the_two_families_of_work_are_told_apart_in_korean(self):
+        from brain.action_commitment import LOOK, OPEN, action_family
+
+        self.assertEqual(action_family("지금 열겠습니다."), OPEN)
+        self.assertEqual(action_family("검색해 보겠습니다."), LOOK)

@@ -1,0 +1,113 @@
+{
+  "arc": "korean",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "안녕하세요. 오늘은 어떻게 지내세요?",
+      "statuses": [],
+      "seconds": 3.04
+    },
+    {
+      "turn": 2,
+      "arc": "korean",
+      "user": "방금 퇴근했어",
+      "act": "react",
+      "reply": "You've made it through the day. Take a moment to breathe and recharge, rest is key to staying balanced.",
+      "statuses": [],
+      "seconds": 3.36
+    },
+    {
+      "turn": 3,
+      "arc": "korean",
+      "user": "좀 피곤하네",
+      "act": "react",
+      "reply": "I understand you're feeling tired. Take a moment to rest and let your energy return gradually.",
+      "statuses": [],
+      "seconds": 3.3
+    },
+    {
+      "turn": 4,
+      "arc": "korean",
+      "user": "오늘 길었어. 84의 15%가 얼마야?",
+      "act": "answer",
+      "reply": "15%의 84는 12.60입니다. 조금 쉬시고, 충분한 휴식을 취하시길 바랍니다.",
+      "statuses": [],
+      "seconds": 4.29
+    },
+    {
+      "turn": 5,
+      "arc": "korean",
+      "user": "고마워",
+      "act": "receipt",
+      "reply": "네, 알겠습니다.",
+      "statuses": [],
+      "seconds": 0.43
+    },
+    {
+      "turn": 6,
+      "arc": "korean",
+      "user": "지금 런던 몇 시야?",
+      "act": "answer",
+      "reply": "런던 시간은 오후 3시 21분입니다. 한국 시간보다 8시간 빠릅니다.",
+      "statuses": [],
+      "seconds": 3.58
+    },
+    {
+      "turn": 7,
+      "arc": "korean",
+      "user": "콜드브루 만드는 법 알아?",
+      "act": "answer",
+      "reply": "원하는 강도로 조절할 수 있는 콜드브루는 물을 따뜻하게 데우고, 커피 추출한 뒤 차가운 물로 희석하는 방식입니다. 재료와 방법을 알려드릴까요?",
+      "statuses": [],
+      "seconds": 4.49
+    },
+    {
+      "turn": 8,
+      "arc": "korean",
+      "user": "얼마나 우려야 돼?",
+      "act": "answer",
+      "reply": "지금 런던 시간은 오후 3시 21분입니다. 한국 시간보다 8시간 빠릅니다.",
+      "statuses": [],
+      "seconds": 3.71
+    },
+    {
+      "turn": 9,
+      "arc": "korean",
+      "user": "알겠어 해볼게",
+      "act": "receipt",
+      "reply": "알겠어 해볼게요. 준비하시면 바로 시작할 수 있어요.",
+      "statuses": [],
+      "seconds": 3.73
+    },
+    {
+      "turn": 10,
+      "arc": "korean",
+      "user": "커피는 됐고, 오늘 볼 만한 영화 뭐 있어?",
+      "act": "answer",
+      "reply": "오늘 볼 만한 영화는 《어바웃 타임》이 있어요. 감성적인 스토리와 아름다운 영상이 인상적이에요. 극장에서 보시는 게 좋습니다.",
+      "statuses": [],
+      "seconds": 5.43
+    },
+    {
+      "turn": 11,
+      "arc": "korean",
+      "user": "좀 더 가벼운 걸로",
+      "act": "answer",
+      "reply": "가벼운 영화를 추천드릴게요. 《아이 엠 러브 유》가 좋아요. 편안한 분위기와 감성적인 가사가 매력적이에요. 극장에서 보시면 더욱 좋습니다.",
+      "statuses": [],
+      "seconds": 6.1
+    },
+    {
+      "turn": 12,
+      "arc": "korean",
+      "user": "아니야",
+      "act": "receipt",
+      "reply": "아니요, 다른 영화 추천드릴게요. 《마이 라이프》는 유쾌한 분위기와 따뜻한 감성이 매력적이에요. 극장에서 보시면 더욱 즐기실 수 있습니다.",
+      "statuses": [],
+      "seconds": 5.22
+    }
+  ]
+}

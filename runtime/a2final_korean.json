@@ -1,0 +1,113 @@
+{
+  "arc": "korean",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "안녕하세요! 어때요?",
+      "statuses": [],
+      "seconds": 3.81
+    },
+    {
+      "turn": 2,
+      "arc": "korean",
+      "user": "방금 퇴근했어",
+      "act": "react",
+      "reply": "퇴근하셨네요. 힘들었겠습니다.",
+      "statuses": [],
+      "seconds": 4.26
+    },
+    {
+      "turn": 3,
+      "arc": "korean",
+      "user": "좀 피곤하네",
+      "act": "react",
+      "reply": "피곤하시겠습니다. 쉬시는 게 좋습니다.",
+      "statuses": [],
+      "seconds": 3.41
+    },
+    {
+      "turn": 4,
+      "arc": "korean",
+      "user": "오늘 길었어. 84의 15%가 얼마야?",
+      "act": "answer",
+      "reply": "15%의 84는 12.60입니다. 피곤하시면 쉬시는 게 좋습니다.",
+      "statuses": [],
+      "seconds": 4.73
+    },
+    {
+      "turn": 5,
+      "arc": "korean",
+      "user": "고마워",
+      "act": "receipt",
+      "reply": "도움이 되었다면 다행입니다.",
+      "statuses": [],
+      "seconds": 0.45
+    },
+    {
+      "turn": 6,
+      "arc": "korean",
+      "user": "지금 런던 몇 시야?",
+      "act": "answer",
+      "reply": "런던 시간은 현재 17시 03분입니다. 한국 시간보다 8시간 빠릅니다.",
+      "statuses": [],
+      "seconds": 3.93
+    },
+    {
+      "turn": 7,
+      "arc": "korean",
+      "user": "콜드브루 만드는 법 알아?",
+      "act": "answer",
+      "reply": "콜드브루는 물을 9분간 끝에 설탕을 넣고, 15분간 우유를 넣어 섞은 뒤 20분간 끝에 우유를 넣고 냉각하면 됩니다.",
+      "statuses": [],
+      "seconds": 4.49
+    },
+    {
+      "turn": 8,
+      "arc": "korean",
+      "user": "얼마나 우려야 돼?",
+      "act": "answer",
+      "reply": "콜드브루는 일반적으로 12~24시간 정도 우유와 설탕이 섞인 물을 냉각시켜 만듭니다. 15%의 84는 12.60입니다.",
+      "statuses": [],
+      "seconds": 7.18
+    },
+    {
+      "turn": 9,
+      "arc": "korean",
+      "user": "알겠어 해볼게",
+      "act": "receipt",
+      "reply": "준비가 되셨다면 언제든 말씀해 주십시오.",
+      "statuses": [],
+      "seconds": 4.48
+    },
+    {
+      "turn": 10,
+      "arc": "korean",
+      "user": "커피는 됐고, 오늘 볼 만한 영화 뭐 있어?",
+      "act": "answer",
+      "reply": "오늘 추천 영화는 《어바웃 타임》입니다. 극장에서 보시면 좋습니다. a movie 확인해 드릴까요?",
+      "statuses": [],
+      "seconds": 5.78
+    },
+    {
+      "turn": 11,
+      "arc": "korean",
+      "user": "좀 더 가벼운 걸로",
+      "act": "answer",
+      "reply": "《어바웃 타임》 보시면 좋습니다. 극장에서 감상하시면 더 좋습니다. 지금 보실 건가요.",
+      "statuses": [],
+      "seconds": 14.52
+    },
+    {
+      "turn": 12,
+      "arc": "korean",
+      "user": "아니야",
+      "act": "receipt",
+      "reply": "영화 추천이 어렵습니다. 좀 더 구체적인 장르나 기대할 점이 있으면 도와드리겠습니다.",
+      "statuses": [],
+      "seconds": 4.24
+    }
+  ]
+}

@@ -1,0 +1,83 @@
+{
+  "arc": "mixed",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "mixed",
+      "user": "hey, can you check the weather in seoul today",
+      "act": "answer",
+      "reply": "The current weather in Seoul today is partly cloudy with a temperature of 27°C. It feels pleasant, with humidity at 42% and wind speeds reaching 16.2 km/h from the east.",
+      "statuses": [
+        "Give me a moment."
+      ],
+      "seconds": 14.78
+    },
+    {
+      "turn": 2,
+      "arc": "mixed",
+      "user": "고마워",
+      "act": "receipt",
+      "reply": "Glad that helped.",
+      "statuses": [],
+      "seconds": 0.38
+    },
+    {
+      "turn": 3,
+      "arc": "mixed",
+      "user": "그 monitor 어때? 50달러 이하로 찾아줘",
+      "act": "answer",
+      "reply": "가격대에 맞는 제품을 확인하시려면 온라인 쇼핑몰을 직접 검색해 보시기 바랍니다. 찾아봤지만 확인되지 않아서, 추측으로 말씀드리지는 않겠습니다.",
+      "statuses": [
+        "바로 찾아보겠습니다."
+      ],
+      "seconds": 14.55
+    },
+    {
+      "turn": 4,
+      "arc": "mixed",
+      "user": "ok",
+      "act": "receipt",
+      "reply": "알겠습니다.",
+      "statuses": [],
+      "seconds": 0.42
+    },
+    {
+      "turn": 5,
+      "arc": "mixed",
+      "user": "speak english please",
+      "act": "receipt",
+      "reply": "Sure. I'll switch to English. How can I assist you?",
+      "statuses": [],
+      "seconds": 4.36
+    },
+    {
+      "turn": 6,
+      "arc": "mixed",
+      "user": "오늘 날씨 어때?",
+      "act": "answer",
+      "reply": "Today's weather in South Korea is mostly partly cloudy. Some areas may experience light rain later in the day.",
+      "statuses": [
+        "I'll find out."
+      ],
+      "seconds": 14.76
+    },
+    {
+      "turn": 7,
+      "arc": "mixed",
+      "user": "한국어로 말해줘",
+      "act": "receipt",
+      "reply": "한국어로 말하겠습니다. 오늘 날씨는 부분적으로 흐리고, 오후에 가끔 비가 오는样子입니다.",
+      "statuses": [],
+      "seconds": 3.02
+    },
+    {
+      "turn": 8,
+      "arc": "mixed",
+      "user": "고마워",
+      "act": "receipt",
+      "reply": "아닙니다.",
+      "statuses": [],
+      "seconds": 0.43
+    }
+  ]
+}

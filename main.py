@@ -140,15 +140,19 @@ def launch_electron_if_requested():
     ).start()
 
 
-def run_response(user_input, selected_screen):
+def run_response(user_input, selected_screen, spoken_language, confidence):
     """Generate one response without blocking the microphone listener."""
     engine.chat(
         user_input,
         screen_snapshot=selected_screen,
+        spoken_language=spoken_language,
+        spoken_confidence=confidence,
     )
 
 
-def dispatch_response(user_input, selected_screen):
+def dispatch_response(
+    user_input, selected_screen, spoken_language="", confidence=0.0,
+):
     """
     Start one response turn, whether it came from the microphone or a typed
     message. Both entry points share this lock so a spoken turn and a typed
@@ -172,7 +176,7 @@ def dispatch_response(user_input, selected_screen):
 
         response_thread = threading.Thread(
             target=run_response,
-            args=(user_input, selected_screen),
+            args=(user_input, selected_screen, spoken_language, confidence),
             name="elaina-response",
             daemon=True,
         )
@@ -555,7 +559,16 @@ try:
             break
 
         selected_screen = engine.consume_pending_screen_snapshot()
-        dispatch_response(user_input, selected_screen)
+        dispatch_response(
+            user_input,
+            selected_screen,
+            spoken_language=getattr(
+                speech_to_text, "last_detected_language", "",
+            ),
+            confidence=getattr(
+                speech_to_text, "last_language_probability", 0.0,
+            ),
+        )
 
 except KeyboardInterrupt:
     print("\nStopping Elaina...")

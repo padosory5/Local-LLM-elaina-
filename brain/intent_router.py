@@ -1601,12 +1601,19 @@ class SemanticIntentRouter:
         original_input: str = "",
     ) -> IntentDecision:
         """Turn indirect interest in a read-only capability into an offer."""
-        if decision.intent == "project_question" and not _NAMES_THE_PROJECT.search(
-            # Both, because the model's paraphrase can drop the very word
-            # that made it a project question: "Inspect the codebase and
-            # explain how voice input reaches chat" came back normalized as
-            # "Explain the voice input flow."
-            f"{original_input} {decision.normalized_request or ''}",
+        if decision.intent in {
+            "project_question", "project_edit",
+        } and not _NAMES_THE_PROJECT.search(
+            # Three fields, because any one of them can be the only place
+            # the project is named. The model's paraphrase can drop the
+            # word that made it a project question ("Inspect the codebase
+            # and explain how voice input reaches chat" came back as
+            # "Explain the voice input flow"), and a genuine edit often
+            # describes the app rather than the repository -- "Add a
+            # settings button next to the Screen button" names no file and
+            # is exactly what a real request looks like. Its topic does.
+            f"{original_input} {decision.normalized_request or ''} "
+            f"{decision.topic or ''}",
         ):
             # "Project" has an everyday sense, and the model reads it.
             # Measured live: "I'm interested in like AI software companies"
@@ -1614,14 +1621,26 @@ class SemanticIntentRouter:
             # project-related inquiry" -- and the Coding Agent went and
             # searched Elaina's own source tree for internship employers.
             #
-            # This intent means one thing: the local codebase. A turn that
-            # names nothing in it is not asking about it.
+            # ``project_edit`` was left out of this and is the more
+            # dangerous of the two, because it proposes writes. Measured
+            # live in Korean: "컴퓨터를 챙겨가야하는데 본체가 너무 커서 좀
+            # 걱정이야" -- worrying about fitting a desktop tower in the
+            # luggage -- came back project_edit 0.95, normalized to "adjust
+            # computer size for travel", and the Coding Agent proposed
+            # edits to desktop/renderer/index.html. The action-safety
+            # policy passed it because the model had confidently filled in
+            # speech_act, action_requested and action_target; that policy
+            # asks whether an action was requested, and this one asks
+            # whether it was requested *of the codebase*.
+            #
+            # These intents mean one thing: the local project. A turn that
+            # names nothing in it is not about it.
             return replace(
                 decision,
                 intent="conversation",
                 reason=(
                     "The turn names nothing in the local project, so it is "
-                    "not a question about the codebase."
+                    "not about the codebase."
                 ),
                 action_requested=False,
                 action_target="",

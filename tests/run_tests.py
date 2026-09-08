@@ -131,12 +131,14 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_candidate_fit",
             "test_candidate_shape",
             "test_capability_rescue",
+            "test_context_inheritance",
             "test_context_policy",
             "test_continuity_matrix",
             "test_conversation_focus",
             "test_conversation_style",
             "test_followup_subject",
             "test_grounded_values",
+            "test_guard_languages",
             "test_response_cases",
             "test_response_language",
             "test_response_policy",
@@ -145,6 +147,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_speak_window_list",
             "test_spoken_label",
             "test_text_filter",
+            "test_turn_language",
             "test_unfinished_sentence",
             "test_user_locale",
             "test_user_profile",
@@ -310,6 +313,10 @@ LIVE_TIERS: dict[str, str] = {
 }
 
 LIVE_CHECKS: tuple[LiveCheck, ...] = (
+    LiveCheck(
+        "contamination", "live_contamination_check.py", "app",
+        "turns that must not inherit the turns before them (A3)",
+    ),
     LiveCheck(
         "router", "live_router_check.py", "model",
         "the feature matrix, routed by the real model",

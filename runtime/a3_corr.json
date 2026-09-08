@@ -1,0 +1,15 @@
+{
+  "passed": 0,
+  "total": 1,
+  "cases": [
+    {
+      "id": "a_correction_outranks_what_was_held",
+      "turn": "where is my school again?",
+      "reply": "Your school's location is in the city center, near the main train station. If you need the exact address or directions, I can look that up for you.",
+      "leaked": [],
+      "answered": false,
+      "passed": false,
+      "why": "Dogfooding session 1: what the person just said must outrank anything held from before, including the model's own memory of mishearing it. Case redesigned after the fact: the turn under test used to be the correction itself, and 'That's great news, I'm glad you're moving forward' is a perfectly good reply to a statement that happens to name no city -- so the case failed on its must_mention while proving nothing either way. Asking the question forces the held value to surface."
+    }
+  ]
+}

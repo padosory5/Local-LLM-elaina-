@@ -105,6 +105,10 @@ class SpeechToText:
             )
             if str(language).strip()
         )
+        # What the microphone last heard, for the language decision. Reset
+        # per transcription, never stale beyond one utterance.
+        self.last_detected_language = ""
+        self.last_language_probability = 0.0
         self.language_retry_threshold = float(config.get(
             "stt",
             "faster_whisper",
@@ -292,6 +296,13 @@ class SpeechToText:
         language_probability = float(
             self._value(info, "language_probability", 0.0) or 0.0
         )
+        # Kept, not just used. Whisper's reading of which language was
+        # spoken was computed here and then dropped on the floor -- it
+        # decided whether to retry the transcription and nothing else. It
+        # is the tiebreaker brain/turn_language.py wants when the script
+        # and the sound disagree.
+        self.last_detected_language = detected_language
+        self.last_language_probability = language_probability
         retry_language = retry_language_for_detection(
             configured_language=self.language,
             detected_language=detected_language,

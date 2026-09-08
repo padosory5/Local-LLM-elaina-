@@ -1,0 +1,113 @@
+{
+  "arc": "korean",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "안녕하세요. 오늘은 어떻게 지내세요?",
+      "statuses": [],
+      "seconds": 3.78
+    },
+    {
+      "turn": 2,
+      "arc": "korean",
+      "user": "방금 퇴근했어",
+      "act": "react",
+      "reply": "퇴근하셨군요. 하루의 끝이 고생하셨습니다.",
+      "statuses": [],
+      "seconds": 3.94
+    },
+    {
+      "turn": 3,
+      "arc": "korean",
+      "user": "좀 피곤하네",
+      "act": "react",
+      "reply": "피곤하시군요. 퇴근 후엔 좀 쉬시는 게 좋습니다.",
+      "statuses": [],
+      "seconds": 3.92
+    },
+    {
+      "turn": 4,
+      "arc": "korean",
+      "user": "오늘 길었어. 84의 15%가 얼마야?",
+      "act": "answer",
+      "reply": "15%의 84는 12.60입니다. 조금 피곤하시면 퇴근 후에 쉬시는 게 좋습니다.",
+      "statuses": [],
+      "seconds": 5.01
+    },
+    {
+      "turn": 5,
+      "arc": "korean",
+      "user": "고마워",
+      "act": "receipt",
+      "reply": "도움이 되었다면 다행입니다.",
+      "statuses": [],
+      "seconds": 0.46
+    },
+    {
+      "turn": 6,
+      "arc": "korean",
+      "user": "지금 런던 몇 시야?",
+      "act": "answer",
+      "reply": "런던 시간은 오후 3시 50분입니다. 한국 시간보다 8시간 빠릅니다.",
+      "statuses": [],
+      "seconds": 4.1
+    },
+    {
+      "turn": 7,
+      "arc": "korean",
+      "user": "콜드브루 만드는 법 알아?",
+      "act": "answer",
+      "reply": "콜드브루는 간단한 방법으로 만들 수 있습니다. 원두를 물에 24시간 달아두면 되는데, 냉수로 우려내는 방법이 있습니다. 원하는 레시피가 필요하시면 알려드리겠습니다.",
+      "statuses": [],
+      "seconds": 5.09
+    },
+    {
+      "turn": 8,
+      "arc": "korean",
+      "user": "얼마나 우려야 돼?",
+      "act": "answer",
+      "reply": "콜드브루는 일반적으로 24시간 동안 우려내면 됩니다. 원하는 레시피나 추가 조언이 필요하시면 말씀해 주십시오.",
+      "statuses": [],
+      "seconds": 6.07
+    },
+    {
+      "turn": 9,
+      "arc": "korean",
+      "user": "알겠어 해볼게",
+      "act": "receipt",
+      "reply": "알겠어 해보겠습니다. 원두와 물을 준비하시고, 24시간 동안 냉수로 우려내면 됩니다. 필요하시면 레시피도 알려드리겠습니다.",
+      "statuses": [],
+      "seconds": 5.13
+    },
+    {
+      "turn": 10,
+      "arc": "korean",
+      "user": "커피는 됐고, 오늘 볼 만한 영화 뭐 있어?",
+      "act": "answer",
+      "reply": "오늘 볼 만한 영화는 《플래그십》입니다. 기업의 투명성과 리더십을 다루고 있습니다. 넷플릭스에서 확인해 보십시오.",
+      "statuses": [],
+      "seconds": 6.4
+    },
+    {
+      "turn": 11,
+      "arc": "korean",
+      "user": "좀 더 가벼운 걸로",
+      "act": "answer",
+      "reply": "미니 마키아는 웃음과 감동이 섞인 코미디로, 넷플릭스에서 볼 수 있습니다.",
+      "statuses": [],
+      "seconds": 5.98
+    },
+    {
+      "turn": 12,
+      "arc": "korean",
+      "user": "아니야",
+      "act": "receipt",
+      "reply": "다른 영화 추천해드리겠습니다. 《아이러니 데이》는 유쾌한 일상 속에서 희망을 찾는 이야기입니다. 넷플릭스에서 볼 수 있습니다.",
+      "statuses": [],
+      "seconds": 5.1
+    }
+  ]
+}

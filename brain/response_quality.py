@@ -4,6 +4,13 @@ import re
 from difflib import SequenceMatcher
 
 
+# English only, with one exception that is not: the repetition checks
+# compare content words and work in any script, but the courtesy and echo
+# patterns are English phrases. A Korean reply that thanks the user twice
+# is not caught.
+LANGUAGES = ("en",)
+
+
 class ResponseQualityGuard:
     """Detect a draft that simply repeats an unrelated previous answer.
 

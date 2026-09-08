@@ -6,7 +6,7 @@
 #
 # Currently implemented:
 #   LLM: Ollama
-#   TTS: Piper
+#   TTS: Piper, ElevenLabs
 ############################################################
 
 
@@ -360,13 +360,23 @@ tts:
   #
   # Current:
   #   piper
+  #   elevenlabs
   #
   # Possible future providers:
   #   xtts
-  #   elevenlabs
   #   fish_speech
   #   edge_tts
-  provider: "piper"
+  #
+  # elevenlabs, because she speaks two languages and has to sound like the
+  # same person in both. Piper voices are language-locked ONNX models, so
+  # a Korean Piper voice would be a different woman answering -- which is
+  # the one thing the bilingual work is trying not to do. eleven_v3 is
+  # multilingual and detects the language from the text, so no language
+  # parameter is threaded to the audio layer.
+  #
+  # The cost is that speech now needs the network. Switching back to piper
+  # is a one-line change and loses only the Korean voice.
+  provider: "elevenlabs"
 
   ##########################################################
   # Piper
@@ -404,9 +414,32 @@ tts:
 
   elevenlabs:
     api_key_env: "ELEVENLABS_API_KEY"
-    voice_id: "9wV7LnFitDJZcfhwO7gm"
+    voice_id: "JTlYtJrcTzPC71hMLOxo"
     model: "eleven_v3"
     output_format: "mp3_44100_128"
+
+    # How she delivers a line. Nothing was sent before, so every reply used
+    # the voice's own defaults, and the result was reported as sounding
+    # aggressive and loud. These are taste settings, so they live here
+    # rather than in code -- tune them and restart.
+    #
+    # stability        0.0 creative / 0.5 natural / 1.0 robust. Higher is
+    #                  steadier and less emotionally swingy.
+    # style            emotional exaggeration. 0.0 is none, and none is
+    #                  what "calm" means here.
+    # speed            0.7 to 1.2. Slightly under 1.0 reads as relaxed.
+    # use_speaker_boost adds presence and, with it, loudness.
+    # similarity_boost how closely to hold the original voice.
+    voice_settings:
+      stability: 0.75
+      similarity_boost: 0.75
+      style: 0.0
+      speed: 0.95
+      use_speaker_boost: false
+
+    # Playback level, 0.0 to 1.0. Separate from the settings above: those
+    # change how she performs the line, this changes how loud it is.
+    volume: 0.85
 
   ##########################################################
   # Fish Speech

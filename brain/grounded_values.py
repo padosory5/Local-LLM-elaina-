@@ -121,6 +121,13 @@ def _mangled_numbers(reply: str, source: str) -> set[str]:
     return mangled
 
 
+# Both, and by accident rather than design: what it compares are
+# numbers and names, which do not change shape between languages. The
+# sentence it *puts back* is language-specific and lives in
+# brain/guard_lines.py for that reason.
+LANGUAGES = ("en", "ko")
+
+
 class GroundedValueGuard:
     """Tell a looked-up figure from an invented one."""
 

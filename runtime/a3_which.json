@@ -1,0 +1,17 @@
+{
+  "passed": 0,
+  "total": 1,
+  "cases": [
+    {
+      "id": "which_one_means_the_nearest_subject",
+      "turn": "which one would you choose?",
+      "reply": "I'd go with the RTX 4080 for its stronger performance in both gaming and professional tasks. Want me to look up real specs to confirm?",
+      "leaked": [
+        "4080"
+      ],
+      "answered": true,
+      "passed": false,
+      "why": "Measured live: a sentence that means nothing on its own was answered about graphics cards, because the GPU answer was the one that came as a list."
+    }
+  ]
+}

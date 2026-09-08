@@ -42,6 +42,13 @@ import re
 from dataclasses import dataclass, field
 
 
+# Both, unevenly, and the unevenness is stated in each rule. The
+# structural repairs and the counting rules work on any script; the
+# register lists are English phrases except for the Korean register and
+# service checks, which are marked where they are defined.
+LANGUAGES = ("en", "ko")
+
+
 # --------------------------------------------------------------------------
 # Conversational acts
 # --------------------------------------------------------------------------
@@ -165,6 +172,7 @@ TOO_VERBOSE = "too_verbose"
 STRUCTURAL_ARTIFACT = "structural_artifact"
 SELF_REPETITION = "self_repetition"
 LIST_RECITAL = "list_recital"
+REGISTER_DRIFT = "register_drift"
 
 FAILURE_CLASSES = (
     SERVICE_PHRASING,
@@ -181,6 +189,7 @@ FAILURE_CLASSES = (
     STRUCTURAL_ARTIFACT,
     SELF_REPETITION,
     LIST_RECITAL,
+    REGISTER_DRIFT,
 )
 
 
@@ -406,10 +415,94 @@ _MARKDOWN_LEFTOVER = re.compile(r"\*\*|__|^\s*[-*+]\s+|^\s*#{1,6}\s+|```",
 # full stop that was overwritten: measured live, "just the right amount of
 # light; Just make sure to keep the volume down" -- the capital J is the
 # sentence boundary saying where it used to be.
-_SEMICOLON_CHAIN = re.compile(r";[^;]{1,120};|;\s+[A-Z]")
+#
+# Korean has no capitals, so the capital-letter half of that rule was
+# one of the guards that silently did nothing in Korean. Measured live:
+# "관객들의 호응이 좋습니다; 극장에서 보는 게 제일 좋습니다." A semicolon
+# followed by a Hangul syllable is the same lost full stop.
+_SEMICOLON_CHAIN = re.compile(r";[^;]{1,120};|;\s+[A-Z]|;\s*[가-힯]")
 _DOUBLE_PUNCT = re.compile(r"[.!?]{2,}(?<!\.\.\.)|\s+[,;]\s*[.!?]")
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _WORD = re.compile(r"\b[\w'$%-]+\b", re.UNICODE)
+
+
+# --- register ------------------------------------------------------------
+#
+# LANGUAGES: en, ko -- and the Korean half is the only one implemented,
+# because English has no honorific system to drift within. Stated out loud
+# because a guard that quietly covers one language is worse than no guard:
+# it reports clean and enforces nothing.
+#
+# personality_ko.txt specifies 습니다체. Measured live, qwen3:8b drifts to
+# 해요체 constantly and the prompt does not hold it -- "퇴근하셨다니
+# 힘들었겠어요", "직접 검색해서 보시는 게 더 좋아요". Both are polite and
+# both are the wrong person.
+#
+# -ㄹ까요 is deliberately absent from this list. "진행할까요?" is the normal
+# way to ask permission inside 습니다체 and appears in her own line banks;
+# flagging it would condemn the register it is trying to enforce.
+# 습니다체, stated as what it *is* rather than as what it is not.
+#
+# A declarative ends in -니다 (입니다 / 합니다 / 겠습니다). A question ends
+# in -니까 or, when asking permission, -ㄹ까요 -- which is standard inside
+# this register and appears in her own line banks, so it is allowed rather
+# than flagged. An instruction ends in -십시오.
+#
+# Everything else ending in a Hangul syllable is drift, which catches both
+# directions at once: 해요체 ("고마워요", "천만에요", "좋아요") and 반말
+# ("쉬고 있어", "도와줄게"). The first attempt listed the wrong endings
+# instead and missed 반말 entirely -- a rewrite turned 해요체 into 반말 and
+# passed, which is a worse register going out under a clean review.
+_FORMAL_ENDING = re.compile(
+    r"(?:니다|니까|십시오|시죠|까요|을까|ㄹ까)\s*[.!?~]*$"
+)
+# Said on their own, and correct in this register whatever their form.
+# "네." would otherwise read as drift for ending in a bare syllable, and
+# the greetings are lexicalised: 안녕하세요 is -세요 by shape and is the
+# standard polite greeting in every register including this one. A rule
+# about grammar has to know which phrases stopped being grammar.
+_FORMAL_ALONE = frozenset({
+    "네", "예", "아니요", "아니오", "물론",
+    "안녕하세요", "안녕하십니까", "안녕히 계세요", "안녕히 가세요",
+    "어서 오세요", "좋은 아침입니다",
+})
+
+
+def _drifts_from_the_register(text: str) -> str:
+    """A Korean sentence not written in the 습니다체 she is specified in."""
+    for sentence in sentences(text):
+        stripped = sentence.strip()
+        if not _HANGUL_SYLLABLE.search(stripped):
+            continue
+        bare = re.sub(r"[^\w가-힯]+$", "", stripped)
+        if bare in _FORMAL_ALONE:
+            continue
+        # The sentence has to *end* in Hangul to be judged at all: a line
+        # ending in a number, a price or a Latin product name says nothing
+        # about register.
+        if not re.search(r"[가-힯][\s.!?~]*$", stripped):
+            continue
+        if _FORMAL_ENDING.search(stripped):
+            continue
+        return stripped[:90]
+    return ""
+
+
+# Korean customer service. The same register failure as the English list,
+# in the language where it actually sounds like a call centre.
+_KOREAN_SERVICE = (
+    r"더\s*궁금하신\s*(?:점|것|거)",
+    r"필요하시면\s*언제든",
+    r"언제든(?:지)?\s*(?:말씀|문의|연락)",
+    r"무엇이든\s*도와",
+    r"도움이\s*필요하시면",
+    r"다른\s*(?:질문|문의|도움)(?:은|이)?\s*있으",
+    r"불편(?:을)?\s*드려\s*죄송",
+    r"기꺼이\s*도와",
+)
+_KOREAN_SERVICE_RE = re.compile("|".join(_KOREAN_SERVICE))
+
+_HANGUL_SYLLABLE = re.compile(r"[가-힯]")
 
 
 def _compiled(patterns) -> re.Pattern:
@@ -508,6 +601,26 @@ what which who whom whose when where why how
 """.split())
 
 
+# How many of the person's opening words a reply may repeat before it is
+# giving them back rather than answering. One is a coincidence in any
+# language ("Yes." answering "Yes?"); two is the sentence starting again.
+_ECHOED_OPENING_WORDS = 2
+
+
+def _opens_with_their_words(sentence: str, said: str) -> str:
+    """The person's own opening, handed back at the start of the reply."""
+    theirs = re.findall(r"[^\W_]+", str(said).casefold(), flags=re.UNICODE)
+    mine = re.findall(r"[^\W_]+", str(sentence).casefold(), flags=re.UNICODE)
+    shared = 0
+    for theirs_word, mine_word in zip(theirs, mine):
+        if theirs_word != mine_word:
+            break
+        shared += 1
+    if shared < _ECHOED_OPENING_WORDS:
+        return ""
+    return " ".join(mine[:shared])
+
+
 def _content_run(sentence: str, said: str) -> str:
     """The longest stretch of the person's own words this sentence gives back.
 
@@ -579,6 +692,7 @@ class RoboticTells:
         user_input: str = "",
         previous_reply: str = "",
         earlier_replies: tuple[str, ...] = (),
+        language: str = "en",
     ) -> tuple[StyleFinding, ...]:
         draft = str(text or "").strip()
         if not draft:
@@ -605,6 +719,14 @@ class RoboticTells:
             if match:
                 note(failure, match)
 
+        if str(language or "").strip().lower().startswith("ko"):
+            drift = _drifts_from_the_register(draft)
+            if drift:
+                note(REGISTER_DRIFT, drift)
+            service = _KOREAN_SERVICE_RE.search(draft)
+            if service:
+                note(SERVICE_PHRASING, service)
+
         marker = _INTERNAL_RE.search(draft)
         if marker:
             # Structural: a role label or a bracketed log tag is damage,
@@ -617,7 +739,10 @@ class RoboticTells:
             if restated:
                 note(REQUEST_RESTATED, restated)
             else:
-                given_back = _content_run(opener, user_input)
+                given_back = (
+                    _opens_with_their_words(opener, user_input)
+                    or _content_run(opener, user_input)
+                )
                 if given_back:
                     note(REQUEST_RESTATED, given_back)
 
@@ -740,9 +865,20 @@ class RoboticTells:
 
         # Short sentences repeat legitimately ("Sure.", "Nice."); a repeated
         # clause of real length is a template, not a coincidence.
+        #
+        # "Real length" is not the same number of words in both languages.
+        # Korean packs a clause into fewer of them, and a flat six-word
+        # floor let "편안한 밤 보내시길 바랍니다." -- a whole sentence, four
+        # words -- repeat across two consecutive turns unnoticed.
+        def long_enough(sentence: str) -> bool:
+            words = len(_WORD.findall(sentence))
+            if _HANGUL_SYLLABLE.search(sentence):
+                return words >= 3
+            return words >= 6
+
         said_before = {
             key(sentence) for sentence in sentences(previous)
-            if len(_WORD.findall(sentence)) >= 6
+            if long_enough(sentence)
         }
         for sentence in sentences(draft):
             if key(sentence) in said_before:
@@ -884,6 +1020,7 @@ _REWORDABLE = frozenset({
     EMPTY_RESPONSE,
     SELF_REPETITION,
     LIST_RECITAL,
+    REGISTER_DRIFT,
 })
 
 
@@ -939,6 +1076,7 @@ def review(
     user_input: str = "",
     previous_reply: str = "",
     earlier_replies: tuple[str, ...] = (),
+    language: str = "en",
 ) -> StyleVerdict:
     """Inspect a draft and repair only what is structural.
 
@@ -952,6 +1090,7 @@ def review(
         user_input=user_input,
         previous_reply=previous_reply,
         earlier_replies=earlier_replies,
+        language=language,
     )
     return StyleVerdict(findings=findings, repaired=repaired, act=act)
 
@@ -1072,7 +1211,7 @@ def act_for_turn(
     return ANSWER
 
 
-def style_instruction(act: str = ANSWER) -> str:
+def style_instruction(act: str = ANSWER, language: str = "en") -> str:
     """The response-style rules for this act, as prompt text."""
     contract = contract_for(act)
     lines = [
@@ -1092,4 +1231,15 @@ def style_instruction(act: str = ANSWER) -> str:
         lines.append("Do not offer to do anything in this reply.")
     else:
         lines.append("At most one offer, and only if it is genuinely useful.")
+    if str(language or "").strip().lower().startswith("ko"):
+        # Said in Korean, because a rule about Korean grammar written in
+        # English is one translation away from being ignored. Measured:
+        # qwen3:8b drifts to 해요체 on most turns and the personality file
+        # alone does not hold it.
+        lines.append(
+            "한국어로 답할 때는 반드시 습니다체로 말합니다. "
+            "'~요'로 끝나는 해요체는 쓰지 않습니다. "
+            "예: '확인했어요' (X) / '확인했습니다' (O). "
+            "허락을 구하는 질문만 '~할까요?' 형태를 씁니다."
+        )
     return "\n".join(lines)

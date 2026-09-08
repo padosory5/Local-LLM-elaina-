@@ -69,20 +69,21 @@ class Recommendation:
 _PHRASINGS = {
     "en": (
         "I can pull up {what} if you want.",
-        "Want me to look into {what}?",
-        "I could check {what} for you -- worth it?",
-        "Happy to dig into {what} if that helps.",
+        "Shall I look into {what}?",
+        "I can check {what} for you.",
+        "I can go through {what} if that helps.",
         "Say the word and I'll go through {what}.",
         "There's more on {what} I could find, if you'd like.",
     ),
     "ko": (
-        "원하면 {what} 찾아볼 수 있어.",
-        "{what} 한번 알아볼까?",
-        "{what} 확인해줄까?",
-        "필요하면 {what} 좀 더 볼게.",
-        "말만 하면 {what} 찾아볼게.",
+        "원하시면 {what} 찾아보겠습니다.",
+        "{what} 한번 알아볼까요?",
+        "{what} 확인해 드릴까요?",
+        "필요하시면 {what} 더 보겠습니다.",
+        "말씀만 주시면 {what} 찾아보겠습니다.",
     ),
 }
+
 
 DEFAULT_LANGUAGE = "en"
 
@@ -115,6 +116,19 @@ class RecommendationPolicy:
         self._recent: deque[str] = deque(maxlen=4)
 
     # ------------------------------------------------------------- turns
+
+    def speak_in(self, language: str) -> None:
+        """Offer in this language from now on, and forget the old phrasings.
+
+        The recent-template memory is per language bank; carried across a
+        switch it would bar a Korean phrasing because its English
+        counterpart was used, and let the first Korean offer repeat.
+        """
+        language = language if language in _PHRASINGS else DEFAULT_LANGUAGE
+        if language == self.language:
+            return
+        self.language = language
+        self._recent.clear()
 
     def begin_turn(self) -> None:
         """Count one exchange. Cooldowns are measured in turns, not seconds.

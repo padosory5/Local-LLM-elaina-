@@ -1,0 +1,15 @@
+{
+  "passed": 1,
+  "total": 1,
+  "cases": [
+    {
+      "id": "arithmetic_in_a_social_thread",
+      "turn": "what's 2+2",
+      "reply": "2 + 2 equals 4. That was a straightforward one.",
+      "leaked": [],
+      "answered": true,
+      "passed": true,
+      "why": "A1's residual. After four sympathy turns the answer came back \"That's straightforward. Need help with.\" The router classified it as a calculation correctly; the answer path lost it."
+    }
+  ]
+}

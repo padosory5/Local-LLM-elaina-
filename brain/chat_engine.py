@@ -61,6 +61,10 @@ from brain.response_policy import (
     ResponseLimits,
 )
 from brain import conversation_style
+from brain import guard_lines
+from brain import korean_register
+from brain import turn_language
+from brain.turn_context import TurnContext
 from brain.calculation_planner import CalculationPlanner
 from brain.desktop_action_planner import (
     DesktopActionPlanner,
@@ -120,6 +124,7 @@ from tools.screen_browser.screen_browser_service import ScreenBrowserService
 from tools.screen_control.cursor_driver import CursorDriver
 from tools.screen_control.input_watcher import InputWatcher
 from tools.screen_control.screen_ui_control import ScreenUIControl
+from brain import context_policy
 from brain.context_policy import should_include_grounded_context
 from brain.brief_response import BriefResponseGenerator
 from datetime import datetime
@@ -450,6 +455,16 @@ class TurnRouting:
 
 class ChatEngine:
 
+    # Class-level so a partially-constructed engine still has a language.
+    # Several tests build one without running __init__, and the language
+    # is now read from deep inside guards that those tests do exercise --
+    # a missing attribute there would be an AttributeError in a grounding
+    # guard, which is the worst place to discover one.
+    _configured_language = "en"
+    _turn_language = "en"
+    _pinned_language = ""
+
+
     def __init__(self, config: Config | None = None):
         # The one seam a test needs: a turn suite builds the real engine
         # with heavy, side-effectful features switched off in a copy of the
@@ -603,14 +618,19 @@ class ChatEngine:
         self.prompt_builder = PromptBuilder()
         self.personality_loader = PersonalityLoader()
 
-        self.response_language = str(self.config.get(
+        # The configured language is now a *starting* language, not the
+        # language. Which one a turn is answered in is decided per turn by
+        # brain/turn_language.py, from the script the person actually wrote
+        # in -- so someone who speaks two languages is answered in the one
+        # they just used.
+        self._configured_language = str(self.config.get(
             "language",
             "response",
         )).strip().lower()
-
-        self.system_prompt = self.personality_loader.load(
-            self.response_language
-        )
+        self._turn_language = self._configured_language
+        # A language the user explicitly asked for ("영어로 말해줘", or the
+        # switch in the window). It outranks detection until it is changed.
+        self._pinned_language = ""
 
         # Memory is optional. Besides being a user-facing privacy and
         # resource setting, honouring this flag lets diagnostics and whole-
@@ -1400,6 +1420,72 @@ class ChatEngine:
         print(f"[Ability] Answered from the registry for {capability.id}.")
         return f"Yes. I can {capability.spoken_summary}. {offer}"
 
+    # ------------------------------------------------------------ language
+    #
+    # Both of these were plain attributes set once in __init__, read at a
+    # dozen call sites. Making them properties over ``_turn_language`` is
+    # what let the language become a per-turn decision without touching any
+    # of those call sites: they ask the same question and now get an answer
+    # about this turn instead of about the config file.
+
+    @property
+    def response_language(self) -> str:
+        """The language this turn is being answered in."""
+        return self._turn_language
+
+    @property
+    def system_prompt(self) -> str:
+        """Who she is, written in the language of this turn."""
+        return self.personality_loader.load(self._turn_language)
+
+    def _use_language(self, language: str) -> None:
+        """Answer in this language from now until it changes.
+
+        Most of the system reads ``response_language`` when it needs it, so
+        it needs no telling. These four hold their own copy because they
+        were built once with language-specific line banks or prompts, and a
+        bank chosen at construction cannot follow a conversation.
+        """
+        language = str(language or "").strip().lower()
+        if not language or language == self._turn_language:
+            return
+        self._turn_language = language
+        for component in (
+            self.action_status,
+            self.social_lines,
+            self.recommendations,
+        ):
+            speak_in = getattr(component, "speak_in", None)
+            if callable(speak_in):
+                speak_in(language)
+        planner = getattr(self, "desktop_action_planner", None)
+        if planner is not None:
+            planner.response_language = language
+        # And the audio boundary, which is the one that matters most: it
+        # decides whether the reply is spoken at all.
+        audio = getattr(self, "audio", None)
+        if audio is not None and hasattr(audio, "speak_in"):
+            audio.speak_in(language)
+
+    def _decide_turn_language(
+        self, said: str, *, spoken_language: str = "",
+        spoken_confidence: float = 0.0,
+    ) -> turn_language.LanguageDecision:
+        """Which language to answer this turn in, and remember the answer."""
+        decision = turn_language.decide(
+            said,
+            current=self._turn_language,
+            pinned=self._pinned_language,
+            detected=spoken_language,
+            probability=spoken_confidence,
+        )
+        if decision.pinned:
+            self._pinned_language = decision.language
+        if decision.switched or decision.pinned:
+            print(decision.log_line())
+        self._use_language(decision.language)
+        return decision
+
     def _things_she_has_said(self) -> tuple[str, tuple[str, ...]]:
         """The last thing she said, and everything before it this session.
 
@@ -1505,6 +1591,27 @@ class ChatEngine:
         if not draft.strip():
             return draft
 
+        # Fix the register mechanically before judging it. Measured over
+        # three live runs, roughly half her Korean sentences came back
+        # 해요체, the prompt did not move it, and asking for the line again
+        # mostly produced 해요체 again -- once 반말, which is further from
+        # the register than what it replaced. What is left after this pass
+        # is what genuinely needs saying differently.
+        # Keyed to what she actually wrote, not to what the turn decided.
+        # "안녕" is two syllables and stays under the switch threshold, so
+        # the turn stayed English -- and the model answered in Korean 반말
+        # anyway, with no Korean guard running over it. The register of a
+        # Korean sentence is a fact about the sentence.
+        spoken_language = (
+            "ko" if any("\uac00" <= ch <= "\ud7a3" for ch in draft)
+            else self._turn_language
+        )
+        if spoken_language.startswith("ko"):
+            formal = korean_register.to_formal(draft)
+            if formal != draft:
+                print("[Style] Converted to 습니다체.")
+                draft = formal
+
         contract = conversation_style.contract_for(act)
         previous, earlier = self._things_she_has_said()
         verdict = conversation_style.review(
@@ -1513,6 +1620,7 @@ class ChatEngine:
             user_input=user_input,
             previous_reply=previous,
             earlier_replies=earlier,
+            language=spoken_language,
         )
         repaired = verdict.repaired
         if repaired != draft:
@@ -1540,9 +1648,21 @@ class ChatEngine:
             faults=verdict.findings,
             already_said=(previous, *earlier),
         )
+        if spoken_language.startswith("ko"):
+            said_again = korean_register.to_formal(said_again)
         if not said_again:
             return repaired
-        if not self._keeps_the_facts(said_again, repaired):
+        # A draft that repeats the previous answer has no facts of its own
+        # to keep: its numbers belong to the question before this one.
+        # Measured live -- "콜드브루 만드는 법 알아?" was answered with the
+        # London time from two turns earlier, the style layer caught the
+        # repetition, and the faithfulness check then vetoed the rewrite
+        # for dropping "16:35". It was protecting the wrong answer.
+        stale = any(
+            finding.failure == conversation_style.SELF_REPETITION
+            for finding in verdict.findings
+        )
+        if not stale and not self._keeps_the_facts(said_again, repaired):
             print("[Style] The re-said version changed a value or dropped a "
                   "name; kept the original.")
             return repaired
@@ -1550,6 +1670,7 @@ class ChatEngine:
         second = conversation_style.review(
             said_again, act=act, user_input=user_input,
             previous_reply=previous, earlier_replies=earlier,
+            language=spoken_language,
         )
         if second.needs_rewrite:
             # One attempt only. A second call would usually return the same
@@ -1631,7 +1752,7 @@ class ChatEngine:
         plural = "s" if contract.max_sentences != 1 else ""
         brief = (
             "Rewrite the draft below as one line of natural speech.\n\n"
-            f"{conversation_style.style_instruction(act)}\n"
+            f"{conversation_style.style_instruction(act, self._turn_language)}\n"
             "Keep every number, name, price, time and action status exactly "
             "as the draft has them. Add no fact the draft does not contain. "
             "Drop nothing the draft states. Do not mention the draft, the "
@@ -1865,11 +1986,10 @@ class ChatEngine:
         # one fact the person needs: looking failed, so try somewhere else.
         state = self._capability_state()
         if CapabilityRegistry.is_available("browser_control", state):
-            offer = (
-                "I looked and couldn't find that -- want me to open the "
-                "site and check properly?"
-                if searched else
-                "I haven't actually checked that -- want me to look it up?"
+            offer = guard_lines.say(
+                "unverified_offer_searched" if searched
+                else "unverified_offer_unsearched",
+                self._turn_language,
             )
             task_sessions = getattr(self, "task_sessions", None)
             active_problem = (
@@ -1890,10 +2010,9 @@ class ChatEngine:
                 ),
             )
         else:
-            offer = (
-                "I looked and couldn't find that, so I'd rather not guess."
-                if searched else
-                "I haven't actually checked that, so I'd rather not guess."
+            offer = guard_lines.say(
+                "unverified_searched" if searched else "unverified_unsearched",
+                self._turn_language,
             )
         print(
             "[Grounding Guard] Removed "
@@ -3157,6 +3276,95 @@ class ChatEngine:
             return ""
         return subject if self._reads_as_followup(request) else ""
 
+    def _subject_now(self) -> str:
+        """What the conversation is about, from whichever layer holds it.
+
+        The focus is only written by the task planner, so on an ordinary
+        conversational turn it is empty and the open recommendation is the
+        one carrying a subject. Asking both is what makes the answer
+        available on a chat turn at all.
+        """
+        for holder in (
+            self.task_sessions.focus(),
+            self.task_sessions.active_recommendation(),
+        ):
+            subject = str(getattr(holder, "subject", "") or "").strip()
+            if subject:
+                return subject
+        return ""
+
+    def _context_for_turn(self, route, goal) -> TurnContext:
+        """What this turn may carry, decided once for every builder.
+
+        The one place that answers "does the conversation so far belong to
+        this turn". Before it, three prompt builders each answered
+        separately and disagreed -- one of them by never asking.
+        """
+        # Whichever authority actually holds a subject. The focus is only
+        # written by the task planner (`remember`), so on an ordinary
+        # conversational turn it is empty -- which is why the first version
+        # of this rule never fired once in twelve measured cases. The open
+        # recommendation is the one that carries a subject through chat.
+        held_subject = getattr(self, "_subject_before_turn", "")
+        current = str(getattr(goal, "subject", "") or "") or route.topic
+
+        if route.topic_shift:
+            reason = "the router says the topic moved"
+        elif held_subject and current and not context_policy.subjects_agree(
+            held_subject, current,
+        ):
+            reason = (
+                f"the turn is about {current!r}, the conversation was about "
+                f"{held_subject!r}"
+            )
+        else:
+            reason = ""
+
+        return TurnContext(
+            question=route.normalized_request or "",
+            inherit_history=not reason,
+            include_grounded=self._grounded_context_is_relevant(route, goal),
+            followup_subject=self._followup_subject_for(route, goal),
+            reason=reason,
+            held_subject=held_subject,
+            current_subject=current,
+        )
+
+    def _history_belongs_to_this_turn(self, route, goal) -> bool:
+        """Whether the conversation so far is about what is being asked now.
+
+        ``route.topic_shift`` is the model's answer to this and it is not
+        reliable: measured live, "what's 2+2" after four turns about not
+        sleeping came back with topic_shift unset, inherited the sympathy,
+        and never produced the number.
+
+        ``context_policy.subjects_agree`` is the deterministic answer, and
+        it is already trusted for exactly this decision one layer over --
+        it decides whether stored evidence is about the current subject.
+        Evidence and history are the same question about the same two
+        subjects, so they get the same answer.
+
+        Either subject being unknown is not a disagreement. Nothing is
+        reset on a guess; the old behaviour is what happens when the
+        comparison cannot be made.
+        """
+        focus = self.task_sessions.focus()
+        held = str(getattr(focus, "subject", "") or "") if focus else ""
+        current = str(getattr(goal, "subject", "") or "") or route.topic
+        if not held or not current:
+            return True
+        agrees = context_policy.subjects_agree(held, current)
+        if not agrees:
+            print(f"[Context] The turn is about {current!r}, the "
+                  f"conversation was about {held!r}; not inheriting it.")
+        return agrees
+
+    def _should_reset_history(self, route, goal) -> bool:
+        """Whether this turn starts clean."""
+        return bool(route.topic_shift) or not self._history_belongs_to_this_turn(
+            route, goal,
+        )
+
     def _build_factual_messages(
         self,
         question: str,
@@ -3199,11 +3407,21 @@ class ChatEngine:
         self,
         user_input: str,
         tool_result: str,
+        *,
+        inherit_history: bool = True,
     ) -> list[dict]:
-        """Let personality.txt phrase a trusted action result for the user."""
+        """Let personality.txt phrase a trusted action result for the user.
+
+        ``inherit_history`` was missing entirely, and this is the path a
+        successful calculation plan takes. Measured live: "what's 2+2"
+        after four turns about not sleeping was answered "That's
+        straightforward." -- the sympathy came in with the history and the
+        number never came out. The other two builders could already drop
+        history; this one could not, so no rule added to them reached it.
+        """
         return build_personality_messages(
             system_prompt=self.system_prompt,
-            history=self.conversation.get_history(),
+            history=self.conversation.get_history() if inherit_history else [],
             user_input=user_input,
             context_sections=(
                 ("TRUSTED TOOL RESULT", tool_result),
@@ -5037,6 +5255,14 @@ class ChatEngine:
             return "", f"{subject!r} is about them, not a thing to look up"
         if len(subject.split()) > 6:
             return "", f"the subject is a whole sentence ({subject!r})"
+        # The offer template is in the language of the turn, and the subject
+        # comes from the router, which writes in English. Dropped into a
+        # Korean sentence it produces "a movie 확인해 드릴까요?" -- measured
+        # live. An offer she cannot say in one language is not an offer.
+        if self._turn_language.startswith("ko") and not any(
+            "가" <= character <= "힣" for character in subject
+        ):
+            return "", f"{subject!r} is English and this turn is Korean"
         return subject, ""
 
     def _one_offer_per_reply(self, reply: str) -> str:
@@ -7245,10 +7471,24 @@ class ChatEngine:
         # Ask Qwen
         ####################################################
 
+        # What this turn is allowed to carry, decided once. Three builders
+        # follow, and until this existed each answered the question its own
+        # way -- the trusted-result one by never asking it. See
+        # brain/turn_context.py for the turn that cost.
+        turn_context = self._context_for_turn(route, goal_intent_result)
+        print(turn_context.log_line())
+        if not turn_context.inherit_history:
+            # Move the line, rather than skipping one turn. Emptying only
+            # this prompt left the old subject in the manager, and the next
+            # turn -- which legitimately inherits -- brought it straight
+            # back. Measured: the dinner turn started clean and "which one
+            # would you choose?" answered about graphics cards anyway.
+            self.conversation.start_new_subject()
+
         messages = self.conversation.build_messages(
             system_prompt=self.system_prompt,
             context_prompt=context_prompt,
-            history=[] if route.topic_shift else None,
+            history=turn_context.history_for_builder,
         )
 
         calculation_plan = None
@@ -7258,7 +7498,7 @@ class ChatEngine:
                 include_grounded=self._grounded_context_is_relevant(
                     route, goal_intent_result,
                 ),
-                reset_history=route.topic_shift,
+                reset_history=not turn_context.inherit_history,
             )
         elif route.intent == "calculation":
             # A small local model doing multi-step arithmetic in its head is
@@ -7278,6 +7518,7 @@ class ChatEngine:
                 messages = self._build_tool_result_messages(
                     user_input=route.normalized_request,
                     tool_result=calculation_plan.as_trusted_result_text(),
+                    inherit_history=turn_context.inherit_history,
                 )
             else:
                 # Use the router's self-contained interpretation so a short
@@ -7287,7 +7528,7 @@ class ChatEngine:
                 # planner's own request fails or produces untrusted output.
                 messages = self._build_factual_messages(
                     route.normalized_request,
-                    reset_history=route.topic_shift,
+                    reset_history=not turn_context.inherit_history,
                     followup_subject=self._followup_subject_for(
                         route, goal_intent_result,
                     ),
@@ -7296,7 +7537,7 @@ class ChatEngine:
             messages = self._build_factual_messages(
                 route.normalized_request,
                 self.build_time_context(route.normalized_request),
-                reset_history=route.topic_shift,
+                reset_history=not turn_context.inherit_history,
             )
 
         turn_grounding_source = ""
@@ -7893,6 +8134,7 @@ class ChatEngine:
             messages = self._build_tool_result_messages(
                 user_input=user_input,
                 tool_result=forced_response,
+                inherit_history=turn_context.inherit_history,
             )
             forced_response = ""
 
@@ -7974,6 +8216,7 @@ class ChatEngine:
         response_instruction = response_limits.instruction(
             calculation=calculation_needs_own_math,
             recommendation=recommendation_response,
+            language=self._turn_language,
         )
         # The first unverified calculation draft is generated without a
         # length target so it can show brief working before the result;
@@ -7981,7 +8224,9 @@ class ChatEngine:
         # later only to condense a complete draft that ran long, never to
         # constrain this first pass.
         generation_instruction = (
-            ResponseLimits().instruction(calculation=True)
+            ResponseLimits().instruction(
+                calculation=True, language=self._turn_language,
+            )
             if calculation_needs_own_math
             else response_instruction
         )
@@ -7998,7 +8243,7 @@ class ChatEngine:
             # act would say it. personality.txt says who she is once, at the
             # top of a long prompt; this says what this particular reply is
             # for, which is the part the model was losing.
-            f"\n\n{conversation_style.style_instruction(turn_act)}"
+            f"\n\n{conversation_style.style_instruction(turn_act, self._turn_language)}"
         )
 
         # Notify the UI before waiting for Ollama's first token.
@@ -8453,6 +8698,21 @@ class ChatEngine:
                 searched="web_search" in timings,
             )
             active_problem = self.task_sessions.active_recommendation()
+            if not turn_context.inherit_history and active_problem is not None:
+                # The candidates belong to the subject we just left. Moving
+                # the history line without moving this one produced, live:
+                #
+                #   User:   actually forget the mouse, what's a good film
+                #           for tonight?
+                #   Elaina: A perfect pick for tonight? The one I actually
+                #           found is AmazonBasics Wireless Mouse.
+                #
+                # The reply was assembled by the guards that name what a
+                # search found, reading a result set from the old subject.
+                # Held results are as inheritable as held turns.
+                print("[Context] The held results are about the old subject; "
+                      "not naming them.")
+                active_problem = None
             # A structured browser result is the last word on what the
             # machine did. These two guards read a reply as an answer about
             # listings; a page-click failure is not one, and rewriting it
@@ -8685,7 +8945,7 @@ class ChatEngine:
                     "supports images."
                 )
             else:
-                reply = "I couldn't generate a response. Please try again."
+                reply = guard_lines.say("no_response", self._turn_language)
 
             print(
                 reply,
@@ -10939,6 +11199,8 @@ class ChatEngine:
         user_input,
         screen_region=None,
         screen_snapshot=None,
+        spoken_language="",
+        spoken_confidence=0.0,
     ):
         turn_started = time.perf_counter()
         timings: dict[str, float] = {}
@@ -10953,6 +11215,15 @@ class ChatEngine:
         with self._turn_lock:
             self._active_turn_cancel = turn_cancel
         self._turn_visual_subject = ""
+
+        # First, before anything reads response_language: the router's own
+        # prompt, the personality, the style contract and the status banks
+        # all ask which language this is, and they must all get one answer.
+        self._decide_turn_language(
+            user_input,
+            spoken_language=spoken_language,
+            spoken_confidence=spoken_confidence,
+        )
 
         self.events.emit(
             "user_message",
@@ -10969,6 +11240,15 @@ class ChatEngine:
         # Replaced by the routing phase; reset here so a turn that returns
         # early cannot leave the last turn's reading behind it.
         self._supersedes = supersession.Supersession()
+        # What the conversation was about *before* this turn touched it.
+        #
+        # Read here and nowhere else, because by the time the answer is
+        # assembled it is already gone: `note_recommendation_turn` folds the
+        # current turn into the open problem during routing, so a subject
+        # comparison made later reads "mathematics" against "mathematics"
+        # and can never disagree. Measured exactly that way -- the
+        # inheritance rule was correct and structurally unable to fire.
+        self._subject_before_turn = self._subject_now()
 
         ####################################################
         # Retrieve Memories

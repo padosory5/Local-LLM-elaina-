@@ -1,0 +1,83 @@
+{
+  "arc": "mixed",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "mixed",
+      "user": "hey, can you check the weather in seoul today",
+      "act": "answer",
+      "reply": "The current weather in Seoul today is fair with temperatures around 73°F. The conditions are expected to stay near yesterday's levels.",
+      "statuses": [
+        "Let me look into that."
+      ],
+      "seconds": 15.06
+    },
+    {
+      "turn": 2,
+      "arc": "mixed",
+      "user": "고마워",
+      "act": "receipt",
+      "reply": "Of course.",
+      "statuses": [],
+      "seconds": 0.84
+    },
+    {
+      "turn": 3,
+      "arc": "mixed",
+      "user": "그 monitor 어때? 50달러 이하로 찾아줘",
+      "act": "answer",
+      "reply": "1080p 해상도와 50Hz 주사율로 가성비가 좋습니다; 온라인 쇼핑몰에서 바로 구매 가능합니다. I looked and couldn't find that, so I'd rather not guess.",
+      "statuses": [
+        "잠시만 기다려 주십시오."
+      ],
+      "seconds": 16.77
+    },
+    {
+      "turn": 4,
+      "arc": "mixed",
+      "user": "ok",
+      "act": "receipt",
+      "reply": "예.",
+      "statuses": [],
+      "seconds": 0.43
+    },
+    {
+      "turn": 5,
+      "arc": "mixed",
+      "user": "speak english please",
+      "act": "receipt",
+      "reply": "Speak English, got it. What can I help you with?",
+      "statuses": [],
+      "seconds": 3.63
+    },
+    {
+      "turn": 6,
+      "arc": "mixed",
+      "user": "오늘 날씨 어때?",
+      "act": "answer",
+      "reply": "The weather in South Korea today is experiencing poor air quality, with reports advising to wear masks for safety. It is also noted that the air pollution is a current concern.",
+      "statuses": [
+        "Let me look that up."
+      ],
+      "seconds": 15.86
+    },
+    {
+      "turn": 7,
+      "arc": "mixed",
+      "user": "한국어로 말해줘",
+      "act": "receipt",
+      "reply": "오늘 서울의 날씨는 좋습니다. 낮에는 23°C로 따뜻하지만, 밤에는 서늘해지니 옷차림에 주의하시기 바랍니다.",
+      "statuses": [],
+      "seconds": 3.5
+    },
+    {
+      "turn": 8,
+      "arc": "mixed",
+      "user": "고마워",
+      "act": "receipt",
+      "reply": "괜찮습니다.",
+      "statuses": [],
+      "seconds": 0.45
+    }
+  ]
+}

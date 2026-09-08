@@ -1,0 +1,113 @@
+{
+  "arc": "korean",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "오늘은 어떻게 지내고 있어?",
+      "statuses": [],
+      "seconds": 8.86
+    },
+    {
+      "turn": 2,
+      "arc": "korean",
+      "user": "방금 퇴근했어",
+      "act": "react",
+      "reply": "퇴근하시다니 나도 조금은 편안해집니다. 오늘 하루는 힘들었겠습니다.",
+      "statuses": [],
+      "seconds": 3.76
+    },
+    {
+      "turn": 3,
+      "arc": "korean",
+      "user": "좀 피곤하네",
+      "act": "react",
+      "reply": "피곤하시다니 걱정입니다. 오늘은 조용히 쉬시는 게 좋습니다.",
+      "statuses": [],
+      "seconds": 3.56
+    },
+    {
+      "turn": 4,
+      "arc": "korean",
+      "user": "오늘 길었어. 84의 15%가 얼마야?",
+      "act": "answer",
+      "reply": "15%의 84는 12.60입니다. 피곤하시면 쉬시는 게 좋습니다.",
+      "statuses": [],
+      "seconds": 4.75
+    },
+    {
+      "turn": 5,
+      "arc": "korean",
+      "user": "고마워",
+      "act": "receipt",
+      "reply": "도움이 되었다면 다행입니다.",
+      "statuses": [],
+      "seconds": 1.32
+    },
+    {
+      "turn": 6,
+      "arc": "korean",
+      "user": "지금 런던 몇 시야?",
+      "act": "answer",
+      "reply": "런던 시간은 현재 16:35입니다. 한국 시간보다 8시간 빠릅니다.",
+      "statuses": [],
+      "seconds": 4.03
+    },
+    {
+      "turn": 7,
+      "arc": "korean",
+      "user": "콜드브루 만드는 법 알아?",
+      "act": "answer",
+      "reply": "런던 시간은 현재 16:35입니다. 한국 시간보다 8시간 빠릅니다.",
+      "statuses": [],
+      "seconds": 4.58
+    },
+    {
+      "turn": 8,
+      "arc": "korean",
+      "user": "얼마나 우려야 돼?",
+      "act": "answer",
+      "reply": "런던 시간이 16:35로 한국 시간보다 8시간 빠릅니다.",
+      "statuses": [],
+      "seconds": 4.54
+    },
+    {
+      "turn": 9,
+      "arc": "korean",
+      "user": "알겠어 해볼게",
+      "act": "receipt",
+      "reply": "알겠어요, 지금 바로 시작하겠습니다. 준비되셨다면 원하시는 커피 종류나 레시피를 말씀해 주십시오.",
+      "statuses": [],
+      "seconds": 4.47
+    },
+    {
+      "turn": 10,
+      "arc": "korean",
+      "user": "커피는 됐고, 오늘 볼 만한 영화 뭐 있어?",
+      "act": "answer",
+      "reply": "오늘은 '파라사이트'가 추천됩니다. 최근 개봉했고, 감정선이 깊어요. 영화 보시면 좋을 거 같습니다.",
+      "statuses": [],
+      "seconds": 5.57
+    },
+    {
+      "turn": 11,
+      "arc": "korean",
+      "user": "좀 더 가벼운 걸로",
+      "act": "answer",
+      "reply": "가벼운 것이라면, 지금 바로 시작할 수 있습니다. 도와드릴 일은 있으신가요?",
+      "statuses": [],
+      "seconds": 4.51
+    },
+    {
+      "turn": 12,
+      "arc": "korean",
+      "user": "아니야",
+      "act": "receipt",
+      "reply": "알겠습니다.",
+      "statuses": [],
+      "seconds": 4.49
+    }
+  ]
+}

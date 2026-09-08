@@ -1,0 +1,79 @@
+"""Sentences the guards say, in the language of the turn.
+
+Most of what Elaina says is generated, and the language layer decides what
+language that is. But a guard does not generate -- it *replaces*. When the
+grounded-value guard removes an unverified price it puts its own sentence
+there, and that sentence was written in English by whoever wrote the guard.
+
+Measured across every bilingual live run: 4 of 62 Korean replies carried an
+English sentence, and all four were the same one --
+
+    1080p 해상도와 5ms 응답 시간으로 게임 및 일상 사용에 적합합니다.
+    I looked and couldn't find that, so I'd rather not guess.
+
+A reply in two languages is worse than a reply in the wrong one: the wrong
+language is a bug you notice, and half a reply in the wrong language reads
+as a fault in her rather than in the software.
+
+Deliberately a table and not a translator. These lines carry consent
+meaning -- an offer parked here is classified against its own words later --
+so each one is written once, in both languages, by someone who read what it
+is for. Anything missing falls back to English rather than to nothing.
+"""
+
+from __future__ import annotations
+
+
+LANGUAGES = ("en", "ko")
+
+
+ENGLISH = "en"
+KOREAN = "ko"
+
+# Keyed by an identifier, not by the English text, so the English wording
+# can be improved without silently orphaning the Korean.
+LINES: dict[str, dict[str, str]] = {
+    # The grounded-value guard removed a value nothing had verified, and
+    # browser control is available to go and check it properly.
+    "unverified_offer_searched": {
+        ENGLISH: "I looked and couldn't find that -- want me to open the "
+                 "site and check properly?",
+        KOREAN: "찾아봤지만 확인되지 않았습니다. 사이트를 열어서 직접 확인해 "
+                "드릴까요?",
+    },
+    "unverified_offer_unsearched": {
+        ENGLISH: "I haven't actually checked that -- want me to look it up?",
+        KOREAN: "아직 확인해 보지 않았습니다. 지금 찾아볼까요?",
+    },
+    # The same, with no way to check: she says so and stops.
+    "unverified_searched": {
+        ENGLISH: "I looked and couldn't find that, so I'd rather not guess.",
+        KOREAN: "찾아봤지만 확인되지 않아서, 추측으로 말씀드리지는 않겠습니다.",
+    },
+    "unverified_unsearched": {
+        ENGLISH: "I haven't actually checked that, so I'd rather not guess.",
+        KOREAN: "아직 확인해 보지 않아서, 추측으로 말씀드리지는 않겠습니다.",
+    },
+    # Nothing came back from the model at all.
+    "no_response": {
+        ENGLISH: "I couldn't generate a response. Please try again.",
+        KOREAN: "응답을 만들지 못했습니다. 다시 한번 말씀해 주십시오.",
+    },
+}
+
+
+def say(name: str, language: str = ENGLISH) -> str:
+    """The guard line for this identifier, in this language.
+
+    Falls back to English rather than to an empty string: a guard that
+    goes silent removes a value and says nothing about it, which is the
+    one outcome none of these may produce.
+    """
+    line = LINES.get(str(name or ""))
+    if not line:
+        return ""
+    wanted = str(language or "").strip().lower()
+    for key in (wanted, wanted[:2], ENGLISH):
+        if key in line:
+            return line[key]
+    return ""

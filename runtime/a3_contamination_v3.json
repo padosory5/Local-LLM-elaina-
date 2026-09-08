@@ -1,0 +1,118 @@
+{
+  "passed": 10,
+  "total": 12,
+  "cases": [
+    {
+      "id": "steep_time_after_coffee",
+      "turn": "얼마나 우려야 돼?",
+      "reply": "콜드브루는 24시간 우려내면 됩니다. 원하는 맛에 따라 시간이나 물의 양을 조절해보십시오.",
+      "leaked": [],
+      "answered": true,
+      "passed": true,
+      "why": "Measured live three times. 우려 is worry and 우려야 is from 우리다, to steep; without the coffee turn the model reads it as worry, and once answered with the London time from two turns earlier."
+    },
+    {
+      "id": "fresh_question_after_time",
+      "turn": "콜드브루 만드는 법 알아?",
+      "reply": "콜드브루는 원두를 물에 담가 두어 추출합니다. 끓인 물에 원두를 넣고 12~24시간 방치한 뒤 필터로 걸러냅니다. 원하는 강도에 따라 물 양을 조절하십시오.",
+      "leaked": [],
+      "answered": true,
+      "passed": true,
+      "why": "Measured live: a brand new question was answered with the previous turn's clock reading."
+    },
+    {
+      "id": "arithmetic_in_a_social_thread",
+      "turn": "what's 2+2",
+      "reply": "2 + 2 equals 4. That’s straightforward.",
+      "leaked": [],
+      "answered": true,
+      "passed": true,
+      "why": "A1's residual. After four sympathy turns the answer came back \"That's straightforward. Need help with.\" The router classified it as a calculation correctly; the answer path lost it."
+    },
+    {
+      "id": "refusal_is_not_a_request",
+      "turn": "아니야",
+      "reply": "아니요, 영화 추천은 잠시 보류하겠습니다.",
+      "leaked": [
+        "추천"
+      ],
+      "answered": true,
+      "passed": false,
+      "why": "Measured live across several runs: a plain refusal produced another film recommendation instead of being accepted."
+    },
+    {
+      "id": "acknowledgement_is_not_a_constraint",
+      "turn": "Yeah.",
+      "reply": "Okay.",
+      "leaked": [],
+      "answered": true,
+      "passed": true,
+      "why": "Dogfooding session 1: an open rental task absorbed every later turn containing a number, a date or a noun. By turn 30 the query read 'studio apartments September 13th 206-221 in South Korea'."
+    },
+    {
+      "id": "a_number_that_is_not_a_budget",
+      "turn": "my number is 206 555 0134",
+      "reply": "What type of housing did you have in mind?",
+      "leaked": [],
+      "answered": true,
+      "passed": true,
+      "why": "The same session: half a phone number read aloud became a price range on the open task."
+    },
+    {
+      "id": "which_one_means_the_nearest_subject",
+      "turn": "which one would you choose?",
+      "reply": "The RTX 4080 is better for gaming and professional tasks, with higher performance in ray tracing and AI. I can look up more details if you'd like.",
+      "leaked": [
+        "4080"
+      ],
+      "answered": true,
+      "passed": false,
+      "why": "Measured live: a sentence that means nothing on its own was answered about graphics cards, because the GPU answer was the one that came as a list."
+    },
+    {
+      "id": "a_new_subject_closes_the_old_one",
+      "turn": "actually forget the mouse, what's a good film for tonight?",
+      "reply": "Pop some popcorn and enjoy the ride. I don't want to send you somewhere I haven't checked, want me to look up real ones?",
+      "leaked": [],
+      "answered": true,
+      "passed": true,
+      "why": "A1 found that a bare 'forget X' was read as a preference command and ate the question that followed it. The turn now routes normally; this holds it there."
+    },
+    {
+      "id": "a_remark_is_not_a_task",
+      "turn": "컴퓨터를 챙겨가야하는데 본체가 너무 커서 좀 걱정이야",
+      "reply": "컴퓨터 본체가 너무 크면 이동이 어려울 수 있습니다. 가벼운 모델로 교체하거나 이동 시 도움이 되는 도구를 준비하시면 좋습니다.",
+      "leaked": [],
+      "answered": true,
+      "passed": true,
+      "why": "Measured live: worrying that a desktop tower will not fit in the luggage was routed to project_edit and the Coding Agent proposed changes to desktop/renderer/index.html."
+    },
+    {
+      "id": "thanks_closes_rather_than_continues",
+      "turn": "that's fine, thanks",
+      "reply": "You're welcome.",
+      "leaked": [],
+      "answered": true,
+      "passed": true,
+      "why": "A1: an offer appended to a goodbye parked a pending consent, and the next turn was read as accepting it. An offer nobody asked for is a question."
+    },
+    {
+      "id": "a_correction_outranks_what_was_held",
+      "turn": "no I mean I'm going to UW in Tacoma",
+      "reply": "Great, you're heading to UW in Tacoma. That’s a solid choice, hope you're excited about the start.",
+      "leaked": [],
+      "answered": true,
+      "passed": true,
+      "why": "Dogfooding session 1: what the person just said must outrank anything held from before, including the model's own memory of mishearing it."
+    },
+    {
+      "id": "a_finished_task_does_not_reopen",
+      "turn": "how long should cold brew steep?",
+      "reply": "Cold brew should steep for at least 12 to 24 hours. The longer it steeps, the stronger and more flavorful it becomes.",
+      "leaked": [],
+      "answered": true,
+      "passed": true,
+      "why": "The English half of the same fault as steep_time_after_coffee, to show whether it is a Korean-only problem or a general one."
+    }
+  ]
+}

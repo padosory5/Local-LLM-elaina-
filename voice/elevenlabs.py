@@ -12,6 +12,16 @@ from config.loader import Config
 from voice.base import BaseTTS
 
 
+def _clamped(value, *, default: float, low: float = 0.0,
+             high: float = 1.0) -> float:
+    """A number inside its allowed range, or the default when it is not one."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(high, number))
+
+
 class ElevenLabsTTS(BaseTTS):
 
     def __init__(self, config: Config) -> None:
@@ -46,6 +56,19 @@ class ElevenLabsTTS(BaseTTS):
                 "ElevenLabs voice_id is missing in config.yaml."
             )
 
+        # How the line is delivered. Nothing was sent before, so every
+        # reply used the voice's own defaults and came out sounding
+        # aggressive and loud. Absent config keeps the old behaviour, so a
+        # missing block cannot silently change how she sounds.
+        self.voice_settings = self._read_voice_settings(config)
+        self.volume = _clamped(
+            config.get(
+                "tts", "elevenlabs", "volume",
+                default=1.0, required=False,
+            ),
+            default=1.0,
+        )
+
         self.client = ElevenLabs(
             api_key=self.api_key,
         )
@@ -66,12 +89,15 @@ class ElevenLabsTTS(BaseTTS):
 
         self._stop_event.clear()
 
-        audio = self.client.text_to_speech.convert(
-            voice_id=self.voice_id,
-            model_id=self.model,
-            text=text,
-            output_format=self.output_format,
-        )
+        request = {
+            "voice_id": self.voice_id,
+            "model_id": self.model,
+            "text": text,
+            "output_format": self.output_format,
+        }
+        if self.voice_settings is not None:
+            request["voice_settings"] = self.voice_settings
+        audio = self.client.text_to_speech.convert(**request)
 
         with tempfile.NamedTemporaryFile(
             suffix=".mp3",
@@ -87,6 +113,9 @@ class ElevenLabsTTS(BaseTTS):
                 return
 
             sound = pygame.mixer.Sound(output_path)
+            # Loudness is not delivery. Turning the style down makes her
+            # calmer; this is the separate question of how loud calm is.
+            sound.set_volume(self.volume)
             channel = sound.play()
 
             if channel is None:
@@ -114,6 +143,36 @@ class ElevenLabsTTS(BaseTTS):
                 os.remove(output_path)
             except (PermissionError, FileNotFoundError):
                 pass
+
+    @staticmethod
+    def _read_voice_settings(config):
+        """The delivery settings from config, or ``None`` to use the voice's.
+
+        Returns ``None`` when the block is absent so that an older
+        config.yaml behaves exactly as it did before this existed. A
+        missing setting must not quietly change how she sounds.
+        """
+        block = config.get(
+            "tts", "elevenlabs", "voice_settings",
+            default=None, required=False,
+        )
+        if not isinstance(block, dict) or not block:
+            return None
+
+        from elevenlabs import VoiceSettings
+
+        settings = {}
+        for name in ("stability", "similarity_boost", "style", "speed"):
+            if name in block:
+                settings[name] = _clamped(
+                    block[name],
+                    default=0.5,
+                    low=0.0 if name != "speed" else 0.7,
+                    high=1.0 if name != "speed" else 1.2,
+                )
+        if "use_speaker_boost" in block:
+            settings["use_speaker_boost"] = bool(block["use_speaker_boost"])
+        return VoiceSettings(**settings) if settings else None
 
     def stop(self) -> None:
         self._stop_event.set()

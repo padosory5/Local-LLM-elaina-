@@ -1,0 +1,15 @@
+{
+  "passed": 1,
+  "total": 1,
+  "cases": [
+    {
+      "id": "which_one_means_the_nearest_subject",
+      "turn": "which one would you choose?",
+      "reply": "I’d go for the bibimban with grilled squid, it’s quick, tasty, and easy to make. Just check the ingredients to make sure there’s nothing you’re allergic to.",
+      "leaked": [],
+      "answered": true,
+      "passed": true,
+      "why": "Measured live: a sentence that means nothing on its own was answered about graphics cards, because the GPU answer was the one that came as a list."
+    }
+  ]
+}

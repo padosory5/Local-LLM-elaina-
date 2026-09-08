@@ -1,0 +1,83 @@
+{
+  "arc": "mixed",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "mixed",
+      "user": "hey, can you check the weather in seoul today",
+      "act": "answer",
+      "reply": "The current weather in Seoul today is fair with a temperature near 72°F. The conditions are expected to remain stable throughout the day.",
+      "statuses": [
+        "I'll see what I can find."
+      ],
+      "seconds": 16.94
+    },
+    {
+      "turn": 2,
+      "arc": "mixed",
+      "user": "고마워",
+      "act": "receipt",
+      "reply": "No problem.",
+      "statuses": [],
+      "seconds": 0.45
+    },
+    {
+      "turn": 3,
+      "arc": "mixed",
+      "user": "그 monitor 어때? 50달러 이하로 찾아줘",
+      "act": "answer",
+      "reply": "온라인 쇼핑몰에서 쉽게 구매할 수 있습니다. 바로 구매하시거나, 가격 비교 후 결정하십시오. 찾아봤지만 확인되지 않아서, 추측으로 말씀드리지는 않겠습니다.",
+      "statuses": [
+        "그건 알아보겠습니다."
+      ],
+      "seconds": 14.65
+    },
+    {
+      "turn": 4,
+      "arc": "mixed",
+      "user": "ok",
+      "act": "receipt",
+      "reply": "확인했습니다.",
+      "statuses": [],
+      "seconds": 0.42
+    },
+    {
+      "turn": 5,
+      "arc": "mixed",
+      "user": "speak english please",
+      "act": "receipt",
+      "reply": "Speak English, got it. What do you need?",
+      "statuses": [],
+      "seconds": 4.05
+    },
+    {
+      "turn": 6,
+      "arc": "mixed",
+      "user": "오늘 날씨 어때?",
+      "act": "answer",
+      "reply": "Today’s weather in Seoul, South Korea is clear and sunny with a temperature of 30°C. Skies are expected to remain mostly clear throughout the day.",
+      "statuses": [
+        "I'll find out."
+      ],
+      "seconds": 17.7
+    },
+    {
+      "turn": 7,
+      "arc": "mixed",
+      "user": "한국어로 말해줘",
+      "act": "receipt",
+      "reply": "한국어로 말해드리겠습니다. 도움이 필요하신다면 말씀해주십시오.",
+      "statuses": [],
+      "seconds": 4.15
+    },
+    {
+      "turn": 8,
+      "arc": "mixed",
+      "user": "고마워",
+      "act": "receipt",
+      "reply": "도움이 되었다면 다행입니다.",
+      "statuses": [],
+      "seconds": 0.45
+    }
+  ]
+}

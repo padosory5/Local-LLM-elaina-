@@ -1,6 +1,11 @@
 import re
 
 
+# Both. It is the only guard that was bilingual from the start, because
+# it had to be: it decides what a voice is asked to pronounce.
+LANGUAGES = ("en", "ko")
+
+
 class TextFilter:
 
     # Matches most emoji and pictographic Unicode ranges.

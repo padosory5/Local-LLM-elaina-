@@ -110,6 +110,40 @@ ARCS: dict[str, dict] = {
             ("that's fine, thanks", RECEIPT),
         ),
     },
+    "korean": {
+        "computer_control": False,
+        "turns": (
+            ("안녕", GREET),
+            ("방금 퇴근했어", REACT),
+            ("좀 피곤하네", REACT),
+            ("오늘 길었어. 84의 15%가 얼마야?", ANSWER),
+            ("고마워", RECEIPT),
+            ("지금 런던 몇 시야?", ANSWER),
+            ("콜드브루 만드는 법 알아?", ANSWER),
+            ("얼마나 우려야 돼?", ANSWER),
+            ("알겠어 해볼게", RECEIPT),
+            ("커피는 됐고, 오늘 볼 만한 영화 뭐 있어?", ANSWER),
+            ("좀 더 가벼운 걸로", ANSWER),
+            ("아니야", RECEIPT),
+        ),
+    },
+    # Not a conversation so much as the switch rule, said out loud. Each
+    # turn is here because it is a case the rule has to get right, and the
+    # two "stays put" turns matter most: flipping on a one-word
+    # interjection is the failure this whole design is built to avoid.
+    "mixed": {
+        "computer_control": False,
+        "turns": (
+            ("hey, can you check the weather in seoul today", ANSWER),
+            ("고마워", RECEIPT),
+            ("그 monitor 어때? 50달러 이하로 찾아줘", ANSWER),
+            ("ok", RECEIPT),
+            ("speak english please", RECEIPT),
+            ("오늘 날씨 어때?", ANSWER),
+            ("한국어로 말해줘", RECEIPT),
+            ("고마워", RECEIPT),
+        ),
+    },
     "social": {
         "computer_control": False,
         "turns": (

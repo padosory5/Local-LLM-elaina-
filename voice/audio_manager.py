@@ -62,6 +62,20 @@ class AudioManager:
         )
         self._worker_thread.start()
 
+    def speak_in(self, language: str) -> None:
+        """Speak in this language from now on.
+
+        This was read once from config.yaml at construction and never again,
+        which is the same fault ChatEngine had and a worse one to leave
+        here: for_configured_speech strips Hangul when the language is
+        English, so every Korean reply was replaced at the audio boundary
+        with "The result is shown on screen." She answered correctly in
+        Korean and then refused to say it out loud.
+        """
+        language = str(language or "").strip().lower()
+        if language:
+            self._response_language = language
+
     def speak(self, text: str) -> None:
         text = TextFilter.for_configured_speech(
             text,

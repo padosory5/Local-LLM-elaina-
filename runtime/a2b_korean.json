@@ -1,0 +1,113 @@
+{
+  "arc": "korean",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "안녕하세요. 오늘은 어떻게 보내고 있나요?",
+      "statuses": [],
+      "seconds": 3.0
+    },
+    {
+      "turn": 2,
+      "arc": "korean",
+      "user": "방금 퇴근했어",
+      "act": "react",
+      "reply": "퇴근하셨다니 반갑습니다. 하루의 마지막이 다가오고 있네요.",
+      "statuses": [],
+      "seconds": 3.09
+    },
+    {
+      "turn": 3,
+      "arc": "korean",
+      "user": "좀 피곤하네",
+      "act": "react",
+      "reply": "피곤하다니, 힘들었겠네요. 충분히 쉬고 있어야 해요.",
+      "statuses": [],
+      "seconds": 3.11
+    },
+    {
+      "turn": 4,
+      "arc": "korean",
+      "user": "오늘 길었어. 84의 15%가 얼마야?",
+      "act": "answer",
+      "reply": "오늘 길었어. 84의 15%는 12.60입니다.",
+      "statuses": [],
+      "seconds": 4.46
+    },
+    {
+      "turn": 5,
+      "arc": "korean",
+      "user": "고마워",
+      "act": "receipt",
+      "reply": "도움이 되었다면 다행입니다.",
+      "statuses": [],
+      "seconds": 0.46
+    },
+    {
+      "turn": 6,
+      "arc": "korean",
+      "user": "지금 런던 몇 시야?",
+      "act": "answer",
+      "reply": "런던 시간은 오후 3시 13분입니다. 한국 시간보다 8시간 빠릅니다.",
+      "statuses": [],
+      "seconds": 3.61
+    },
+    {
+      "turn": 7,
+      "arc": "korean",
+      "user": "콜드브루 만드는 법 알아?",
+      "act": "answer",
+      "reply": "콜드브루는 원두를 물에 15~20분간 달여 만드는 방법입니다. 강도에 따라 시간을 조절하면 됩니다.",
+      "statuses": [],
+      "seconds": 4.07
+    },
+    {
+      "turn": 8,
+      "arc": "korean",
+      "user": "얼마나 우려야 돼?",
+      "act": "answer",
+      "reply": "지금 런던 시간은 오후 3시 13분입니다. 한국 시간보다 8시간 빠릅니다.",
+      "statuses": [],
+      "seconds": 3.68
+    },
+    {
+      "turn": 9,
+      "arc": "korean",
+      "user": "알겠어 해볼게",
+      "act": "receipt",
+      "reply": "그때까지는 편안하게 쉬고 있어. 필요하면 언제든 도와줄게.",
+      "statuses": [],
+      "seconds": 3.92
+    },
+    {
+      "turn": 10,
+      "arc": "korean",
+      "user": "커피는 됐고, 오늘 볼 만한 영화 뭐 있어?",
+      "act": "answer",
+      "reply": "오늘 추천할 만한 영화는 '인사이드 아웃'입니다. 감정을 이성적으로 조절하는 방법을 배울 수 있어요. 극장에서 보시면 더 좋습니다.",
+      "statuses": [],
+      "seconds": 5.42
+    },
+    {
+      "turn": 11,
+      "arc": "korean",
+      "user": "좀 더 가벼운 걸로",
+      "act": "answer",
+      "reply": "가벼운 영화 추천이라면 '미스터 빅'이 좋습니다. 감정을 풀어내는 데 도움이 되는 영화예요.",
+      "statuses": [],
+      "seconds": 5.58
+    },
+    {
+      "turn": 12,
+      "arc": "korean",
+      "user": "아니야",
+      "act": "receipt",
+      "reply": "아니요, 알겠습니다.",
+      "statuses": [],
+      "seconds": 3.9
+    }
+  ]
+}

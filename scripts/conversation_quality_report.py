@@ -59,6 +59,11 @@ def _acts_from_harness() -> dict:
     }
 
 
+def _language_of(text: str) -> str:
+    """Which language a reply is in, for scoring it by the right rules."""
+    return "ko" if any("\uac00" <= ch <= "\ud7a3" for ch in str(text)) else "en"
+
+
 def score(path: Path) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
     declared = _acts_from_harness()
@@ -77,6 +82,10 @@ def score(path: Path) -> dict:
             user_input=str(record.get("user") or ""),
             previous_reply=previous,
             earlier_replies=tuple(earlier),
+            # Scored in the language she answered in, so a Korean arc is
+            # judged by the Korean rules rather than passing every
+            # English-only detector by default.
+            language=_language_of(reply),
         )
         classes = sorted({finding.failure for finding in findings})
         for name in classes:

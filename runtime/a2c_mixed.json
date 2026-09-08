@@ -1,0 +1,83 @@
+{
+  "arc": "mixed",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "mixed",
+      "user": "hey, can you check the weather in seoul today",
+      "act": "answer",
+      "reply": "The current weather in Seoul today shows clear skies with a temperature of 25°C. Wind is light, and there's no precipitation expected.",
+      "statuses": [
+        "Give me a moment."
+      ],
+      "seconds": 12.36
+    },
+    {
+      "turn": 2,
+      "arc": "mixed",
+      "user": "고마워",
+      "act": "receipt",
+      "reply": "Glad that helped.",
+      "statuses": [],
+      "seconds": 0.44
+    },
+    {
+      "turn": 3,
+      "arc": "mixed",
+      "user": "그 monitor 어때? 50달러 이하로 찾아줘",
+      "act": "answer",
+      "reply": "온라인 쇼핑몰에서 바로 구매할 수 있어요. 주의는 배송료가 추가될 수 있으니 확인해 주세요. I looked and couldn't find that, so I'd rather not guess.",
+      "statuses": [
+        "바로 찾아보겠습니다."
+      ],
+      "seconds": 14.87
+    },
+    {
+      "turn": 4,
+      "arc": "mixed",
+      "user": "ok",
+      "act": "receipt",
+      "reply": "확인했습니다.",
+      "statuses": [],
+      "seconds": 0.4
+    },
+    {
+      "turn": 5,
+      "arc": "mixed",
+      "user": "speak english please",
+      "act": "receipt",
+      "reply": "Speak English. Got it. What’s next?",
+      "statuses": [],
+      "seconds": 3.61
+    },
+    {
+      "turn": 6,
+      "arc": "mixed",
+      "user": "오늘 날씨 어때?",
+      "act": "answer",
+      "reply": "Today’s weather in Seoul, South Korea is clear and sunny with a temperature of 30°C. Skies will stay bright throughout the day.",
+      "statuses": [
+        "I'll find out."
+      ],
+      "seconds": 14.24
+    },
+    {
+      "turn": 7,
+      "arc": "mixed",
+      "user": "한국어로 말해줘",
+      "act": "receipt",
+      "reply": "한국어로 말해드릴게요.",
+      "statuses": [],
+      "seconds": 2.92
+    },
+    {
+      "turn": 8,
+      "arc": "mixed",
+      "user": "고마워",
+      "act": "receipt",
+      "reply": "괜찮습니다.",
+      "statuses": [],
+      "seconds": 0.37
+    }
+  ]
+}

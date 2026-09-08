@@ -16,6 +16,74 @@ class ResponseLimits:
         *,
         calculation: bool = False,
         recommendation: bool = False,
+        language: str = "en",
+    ) -> str:
+        """The generation rules, written in the language of the reply.
+
+        Korean gets Korean. The personality file already switches; the
+        rules under it did not, so the model was told in English how to
+        write Korean. Measured directly against qwen3:8b on the turns that
+        failed live, Korean rules gave shorter and more natural answers.
+        """
+        if str(language or "").strip().lower().startswith("ko"):
+            return self._korean_instruction(
+                calculation=calculation, recommendation=recommendation,
+            )
+        return self._english_instruction(
+            calculation=calculation, recommendation=recommendation,
+        )
+
+    def _korean_instruction(
+        self, *, calculation: bool, recommendation: bool,
+    ) -> str:
+        limits: list[str] = []
+        if self.max_words > 0:
+            limits.append(f"{self.max_words}단어 이내")
+        if self.max_sentences > 0:
+            limits.append(f"{self.max_sentences}문장 이내")
+        length_rule = (
+            "완성된 응답은 " + ", ".join(limits) + "로 유지합니다."
+            if limits else "필요한 만큼만 자세히 말합니다."
+        )
+        rules = [
+            "지금 들어온 요청에 이 응답에서 답합니다.",
+            "요청하신 결과를 먼저 말하고, 반응이나 배경 설명은 그다음입니다.",
+            "지금 할 수 있는 계산이나 설명을 나중에 하겠다고 미루지 않습니다.",
+            "이미 요청하신 것을 다시 원하시는지 묻지 않습니다.",
+            length_rule,
+            "길이를 맞추려고 문장을 중간에 끊거나 요청하신 결과를 빼지 "
+            "않습니다. 자연스럽게 짧게 씁니다.",
+            "반드시 습니다체로 씁니다. '~요'로 끝나는 해요체는 쓰지 않습니다.",
+            "확실하지 않은 것은 지어내지 않습니다. 영화 제목, 상품명, 가격은 "
+            "확인된 것만 말합니다.",
+        ]
+        if calculation:
+            rules.extend([
+                "지금 계산해서 최종 숫자를 먼저 말합니다.",
+                "합리적인 가정이 가능하면 짧게 밝히고 답합니다. 되묻지 "
+                "않습니다.",
+            ])
+        if recommendation:
+            rules.extend([
+                "배경 설명보다 추천을 먼저 말합니다.",
+                "구체적인 제품, 모델, 장소를 말합니다. 분류나 브랜드 전체, "
+                "판매처가 아닙니다.",
+                "이유는 요청하신 목적에 맞는 구체적인 기능이나 수치 하나로 "
+                "말합니다.",
+                "어디서 찾았는지, 검색 결과가 몇 개였는지는 말하지 않습니다.",
+                "지금 하실 수 있는 다음 단계와 꼭 필요한 주의사항 하나만 "
+                "덧붙입니다.",
+                "전문가나 병원에 문의하라는 말을 일상적인 조언에 붙이지 "
+                "않습니다.",
+                "보고서가 아니라 실무를 아는 사람처럼 말합니다.",
+            ])
+        return " ".join(rules)
+
+    def _english_instruction(
+        self,
+        *,
+        calculation: bool = False,
+        recommendation: bool = False,
     ) -> str:
         limits: list[str] = []
         if self.max_words > 0:
@@ -148,6 +216,12 @@ class ResponseLimits:
         else:
             requested = 480 if detailed else 320
         return max(256, min(requested, 768))
+
+
+# English only. Every pattern below is an English deferral phrase
+# ("let me calculate that"), and Korean deferrals share none of their shape.
+# A Korean draft that defers is currently not caught.
+LANGUAGES = ("en",)
 
 
 class AnswerCompletionGuard:

@@ -72,6 +72,54 @@ _ACTION_VERB = (
 # to follow "let me" immediately missed it.
 _THEN = r"(?:[\w',]{1,20}(?:\s+[\w',]{1,20}){0,3}\s+(?:and|then)\s+)?"
 
+# --- the same two questions, in Korean -------------------------------------
+#
+# Korean drops the subject, so a promise usually has no "I" in it at all:
+# "확인해 보겠습니다" is exactly the sentence this guard exists to catch,
+# and the previous Korean alternative required 제가 and therefore never
+# matched one. Every line in her own status bank has that shape.
+#
+# The verb stems are the action ones only. 말씀드리다 (to tell), 알려드리다
+# (to let you know) and 설명하다 (to explain) are deliberately absent for
+# the same reason English excludes "tell" and "explain": the reply itself
+# satisfies them, so they are not broken promises.
+_KO_ACTION_STEM = (
+    r"(?:확인|검색|찾|열|살펴보|알아보|비교|실행|시작|가져|"
+    r"수정|고치|바꾸|처리|정리|추가|삭제|보내|예약|구매|"
+    r"켜|끄|닫|눌러|클릭|입력)"
+)
+
+# What a promise sounds like once the stem is said. 겠습니다 is the
+# 습니다체 volitional she now speaks; the 해요체 and 반말 forms stay
+# because the model still produces them and a promise in the wrong
+# register is still a promise.
+_KO_PROMISE_ENDING = (
+    r"(?:겠습니다|겠어요|ㄹ게요|ㄹ게|을게요|을게|"
+    r"드리겠습니다|드릴게요|볼게요|볼게|보겠습니다|"
+    r"는 중입니다|고 있습니다|중입니다)"
+)
+
+# "잠시만 기다려 주십시오" is the Korean of "one moment" -- a promise that
+# something is underway, with no verb of its own.
+_KO_HOLD_ON = (
+    r"(?:잠시만|잠깐만|조금만)\s*(?:기다려|기다리)"
+    r"|잠시\s*후에?\s*(?:알려|말씀)"
+)
+
+_KO_PROMISE = (
+    _KO_ACTION_STEM + r"[가-힣]{0,4}\s*" + _KO_PROMISE_ENDING
+    + r"|" + _KO_HOLD_ON
+)
+
+# An offer asks; a promise states. 할까요 / 드릴까요 were already here and
+# are right -- these add the rest of the question forms she actually uses.
+_KO_OFFER = (
+    r"(?:해\s*드릴까요|할까요|드릴까요|볼까요|하시겠습니까|"
+    r"할까\?|드릴까\?)"
+    r"|원하시면\s*[가-힣]{0,8}\s*(?:드리|보|찾)"
+)
+
+
 _PROMISE = re.compile(
     r"\b(?:"
     r"let\s+me\s+" + _THEN + _ACTION_VERB + r"|"
@@ -84,7 +132,7 @@ _PROMISE = re.compile(
     r"one\s+moment(?:\s+please)?|bear\s+with\s+me|"
     r"stand\s+by\s+while\s+i"
     r")\b"
-    r"|제가\s*(?:한번\s*)?(?:확인|검색|찾아|열어)\s*(?:해\s*)?(?:볼게|드릴게|보겠)",
+    r"|" + _KO_PROMISE,
     flags=re.IGNORECASE,
 )
 
@@ -114,7 +162,7 @@ _OFFER = re.compile(
     r"(?:want|need|like)\s+help\s+[a-z]"
     r"|\bshall\s+i\b|\bdo\s+you\s+want\s+me\s+to\b"
     r"|\b(?:i\s+can|i\s+could)\b[^.?!]{0,80}\?"
-    r"|해\s*드릴까요|할까요",
+    r"|" + _KO_OFFER,
     flags=re.IGNORECASE,
 )
 
@@ -122,13 +170,20 @@ _OFFER = re.compile(
 # action is underway, so it is not a broken promise -- but it does name the
 # action, which is what a parked offer needs to carry forward.
 _STATED_INTENT = re.compile(
-    r"\bi\s+(?:can|could)\s+" + _ACTION_VERB + r"\b",
+    r"\bi\s+(?:can|could)\s+" + _ACTION_VERB + r"\b"
+    + r"|" + _KO_ACTION_STEM + r"[가-힣]{0,4}\s*수\s*있습니다",
     flags=re.IGNORECASE,
 )
 
 # The promise sentence is removed rather than the whole reply, so whatever
 # real content came with it survives.
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+# Both. Korean reads promises off verb endings rather than off a subject
+# pronoun -- 확인해 보겠습니다 has no "I" in it -- so the Korean half is a
+# stem-plus-ending pattern rather than a translation of the English one.
+LANGUAGES = ("en", "ko")
 
 
 class ActionCommitmentGuard:
@@ -264,12 +319,14 @@ OPEN = "open"   # something appears on screen: a page, a window, an app
 LOOK = "look"   # something is read: a search, a lookup, a check
 
 _OPENS = re.compile(
-    r"\b(?:open|pull\s+up|bring\s+up|go\s+to|visit|navigate|launch)\b",
+    r"\b(?:open|pull\s+up|bring\s+up|go\s+to|visit|navigate|launch)\b"
+    r"|(?:열|켜|띄우|실행|접속)[가-힣]{0,4}",
     flags=re.IGNORECASE,
 )
 _LOOKS = re.compile(
     r"\b(?:search|look\s+up|look\s+into|find|browse|google|check|"
-    r"see\s+what|dig\s+into|read)\b",
+    r"see\s+what|dig\s+into|read)\b"
+    r"|(?:검색|확인|찾|알아보|살펴보|조회)[가-힣]{0,4}",
     flags=re.IGNORECASE,
 )
 
