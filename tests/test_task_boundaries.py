@@ -173,6 +173,73 @@ class ARefinementIsTheSameTaskTests(unittest.TestCase):
         self.assertEqual(after.id, before.id)
 
 
+class AQuestionAboutTheOptionsContinuesTests(unittest.TestCase):
+    """Found in the release-candidate dogfood, twice in two attempts.
+
+        [Task Continuity]
+          previous_thing: hotels
+          current_thing: pick?
+          follow_up: False
+          decision: NEW_TASK
+
+    "Which one would you pick?" was routed as a task_action rather than a
+    follow-up, so nothing recognised it as continuing: three hotels were
+    discarded and the literal question went to a web search. Continuation
+    of a pure reference must not depend on the router labelling it.
+    """
+
+    REFERENCES = (
+        "which one would you pick?",
+        "what about the second one?",
+        "open the second one",
+        "any of them under 100000?",
+    )
+
+    def test_a_reference_continues_without_the_router_saying_so(self):
+        for said in self.REFERENCES:
+            with self.subTest(said=said):
+                store, before = _store_with("find me a few good hotels in Seoul")
+
+                after = store.note_recommendation_turn(said, subject=said)
+
+                self.assertEqual(after.id, before.id)
+
+    def test_the_candidates_survive_it(self):
+        for said in self.REFERENCES:
+            with self.subTest(said=said):
+                store, _ = _store_with("find me a few good hotels in Seoul")
+
+                store.note_recommendation_turn(said, subject=said)
+
+                self.assertEqual(len(store.results().items), 2)
+
+    def test_naming_another_thing_still_switches(self):
+        for said in ("find me some good restaurants in Gangnam",
+                     "what mechanical keyboard should I buy?",
+                     "by the way, what does OLED mean?"):
+            with self.subTest(said=said):
+                store, before = _store_with("find me a few good hotels in Seoul")
+
+                after = store.note_recommendation_turn(said, subject=said)
+
+                self.assertNotEqual(after.id, before.id)
+
+    def test_with_nothing_in_hand_it_cannot_hijack(self):
+        # "Which one" means nothing when there are no options, so the rule
+        # stands aside rather than adopting an unrelated problem.
+        store = TaskSessionStore()
+        before = store.note_recommendation_turn(
+            "find me a few good hotels in Seoul",
+            subject="find me a few good hotels in Seoul",
+        )
+
+        after = store.note_recommendation_turn(
+            "which one would you pick?", subject="which one would you pick?",
+        )
+
+        self.assertNotEqual(after.id, before.id)
+
+
 class TheHeadNounComparisonTests(unittest.TestCase):
     """Asked of the words, not of a table that has to know the domain."""
 

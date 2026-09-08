@@ -167,7 +167,40 @@ _DANGLING = re.compile(
 )
 
 
-def _card_name(value) -> str:
+# A trailing " - Something" or " | Something" that names the site rather
+# than the thing. Which words those are is not guessable in the abstract,
+# so it is not guessed: the address says who published the page, and a tail
+# made of the publisher's own name is the publisher's own name.
+_PUBLISHER_TAIL = re.compile(r"\s*[-|\u2013\u2014]\s*([^-|\u2013\u2014]{2,30})\s*$")
+
+
+def _strip_publisher(name: str, url: str) -> str:
+    """Drop "- Best Buy" from a bestbuy.com title, and "- KAYAK" from kayak."""
+    host = re.sub(r"^https?://(?:www\.)?", "", str(url or "")).split("/")[0]
+    letters = re.sub(r"[^a-z0-9]", "", host.split(":")[0].casefold())
+    if not letters:
+        return name
+    for _ in range(2):
+        tail = _PUBLISHER_TAIL.search(name)
+        if tail is None:
+            break
+        squashed = re.sub(r"[^a-z0-9]", "", tail.group(1).casefold())
+        if not squashed or squashed not in letters:
+            break
+        trimmed = name[:tail.start()].strip(" ,-|:")
+        if len(trimmed.split()) < 2:
+            break
+        name = trimmed
+    return name
+
+
+# "H27E6 27" -- a listing title cut mid-phrase ("27 Inch Gaming Monitor"),
+# leaving a measurement with nothing to measure. A model number keeps its
+# letters; a bare trailing integer is the seam where the title was cut.
+_CUT_SHORT = re.compile(r"\s\d{1,3}$")
+
+
+def _card_name(value, url: str = "") -> str:
     """The name of the thing, not the title of a page about it.
 
     Deliberately conservative in one direction: it only ever *drops* a
@@ -184,6 +217,7 @@ def _card_name(value) -> str:
     name = _PRICE_TAIL.sub("", name)
     name = _COUNT_TAIL.sub("", name)
     name = _SITE_TAIL.sub("", name)
+    name = _strip_publisher(name, url)
 
     # Titles stack parentheticals, so this runs more than once.
     for _ in range(2):
@@ -376,7 +410,95 @@ def _refuses_a_card(name: str, subject: str = "") -> str:
             return reason
     if _adds_nothing_to(text, subject):
         return "names the category, not one of them"
+    if _pluralises_the_request(text, subject):
+        # "High Refresh Gaming Computer Monitors" answering a request for a
+        # gaming monitor. It carries distinguishing words, so the rule above
+        # lets it through -- but it is still several of them, not one.
+        return "several of them, not one"
+    if _CUT_SHORT.search(text) and not re.search(r"[A-Za-z]\d|\d[A-Za-z]",
+                                                 text.split()[-1]):
+        return "a title cut short"
     return ""
+
+
+def _pluralises_the_request(name: str, subject: str) -> bool:
+    """Whether the name says *several* of the thing that was asked for."""
+    if not subject:
+        return False
+    known = {
+        _singularish(word) for word in _WORD.findall(str(subject).casefold())
+    }
+    for token in _WORD.findall(str(name).casefold()):
+        if not token.endswith("s") or token.endswith("ss"):
+            continue
+        stem = _singularish(token)
+        if stem != token and stem in known:
+            return True
+    return False
+
+
+def _same_thing_as_one_of(key: str, shown: set, subject: str) -> bool:
+    """Whether this identity is one already drawn, wearing its category.
+
+    "HOTEL THE BOTANIK SEWOON MYEONGDONG" and "BOTANIK SEWOON MYEONGDONG"
+    are one hotel: everything that differs between them is the word the
+    person searched for. Both reached the window as separate cards.
+
+    Deliberately not containment on its own. "Keychron Q1" is inside
+    "Keychron Q1 Max" and they are two products -- what separates the two
+    cases is whether the extra words say *which one* or merely say *what
+    kind*, and the request is what knows the difference.
+    """
+    words = set(key.split())
+    if not words:
+        return False
+    category = {
+        _singularish(word) for word in _WORD.findall(str(subject or "").casefold())
+    }
+    if not category:
+        return False
+    for held in shown:
+        other = set(str(held).split())
+        if not other or other == words:
+            continue
+        if not (words <= other or other <= words):
+            continue
+        difference = words ^ other
+        if difference and all(
+            _singularish(word) in category or word in category
+            for word in difference
+        ):
+            return True
+    return False
+
+
+def _identity_key(name: str) -> str:
+    """What two cards for the same thing have in common.
+
+    "ROYAL HOTEL SEOUL" and "ROYAL HOTEL SEOUL (South Korea)" are one
+    hotel; "Hotel Morning Sky" and "Hotel Morning Sky in Seoul, South
+    Korea" are one hotel. Both pairs reached the window as two cards.
+
+    Reduced to the words that do the naming -- case folded, punctuation
+    dropped, the region qualifier and the joining words removed -- so the
+    comparison is between identities and not between labels. Word order is
+    kept: "Seoul Station Hotel" and "Hotel Station Seoul" are not obviously
+    the same thing, and collapsing them would be guessing.
+    """
+    words = [
+        word for word in re.findall(r"[^\W_]+", str(name or "").casefold())
+        if word not in _QUALIFIER
+    ]
+    return " ".join(words)
+
+
+# Words that qualify a name without being part of it: the country a listing
+# appends, and the joining words a longer variant uses to say the same thing.
+_QUALIFIER = frozenset({
+    "the", "a", "an", "in", "at", "of", "on", "and",
+    "south", "north", "korea", "korean", "japan", "china", "usa", "us",
+    "kr", "jp", "cn", "seoul",
+})
 
 
 def refusals(candidates, subject: str = "") -> tuple[tuple[str, str], ...]:
@@ -389,7 +511,9 @@ def refusals(candidates, subject: str = "") -> tuple[tuple[str, str], ...]:
     return tuple(
         (name, _refuses_a_card(name, subject))
         for name in (
-            _card_name(getattr(candidate, "name", ""))
+            _card_name(
+                getattr(candidate, "name", ""), getattr(candidate, "url", ""),
+            )
             for candidate in (candidates or ())
         )
     )
@@ -428,7 +552,9 @@ def from_candidates(
     for candidate in (candidates or ()):
         if len(items) >= limit:
             break
-        name = _card_name(getattr(candidate, "name", ""))
+        name = _card_name(
+            getattr(candidate, "name", ""), getattr(candidate, "url", ""),
+        )
         identity = _clean(getattr(candidate, "id", ""), 64)
         if not name or not identity:
             continue
@@ -436,9 +562,18 @@ def from_candidates(
             # A card carries a photograph, and the picture behind a page
             # about several things is whatever that page leads with.
             continue
-        if name.casefold() in shown:
+        # An exact repeat, a longer way of writing one already shown, or the
+        # same thing with the category word attached. Only the label is
+        # collapsed: the candidates keep their own identities, and the one
+        # that ranked highest is the one drawn.
+        key = _identity_key(name)
+        if name.casefold() in shown or (key and key in shown):
+            continue
+        if key and _same_thing_as_one_of(key, shown, subject):
             continue
         shown.add(name.casefold())
+        if key:
+            shown.add(key)
         url = _link(getattr(candidate, "url", ""))
         actions = [TELL_ME_MORE]
         if url:

@@ -318,6 +318,20 @@ def evaluate(
             "" if kind != acquisition.CANDIDATE
             else off_target(name, url, summary, wanted)
         )
+        if not problem_shape and kind == acquisition.CANDIDATE:
+            # Right kind of thing, wrong place. A restaurant in England is
+            # not a worse answer to "restaurants in Gangnam" than a listicle
+            # is -- it is a more dangerous one, because it looks right.
+            # The location can arrive either way: as the focus background's
+            # location, or as an area the turn itself named. A request that
+            # said "in Gangnam" out loud has it only in the second.
+            where = str(getattr(problem, "location", "") or "").strip()
+            if not where:
+                try:
+                    where = next(iter(problem.values(rs.AREA)), "")
+                except Exception:
+                    where = ""
+            problem_shape = elsewhere(name, url, summary, where)
         if problem_shape:
             # A round-up on somebody's blog: writing about candidates, and
             # not a surface that can be searched for them either.
@@ -608,6 +622,160 @@ _TITLE_FILLER = frozenset({
 })
 
 
+# Somebody's opinion of a thing, rather than the thing.
+#
+# Measured live, answering "give me some hotels in Myeongdong":
+#
+#     Excellent location for Myeongdong exploring
+#     REVIEW: Memorable stay in Myeongdong!!!!
+#
+# Both are review headlines that a listing site puts in its <title>, and
+# both reached a card. What separates them from a hotel is not their
+# vocabulary -- listing them by phrase would never end -- but their shape:
+# a name is a noun phrase and these are sentences, written by a guest.
+
+# One person's review, rather than the page for the thing reviewed. The
+# listing sites keep the two at different addresses, which is the most
+# reliable evidence available: Hotel_Review-g294197-d106... is the hotel,
+# ShowUserReviews-g294197-d106...-r8... is one stay at it.
+_REVIEW_URL = re.compile(
+    r"/showuserreviews|/user-?reviews?[/-]|/reviews?/\d|[?&]review(?:id|_id)=",
+    re.IGNORECASE,
+)
+_REVIEW_TITLE = re.compile(r"^\s*review\s*[:\-]", re.IGNORECASE)
+# Emphasis. Deliberately two or more: a listing title may legitimately end
+# "+ Reviews!", and "Jongno M and Lucky Hotel ... + Reviews!" is a real
+# hotel that a single exclamation mark would have thrown away.
+_SHOUTING = re.compile(r"!\s*!")
+
+_HEADLINE_FILLER = frozenset({
+    "a", "an", "the", "of", "in", "on", "at", "for", "to", "and", "or",
+    "with", "from", "by", "is", "was", "are", "were", "my", "our", "your",
+})
+
+
+def _reads_as_a_sentence(name: str) -> bool:
+    """Whether the words are a description rather than a name.
+
+    A name is capitalised because it is a name: "Hotel Inspiroom Jongro",
+    "GANGNAM MYEONOK". A headline capitalises its first word because it is
+    a sentence, and nothing else unless a proper noun happens to be in it --
+    "Excellent location for Myeongdong exploring" has one, and it is the
+    place the search asked about.
+
+    Only asked of Latin script, where capitalisation means something, and
+    only of names long enough for the proportion to say anything.
+    """
+    words = [word.strip(".,;:!?()") for word in str(name or "").split()]
+    words = [word for word in words if word]
+    if len(words) < 3:
+        return False
+    # The first word is capitalised by grammar, so it is not evidence.
+    rest = [
+        word for word in words[1:]
+        if word.casefold() not in _HEADLINE_FILLER
+        and re.search(r"[A-Za-z]", word)
+    ]
+    if len(rest) < 2:
+        return False
+    if any(re.search(r"[A-Za-z]", word) and re.search(r"\d", word)
+           for word in rest):
+        # A model number is an identity whatever the rest looks like.
+        return False
+    capitalised = sum(1 for word in rest if word[:1].isupper())
+    return capitalised * 2 < len(rest)
+
+
+def reads_as_commentary(name: str, url: str = "") -> str:
+    """Why this is a review of the thing rather than the thing itself."""
+    said = str(name or "")
+    if _REVIEW_URL.search(str(url or "")):
+        return "a single review, not the thing reviewed"
+    if _REVIEW_TITLE.search(said):
+        return "a review headline"
+    if _SHOUTING.search(said):
+        return "a review headline"
+    if _reads_as_a_sentence(said):
+        return "a sentence about it, not its name"
+    return ""
+
+
+# Where a result says it actually is.
+#
+# Deliberately "in" and not "at": "Order takeaway at Gangnam Restaurant,
+# Stevenage" puts the *business name* after "at", and reading that as the
+# location made a restaurant in England look like a restaurant in Gangnam.
+# What follows "in" is the place -- "ranked #13 among 161 restaurants in
+# Stevenage", "at 19505 44th Ave W in Lynnwood", "of 19,189 restaurants in
+# Seoul".
+_IN_PLACE = re.compile(
+    r"\bin\s+([A-Z][\w.'\u2019-]{1,24}(?:\s+[A-Z][\w.'\u2019-]{1,24}){0,2})"
+)
+
+
+# "Gangnam, Lynnwood", "GANGNAM RESTAURANT, Stevenage", "Gangnam Myeonok,
+# Seoul". A listing titles itself as the thing, a comma, and where it is --
+# and a result whose summary says nothing about location still says it here.
+_COMMA_PLACE = re.compile(
+    r",\s*([A-Z][\w.'\u2019-]{1,24}(?:\s+[A-Z][\w.'\u2019-]{1,24}){0,2})"
+)
+
+
+def _places_named(text: str) -> list[str]:
+    return [
+        place for place in (
+            " ".join(match.group(1).split()).strip(".,;:'")
+            for match in _IN_PLACE.finditer(str(text or ""))
+        ) if place
+    ]
+
+
+def elsewhere(name: str, url: str, summary: str, location: str) -> str:
+    """Why this result is somewhere other than where it was asked for.
+
+    Measured live, answering "find me some good restaurants in Gangnam":
+
+        GANGNAM RESTAURANT, Stevenage    -- Hertfordshire, England
+        Gangnam, Lynnwood                -- Washington State
+
+    Both carry "Gangnam" in the name, which is exactly why matching on the
+    requested location was never enough: the name of a Korean restaurant
+    abroad contains the place it is named after. What a listing also states
+    is where it *is*, and that is what this reads.
+
+    Silent unless the result says where it is. No statement, no rejection --
+    the rule can only fire on evidence that is actually there.
+    """
+    wanted = " ".join(str(location or "").split()).casefold()
+    if not wanted:
+        return ""
+    named = _places_named(f"{name} {summary}") + [
+        place for place in (
+            " ".join(match.group(1).split()).strip(".,;:'")
+            for match in _COMMA_PLACE.finditer(str(name or ""))
+        ) if place
+    ]
+    if not named:
+        return ""
+    try:
+        from brain.user_locale import _PLACE_COUNTRIES
+    except Exception:
+        return ""
+    home = _PLACE_COUNTRIES.get(wanted, "")
+    for place in named:
+        lowered = place.casefold()
+        if wanted in lowered or lowered in wanted:
+            return ""
+        country = _PLACE_COUNTRIES.get(lowered, "")
+        if country and home and country == home:
+            # A different place in the same market: Gangnam is in Seoul.
+            return ""
+        if not country and not home:
+            # Nothing known either side. Guessing would be worse.
+            return ""
+    return f"it is in {named[0]}, not {location}"
+
+
 def off_target(name: str, url: str, summary: str, shape: str) -> str:
     """Why this is not a candidate at all, or empty if it might be one.
 
@@ -644,6 +812,9 @@ def off_target(name: str, url: str, summary: str, shape: str) -> str:
         # A round-up can still be a page worth reading; it is not a thing
         # that can be bought or visited, which is what was asked for.
         return "a round-up article, not a single candidate"
+    commentary = reads_as_commentary(name, url)
+    if commentary:
+        return commentary
     return ""
 
 

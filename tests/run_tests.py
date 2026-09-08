@@ -240,6 +240,8 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_desktop_control_ui",
             "test_response_surface",
             "test_result_grounding",
+            "test_candidate_relevance",
+            "test_candidate_name_quality",
             "test_entity_discovery",
             "test_surface_images",
             "test_phase3a_controls",

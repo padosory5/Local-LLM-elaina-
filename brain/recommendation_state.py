@@ -2003,6 +2003,23 @@ def returns_to_earlier(text: str) -> str:
     return named
 
 
+# "Which one would you pick?", "what about the second one?", "open the
+# second one". A turn that points *at the options already in hand* names
+# nothing new and is about nothing else.
+_REFERS_TO_OPTIONS = re.compile(
+    r"\b(?:which|what)\s+(?:one|ones)\b"
+    r"|\b(?:the\s+)?(?:first|second|third|fourth|fifth|last|other)\s+ones?\b"
+    r"|\b(?:one|any|either|both|none)\s+of\s+(?:them|these|those)\b"
+    r"|\b(?:which|what)\s+of\s+(?:these|those|them)\b",
+    re.IGNORECASE,
+)
+
+
+def refers_to_the_options(text: str) -> bool:
+    """Whether this turn points at the results rather than asking for more."""
+    return bool(_REFERS_TO_OPTIONS.search(str(text or "")))
+
+
 def about_the_same_thing(
     problem: RecommendationProblem,
     text: str,
@@ -2048,6 +2065,21 @@ def about_the_same_thing(
     # Only after the different-named-thing check above, so a follow-up that
     # names something else still starts a new problem.
     if follow_up and not topic_shift:
+        return True
+    if refers_to_the_options(text) and getattr(problem, "candidates", ()):
+        # A question about the options in hand is about the problem that
+        # holds them, whatever the router made of the sentence.
+        #
+        # Measured live during the release-candidate dogfood, twice in two
+        # attempts: "which one would you pick?" was routed as a task_action
+        # rather than a follow-up, so ``follow_up`` was False, nothing here
+        # recognised it, and the word-overlap test at the end of this
+        # function found no shared word with "hotels". Three hotels were
+        # discarded and the literal question was sent to a web search.
+        #
+        # Guarded on there actually being candidates, so this can never
+        # hijack an unrelated problem: with nothing in hand there is
+        # nothing for "which one" to mean.
         return True
     if wants_to_see_options(text) or (
         problem.lookup_requested and complains_about_missing_results(text)
