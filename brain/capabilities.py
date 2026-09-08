@@ -42,6 +42,27 @@ class Capability:
     examples: tuple[str, ...] = ()
     offer_when: str = ""
 
+    @property
+    def spoken_summary(self) -> str:
+        """The summary as a person would say it out loud.
+
+        ``summary`` has two readers with opposite needs. The model gets it
+        every turn in ``context_text`` and wants the whole inventory, so
+        that it never claims an ability she does not have; the user gets it
+        when they ask what she can do, and wants a sentence.
+
+        Measured live: "Yes. I can drive a real browser session, search,
+        follow links, read the live page, click buttons, and fill in
+        fields. Want me to use it now?" -- six items, read out in registry
+        order. That reply is a consent question, so the style layer holds
+        off rewording it, which leaves this the place to fix it.
+
+        The rule is the dash the summaries already use: everything before
+        it is what the ability *is*, everything after is the enumeration.
+        """
+        head = re.split(r"\s+(?:--+|[–—])\s+", self.summary, 1)[0]
+        return head.strip() or self.summary
+
 
 @dataclass(frozen=True)
 class CapabilityMatch:
@@ -104,10 +125,15 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(
         id="ui_control",
         name="desktop control",
+        # The dash is load-bearing: everything before it is what the
+        # ability is, and is what gets said aloud; everything after is the
+        # full inventory the model needs in order not to over- or
+        # under-claim. See Capability.spoken_summary.
         summary=(
-            "open, close, and force-quit Windows apps, create or recycle "
-            "files and folders in Desktop, Documents, and Downloads, and "
-            "click, type, and scroll inside a real app window"
+            "work inside real Windows apps -- open, close and force-quit "
+            "them, create or recycle files and folders in Desktop, "
+            "Documents, and Downloads, and click, type, and scroll inside "
+            "an app window"
         ),
         needs=("computer_control_mode",),
         examples=("open Spotify", "make a folder on my Desktop", "close Discord"),
@@ -544,6 +570,30 @@ class CapabilityRegistry:
             return f"I could use {capability.name}, but {blocked}.{tail}"
         return f"I can use {capability.name} for this -- want me to?"
 
+    # How many abilities a person names before they stop naming them.
+    # Measured live: asked "what can you do?", she answered "Right now I can
+    # use browser control, web search, desktop control, screen vision,
+    # multi-step tasks, memory, calendar, project access." -- the registry
+    # read out in registry order, which is an inventory rather than a
+    # sentence, and is the single most interface-sounding line in the
+    # product. Three is where an English list still parses as speech.
+    SPOKEN_LIST_LIMIT = 3
+
+    @classmethod
+    def _spoken_list(cls, names: list[str]) -> str:
+        """Name a few of them the way a person would, not all of them.
+
+        Nothing is hidden by this: the full registry is still in the model's
+        context every turn (``context_text``), so a question about a
+        specific ability is still answered from the complete list. This
+        governs only the one sentence that is *spoken aloud*.
+        """
+        if len(names) <= cls.SPOKEN_LIST_LIMIT:
+            return ", ".join(names)
+        head = ", ".join(names[:cls.SPOKEN_LIST_LIMIT])
+        rest = len(names) - cls.SPOKEN_LIST_LIMIT
+        return f"{head}, and {rest} other things"
+
     @classmethod
     def inventory_sentence(cls, state: Mapping[str, object]) -> str:
         """A short spoken summary of live abilities, for "what can you do?"."""
@@ -555,7 +605,10 @@ class CapabilityRegistry:
         ]
         parts = []
         if ready:
-            parts.append("Right now I can use " + ", ".join(ready) + ".")
+            parts.append("Right now I can use " + cls._spoken_list(ready) + ".")
         if blocked:
+            # What is switched off is the actionable half -- it tells the
+            # user what to turn on -- so it keeps a longer list than the
+            # ready one, but not an unbounded one.
             parts.append("Currently off: " + ", ".join(blocked) + ".")
         return " ".join(parts)

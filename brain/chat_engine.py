@@ -60,6 +60,7 @@ from brain.response_policy import (
     ClosingOfferGuard,
     ResponseLimits,
 )
+from brain import conversation_style
 from brain.calculation_planner import CalculationPlanner
 from brain.desktop_action_planner import (
     DesktopActionPlanner,
@@ -1388,7 +1389,8 @@ class ChatEngine:
         if _DOUBTS_AN_ABILITY.search(text):
             print(f"[Ability] Answered a doubt about {capability.id}.")
             return (
-                f"I do have {capability.name} -- I can {capability.summary}. "
+                f"I do have {capability.name} -- I can "
+                f"{capability.spoken_summary}. "
                 "Give me a page to open and we'll see what it does."
             )
         offer = "Want me to use it now?"
@@ -1396,7 +1398,274 @@ class ChatEngine:
             capability_id=capability.id, goal=text, offer_text=offer,
         )
         print(f"[Ability] Answered from the registry for {capability.id}.")
-        return f"Yes. I can {capability.summary}. {offer}"
+        return f"Yes. I can {capability.spoken_summary}. {offer}"
+
+    def _things_she_has_said(self) -> tuple[str, tuple[str, ...]]:
+        """The last thing she said, and everything before it this session.
+
+        Both, because they catch different faults. The adjacent reply
+        catches a draft that echoes the turn before; the rest of the
+        session catches a bank line coming back around, which is invisible
+        turn-to-turn and obvious across a conversation.
+        """
+        spoken = [
+            str(item.get("content", "") or "")
+            for item in self.conversation.get_history()
+            if item.get("role") == "assistant"
+            and str(item.get("content", "") or "").strip()
+        ]
+        if not spoken:
+            return "", ()
+        return spoken[-1], tuple(spoken[:-1])
+
+    @staticmethod
+    def _keeps_the_facts(candidate: str, original: str) -> bool:
+        """Whether a re-said reply still says everything the draft did.
+
+        The whole safety argument for letting a model reword a tool result
+        rests here, so it is deliberately two-sided and deliberately dumb.
+        Every number in the draft must survive, and no number may appear
+        that was not there -- an invented value and a dropped one are the
+        same defect wearing different clothes, and the condenser's own
+        one-sided subset test would have caught only half of it.
+
+        Capitalised words are checked the same way, because that is where
+        the names live: a report that quietly stops mentioning Notepad, or
+        starts mentioning Chrome, is not a rewording.
+        """
+        if not candidate.strip():
+            return False
+
+        def numbers(text: str) -> set[str]:
+            return {
+                token.strip(".,")
+                for token in re.findall(r"\d[\d,.:]*", str(text))
+                if token.strip(".,")
+            }
+
+        def names(text: str, *, skip_sentence_openers: bool) -> set[str]:
+            found: set[str] = set()
+            for sentence in re.split(r"(?<=[.!?])\s+", str(text).strip()):
+                words = re.findall(r"[^\W\d_][\w'-]*", sentence)
+                start = 1 if skip_sentence_openers else 0
+                for word in words[start:]:
+                    if len(word) > 2 and word[0].isupper():
+                        found.add(word)
+            return found
+
+        if numbers(candidate) != numbers(original):
+            return False
+        # Asymmetric on purpose. What the draft capitalised mid-sentence is
+        # a name; what the rewrite capitalised anywhere might be, because a
+        # rewrite is allowed to move a name to the front of a sentence. The
+        # comparison errs towards keeping the original.
+        return names(original, skip_sentence_openers=True).issubset(
+            names(candidate, skip_sentence_openers=False)
+        )
+
+    def _say_it_in_her_voice(
+        self,
+        reply: str,
+        *,
+        act: str,
+        user_input: str,
+        model: str,
+        keep_alive,
+        max_words: int,
+    ) -> str:
+        """Repair what is damaged, and say again what sounds like a machine.
+
+        The one place a finished reply is judged on *how it sounds*, and the
+        reason every path now sounds like the same person. Before it, a
+        greeting came from a variety selector, a tool outcome came from a
+        planner and a plain answer came from personality.txt -- three
+        authors, and the seams were audible the moment a conversation
+        crossed between them.
+
+        Two mechanisms, and the split between them is the point:
+
+        **Structural damage is repaired, silently and always.** A leaked
+        ``[id=6e663719-e0]``, an unpaired quote, a snake_case identifier
+        that reached speech because it was appended after the speech filter
+        had already run. No rewording of those is the correct version.
+
+        **Register is re-said, never edited.** A customer-service sentence
+        cut out of a reply leaves a shorter customer-service reply, so the
+        model is asked for the same content in her own voice instead. That
+        costs one call and only happens when the review actually failed,
+        which on measured conversation is a minority of turns.
+
+        The locked acts are exempt from the second mechanism entirely. A
+        clarification question and a consent question are classified
+        against their exact words by ``SemanticConsentClassifier``, and a
+        reworded question is a different question -- so those are repaired,
+        reported, and left alone.
+        """
+        draft = str(reply or "")
+        if not draft.strip():
+            return draft
+
+        contract = conversation_style.contract_for(act)
+        previous, earlier = self._things_she_has_said()
+        verdict = conversation_style.review(
+            draft,
+            act=act,
+            user_input=user_input,
+            previous_reply=previous,
+            earlier_replies=earlier,
+        )
+        repaired = verdict.repaired
+        if repaired != draft:
+            print(f"[Style] repaired structure: {verdict.report()[:120]}")
+        if verdict.clean:
+            return repaired
+        print(f"[Style] {act}: {verdict.report()}")
+
+        if not verdict.needs_rewrite:
+            return repaired
+        if not contract.may_reword:
+            # Said out loud rather than swallowed: a locked act that keeps
+            # failing the review is a defect in whoever writes that
+            # question, and it should be visible in the log.
+            print(f"[Style] {act} is locked; left as written.")
+            return repaired
+
+        said_again = self._resay(
+            repaired,
+            act=act,
+            user_input=user_input,
+            model=model,
+            keep_alive=keep_alive,
+            max_words=max_words,
+            faults=verdict.findings,
+            already_said=(previous, *earlier),
+        )
+        if not said_again:
+            return repaired
+        if not self._keeps_the_facts(said_again, repaired):
+            print("[Style] The re-said version changed a value or dropped a "
+                  "name; kept the original.")
+            return repaired
+
+        second = conversation_style.review(
+            said_again, act=act, user_input=user_input,
+            previous_reply=previous, earlier_replies=earlier,
+        )
+        if second.needs_rewrite:
+            # One attempt only. A second call would usually return the same
+            # register, and a reply that is merely late is worse than one
+            # that is merely stiff.
+            #
+            # But "not perfect" is not "not better", and treating them as
+            # the same had a cost. Measured live: four consecutive
+            # acknowledgements all came out "i'm here...", because each
+            # rewrite still tripped the opener check and each was therefore
+            # discarded in favour of the exact repeat it was offered to
+            # replace. The saturated history then swallowed the next real
+            # question -- "what's 2+2" was answered "You had a rough night,
+            # but I'm here." So take whichever reads better, and only fall
+            # back when the rewrite is genuinely no improvement.
+            if len(second.findings) < len(verdict.findings):
+                print(f"[Style] The re-said version still reads as "
+                      f"{', '.join(second.classes)}, but less so; taking it.")
+                return second.repaired
+            print(f"[Style] The re-said version still reads as "
+                  f"{', '.join(second.classes)}; kept the original.")
+            return repaired
+        print(f"[Style] Said again in her own voice: {said_again[:90]!r}")
+        return second.repaired
+
+    def _resay(
+        self,
+        draft: str,
+        *,
+        act: str,
+        user_input: str,
+        model: str,
+        keep_alive,
+        max_words: int,
+        faults=(),
+        already_said=(),
+    ) -> str:
+        """Ask for the same content, said the way she would say it.
+
+        The instruction is a rewrite brief, not a conversation: the draft is
+        given as material and the model is told what may not change. It is
+        never given the tools, the evidence or the history, because it has
+        no business adding anything that is not already in front of it.
+
+        The brief names the actual fault. A generic "sound natural"
+        instruction measured badly -- the log filled with "the re-said
+        version still reads as service_phrasing", because the model was
+        never told which words were the problem. The detector already knows
+        that, and handing its finding to the rewrite is what closes the
+        loop. It stays general: the brief carries whatever was found, not a
+        list of phrases written out in advance.
+        """
+        contract = conversation_style.contract_for(act)
+        wrong = "; ".join(
+            f"{finding.failure.replace('_', ' ')} ({finding.evidence})"
+            for finding in faults if not finding.structural
+        )
+        # Repetition is the one fault the model cannot avoid on its own: it
+        # has no idea what it said four turns ago, so it is told.
+        repeats = any(
+            finding.failure == conversation_style.SELF_REPETITION
+            for finding in faults
+        )
+        recent = [line for line in already_said if str(line).strip()][-4:]
+        already = ""
+        if repeats and recent:
+            said_before = "\n".join(f"- {line}" for line in recent)
+            already = (
+                "\n\nYOU HAVE ALREADY SAID THESE THIS CONVERSATION\n"
+                f"{said_before}\n"
+                "Say something different from every one of them.\n"
+            )
+        fault_note = ""
+        if wrong:
+            fault_note = (
+                f"\n\nWHY THE DRAFT IS WRONG\n{wrong}\n"
+                "Do not use that wording, or anything like it.\n"
+            )
+        plural = "s" if contract.max_sentences != 1 else ""
+        brief = (
+            "Rewrite the draft below as one line of natural speech.\n\n"
+            f"{conversation_style.style_instruction(act)}\n"
+            "Keep every number, name, price, time and action status exactly "
+            "as the draft has them. Add no fact the draft does not contain. "
+            "Drop nothing the draft states. Do not mention the draft, the "
+            "rewrite, or yourself doing either.\n"
+            f"Say it in at most {max_words} words and at most "
+            f"{contract.max_sentences} sentence{plural}.\n\n"
+            f"WHAT THEY SAID\n{user_input.strip()}\n\n"
+            f"DRAFT\n{draft.strip()}"
+            f"{fault_note}{already}\n\n"
+            "Your reply is the rewritten line and nothing else."
+        )
+        try:
+            response = self.client.chat(
+                model=model,
+                messages=[
+                    {"role": "system", "content": self.system_prompt.strip()},
+                    {"role": "user", "content": brief},
+                ],
+                stream=False,
+                options={"temperature": 0.4, "num_predict": 160},
+                keep_alive=keep_alive,
+                think=False,
+            )
+        except Exception as error:
+            print(f"[Style] Could not re-say it: "
+                  f"{type(error).__name__}: {error}")
+            return ""
+        message = self._value(response, "message", {})
+        said = TextFilter.for_voice_response(
+            str(self._value(message, "content", "") or ""),
+            max_words=max_words,
+            max_sentences=contract.max_sentences,
+        )
+        return said.strip()
 
     def _final_response_check(
         self,
@@ -1411,6 +1680,7 @@ class ChatEngine:
         max_words: int,
         max_sentences: int,
         forced: bool = False,
+        act: str = conversation_style.ANSWER,
     ) -> str:
         """The last thing that happens before anything is said out loud.
 
@@ -1427,6 +1697,20 @@ class ChatEngine:
         """
         text = str(reply or "").strip()
         if not text:
+            return reply
+        if act == conversation_style.RECEIPT:
+            # This check compares answers, and a receipt is not an answer.
+            # Two "yeah"s in a row legitimately get two short, similar
+            # replies -- that is what receipting looks like -- and the
+            # guard read the similarity as her repeating herself, retried,
+            # got another short reply, and gave up with "Sorry, I answered
+            # the wrong thing there. Say it once more and I'll take it
+            # properly?" Measured live, twice in one eight-turn
+            # conversation, both times to a bare "yeah" or "no", where
+            # there was nothing for the person to say once more.
+            #
+            # Repetition in receipts is still a real fault; it is caught
+            # where it is visible, across the session, by the style layer.
             return reply
         if forced:
             # A forced reply is hand-written -- a greeting from the social
@@ -5158,7 +5442,7 @@ class ChatEngine:
         return text
 
     def _append_recommendation(
-        self, reply: str, *, decision, capability, goal,
+        self, reply: str, *, decision, capability, goal, act=conversation_style.ANSWER,
     ) -> str:
         """Offer something that would help, when offering is worth it.
 
@@ -5184,6 +5468,20 @@ class ChatEngine:
         text = str(reply or "").strip()
         if not text:
             return quiet("the reply was empty")
+        if conversation_style.contract_for(act).offers_allowed < 1:
+            # The act says no. A receipt, a greeting and a goodbye have no
+            # room for an offer, and this is the layer that was adding one
+            # anyway -- it runs after the style pass, so nothing the style
+            # pass decided had reached it.
+            #
+            # Not a cosmetic rule. Measured live: "ok" was answered with "I
+            # can help you find a good wireless mouse under $50. Want me to
+            # look it up?", which parked an offer; the next turn was "that's
+            # fine, thanks", which the consent classifier read as accepting
+            # it, and a browser action ran on a goodbye. An offer nobody
+            # asked for is not just noise -- it is a question, and the next
+            # thing the person says becomes its answer.
+            return quiet(f"a {act} has no room for an offer")
         if self.clarification.peek() is not None:
             # She has just asked a question of her own. Adding "want me to
             # search?" underneath it puts two questions on the table and
@@ -6219,8 +6517,20 @@ class ChatEngine:
                 # Physical user input remains the immediate emergency stop.
                 # It is not converted into another permission question; a
                 # later explicit command starts immediately like any other.
-                done = ", ".join(plan_result.steps_taken[-2:]) or "nothing yet"
-                return f"You took control, so I stopped. Completed: {done}", None
+                # Only the steps a person could actually hear. A step
+                # record is written for the log, and the last one before an
+                # interruption is often a raw observation -- the whole
+                # accessibility tree went out this way once, introduced by
+                # the word "Completed:".
+                done = conversation_style.speakable_list(
+                    plan_result.steps_taken
+                ).rstrip(" .")
+                return (
+                    f"You took control, so I stopped. I'd got as far as "
+                    f"{done}."
+                    if done else
+                    "You took control, so I stopped partway through."
+                ), None
 
         self._last_computer_action = "ui_action"
         self._last_computer_goal = route.action_target or ""
@@ -7597,6 +7907,50 @@ class ChatEngine:
             if detailed_response
             else self.response_max_sentences
         )
+        # What this reply is *doing*, which is not what the user asked for.
+        # One name, decided once, and every style decision below reads it:
+        # the length ceiling, the prompt's own instructions, and the review
+        # that decides whether a draft is worth saying again. Before this
+        # existed each of those three answered the question separately, and
+        # they did not always agree -- which is how the same session could
+        # answer "ok" with a paragraph and a tool result with a status line.
+        turn_act = conversation_style.act_for_turn(
+            intent=route.intent,
+            speech_act=route.speech_act,
+            user_input=user_input,
+            action_performed=action_performed,
+            has_tool_result=bool(locked_response or forced_response),
+            awaiting_consent=self.action_ledger.offer_pending,
+            awaiting_clarification=self.clarification.peek() is not None,
+            is_greeting=bool(_SIMPLE_GREETING.fullmatch(user_input)),
+            is_farewell=social_lines.reads_as_farewell(user_input),
+        )
+        style = conversation_style.contract_for(turn_act)
+        print(f"[Style] act={turn_act} sentences<={style.max_sentences} "
+              f"offers<={style.offers_allowed} "
+              f"reword={'yes' if style.may_reword else 'no'}")
+        # The act tightens the configured length and never loosens it. A
+        # receipt is one clause whatever config.yaml permits.
+        #
+        # Except when the user asked for detail. ``detailed_response`` is
+        # them saying "explain it properly", and a general contract about
+        # how long an answer usually runs has no business overruling a
+        # specific request -- so the ceiling is skipped there rather than
+        # quietly capping the one case where length was the point.
+        if not detailed_response:
+            max_sentences = (
+                min(max_sentences, style.max_sentences) if max_sentences > 0
+                else style.max_sentences
+            )
+            # The same, in words, for the acts whose whole job is to be
+            # short. Sentences turned out to be the wrong unit for those --
+            # two clauses is what a person says, and the length that makes
+            # a receipt sound like an assistant is measured in words.
+            if style.max_words > 0:
+                max_words = (
+                    min(max_words, style.max_words) if max_words > 0
+                    else style.max_words
+                )
         response_limits = ResponseLimits(
             max_words=max_words,
             max_sentences=max_sentences,
@@ -7639,6 +7993,12 @@ class ChatEngine:
         messages[-1]["content"] += (
             "\n\nVOICE RESPONSE REQUIREMENTS\n"
             f"{generation_instruction}"
+            # Last, and act-specific, so the rules nearest the message being
+            # answered are the ones about how a person performing *this*
+            # act would say it. personality.txt says who she is once, at the
+            # top of a long prompt; this says what this particular reply is
+            # for, which is the part the model was losing.
+            f"\n\n{conversation_style.style_instruction(turn_act)}"
         )
 
         # Notify the UI before waiting for Ollama's first token.
@@ -8065,6 +8425,20 @@ class ChatEngine:
                     max_sentences=max_sentences,
                     goal=route.normalized_request or user_input,
                 )
+            # Say it like a person, then let every truth guard below judge
+            # what came back. Deliberately placed *before* them and not
+            # after: a realized sentence is still a claim, and it has to
+            # pass the same action-commitment, grounded-value and
+            # named-candidate checks as a generated one. Nothing here is
+            # trusted more than the draft it replaced.
+            reply = self._say_it_in_her_voice(
+                reply,
+                act=turn_act,
+                user_input=user_input,
+                model=active_model,
+                keep_alive=active_keep_alive,
+                max_words=max_words,
+            )
             reply = self._enforce_action_commitment(
                 reply,
                 user_input=user_input,
@@ -8186,7 +8560,7 @@ class ChatEngine:
             # useful thing this phase adds.
             reply = self._append_recommendation(
                 reply, decision=decision, capability=capability,
-                goal=goal_intent_result,
+                goal=goal_intent_result, act=turn_act,
             )
             checked_draft = reply
             reply = self._final_response_check(
@@ -8200,6 +8574,7 @@ class ChatEngine:
                 max_words=max_words,
                 max_sentences=max_sentences,
                 forced=bool(effective_forced_response),
+                act=turn_act,
             )
             if reply != checked_draft:
                 # The repetition retry is the final model pass. Its output
@@ -8244,6 +8619,15 @@ class ChatEngine:
                         ),
                     )
             reply = TextFilter.natural_dashes(reply)
+            # The true end of the line, after every guard and every
+            # appender. It has to be here and not earlier: the offer this
+            # turn may append is added *after* the speech filter has run,
+            # which is how "Happy to dig into a product_recommendation if
+            # that helps" reached a user with the underscore still in it.
+            # Anything added past the filter needs a filter past it.
+            reply = conversation_style.repair_structure(
+                TextFilter.for_voice_response(reply)
+            )
             speech_buffer = reply
             if reply:
                 print(

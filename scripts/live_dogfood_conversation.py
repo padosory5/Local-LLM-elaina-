@@ -1,0 +1,214 @@
+"""Drive natural, unscripted-feeling conversations through the real Elaina.
+
+Unlike ``live_conversation_check.py``, which replays specific failure
+transcripts to prove a defect is gone, this one exists to *measure how she
+sounds*. The turns are ordinary: a greeting, a complaint about work, a
+follow-up with no subject in it, an acknowledgement, a topic change, a
+couple of tool-shaped requests mixed in among them.
+
+The point of mixing them is the measurement. Conversation quality is only
+visible as a whole -- a reply that reads fine on its own is still a failure
+if it sounds like a different person from the one who answered two turns
+earlier -- so the arcs deliberately cross from chat into tool use and back.
+
+Each run writes a JSON transcript that ``conversation_quality_report.py``
+scores. Same turns before and after a change; the numbers are comparable
+because the input is identical.
+
+Usage::
+
+    .venv/Scripts/python.exe scripts/live_dogfood_conversation.py \
+        --arc everyday --out runtime/a1_baseline_everyday.json
+
+Start the backend first, without the Electron window::
+
+    ELAINA_OPEN_DESKTOP=0 .venv/Scripts/python.exe main.py
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+import time
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+# The Windows console here is cp949, and a reply carrying an emoji or a
+# stray variation selector kills the run on the print rather than on
+# anything that matters. Measuring what she said must never depend on what
+# the terminal can render.
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):  # pragma: no cover - older stream
+        pass
+
+from brain.conversation_style import (  # noqa: E402
+    ANSWER, CLOSE, GREET, REACT, RECEIPT, REPORT,
+)
+
+try:
+    import websockets
+except ImportError:  # pragma: no cover - operator-facing message
+    raise SystemExit("pip install websockets to run this check")
+
+
+DEFAULT_URL = "ws://127.0.0.1:8765"
+
+
+# Each arc is one conversation, in order, in one process. Restart the
+# backend between arcs: history lives in the running ChatEngine, and a
+# repetition or greeting-variety fault is invisible inside a session that
+# has already warmed up.
+#
+# Each turn also declares the conversational act its *reply* should
+# perform. That is a statement about the conversation, not about the
+# implementation -- a reply to "thanks" is a receipt whoever writes it -- so
+# the same table scores a run from before a change and a run from after it.
+#
+# ``computer_control`` says whether the arc needs the desktop switch on.
+# Only read-only requests are ever sent with it enabled -- this script runs
+# against the operator's real machine.
+ARCS: dict[str, dict] = {
+    "everyday": {
+        "computer_control": False,
+        "turns": (
+            ("hey", GREET),
+            ("not much, just got back from work", REACT),
+            ("kind of tired honestly", REACT),
+            ("yeah it was a long one. what's 15% of 84?", ANSWER),
+            ("thanks", RECEIPT),
+            ("what time is it in london right now?", ANSWER),
+            ("cool. do you know anything about making cold brew?", ANSWER),
+            ("how long should it steep?", ANSWER),
+            ("ok i'll try that", RECEIPT),
+            ("actually forget the coffee, what's a good movie to watch tonight?",
+             ANSWER),
+            ("something lighter", ANSWER),
+            ("nah", RECEIPT),
+        ),
+    },
+    "tooling": {
+        "computer_control": True,
+        "turns": (
+            ("hey can you check what the weather is like in seoul today", ANSWER),
+            ("ok", RECEIPT),
+            ("can you control my browser?", ANSWER),
+            ("what can you do?", ANSWER),
+            ("find me a good wireless mouse under 50 dollars", ANSWER),
+            ("the second one", ANSWER),
+            ("hmm what else is there", ANSWER),
+            ("never mind, what windows do i have open right now?", REPORT),
+            ("thanks", RECEIPT),
+            ("actually back to the mouse thing", ANSWER),
+            ("ok", RECEIPT),
+            ("that's fine, thanks", RECEIPT),
+        ),
+    },
+    "social": {
+        "computer_control": False,
+        "turns": (
+            ("morning", GREET),
+            ("i had a rough night", REACT),
+            ("no", RECEIPT),
+            ("just couldn't sleep", REACT),
+            ("yeah", RECEIPT),
+            ("what's 2+2", ANSWER),
+            ("lol", RECEIPT),
+            ("alright i'm heading out", CLOSE),
+        ),
+    },
+}
+
+
+async def run(url: str, arc_name: str, timeout: float) -> dict:
+    arc = ARCS[arc_name]
+    records: list[dict] = []
+    async with websockets.connect(url, max_size=None) as socket:
+        await socket.send(json.dumps({"command": "set_input_mode", "mode": "text"}))
+        await socket.send(json.dumps({
+            "command": "set_computer_control_mode",
+            "enabled": bool(arc["computer_control"]),
+        }))
+        await asyncio.sleep(1.0)
+
+        for index, (message, act) in enumerate(arc["turns"], start=1):
+            print("\n" + "=" * 72)
+            print(f"[{arc_name} {index}/{len(arc['turns'])}] USER: {message}")
+            print("-" * 72)
+            started = time.perf_counter()
+            await socket.send(
+                json.dumps({"command": "send_text_message", "text": message})
+            )
+            reply, statuses = await _await_reply(socket, timeout)
+            elapsed = time.perf_counter() - started
+            if reply is None:
+                print(f"ELAINA: (no reply within {timeout:.0f}s)")
+            else:
+                print(f"ELAINA ({elapsed:.1f}s): {reply}")
+            records.append({
+                "turn": index,
+                "arc": arc_name,
+                "user": message,
+                "act": act,
+                "reply": reply,
+                "statuses": statuses,
+                "seconds": round(elapsed, 2),
+            })
+    return {"arc": arc_name, "turns": records}
+
+
+async def _await_reply(socket, timeout: float):
+    deadline = time.monotonic() + timeout
+    statuses: list[str] = []
+    while time.monotonic() < deadline:
+        remaining = max(0.1, deadline - time.monotonic())
+        try:
+            raw = await asyncio.wait_for(socket.recv(), timeout=remaining)
+        except asyncio.TimeoutError:
+            return None, statuses
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        event = payload.get("event")
+        if event == "assistant_status":
+            text = str(payload.get("text", ""))
+            statuses.append(text)
+            print(f"   ... {text}")
+        elif event == "assistant_finished":
+            return str(payload.get("text", "")), statuses
+    return None, statuses
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--url", default=DEFAULT_URL)
+    parser.add_argument("--arc", default="everyday", choices=sorted(ARCS))
+    parser.add_argument("--timeout", type=float, default=240.0)
+    parser.add_argument("--out", default="")
+    args = parser.parse_args()
+
+    transcript = asyncio.run(run(args.url, args.arc, args.timeout))
+    missing = sum(1 for turn in transcript["turns"] if not turn["reply"])
+    print("\n" + "=" * 72)
+    print(f"Arc {args.arc}: {len(transcript['turns'])} turn(s), "
+          f"{missing} missing reply/replies.")
+    if args.out:
+        destination = Path(args.out)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(transcript, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        print(f"Wrote {destination}")
+    return 1 if missing else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

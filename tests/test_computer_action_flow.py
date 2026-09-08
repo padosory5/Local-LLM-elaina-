@@ -288,10 +288,39 @@ class UIActionFlowTests(unittest.TestCase):
 
         self.assertEqual(
             response,
-            "You took control, so I stopped. Completed: Opened Spotify.",
+            "You took control, so I stopped. I'd got as far as Opened Spotify.",
         )
         self.assertIsNone(returned)
         self.assertEqual(engine.brief_responses.calls, [])
+
+    def test_an_interrupted_run_never_reads_out_a_step_record(self):
+        # The live failure: asked what windows were open, she answered
+        # "You took control, so I stopped. Completed: Window: ChatGPT
+        # Button: 최소화 [id=6e663719-e0] ..." -- the accessibility tree,
+        # introduced by a field label. A step record is written for the
+        # log, and the boundary between a log and speech needs something
+        # standing on it.
+        planner = FakeDesktopActionPlanner(
+            act_result=ActionPlanResult(
+                "interrupted",
+                "You moved the mouse.",
+                steps_taken=(
+                    "Window: ChatGPT Button: Minimise [id=6e663719-e0] "
+                    "Pane: ChatGPT [id=6e663719-e3]",
+                ),
+            )
+        )
+        engine = self.engine_with(planner)
+
+        response, _ = engine._handle_computer_action(
+            self.route("What windows do I have open?")
+        )
+
+        self.assertEqual(
+            response, "You took control, so I stopped partway through.",
+        )
+        self.assertNotIn("id=", response)
+        self.assertNotIn("Pane:", response)
 
     def test_failed_step_speaks_the_planners_own_summary(self):
         planner = FakeDesktopActionPlanner(

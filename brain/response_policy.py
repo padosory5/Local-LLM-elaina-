@@ -21,7 +21,12 @@ class ResponseLimits:
         if self.max_words > 0:
             limits.append(f"at most {self.max_words} spoken words")
         if self.max_sentences > 0:
-            limits.append(f"at most {self.max_sentences} complete sentences")
+            # "at most 1 complete sentences" used to be unreachable and is
+            # now the ordinary case: a receipt's contract is one sentence.
+            plural = "s" if self.max_sentences != 1 else ""
+            limits.append(
+                f"at most {self.max_sentences} complete sentence{plural}"
+            )
 
         if limits:
             length_rule = "Keep the finished response to " + " and ".join(limits) + "."
@@ -96,6 +101,14 @@ class ResponseLimits:
 
         fixed = sentences[: self.max_sentences - 1]
         remainder = sentences[self.max_sentences - 1 :]
+        # Two clauses joined by a semicolon is punctuation. Three or more is
+        # a list wearing a disguise, and it is unspeakable: measured live,
+        # "How about The Royal Tenenbaums; It's quirky, heartfelt, and just
+        # the right mix of humor and warmth; Perfect for a relaxed night
+        # in." The sentence target is a target, not a licence to produce
+        # something no one would say, so past two clauses it is not met.
+        if len(remainder) > 2:
+            return text
         merged = "; ".join(
             sentence.rstrip(".!?").strip()
             for sentence in remainder
@@ -271,19 +284,36 @@ class ClosingOfferGuard:
         Returns the original whenever removal would leave nothing: an answer
         that is *only* a canned offer is a different failure, and silently
         emptying it would turn a weak reply into no reply at all.
+
+        Generic filler is removed wherever it sits, not only at the end.
+        Position was an assumption, and it was wrong: measured live, "Let me
+        know if you need help with anything else. Enjoy your cold brew!"
+        went out whole, because the filler had a real sentence after it and
+        a tail-only walk never reached it. A line that names nothing in the
+        conversation is filler in the middle of a reply for exactly the
+        reason it is filler at the end of one.
+
+        Offers keep the trailing-only rule. An offer says something, and one
+        placed mid-reply is usually load-bearing -- "I can check that if you
+        want, but here's what I already know" is a sentence with an argument
+        in it, and cutting its first half changes the reply's meaning.
         """
         sentences = cls._sentences(text)
         if len(sentences) < 2:
             return text
 
-        def strippable(sentence: str) -> bool:
-            if keep_offers:
-                return bool(cls._CLOSER.search(sentence))
-            return cls.is_closing_offer(sentence)
+        # Generic filler, anywhere.
+        kept = [
+            sentence for sentence in sentences
+            if not cls._CLOSER.search(sentence)
+        ]
+        if not kept:
+            return text
 
-        kept = list(sentences)
-        while len(kept) > 1 and strippable(kept[-1]):
-            kept.pop()
+        # Offers, from the end only.
+        if not keep_offers:
+            while len(kept) > 1 and cls._OFFER_CLOSER.search(kept[-1]):
+                kept.pop()
 
         if len(kept) == len(sentences):
             return text

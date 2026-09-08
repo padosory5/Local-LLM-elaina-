@@ -252,6 +252,11 @@ class Statement:
     context: str = ""
     value: str = ""
     source: str = STATED   # STATED for "always", SUGGESTED for "usually"
+    # Whether the person used the vocabulary of a default at all. "Stop
+    # using Naver Maps" does; a bare "forget the coffee" does not, and the
+    # difference decides what happens when nothing was saved -- see
+    # :func:`apply`.
+    names_a_default: bool = False
 
     @property
     def durable(self) -> bool:
@@ -276,7 +281,15 @@ def read(text: str) -> Statement | None:
     if stop:
         target = _tidy(stop.group(1) or stop.group(2) or "")
         if target and target.casefold() not in _NAMES_NOTHING:
-            return Statement(action="forget", value=target)
+            # Group 1 is the "stop using ..." branch, which says "using"
+            # out loud and is therefore about a default whatever the
+            # profile happens to hold. Group 2 is a bare "forget ...",
+            # which is the same words a person uses to drop a subject.
+            return Statement(
+                action="forget",
+                value=target,
+                names_a_default=bool(stop.group(1)),
+            )
 
     used = _USE.search(text)
     favourite = _FAVOURITE.search(text)
@@ -499,6 +512,17 @@ def apply(profile, statement: Statement) -> str:
         print(f"  Choice: {statement.value}")
         print("  Applied: forgotten" if dropped else "  Applied: no")
         if not dropped:
+            if not statement.names_a_default:
+                # A bare "forget X" that forgets nothing was never a
+                # preference command. B-27 fixed "forget about X"; the
+                # same idiom without "about" still reached here, and
+                # measured live "actually forget the coffee, what's a good
+                # movie to watch tonight?" was answered with "I wasn't
+                # using the coffee by default anyway." -- internal
+                # bookkeeping said aloud, and the film question lost with
+                # it. Saying nothing lets the turn route normally.
+                print("  Applied: not a preference; leaving the turn alone")
+                return ""
             return f"I wasn't using {statement.value} by default anyway."
         return f"Alright -- I'll stop defaulting to {statement.value}."
     if statement.action != "remember" or not statement.value:

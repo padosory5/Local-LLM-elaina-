@@ -16,6 +16,17 @@ class TextFilter:
         "\U0001FA00-\U0001FAFF"
         "\U00002700-\U000027BF"
         "\U00002600-\U000026FF"
+        # What is left over once the picture itself is gone. A live greeting
+        # came out as "️ How's your day shaping up?" -- the sun was
+        # removed and its variation selector was not, because U+FE0F sits in
+        # none of the ranges above. The same is true of the skin-tone
+        # modifiers, the zero-width joiner that binds a compound emoji, and
+        # the keycap mark. None of them are ever part of a word, and each
+        # one that survives is a character a TTS voice has to guess at.
+        "\U0001F3FB-\U0001F3FF"  # skin tone modifiers
+        "\U0000FE0F\U0000FE0E"   # variation selectors
+        "\U0000200D"             # zero-width joiner
+        "\U000020E3"             # combining enclosing keycap
         "]+",
         flags=re.UNICODE,
     )

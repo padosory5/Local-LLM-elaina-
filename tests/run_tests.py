@@ -134,6 +134,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_context_policy",
             "test_continuity_matrix",
             "test_conversation_focus",
+            "test_conversation_style",
             "test_followup_subject",
             "test_grounded_values",
             "test_response_cases",

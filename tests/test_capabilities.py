@@ -1,6 +1,6 @@
 import unittest
 
-from brain.capabilities import CapabilityRegistry
+from brain.capabilities import CAPABILITIES, CapabilityRegistry
 
 
 ALL_ON = {
@@ -168,3 +168,46 @@ class CapabilityContextTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpokenSummaryTests(unittest.TestCase):
+    """What the model is told and what the user hears are different lengths.
+
+    ``summary`` has two readers with opposite needs. The model gets the
+    whole inventory every turn so that it never over- or under-claims; the
+    user, asking what she can do, wants a sentence.
+
+    Measured live: "Yes. I can drive a real browser session, search, follow
+    links, read the live page, click buttons, and fill in fields. Want me
+    to use it now?" -- the registry read out in registry order. That reply
+    is a consent question, which the style layer deliberately will not
+    reword, so the split has to happen here.
+    """
+
+    def test_the_spoken_form_stops_at_the_dash(self):
+        capability = CapabilityRegistry.get("browser_control")
+
+        self.assertEqual(capability.spoken_summary,
+                         "drive a real browser session")
+        self.assertIn("follow links", capability.summary)
+
+    def test_a_summary_with_no_dash_is_spoken_whole(self):
+        capability = CapabilityRegistry.get("web_search")
+
+        self.assertEqual(capability.spoken_summary, capability.summary)
+
+    def test_every_spoken_summary_is_short_enough_to_say(self):
+        # The failure class, stated as a bound rather than as a list of
+        # the summaries that were too long when this was written.
+        for capability in CAPABILITIES:
+            with self.subTest(capability=capability.id):
+                self.assertLessEqual(
+                    len(capability.spoken_summary.split(",")), 3,
+                    f"{capability.id} reads as a list, not a sentence",
+                )
+
+    def test_the_model_still_gets_the_whole_inventory(self):
+        text = CapabilityRegistry.context_text(ALL_ON)
+
+        self.assertIn("follow links", text)
+        self.assertIn("force-quit", text)

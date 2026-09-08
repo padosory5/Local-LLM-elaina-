@@ -462,6 +462,9 @@ class ActionStatusSelector:
         self._rng = rng if rng is not None else random.Random()
         self._recent: deque[str] = deque(maxlen=self.RECENT_LINES)
         self._recent_openings: deque[str] = deque(maxlen=self.RECENT_OPENINGS)
+        # What has been said out of each individual bank. Keyed by the bank
+        # itself, which is a tuple of its lines and therefore its identity.
+        self._recent_by_pool: dict[tuple[str, ...], deque[str]] = {}
 
     # ------------------------------------------------------------- public
 
@@ -492,6 +495,7 @@ class ActionStatusSelector:
         """Forget what was said recently. For tests and session restarts."""
         self._recent.clear()
         self._recent_openings.clear()
+        self._recent_by_pool.clear()
 
     @property
     def recent(self) -> tuple[str, ...]:
@@ -527,8 +531,24 @@ class ActionStatusSelector:
 
         Each filter falls back to the wider pool rather than returning
         nothing, so a small bank still answers instead of going silent.
+
+        Freshness is judged against *this* bank as well as the shared
+        window. One global deque of five was letting a line come back
+        almost immediately: "ok" got "Sure thing.", six turns of unrelated
+        status lines flushed it out, and "thanks" got "Sure thing." again.
+        A line only ever competes with the lines it could have been chosen
+        instead of, so that is the memory that decides whether it is stale.
         """
-        fresh = [line for line in options if line not in self._recent]
+        used_here = self._recent_by_pool.setdefault(options, deque(maxlen=1_000))
+        fresh = [
+            line for line in options
+            if line not in self._recent and line not in used_here
+        ]
+        # Every line in this bank has now been said. Start the bank over
+        # rather than going silent or repeating the most recent one.
+        if not fresh and used_here:
+            used_here.clear()
+            fresh = [line for line in options if line not in self._recent]
         pool = fresh or list(options)
 
         varied = [
@@ -537,7 +557,9 @@ class ActionStatusSelector:
         ]
         pool = varied or pool
 
-        return self._rng.choice(pool)
+        chosen = self._rng.choice(pool)
+        used_here.append(chosen)
+        return chosen
 
     def _remember(self, line: str) -> None:
         self._recent.append(line)

@@ -462,7 +462,7 @@ class EngineTests(unittest.TestCase):
         for _ in range(DEFAULT_CAPABILITY_GAP):
             self.engine.recommendations.begin_turn()
 
-    def _append(self, reply, level=2, capability="browser_control"):
+    def _append(self, reply, level=2, capability="browser_control", act="answer"):
         class Choice:
             def __init__(self, value):
                 self.capability = value
@@ -474,7 +474,33 @@ class EngineTests(unittest.TestCase):
             goal=goal_intent.SemanticGoal(
                 intent=goal_intent.RECOMMEND, subject="the hotel page",
             ),
+            act=act,
         )
+
+    def test_an_act_with_no_room_for_an_offer_never_gets_one(self):
+        """A receipt, a greeting and a goodbye do not carry offers.
+
+        Measured live, and not a cosmetic rule: "ok" was answered with "I
+        can help you find a good wireless mouse under $50. Want me to look
+        it up?", which parked an offer in the gate; the next turn was
+        "that's fine, thanks", the consent classifier read it as accepting
+        that offer, and a browser action ran on a goodbye.
+
+        An offer nobody asked for is a question, and the next thing the
+        person says becomes its answer.
+        """
+        for act in ("receipt", "greet", "close"):
+            with self.subTest(act=act):
+                self.engine.capability_offer.clear()
+                said = "Alright."
+                self.assertEqual(self._append(said, act=act), said)
+                self.assertIsNone(self.engine.capability_offer.peek())
+
+    def test_an_answer_still_carries_one(self):
+        self.engine.capability_offer.clear()
+        said = "That one looks pretty nice."
+
+        self.assertNotEqual(self._append(said, act="answer"), said)
 
     def test_the_offer_is_appended_to_the_reply(self):
         result = self._append("That one looks pretty nice.")

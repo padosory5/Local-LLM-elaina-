@@ -23,9 +23,16 @@ defaulting to; "forget about X" is the idiom for dropping a subject. And a
 preference name is a phrase, so it ends where its sentence does.
 """
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from brain import preferences
+from brain.deliberation.profile import UserProfile
+
+
+def _profile():
+    return UserProfile(path=Path(tempfile.mkdtemp()) / "profile.json")
 
 
 class ForgetAboutIsATopicChangeTests(unittest.TestCase):
@@ -73,3 +80,48 @@ class ForgetAboutIsATopicChangeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ForgettingNothingIsNotAPreferenceCommandTests(unittest.TestCase):
+    """The same idiom without "about", found in the A1 dogfood run.
+
+        User:   actually forget the coffee, what's a good movie to watch
+                tonight?
+        Elaina: I wasn't using the coffee by default anyway.
+
+    Two failures in one line. The bookkeeping was said out loud, and the
+    question the person actually asked was never answered, because the
+    preference layer had already taken the turn.
+
+    "Stop using Naver Maps" says "using" and is about a default whether or
+    not one is saved. A bare "forget X" is the same words a person uses to
+    drop a subject, so when nothing was saved, nothing about preferences
+    was said.
+    """
+
+    def test_forgetting_something_never_saved_leaves_the_turn_alone(self):
+        spoken = preferences.apply(
+            _profile(),
+            preferences.read(
+                "actually forget the coffee, what's a good movie to watch "
+                "tonight?"
+            ),
+        )
+
+        self.assertEqual(spoken, "")
+
+    def test_stop_using_still_says_it_was_never_the_default(self):
+        spoken = preferences.apply(
+            _profile(),
+            preferences.read("Stop using Naver Maps by default."),
+        )
+
+        self.assertIn("wasn't using", spoken.casefold())
+
+    def test_the_two_readings_are_told_apart_by_the_word_using(self):
+        self.assertTrue(
+            preferences.read("stop using Naver").names_a_default
+        )
+        self.assertFalse(
+            preferences.read("forget Google Maps").names_a_default
+        )
