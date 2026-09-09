@@ -20,6 +20,12 @@ class CalendarTurnResult:
     message: str
     event: dict[str, Any] | None = None
     calendar_id: str = "primary"
+    #: Contract keys (brain/capability_contract.py, calendar_action) that
+    #: are still missing. The agent cannot phrase the question itself --
+    #: agents/ does not import brain/, and the sentence has to be in the
+    #: language of the turn, which only ChatEngine knows. ``message`` stays
+    #: as the English fallback for callers that have no language.
+    missing: tuple[str, ...] = ()
 
 
 class GoogleCalendarAgent:
@@ -80,19 +86,24 @@ class GoogleCalendarAgent:
 
         missing = []
         if not str(values.get("summary", "")).strip():
-            missing.append("the event title")
+            missing.append("title")
         if not str(values.get("start", "")).strip():
-            missing.append("the date and start time")
+            missing.append("when")
 
         if missing:
+            described = {
+                "title": "the event title",
+                "when": "the date and start time",
+            }
             return CalendarTurnResult(
                 status="input_required",
                 message=(
                     "I still need "
-                    + " and ".join(missing)
+                    + " and ".join(described[key] for key in missing)
                     + ". You can say something like, Math review tomorrow at "
                     "3 PM for 90 minutes."
                 ),
+                missing=tuple(missing),
                 calendar_id=calendar_id,
             )
 
@@ -146,7 +157,7 @@ class GoogleCalendarAgent:
             status="ready",
             message=(
                 "I prepared the calendar event. Review the exact title, time, "
-                "calendar, and location in Electron before I create it."
+                "calendar, and location on screen before I create it."
             ),
             event=event,
             calendar_id=calendar_id,

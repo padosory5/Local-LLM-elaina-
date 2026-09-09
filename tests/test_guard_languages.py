@@ -25,6 +25,7 @@ BRAIN = Path(__file__).resolve().parents[1] / "brain"
 # this file is what makes that unavoidable.
 TEXT_GUARDS = (
     "action_commitment.py",
+    "capability_contract.py",
     "conversation_style.py",
     "grounded_values.py",
     "guard_lines.py",

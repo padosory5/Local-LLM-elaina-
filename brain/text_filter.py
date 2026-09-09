@@ -1,5 +1,7 @@
 import re
 
+from brain import capability_contract
+
 
 # Both. It is the only guard that was bilingual from the start, because
 # it had to be: it decides what a voice is asked to pronounce.
@@ -264,6 +266,17 @@ class TextFilter:
         """
         del max_words, max_sentences
         text = cls.for_speech(text)
+        if not text:
+            return ""
+
+        # Nothing describing how Elaina is built gets pronounced. The
+        # static scan in scripts/capability_contract_report.py fixed the
+        # sentences the code chooses; this covers the ones it does not --
+        # a model echoing an exception back out of a tool-result prompt,
+        # a library message arriving through an MCP tool, a call site
+        # written next month. Placed here because every reply path in
+        # chat_engine already ends up in this method.
+        text = capability_contract.redact_internals(text)
         if not text:
             return ""
 

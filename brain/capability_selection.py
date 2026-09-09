@@ -51,17 +51,23 @@ PROJECT_QUESTION = "project_question"
 CALENDAR_ACTION = "calendar_action"
 TASK_PLANNING = "task_planning"
 
-# Surfaces the registry does not model yet. They are real and distinct -- a
-# commit is not a project read, and installing an agent is not planning a
-# task -- and naming them here keeps the [Capability] log honest instead of
-# filing a git push under "project access". Adding them to
-# brain/capabilities.py is the tidier end state; a test below asserts every
-# other id really is a registry one, so this list cannot quietly grow.
+# Real and distinct surfaces -- a commit is not a project read, and
+# installing an agent is not planning a task -- so they are named rather
+# than folded into a neighbour, which is what kept the [Capability] log
+# honest while they were undeclared.
+#
+# They were undeclared for a long time. A4 registered them in
+# brain/capabilities.py, because a surface this layer can *choose* while
+# the registry denies it is the bug that registry was built to prevent:
+# nothing told the model she could do them, and personality.txt listed two
+# of the three as things to refuse.
 PROJECT_EDIT = "project_edit"
 GIT = "git"
 AGENT_BUILDING = "agent_building"
 
-UNREGISTERED = frozenset({PROJECT_EDIT, GIT, AGENT_BUILDING})
+# Kept as an empty set rather than deleted: the drift test below reads it,
+# and an empty exception list is the assertion that there are none.
+UNREGISTERED = frozenset()
 
 # Every capability this layer can choose. Named explicitly so the drift test
 # checks these and not, say, the need constants imported above.

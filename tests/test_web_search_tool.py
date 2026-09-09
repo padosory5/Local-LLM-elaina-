@@ -84,14 +84,33 @@ class SearchWebTests(unittest.TestCase):
 
         self.assertEqual(result, "No useful web search results were found.")
 
-    def test_backend_failure_message(self):
+    def test_a_backend_failure_raises_instead_of_reading_like_evidence(self):
+        """A4: a failure that comes back as a sentence gets used as research.
+
+        This used to return "Web search failed: network down", which went
+        into the prompt as the material for an answer and into
+        ChatEngine's search cache as the material for every later answer
+        to the same query. What kept the two apart was ResearchAgent
+        matching the English prefix of that sentence -- so improving the
+        wording would have silently turned failures into evidence.
+        """
         tool = WebSearchTool()
         with patch("tools.web_search.DDGS") as fake_ddgs:
             fake_ddgs.return_value.text.side_effect = RuntimeError("network down")
 
-            result = tool.search_web("hotels in Guam")
+            with self.assertRaises(RuntimeError):
+                tool.search_web("hotels in Guam")
 
-        self.assertEqual(result, "Web search failed: network down")
+    def test_no_results_is_still_an_answer_not_a_failure(self):
+        """Finding nothing is a real outcome and stays a returned string."""
+        tool = WebSearchTool()
+        with patch("tools.web_search.DDGS") as fake_ddgs:
+            fake_ddgs.return_value.text.return_value = []
+
+            self.assertEqual(
+                tool.search_web("hotels in Guam"),
+                "No useful web search results were found.",
+            )
 
     def test_missing_url_and_summary_use_placeholders(self):
         tool = WebSearchTool()

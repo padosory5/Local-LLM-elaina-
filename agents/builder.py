@@ -176,7 +176,7 @@ class AgentBuilder:
             status="ready",
             message=(
                 "The Google Calendar Agent definition is ready. Review its "
-                "permissions in Electron; no agent has been installed yet."
+                "permissions on screen; no agent has been installed yet."
             ),
             definition=definition,
         )

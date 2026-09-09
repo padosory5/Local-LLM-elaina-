@@ -128,6 +128,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_answer_condenser",
             "test_brief_response",
             "test_capabilities",
+            "test_capability_contract",
             "test_candidate_fit",
             "test_candidate_shape",
             "test_capability_rescue",

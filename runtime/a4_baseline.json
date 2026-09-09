@@ -1,0 +1,117 @@
+{
+  "declarations": {
+    "capabilities": 8,
+    "declared": [
+      "browser_control",
+      "web_search",
+      "ui_control",
+      "screen_analysis",
+      "task_planning",
+      "memory",
+      "calendar_action",
+      "project_question"
+    ],
+    "undeclared": [],
+    "incomplete": []
+  },
+  "leaks": [
+    {
+      "file": "brain/chat_engine.py",
+      "line": 7757,
+      "kind": "framework_name",
+      "fragment": "Electron",
+      "text": "The proposal is still waiting in Electron. Review it and use the approval or rejection button there."
+    },
+    {
+      "file": "brain/chat_engine.py",
+      "line": 7765,
+      "kind": "framework_name",
+      "fragment": "Electron",
+      "text": "A proposal is already waiting in Electron. Review it before creating another capability."
+    },
+    {
+      "file": "brain/chat_engine.py",
+      "line": 7984,
+      "kind": "framework_name",
+      "fragment": "Electron",
+      "text": "A proposal is already waiting in Electron. Review it before creating another action."
+    },
+    {
+      "file": "brain/chat_engine.py",
+      "line": 12115,
+      "kind": "exception_name",
+      "fragment": "SomeError",
+      "text": "SomeError:"
+    },
+    {
+      "file": "brain/chat_engine.py",
+      "line": 7661,
+      "kind": "exception_name",
+      "fragment": "SomeError",
+      "text": "I couldn't complete that web search: SomeError:"
+    },
+    {
+      "file": "brain/chat_engine.py",
+      "line": 7747,
+      "kind": "exception_name",
+      "fragment": "SomeError",
+      "text": "Got it—the name is . I couldn't redo the search: SomeError:"
+    },
+    {
+      "file": "brain/chat_engine.py",
+      "line": 7872,
+      "kind": "framework_name",
+      "fragment": "Electron",
+      "text": "A proposal is already waiting in Electron. Review it before preparing another event."
+    },
+    {
+      "file": "brain/chat_engine.py",
+      "line": 7995,
+      "kind": "framework_name",
+      "fragment": "Electron",
+      "text": "The Git proposal is ready in Electron. Nothing has been committed or pushed; review it and choose Commit & Pus"
+    },
+    {
+      "file": "brain/chat_engine.py",
+      "line": 8016,
+      "kind": "framework_name",
+      "fragment": "Electron",
+      "text": "A proposal is already waiting in Electron. Review it before creating another change."
+    },
+    {
+      "file": "brain/chat_engine.py",
+      "line": 8942,
+      "kind": "framework_name",
+      "fragment": "Ollama",
+      "text": "I couldn't analyze the screen. Please check that the Ollama model ' ' is installed and supports images."
+    },
+    {
+      "file": "brain/chat_engine.py",
+      "line": 7704,
+      "kind": "exception_name",
+      "fragment": "SomeError",
+      "text": "I couldn't verify that correction: SomeError:"
+    },
+    {
+      "file": "brain/chat_engine.py",
+      "line": 8032,
+      "kind": "framework_name",
+      "fragment": "Electron",
+      "text": "The project change proposal is ready in Electron. No files have changed; review the editable code and click Ap"
+    },
+    {
+      "file": "agents/builder.py",
+      "line": 175,
+      "kind": "framework_name",
+      "fragment": "Electron",
+      "text": "The Google Calendar Agent definition is ready. Review its permissions in Electron; no agent has been installed"
+    },
+    {
+      "file": "agents/calendar_agent.py",
+      "line": 145,
+      "kind": "framework_name",
+      "fragment": "Electron",
+      "text": "I prepared the calendar event. Review the exact title, time, calendar, and location in Electron before I creat"
+    }
+  ]
+}

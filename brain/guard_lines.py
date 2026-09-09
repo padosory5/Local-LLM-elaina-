@@ -59,6 +59,41 @@ LINES: dict[str, dict[str, str]] = {
         ENGLISH: "I couldn't generate a response. Please try again.",
         KOREAN: "응답을 만들지 못했습니다. 다시 한번 말씀해 주십시오.",
     },
+    # Answers to "can you...?", built from the registry rather than by the
+    # model -- which is the point of that path and also what hid the gap.
+    # A deterministic answer is a *correct* answer in the wrong language,
+    # every time, and nothing in a green suite says so. Measured live:
+    #
+    #     You said: 깃 커밋 할 수 있어?
+    #     Elaina:   Yes. I can prepare a commit for this project.
+    #               Want me to use it now?
+    #
+    # ``{ability}`` is Capability.spoken_summary_in(language);
+    # ``{name}`` is Capability.name_in(language); ``{reason}`` and
+    # ``{fix}`` come from the registry's requirement tables.
+    "ability_yes": {
+        ENGLISH: "Yes. I can {ability}. {offer}",
+        KOREAN: "네, {ability}. {offer}",
+    },
+    "ability_offer": {
+        ENGLISH: "Want me to use it now?",
+        KOREAN: "지금 해 드릴까요?",
+    },
+    "ability_blocked": {
+        ENGLISH: "Yes, I have {name} -- but {reason}.",
+        KOREAN: "{name} 기능은 있습니다. 다만 {reason}.",
+    },
+    "ability_blocked_fix": {
+        ENGLISH: "{fix} and I'll use it.",
+        KOREAN: "{fix} 바로 사용하겠습니다.",
+    },
+    # A doubt about an ability is a question about it, not a task to run.
+    "ability_doubted": {
+        ENGLISH: "I do have {name} -- I can {ability}. "
+                 "Give me something to try it on and we'll see.",
+        KOREAN: "{name} 기능은 분명히 있습니다. {ability}. "
+                "한번 해 볼 대상을 주시면 확인해 보겠습니다.",
+    },
 }
 
 

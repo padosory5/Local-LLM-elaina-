@@ -55,10 +55,19 @@ class WebSearchTool:
         if not query:
             return "The search query was empty."
 
-        try:
-            results = self.search_web_structured(query, max_results)
-        except Exception as error:
-            return f"Web search failed: {error}"
+        # A backend failure raises, exactly as search_web_structured
+        # documents, instead of being flattened into a sentence.
+        #
+        # It used to come back as "Web search failed: <exception>", and two
+        # things went wrong with that. The string was handed to the model
+        # as research evidence, so a network blip became the material an
+        # answer was built from; and ChatEngine.search_web cached whatever
+        # it got, so the blip was served as evidence for the rest of the
+        # cache window. The only thing standing between the two was
+        # ResearchAgent matching the English prefix of this sentence --
+        # a guard any rewording disarms, which is the failure mode this
+        # project has a standing rule against.
+        results = self.search_web_structured(query, max_results)
 
         if not results:
             return "No useful web search results were found."

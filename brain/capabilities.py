@@ -41,6 +41,18 @@ class Capability:
     needs: tuple[str, ...] = ()
     examples: tuple[str, ...] = ()
     offer_when: str = ""
+    #: The same ability described in Korean, with the same dash
+    #: convention. Only ever *spoken*: ``context_text`` stays in English
+    #: because it is one prompt block the model reads either way, and
+    #: duplicating the whole inventory into the prompt would cost tokens
+    #: to say the same thing twice.
+    #:
+    #: Added when a live probe answered "깃 커밋 할 수 있어?" with "Yes. I
+    #: can prepare a commit for this project." -- the registry answer path
+    #: is deterministic, which is the whole point of it, and deterministic
+    #: is exactly what "silently English" looks like from outside.
+    name_ko: str = ""
+    summary_ko: str = ""
 
     @property
     def spoken_summary(self) -> str:
@@ -62,6 +74,24 @@ class Capability:
         """
         head = re.split(r"\s+(?:--+|[–—])\s+", self.summary, 1)[0]
         return head.strip() or self.summary
+
+    def spoken_summary_in(self, language: str = "en") -> str:
+        """The same, in the language of the turn.
+
+        Falls back to English rather than to nothing: a wrong-language
+        answer is a bug you can see, and a missing one reads as her not
+        having the ability at all -- which is the exact failure this whole
+        registry exists to prevent.
+        """
+        if language == "ko" and self.summary_ko:
+            head = re.split(r"\s+(?:--+|[–—])\s+", self.summary_ko, 1)[0]
+            return head.strip() or self.summary_ko
+        return self.spoken_summary
+
+    def name_in(self, language: str = "en") -> str:
+        if language == "ko" and self.name_ko:
+            return self.name_ko
+        return self.name
 
 
 @dataclass(frozen=True)
@@ -103,6 +133,11 @@ CAPABILITIES: tuple[Capability, ...] = (
             "drive a real browser session -- search, follow links, read the "
             "live page, click buttons, and fill in fields"
         ),
+        name_ko="브라우저 제어",
+        summary_ko=(
+            "브라우저를 직접 조작합니다 -- 검색하고, 링크를 따라가고, 열린 페이지를 읽고, 버튼을 누르고, "
+            "입력란을 채웁니다"
+        ),
         needs=("computer_control_mode", "browser_control_enabled"),
         examples=(
             "check the price on that site",
@@ -118,6 +153,10 @@ CAPABILITIES: tuple[Capability, ...] = (
         id="web_search",
         name="web search",
         summary="search the web and answer from what current sources say",
+        name_ko="웹 검색",
+        summary_ko=(
+            "웹을 검색해서 현재 자료를 근거로 답변드립니다"
+        ),
         needs=("web_search_enabled",),
         examples=("what's the news on X", "how much does Y cost"),
         offer_when="a quick current answer is enough and speed matters",
@@ -135,6 +174,11 @@ CAPABILITIES: tuple[Capability, ...] = (
             "Documents, and Downloads, and click, type, and scroll inside "
             "an app window"
         ),
+        name_ko="데스크톱 제어",
+        summary_ko=(
+            "윈도우 앱 안에서 직접 작업합니다 -- 앱을 열고 닫고 강제 종료하며, 바탕 화면과 문서, 다운로드 "
+            "폴더에 파일과 폴더를 만들거나 정리하고, 앱 창 안에서 클릭하고 입력하고 스크롤합니다"
+        ),
         needs=("computer_control_mode",),
         examples=("open Spotify", "make a folder on my Desktop", "close Discord"),
         offer_when="the task is in a native Windows app rather than a webpage",
@@ -143,6 +187,10 @@ CAPABILITIES: tuple[Capability, ...] = (
         id="screen_analysis",
         name="screen vision",
         summary="look at the screen, or a region you pick, and describe it",
+        name_ko="화면 인식",
+        summary_ko=(
+            "화면이나 지정하신 영역을 보고 설명해 드립니다"
+        ),
         needs=("screen_vision_enabled",),
         examples=("what's on my screen", "read this error for me"),
         offer_when="the user is pointing at something already visible",
@@ -153,6 +201,11 @@ CAPABILITIES: tuple[Capability, ...] = (
         summary=(
             "chain the abilities above into one goal -- research, compare, "
             "shortlist, then act -- pausing before anything committing"
+        ),
+        name_ko="여러 단계 작업",
+        summary_ko=(
+            "위 기능들을 엮어 하나의 목표를 처리합니다 -- 조사하고, 비교하고, 추려낸 다음 실행하며, 실제로 "
+            "바뀌는 작업 전에는 멈춰서 확인합니다"
         ),
         needs=(),
         examples=(
@@ -165,6 +218,10 @@ CAPABILITIES: tuple[Capability, ...] = (
         id="memory",
         name="memory",
         summary="remember what you tell me and bring it up later",
+        name_ko="기억",
+        summary_ko=(
+            "말씀하신 내용을 기억해 두었다가 나중에 다시 꺼내 드립니다"
+        ),
         needs=(),
         examples=("remember that I'm allergic to shellfish",),
         offer_when="the user shares something durable about themselves",
@@ -173,6 +230,10 @@ CAPABILITIES: tuple[Capability, ...] = (
         id="calendar_action",
         name="calendar",
         summary="create Google Calendar events after confirming the details",
+        name_ko="캘린더",
+        summary_ko=(
+            "세부 내용을 확인한 뒤 구글 캘린더에 일정을 만듭니다"
+        ),
         needs=(),
         examples=("put dinner with Jay on Friday at 7",),
         offer_when="the user mentions a time-bound plan",
@@ -181,9 +242,71 @@ CAPABILITIES: tuple[Capability, ...] = (
         id="project_question",
         name="project access",
         summary="read this local project's files to answer questions about it",
+        name_ko="프로젝트 접근",
+        summary_ko=(
+            "이 로컬 프로젝트의 파일을 읽고 관련 질문에 답해 드립니다"
+        ),
         needs=("project_access",),
         examples=("what does the router do in this project",),
         offer_when="the question is about the user's own code",
+    ),
+    # The three below were dispatchable by capability_selection long before
+    # they were declared here, which meant the model was never told she
+    # could do them -- and personality.txt named two of them in its list of
+    # things to deny. A surface the selector can choose and the registry
+    # denies is the exact bug this table exists to prevent.
+    Capability(
+        id="project_edit",
+        name="project edits",
+        summary=(
+            "propose exact changes to this project's files -- you review "
+            "the diff on screen and approve or reject before anything is "
+            "written"
+        ),
+        name_ko="프로젝트 수정",
+        summary_ko=(
+            "이 프로젝트 파일의 정확한 변경안을 제안합니다 -- 화면에서 변경 내용을 확인하시고 승인하거나 거절하시기 "
+            "전까지는 아무것도 저장되지 않습니다"
+        ),
+        needs=("project_access",),
+        examples=(
+            "fix the typo in the router docstring",
+            "add a test for that function",
+        ),
+        offer_when="the user asks for a change to their own code",
+    ),
+    Capability(
+        id="git",
+        name="Git",
+        summary=(
+            "prepare a commit for this project -- you review the files, the "
+            "branch and the message on screen, and nothing is staged, "
+            "committed or pushed until you say so"
+        ),
+        name_ko="깃",
+        summary_ko=(
+            "이 프로젝트의 커밋을 준비합니다 -- 파일과 브랜치, 메시지를 화면에서 확인하시고 승인하시기 전까지는 "
+            "스테이징도 커밋도 푸시도 하지 않습니다"
+        ),
+        needs=("project_access",),
+        examples=("commit this", "push the changes"),
+        offer_when="the user has changes they want recorded",
+    ),
+    Capability(
+        id="agent_building",
+        name="new abilities",
+        summary=(
+            "build a new agent when something is genuinely outside what I "
+            "have -- proposed for your approval, never installed on my own"
+        ),
+        name_ko="새 기능 추가",
+        summary_ko=(
+            "지금 가진 기능으로 정말 안 되는 일이면 새 에이전트를 만들어 제안드립니다 -- 임의로 설치하지는 "
+            "않습니다"
+        ),
+        needs=(),
+        examples=("can you make something that tracks my packages",),
+        offer_when="the user wants something no current ability covers",
     ),
 )
 
@@ -249,6 +372,61 @@ _MATCH_PATTERNS: tuple[tuple[str, re.Pattern[str], float, str], ...] = (
         ),
         0.75,
         "The request asks to open something and report what it says.",
+    ),
+    # Checked before ui_control, and narrowly. "Create a file in my
+    # project" is a project edit; "make a folder on my Desktop" is not, so
+    # every branch here requires a word that names the project, the code,
+    # or the repository. Without these three, "can you commit changes to
+    # git for me?" reached match() with nothing to match, fell through
+    # _answer_ability_question, and was answered by *running the git
+    # action* -- which reported nothing staged, which she then rendered as
+    # "I can't commit changes to Git right now." Registering a capability
+    # is not enough on its own; the question about it has to find it.
+    (
+        "git",
+        re.compile(
+            r"\bgit\b"
+            r"|\b(?:commit|push|stage|staged)\b[^.?!]{0,30}"
+            r"\b(?:change|changes|code|file|files|project|repo|branch)\b"
+            r"|\b(?:change|changes|code|file|files|project|repo)\b[^.?!]{0,30}"
+            r"\b(?:commit|committed|push|pushed)\b"
+            r"|깃|커밋|푸시",
+            re.IGNORECASE,
+        ),
+        0.8,
+        "The request names Git, a commit, or a push.",
+    ),
+    (
+        "project_edit",
+        re.compile(
+            r"\b(?:edit|change|modify|update|fix|refactor|rewrite|add\s+to)\b"
+            r"[^.?!]{0,40}"
+            r"\b(?:project|codebase|repo|source|my\s+code|the\s+code)\b"
+            r"|\b(?:project|codebase|repo)\b[^.?!]{0,30}"
+            r"\b(?:edit|change|modify|fix|refactor)\b"
+            r"|\b(?:create|make|add|delete)\s+(?:a\s+|the\s+)?"
+            r"(?:file|test|function|method|class)\b[^.?!]{0,30}"
+            r"\b(?:project|codebase|repo|code)\b"
+            r"|프로젝트[^.?!]{0,20}(?:수정|고쳐|바꿔)"
+            r"|코드[^.?!]{0,20}(?:수정|고쳐|바꿔)",
+            re.IGNORECASE,
+        ),
+        0.75,
+        "The request asks to change this project's own files.",
+    ),
+    (
+        "agent_building",
+        re.compile(
+            r"\b(?:make|build|create|write)\b[^.?!]{0,30}"
+            r"\b(?:agent|new\s+ability|new\s+capability|new\s+tool|"
+            r"new\s+skill)\b"
+            r"|\b(?:agent|ability|capability)\b[^.?!]{0,20}\bfor\s+(?:that|this)\b"
+            r"|에이전트[^.?!]{0,20}(?:만들|추가)"
+            r"|새\s*기능[^.?!]{0,20}만들",
+            re.IGNORECASE,
+        ),
+        0.7,
+        "The request asks for a new ability to be built.",
     ),
     (
         "ui_control",

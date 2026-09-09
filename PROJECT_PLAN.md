@@ -24,14 +24,16 @@ Elaina that exists then, not the one we imagine now.
 
 | | |
 |---|---|
-| **Branch** | `main` · last commit `a4f37b5` *A1 - naturalconversation* |
-| **Tests green** | **3035** / 166 modules — regression floor, must never drop |
+| **Branch** | `main` · last commit `9f0169b` *A2 bilingual mind, A3 context ownership* |
+| **Tests green** | **3086** / 164 modules — regression floor, must never drop |
 | **Model** | `qwen3:8b` via Ollama · vision `qwen3-vl:8b` |
 | **Router accuracy** | **97.8%** (131/134) · 0 dangerous false positives · target ≥95% ✅ |
+| **Tool selection** | **95.6%** (43/45) · 0 research→browser · 0 UI false positives · target ≥95% ✅ |
 | **Agency / consent** | 0 unrequested actions · consent cases green ✅ |
-| **Conversation quality** | **94%** clean (30/32) EN · 75% KO · target ≥85% ✅ |
+| **Conversation quality** | **97%** clean (31/32) EN · 75% KO · target ≥85% ✅ |
+| **Capability contracts** | **11/11** declared · **0** sentences naming internals (was 14) · ability answers bilingual ✅ |
 | **Latency** | median **3.8s** · p90 **13.0s** · ⚠️ see the latency budget below |
-| **Phase** | A1 done · A2 `[~]` (two guards English-only) · **A3 done** — contamination 9/12 → 12/12 |
+| **Phase** | A1 done · A2 `[~]` (two guards English-only) · A3 done · **A4 `[~]`** — one criterion deferred to A6 |
 
 ```bash
 .venv/Scripts/python.exe tests/run_tests.py     # the full suite, nothing running
@@ -102,7 +104,7 @@ code, that speaks two languages and sounds like one person in both.
 | A1 | Natural conversation | `[x]` | ≥85% clean turns on the dogfood arcs |
 | A2 | Bilingual mind | `[~]` | Korean scores within 10 points of English; no guard silently passes |
 | A3 | Context & state ownership | `[x]` | contamination matrix ≥95% — **12/12**; conversation quality held at 94% |
-| A4 | Capability contracts | `[ ]` | every capability has typed I/O and a declared failure set |
+| A4 | Capability contracts | `[~]` | every capability has typed I/O and a declared failure set — **11/11**; search payload deferred to A6 |
 | A5 | Planning gaps | `[ ]` | retry, cancel and partial completion covered by scenario tests |
 | A6 | Attribute grounding | `[ ]` | no unsourced attribute stated as fact; unknown stays unknown |
 | A7 | Memory & personal context | `[ ]` | useful across sessions, zero cross-task contamination |
@@ -268,7 +270,7 @@ the negative-class equivalent of the router's `conversational_lookalike` set.
 
 ---
 
-## A4 — Capability contracts `[ ]`
+## A4 — Capability contracts `[~]`
 
 **Goal:** a capability declares what it takes, what it returns, and how it fails
 — as types, not prose.
@@ -282,27 +284,70 @@ narrower than "build an inventory".
 
 **What is missing**
 
-- [ ] **Typed inputs.** A capability's requirements are a prose `summary`. A
-      caller cannot ask "what do you need from me" and get an answer it can check.
-- [ ] **Typed results.** Tool results reach the reply as strings and are
-      re-phrased by the model. A1 put a realization layer in front of that, but
-      the underlying result is still prose, which is why a raw accessibility tree
-      could ever have reached speech.
-- [ ] **A declared failure set.** Each capability enumerates how it can fail, so
-      "it didn't work" can become a specific, honest sentence.
-- [ ] **One selection path.** Selection currently reads a registry *and*
-      hand-written branches in `chat_engine.py`.
+- [x] **Typed inputs.** `Need(key, kind, asks, inferable)` — a caller can ask
+      what is missing and get a checkable answer, and the question to ask for it
+      in either language. `calendar_action.when` is declared **not inferable**:
+      a guessed time on a real calendar is a wrong appointment.
+- [~] **Typed results.** `CapabilityResult` carries `facts`, `source`, and a
+      `detail` field that is logged and never spoken. Every **failure** path is
+      typed; three of four success paths already were (`browser_outcome`,
+      `task_outcome`, `CalculationPlan`). The web-search payload is the
+      exception — see below.
+- [x] **A declared failure set.** 44 named failures across 11 capabilities,
+      each with a sentence in both languages, an optional fix, and `retryable`
+      for A5 to read.
+- [x] **One selection path.** Turned out to be a different problem than this
+      bullet assumed: `capability_selection.select()` is already the only
+      dispatcher, and the four `CapabilityRegistry.match()` sites answer a
+      different question (an ability *question*, a router dead-end rescue, and
+      the commitment guard). The real drift was that the selector could dispatch
+      three surfaces the registry denied existing — now registered.
 
-**Instrument:** extend `tests/tool_matrix.json` with input/output conformance —
-every capability's declared contract is exercised, and a capability whose real
-behaviour disagrees with its declaration fails the suite.
+**Instrument:** [`scripts/capability_contract_report.py`](scripts/capability_contract_report.py),
+plus `tests/test_capability_contract.py` as the enforcement half. The tool
+matrix was *not* extended: contract conformance is a property of the
+declaration, not of a routed turn, and `live_tool_check.py` already covers
+selection.
 
 **Exit criteria**
 
-- Every capability has typed I/O and a declared failure set
-- No tool result reaches the reply as unstructured prose
-- Tool selection accuracy holds at **≥95%**
-- A capability cannot be added without a contract (registry test enforces it)
+- ✅ Every capability has typed I/O and a declared failure set — **11/11**
+- ⚠️ No tool result reaches the reply as unstructured prose — **partial**
+- ✅ Tool selection accuracy holds at ≥95% — **95.6%** (43/45)
+- ✅ A capability cannot be added without a contract — registry test
+
+**The partial one.** The web-search payload still reaches the prompt as
+formatted prose, even though `search_web_structured` sits beside it returning
+title/url/summary. Typing it properly is **A6's** work: A6 attaches every
+attribute to its source with per-attribute confidence, and doing it to A4's
+shape now means doing it twice. The concern the criterion was written for — a
+raw accessibility tree reaching speech — is separately held by A1's
+`speakable_fragment()` and by A4's `redact_internals()`.
+
+**What the phase actually found**
+
+- 14 sentences the user hears named a Python exception class, an inference
+  runtime, or a JavaScript framework. Now 0, with a runtime guard on the method
+  every reply path ends in.
+- **Registering the three surfaces was not enough.** A live probe answered
+  "can you commit changes to git for me?" by *running* git, which reported
+  nothing staged, which came out as "I can't commit changes to Git right now" —
+  the question could not find the capability because `match()` had no pattern
+  for it. And "깃 커밋 할 수 있어?" was answered in English, because the registry
+  answer path is deterministic and **deterministic is what silently-English
+  looks like from outside**. Both fixed; all 11 abilities now describe
+  themselves in both languages.
+- Three surfaces (`project_edit`, `git`, `agent_building`) were dispatchable by
+  the selector and absent from the registry — and `personality_en.txt` line 6
+  listed **editing files, Git and calendar** as things to deny, all three of
+  which she can do. Same shape as the bug the registry was built to kill.
+- **A failed web search was returned as a string and used as evidence** — and
+  cached, so one network blip was served as research for the rest of the cache
+  window. What separated failure from evidence was a match on the English prefix
+  of the failure sentence, in a phase that spent its first hour rewording exactly
+  those sentences.
+
+Full record: [docs/CAPABILITY_CONTRACTS.md](docs/CAPABILITY_CONTRACTS.md).
 
 ---
 

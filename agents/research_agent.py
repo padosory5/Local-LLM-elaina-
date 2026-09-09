@@ -75,7 +75,16 @@ class ResearchAgent:
         errors: list[str] = []
 
         for index, candidate in enumerate(queries, start=1):
-            result = str(self._search(candidate, max_results)).strip()
+            try:
+                result = str(self._search(candidate, max_results)).strip()
+            except Exception as error:
+                # The search backend fell over. It reaches the caller as a
+                # failure rather than as a sentence that happens to start
+                # with "Web search failed:", which is how this was detected
+                # before and how it would have stopped being detected the
+                # first time someone improved the wording.
+                errors.append(f"{type(error).__name__}: {error}")
+                continue
             if self._is_failed_result(result):
                 errors.append(result or "No results were returned.")
                 continue

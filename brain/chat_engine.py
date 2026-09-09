@@ -61,6 +61,7 @@ from brain.response_policy import (
     ResponseLimits,
 )
 from brain import conversation_style
+from brain import capability_contract
 from brain import guard_lines
 from brain import korean_register
 from brain import turn_language
@@ -1380,17 +1381,39 @@ class ChatEngine:
             return CapabilityRegistry.inventory_sentence(state)
 
         match = CapabilityRegistry.match(text)
+        # The set used to be browser_control and ui_control only. Measured
+        # live once the three new surfaces were registered:
+        #
+        #     You said: can you commit changes to git for me?
+        #     Elaina:   I can't commit changes to Git right now.
+        #
+        # She had not answered the question -- she had *run* the git
+        # action, which correctly reported nothing staged, and rendered
+        # that as an inability. A question about an ability is answered
+        # from the registry for every ability in it.
         if not match.matched or match.capability.id not in {
             "browser_control", "ui_control",
+            "git", "project_edit", "agent_building",
         }:
             return ""
 
         capability = match.capability
+        language = self._turn_language
+        # Every sentence below used to be an English f-string. The path is
+        # deterministic on purpose -- it answers from the registry so the
+        # model cannot deny an ability she has -- and a deterministic
+        # answer in the wrong language is exactly as reliable, in English.
         blocked = CapabilityRegistry.blocked_reason(capability, state)
         if blocked:
             fix = CapabilityRegistry.fix_for(capability, state)
-            answer = f"Yes, I have {capability.name} -- but {blocked}."
-            return answer + (f" {_sentence_case(fix)} and I'll use it." if fix else "")
+            answer = guard_lines.say("ability_blocked", language).format(
+                name=capability.name_in(language), reason=blocked,
+            )
+            if not fix:
+                return answer
+            return answer + " " + guard_lines.say(
+                "ability_blocked_fix", language,
+            ).format(fix=_sentence_case(fix))
 
         # An offer needs something to do. Measured live, the session-11
         # rerun:
@@ -1408,17 +1431,18 @@ class ChatEngine:
         # not a task to run.
         if _DOUBTS_AN_ABILITY.search(text):
             print(f"[Ability] Answered a doubt about {capability.id}.")
-            return (
-                f"I do have {capability.name} -- I can "
-                f"{capability.spoken_summary}. "
-                "Give me a page to open and we'll see what it does."
+            return guard_lines.say("ability_doubted", language).format(
+                name=capability.name_in(language),
+                ability=capability.spoken_summary_in(language),
             )
-        offer = "Want me to use it now?"
+        offer = guard_lines.say("ability_offer", language)
         self.capability_offer.offer(
             capability_id=capability.id, goal=text, offer_text=offer,
         )
         print(f"[Ability] Answered from the registry for {capability.id}.")
-        return f"Yes. I can {capability.spoken_summary}. {offer}"
+        return guard_lines.say("ability_yes", language).format(
+            ability=capability.spoken_summary_in(language), offer=offer,
+        )
 
     # ------------------------------------------------------------ language
     #
@@ -7658,10 +7682,12 @@ class ChatEngine:
                     f"[Capability] {capability.capability} failed "
                     f"({type(error).__name__}); fallback would be {fallback}."
                 )
-                forced_response = (
-                    "I couldn't complete that web search: "
-                    f"{type(error).__name__}: {error}"
-                )
+                forced_response = capability_contract.failed(
+                    "web_search",
+                    "unreachable",
+                    detail=capability_contract.describe(error),
+                    language=self._turn_language,
+                ).spoken(self._turn_language)
                 # The commitment stands -- she did go and look -- but the
                 # record must not say the lookup returned anything. Phase
                 # 4E's distinction between dispatch, execution and goal
@@ -7701,10 +7727,12 @@ class ChatEngine:
                         or route.topic
                     )
                 except Exception as error:
-                    forced_response = (
-                        "I couldn't verify that correction: "
-                        f"{type(error).__name__}: {error}"
-                    )
+                    forced_response = capability_contract.failed(
+                        "web_search",
+                        "unreachable",
+                        detail=capability_contract.describe(error),
+                        language=self._turn_language,
+                    ).spoken(self._turn_language)
                 finally:
                     timings["web_search"] = (
                         time.perf_counter() - search_started
@@ -7745,8 +7773,13 @@ class ChatEngine:
                 turn_grounding_subject = corrected_entity
             except Exception as error:
                 forced_response = (
-                    f"Got it—the name is {corrected_entity}. I couldn't redo "
-                    f"the search: {type(error).__name__}: {error}"
+                    f"Got it, the name is {corrected_entity}. "
+                    + capability_contract.failed(
+                        "web_search",
+                        "unreachable",
+                        detail=capability_contract.describe(error),
+                        language=self._turn_language,
+                    ).spoken(self._turn_language)
                 )
             finally:
                 timings["web_search"] = (
@@ -7756,15 +7789,15 @@ class ChatEngine:
         if route.intent == "pending_approval":
             forced_response = (
                 f"The {self._pending_action or 'action'} proposal is still "
-                "waiting in Electron. Review it and use the approval or "
+                "waiting on screen. Review it and use the approval or "
                 "rejection button there."
             )
 
         if route.intent == "agent_create":
             if self._pending_action:
                 forced_response = (
-                    f"A {self._pending_action} proposal is already waiting in "
-                    "Electron. Review it before creating another capability."
+                    f"A {self._pending_action} proposal is already waiting on "
+                    "screen. Review it before creating another capability."
                 )
             else:
                 build_result = self.agent_builder.handle(
@@ -7870,8 +7903,8 @@ class ChatEngine:
                 )
             elif self._pending_action:
                 forced_response = (
-                    f"A {self._pending_action} proposal is already waiting in "
-                    "Electron. Review it before preparing another event."
+                    f"A {self._pending_action} proposal is already waiting on "
+                    "screen. Review it before preparing another event."
                 )
             else:
                 credentials_ready, credential_message = (
@@ -7896,7 +7929,18 @@ class ChatEngine:
                         route.normalized_request,
                         calendar_definition,
                     )
-                    forced_response = calendar_result.message
+                    # Asked from the contract, in the language of the
+                    # turn. The agent knows *which* inputs are missing;
+                    # it cannot know what language to ask in, and its own
+                    # sentence was English whatever the person had said.
+                    forced_response = (
+                        capability_contract.ask_for(
+                            "calendar_action",
+                            calendar_result.missing,
+                            language=self._turn_language,
+                        )
+                        or calendar_result.message
+                    )
 
                 if (
                     calendar_result is not None
@@ -7982,8 +8026,8 @@ class ChatEngine:
             )
             if self._pending_action:
                 forced_response = (
-                    f"A {self._pending_action} proposal is already waiting in "
-                    "Electron. Review it before creating another action."
+                    f"A {self._pending_action} proposal is already waiting on "
+                    "screen. Review it before creating another action."
                 )
             else:
                 project_started = time.perf_counter()
@@ -7993,15 +8037,22 @@ class ChatEngine:
                 )
                 if self._pending_action == "Git":
                     forced_response = (
-                        "The Git proposal is ready in Electron. Nothing has "
+                        "The Git proposal is ready on screen. Nothing has "
                         "been committed or pushed; review it and choose Commit "
                         "& Push, Commit Only, or Reject."
                     )
                 else:
-                    forced_response = (
-                        "I couldn't prepare a valid Git proposal. Nothing was "
-                        "staged, committed, or pushed; check the console error."
-                    )
+                    # It used to end "; check the console error." There is
+                    # no console in front of the person -- they are talking
+                    # to her, and that clause is the software asking to be
+                    # debugged. The detail is already printed by
+                    # _prepare_git_action.
+                    forced_response = capability_contract.failed(
+                        "git",
+                        "proposal_failed",
+                        detail="the git proposal came back unusable",
+                        language=self._turn_language,
+                    ).spoken(self._turn_language)
 
         # Other project questions use the normal read/proposal tool planner.
         elif not use_screen_vision and route.intent in {
@@ -8014,8 +8065,8 @@ class ChatEngine:
                 self.policy.get("project.read")
             if project_edit_requested and self._pending_action:
                 forced_response = (
-                    f"A {self._pending_action} proposal is already waiting in "
-                    "Electron. Review it before creating another change."
+                    f"A {self._pending_action} proposal is already waiting on "
+                    "screen. Review it before creating another change."
                 )
             else:
                 project_started = time.perf_counter()
@@ -8030,7 +8081,7 @@ class ChatEngine:
 
                 if project_edit_requested and self._pending_action == "project":
                     forced_response = (
-                        "The project change proposal is ready in Electron. No "
+                        "The project change proposal is ready on screen. No "
                         "files have changed; review the editable code and click "
                         "Approve or Reject."
                     )
@@ -8937,13 +8988,19 @@ class ChatEngine:
                     tool_result_fallback,
                     max_words=max_words,
                     max_sentences=max_sentences,
-                )
+                ) or guard_lines.say("no_response", self._turn_language)
             elif uses_vision_model:
-                reply = (
-                    "I couldn't analyze the screen. Please check that the "
-                    f"Ollama model '{self.vision_model}' is installed and "
-                    "supports images."
-                )
+                # Nothing rephrases this one -- it is the reply. It used to
+                # name Ollama and a model tag, in English, to someone who
+                # had asked what was on their screen.
+                reply = capability_contract.failed(
+                    "screen_analysis",
+                    "capture_failed",
+                    detail=(
+                        f"vision model {self.vision_model!r} returned nothing"
+                    ),
+                    language=self._turn_language,
+                ).spoken(self._turn_language)
             else:
                 reply = guard_lines.say("no_response", self._turn_language)
 
@@ -11718,7 +11775,7 @@ class ChatEngine:
                     "files. To remove an HTML element, read its surrounding "
                     "source and replace the complete opening tag, content, and "
                     "closing tag with an empty new_text. Never remove only an "
-                    "opening tag. The proposal does not edit anything; Electron asks "
+                    "opening tag. The proposal does not edit anything; the app asks "
                     "the user for permission. You MUST call "
                     "propose_file_changes before finish_project_research. "
                     "Identifying a file is not enough. Do not answer in normal "
@@ -11846,8 +11903,16 @@ class ChatEngine:
                     try:
                         result = self.project_mcp.call_tool(name, arguments)
                     except Exception as error:
+                        # The model reads this as tool output and will
+                        # happily repeat it, so the exception goes to the
+                        # log and the model is told what happened instead
+                        # of being handed a class name to read out.
+                        detail = capability_contract.describe(error)
+                        print(f"[Project Tool] {name} failed -- {detail}")
                         result = (
-                            f"Tool error: {type(error).__name__}: {error}"
+                            f"Tool error: {name} did not complete. "
+                            "Say so plainly; do not guess what it would "
+                            "have returned."
                         )
 
                 if (
@@ -12010,8 +12075,16 @@ class ChatEngine:
                     try:
                         result = self.project_mcp.call_tool(name, arguments)
                     except Exception as error:
+                        # The model reads this as tool output and will
+                        # happily repeat it, so the exception goes to the
+                        # log and the model is told what happened instead
+                        # of being handed a class name to read out.
+                        detail = capability_contract.describe(error)
+                        print(f"[Project Tool] {name} failed -- {detail}")
                         result = (
-                            f"Tool error: {type(error).__name__}: {error}"
+                            f"Tool error: {name} did not complete. "
+                            "Say so plainly; do not guess what it would "
+                            "have returned."
                         )
 
                     self.events.emit(
@@ -12079,7 +12152,7 @@ class ChatEngine:
         approval_instruction = ""
         if proposal_created:
             approval_instruction = (
-                "\n\nA file-change proposal is now visible in Electron. "
+                "\n\nA file-change proposal is now visible on screen. "
                 "Tell the user briefly that no files have changed yet and that "
                 "they should review and click Approve or Reject. Do not paste "
                 "the full diff into the spoken response."
@@ -12112,16 +12185,22 @@ class ChatEngine:
                 self.project_mcp.prepare_git_proposal()
             )
         except Exception as error:
-            message = f"{type(error).__name__}: {error}"
+            # The detail goes to the interface event, which is where a
+            # developer looks. It used to go into the sentence as well --
+            # this block instructed the model, in as many words, to read a
+            # Python exception class out loud.
+            detail = capability_contract.describe(error)
             self.events.emit(
                 "git_action_error",
                 status="error",
-                message=message,
+                message=detail,
             )
+            print(f"[Git] proposal failed -- {detail}")
             return (
                 "The Git proposal failed. Respond with one factual sentence "
-                "only: \"I couldn't prepare the Git proposal: "
-                f"{message}\" Do not discuss the time, personality, memories, "
+                "only: \"I couldn't prepare the Git proposal, so nothing has "
+                "been staged or committed.\" "
+                "Do not discuss the time, personality, memories, "
                 "or ask an unrelated follow-up question."
             )
 
@@ -12144,7 +12223,7 @@ class ChatEngine:
         self._pending_action = "Git"
 
         return (
-            "A Git proposal is visible in Electron. No files have been staged, "
+            "A Git proposal is visible on screen. No files have been staged, "
             "committed, or pushed yet. Tell the user to review the exact files, "
             "branch, diff, and editable commit message, then choose Commit & "
             "Push, Commit Only, or Reject. Keep the response to one sentence."

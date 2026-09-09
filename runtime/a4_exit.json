@@ -1,0 +1,21 @@
+{
+  "declarations": {
+    "capabilities": 11,
+    "declared": [
+      "browser_control",
+      "web_search",
+      "ui_control",
+      "screen_analysis",
+      "task_planning",
+      "memory",
+      "calendar_action",
+      "project_question",
+      "project_edit",
+      "git",
+      "agent_building"
+    ],
+    "undeclared": [],
+    "incomplete": []
+  },
+  "leaks": []
+}
