@@ -17,17 +17,27 @@ won in Seoul"). It only fires when all of these hold:
 * no capability ran this turn -- so there is no fresh evidence behind it;
 * the conversation already has a grounded subject (the user is following
   up on something Elaina really did look up);
-* the reply states a **money amount** that appears nowhere in that grounded
-  evidence, nor in what the user themselves said.
+* the reply states a **checkable value** that appears nowhere in that
+  grounded evidence, nor in what the user themselves said.
 
 That combination is specifically "inventing a figure about the thing we
 were just discussing", which is the failure this exists for. A number the
 user supplied, or one that came back from a real search, always passes.
+
+A6 widened what counts as a checkable value. It used to be money, phone
+numbers and email addresses; measured against a real monitor listing with
+six invented replies, it caught one of the six. A fabricated 240Hz refresh
+rate, 4.8-star rating or 14-hour battery life read exactly like retrieved
+ones, and they are the numbers that decide a purchase. See
+:mod:`brain.attribute_values` -- which produces tokens in the shape
+``_digits`` already did, so none of the machinery below had to change.
 """
 
 from __future__ import annotations
 
 import re
+
+from brain import attribute_values
 
 # Money only. A plain integer ("three hotels", "2026") is not a claim about
 # a live value and must not be second-guessed.
@@ -78,8 +88,31 @@ def _contacts(text: str) -> set[str]:
     return found
 
 
-def _values(text: str) -> set[str]:
-    return _digits(text) | _contacts(text)
+def _values(text: str, *, spoken: bool = True) -> set[str]:
+    """Every checkable value in this text.
+
+    A6 widened this from money-and-contacts to measured attributes as
+    well -- a refresh rate, a rating, a battery life, a weight. Measured
+    before that change, against a real monitor listing with six invented
+    replies, this caught one of the six: the price. A fabricated 240Hz
+    read exactly like a retrieved one, and it is the number that decides
+    the purchase.
+
+    Nothing else here changed. ``attribute_values`` produces tokens in the
+    same shape ``_digits`` already did, so the decision below, the repair,
+    the bilingual honesty line and the parked browser offer all applied to
+    the wider vocabulary unaltered.
+
+    ``spoken`` marks text Elaina said, where an ordinary unit in ordinary
+    speech ("let it steep for fourteen hours") is not a claim. Evidence is
+    read permissively: a measurement in a retrieved document is a fact
+    whatever prose surrounds it.
+    """
+    return (
+        _digits(text)
+        | _contacts(text)
+        | attribute_values.tokens(text, spoken=spoken)
+    )
 
 
 _BARE_NUMBER = re.compile(r"(?<![\d.,])\d[\d,]*(?:\.\d+)?(?![\d,])")
@@ -139,7 +172,7 @@ class GroundedValueGuard:
     @classmethod
     def unsupported_values(cls, reply: str, evidence: str) -> set[str]:
         """Every checkable value in the reply the evidence does not contain."""
-        return _values(reply) - _values(evidence)
+        return _values(reply) - _values(evidence, spoken=False)
 
     @classmethod
     def needs_correction(
@@ -187,7 +220,8 @@ class GroundedValueGuard:
         # is the right test for "did she invent a figure" and the wrong one
         # for "did she mangle the person's own".
         contradicts_the_user = bool(
-            (_values(evidence) and cls.unsupported_values(reply, evidence))
+            (_values(evidence, spoken=False)
+             and cls.unsupported_values(reply, evidence))
             or _mangled_numbers(reply, evidence)
         )
         if not grounded_subject and not contradicts_the_user and not (

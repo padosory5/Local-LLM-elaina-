@@ -23,6 +23,7 @@ import unittest
 from pathlib import Path
 
 from brain import task_outcome
+from brain import task_progress
 from brain.browser_action_planner import ActionPlanResult as BrowserResult
 from brain.desktop_action_planner import (
     ActionPlanResult as DesktopResult,
@@ -95,8 +96,73 @@ class ExecutionMatrixTests(unittest.TestCase):
             "verification_failed", "recoverable", "non_recoverable",
             "needs_user_input", "cancelled", "retry_succeeds",
             "retry_exhausted", "compound",
+            # A5's sixth outcome. A run that reached part of the goal is
+            # neither of the two things it used to be reported as.
+            "partial",
         ):
             self.assertIn(required, kinds)
+
+    def test_what_the_person_hears_is_asserted_not_only_the_outcome(self):
+        """A5. The outcome and the sentence are two different claims.
+
+        They disagreed on five of twenty-two scenarios, and only one of
+        them was ever checked: TaskRunResult.outcome() said
+        retryable_failure while the person was told "Done.", because
+        nothing outside these tests called outcome() at all.
+        """
+        for case in self.cases:
+            if "expected_report_mentions" not in case:
+                continue
+            with self.subTest(case=case["id"]):
+                result = _run(case)
+                heard = task_progress.report(
+                    result.outcome(),
+                    result.task_state,
+                    model_summary=result.summary,
+                )
+                for fragment in case["expected_report_mentions"]:
+                    self.assertIn(
+                        fragment.casefold(), heard.casefold(),
+                        f"{case['id']} never said it got as far as "
+                        f"{fragment!r}: {heard!r}",
+                    )
+
+    def test_an_unfinished_run_never_says_it_finished(self):
+        """The four scenarios that said "Done." after a failed step."""
+        for case in self.cases:
+            with self.subTest(case=case["id"]):
+                result = _run(case)
+                outcome = result.outcome()
+                if outcome.succeeded:
+                    continue
+                heard = task_progress.report(
+                    outcome, result.task_state, model_summary=result.summary,
+                )
+                # The progress clause carries the word legitimately; the
+                # claim under test is what comes before it.
+                claim = heard
+                for marker in task_progress.SPOKEN_PROGRESS_MARKERS:
+                    claim = claim.partition(marker)[0]
+                self.assertNotIn("done", claim.casefold(), f"{case['id']}: {heard!r}")
+
+    def test_progress_is_never_claimed_where_none_was_made(self):
+        """The other direction, which nothing produces today.
+
+        A reporting layer measured only in the direction it is known to
+        fail is measured once.
+        """
+        for case in self.cases:
+            with self.subTest(case=case["id"]):
+                result = _run(case)
+                if task_progress.read(result.task_state).reached:
+                    continue
+                heard = task_progress.report(
+                    result.outcome(),
+                    result.task_state,
+                    model_summary=result.summary,
+                )
+                for marker in task_progress.SPOKEN_PROGRESS_MARKERS:
+                    self.assertNotIn(marker, heard, f"{case['id']}: {heard!r}")
 
     def test_every_scenario_reaches_its_expected_outcome(self):
         for case in self.cases:

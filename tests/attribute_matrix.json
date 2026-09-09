@@ -1,0 +1,175 @@
+{
+  "description": "For each attribute stated in a reply: is it in the evidence, and does the value match?",
+  "kinds": [
+    "unsupported",
+    "contradicted",
+    "grounded",
+    "not_a_claim",
+    "conflict"
+  ],
+  "note": "The negatives are the point. A guard that strips content is dangerous in proportion to how ordinary its vocabulary is, so half these cases exist to prove ordinary speech survives it. 'Let it steep for fourteen hours' is a real turn from the everyday dogfood arc.",
+  "cases": [
+    {
+      "id": "at01_refresh_invented",
+      "kind": "unsupported",
+      "evidence": "[1] LG UltraGear 27GP850-B\nSource: bestbuy.com\nSnippet: 27-inch QHD (2560x1440) Nano IPS gaming monitor, 165Hz native, 1ms response time. Weighs 6.1 kg. Currently $396.99.",
+      "reply": "The LG UltraGear has a 240Hz refresh rate.",
+      "expect": [
+        "240Hz"
+      ]
+    },
+    {
+      "id": "at02_response_invented",
+      "kind": "unsupported",
+      "evidence": "[1] LG UltraGear 27GP850-B\nSource: bestbuy.com\nSnippet: 27-inch QHD (2560x1440) Nano IPS gaming monitor, 165Hz native, 1ms response time. Weighs 6.1 kg. Currently $396.99.",
+      "reply": "It has a 0.5ms response time.",
+      "expect": [
+        "0.5ms"
+      ]
+    },
+    {
+      "id": "at03_rating_invented",
+      "kind": "unsupported",
+      "evidence": "[1] LG UltraGear 27GP850-B\nSource: bestbuy.com\nSnippet: 27-inch QHD (2560x1440) Nano IPS gaming monitor, 165Hz native, 1ms response time. Weighs 6.1 kg. Currently $396.99.",
+      "reply": "It is rated 4.8 stars.",
+      "expect": [
+        "rated 4.8 stars"
+      ]
+    },
+    {
+      "id": "at04_battery_invented",
+      "kind": "unsupported",
+      "evidence": "[1] Logitech MX Master 3S\nSource: logitech.com\nSnippet: 8000 dpi sensor, USB-C quick charge. $99.99.",
+      "reply": "Battery life is about 70 hours.",
+      "expect": [
+        "70 hours"
+      ]
+    },
+    {
+      "id": "at05_weight_invented",
+      "kind": "unsupported",
+      "evidence": "[1] LG UltraGear 27GP850-B\nSource: bestbuy.com\nSnippet: 27-inch QHD (2560x1440) Nano IPS gaming monitor, 165Hz native, 1ms response time. Weighs 6.1 kg. Currently $396.99.",
+      "reply": "It weighs 4.2 kg.",
+      "expect": [
+        "4.2 kg"
+      ]
+    },
+    {
+      "id": "at06_dpi_invented",
+      "kind": "unsupported",
+      "evidence": "[1] Logitech MX Master 3S\nSource: logitech.com\nSnippet: 8000 dpi sensor, USB-C quick charge. $99.99.",
+      "reply": "The sensor goes up to 16000 dpi.",
+      "expect": [
+        "16000 dpi"
+      ]
+    },
+    {
+      "id": "at07_resolution_invented",
+      "kind": "unsupported",
+      "evidence": "[1] LG UltraGear 27GP850-B\nSource: bestbuy.com\nSnippet: 27-inch QHD (2560x1440) Nano IPS gaming monitor, 165Hz native, 1ms response time. Weighs 6.1 kg. Currently $396.99.",
+      "reply": "It is a 3840x2160 panel.",
+      "expect": [
+        "3840x2160"
+      ]
+    },
+    {
+      "id": "at08_refresh_contradicted",
+      "kind": "contradicted",
+      "evidence": "[1] LG UltraGear 27GP850-B\nSource: bestbuy.com\nSnippet: 27-inch QHD (2560x1440) Nano IPS gaming monitor, 165Hz native, 1ms response time. Weighs 6.1 kg. Currently $396.99.",
+      "reply": "It runs at 144Hz.",
+      "expect": [
+        "144Hz"
+      ]
+    },
+    {
+      "id": "at09_refresh_grounded",
+      "kind": "grounded",
+      "evidence": "[1] LG UltraGear 27GP850-B\nSource: bestbuy.com\nSnippet: 27-inch QHD (2560x1440) Nano IPS gaming monitor, 165Hz native, 1ms response time. Weighs 6.1 kg. Currently $396.99.",
+      "reply": "It runs at 165Hz.",
+      "expect": []
+    },
+    {
+      "id": "at10_size_spelling",
+      "kind": "grounded",
+      "evidence": "[1] LG UltraGear 27GP850-B\nSource: bestbuy.com\nSnippet: 27-inch QHD (2560x1440) Nano IPS gaming monitor, 165Hz native, 1ms response time. Weighs 6.1 kg. Currently $396.99.",
+      "reply": "It is a 27 inch screen.",
+      "expect": [],
+      "note": "the evidence writes it 27-inch; a guard that treats those as two values strips a correct answer"
+    },
+    {
+      "id": "at11_weight_grounded",
+      "kind": "grounded",
+      "evidence": "[1] LG UltraGear 27GP850-B\nSource: bestbuy.com\nSnippet: 27-inch QHD (2560x1440) Nano IPS gaming monitor, 165Hz native, 1ms response time. Weighs 6.1 kg. Currently $396.99.",
+      "reply": "It weighs 6.1 kg.",
+      "expect": []
+    },
+    {
+      "id": "at12_resolution_grounded",
+      "kind": "grounded",
+      "evidence": "[1] LG UltraGear 27GP850-B\nSource: bestbuy.com\nSnippet: 27-inch QHD (2560x1440) Nano IPS gaming monitor, 165Hz native, 1ms response time. Weighs 6.1 kg. Currently $396.99.",
+      "reply": "It is 2560x1440.",
+      "expect": []
+    },
+    {
+      "id": "at13_dpi_grounded",
+      "kind": "grounded",
+      "evidence": "[1] Logitech MX Master 3S\nSource: logitech.com\nSnippet: 8000 dpi sensor, USB-C quick charge. $99.99.",
+      "reply": "The sensor is 8000 dpi.",
+      "expect": []
+    },
+    {
+      "id": "at14_rating_grounded",
+      "kind": "grounded",
+      "evidence": "[1] The Peninsula Seoul\nSource: trip.com\nSnippet: Rooms from 380,000 KRW. Rated 4.6 stars.",
+      "reply": "It is rated 4.6 stars.",
+      "expect": []
+    },
+    {
+      "id": "at15_steeping",
+      "kind": "not_a_claim",
+      "evidence": "[1] LG UltraGear 27GP850-B\nSource: bestbuy.com\nSnippet: 27-inch QHD (2560x1440) Nano IPS gaming monitor, 165Hz native, 1ms response time. Weighs 6.1 kg. Currently $396.99.",
+      "reply": "Let it steep for 14 hours in the fridge.",
+      "expect": [],
+      "note": "a real turn from the everyday arc -- an ordinary unit in ordinary speech"
+    },
+    {
+      "id": "at16_walking",
+      "kind": "not_a_claim",
+      "evidence": "[1] LG UltraGear 27GP850-B\nSource: bestbuy.com\nSnippet: 27-inch QHD (2560x1440) Nano IPS gaming monitor, 165Hz native, 1ms response time. Weighs 6.1 kg. Currently $396.99.",
+      "reply": "I walked 6 km this morning.",
+      "expect": []
+    },
+    {
+      "id": "at17_counts_and_years",
+      "kind": "not_a_claim",
+      "evidence": "[1] The Peninsula Seoul\nSource: trip.com\nSnippet: Rooms from 380,000 KRW. Rated 4.6 stars.",
+      "reply": "I found three hotels and the building went up in 2026.",
+      "expect": []
+    },
+    {
+      "id": "at18_minutes_casual",
+      "kind": "not_a_claim",
+      "evidence": "[1] LG UltraGear 27GP850-B\nSource: bestbuy.com\nSnippet: 27-inch QHD (2560x1440) Nano IPS gaming monitor, 165Hz native, 1ms response time. Weighs 6.1 kg. Currently $396.99.",
+      "reply": "Give it about 20 minutes and try again.",
+      "expect": []
+    },
+    {
+      "id": "at19_no_numbers",
+      "kind": "not_a_claim",
+      "evidence": "[1] LG UltraGear 27GP850-B\nSource: bestbuy.com\nSnippet: 27-inch QHD (2560x1440) Nano IPS gaming monitor, 165Hz native, 1ms response time. Weighs 6.1 kg. Currently $396.99.",
+      "reply": "It is a solid pick for the money.",
+      "expect": []
+    },
+    {
+      "id": "at20_conflict",
+      "kind": "conflict",
+      "evidence": "[1] LG UltraGear 27GP850-B\nSource: bestbuy.com\nSnippet: 27-inch QHD (2560x1440) Nano IPS gaming monitor, 165Hz native, 1ms response time. Weighs 6.1 kg. Currently $396.99.",
+      "second_source": "[2] LG UltraGear 27GP850-B\nSource: lg.com\nSnippet: 180Hz overclocked.",
+      "reply": "It runs at 165Hz.",
+      "expect_conflict": [
+        "refresh_rate"
+      ],
+      "note": "two sources disagreeing is a state, not a race"
+    }
+  ]
+}

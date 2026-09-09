@@ -41,10 +41,27 @@ RETRYABLE_FAILURE = "retryable_failure"
 NEEDS_USER_INPUT = "needs_user_input"
 CANCELLED = "cancelled"
 TERMINAL_FAILURE = "terminal_failure"
+# The sixth, added in A5. A run that did not reach the goal but did reach
+# part of it is neither of the two things it used to be reported as. "I got
+# two of the four done" was previously either a failure -- which throws away
+# the two -- or, when the model wrote the summary, a success.
+#
+# Deliberately *not* reachable from classify(): a status and a failure code
+# cannot tell you whether anything was accomplished. Only the run's own
+# steps can, which is why it is decided in TaskRunResult.outcome() where
+# they are. See brain/task_progress.py.
+PARTIAL = "partial"
 
 OUTCOMES = (
     SUCCESS, RETRYABLE_FAILURE, NEEDS_USER_INPUT, CANCELLED, TERMINAL_FAILURE,
+    PARTIAL,
 )
+
+# The outcomes that describe *why* a run ended rather than how far it got.
+# A cancellation is still a cancellation when work was done, and a question
+# is still a question -- promoting either to PARTIAL would lose the reason,
+# which is the more useful half.
+_KEEPS_ITS_REASON = frozenset({CANCELLED, NEEDS_USER_INPUT, SUCCESS})
 
 # How a success was established. A task may finish without anything having
 # confirmed the end state -- saying so is more useful than a confidence that
@@ -63,6 +80,11 @@ NOT_APPLICABLE = ""                    # not a success
 _CANCELLED = frozenset({
     "user_took_over",
 })
+
+# Exported so other modules can recognise a cancellation without keeping a
+# second copy of the list. brain/task_progress.py reads it to tell a
+# cancelled step's placeholder summary from a real finding about the task.
+CANCELLED_CODES = _CANCELLED
 
 # The task cannot proceed until a person answers something. Never a guess:
 # "send this to John" with three Johns stops here.
@@ -188,6 +210,29 @@ class TaskOutcome:
         detail = f" ({self.failure_code})" if self.failure_code else ""
         verification = f" [{self.verification}]" if self.verification else ""
         return f"{self.outcome}{verification}{detail}: {self.reason}"
+
+
+def with_progress(outcome: TaskOutcome, made_progress: bool) -> TaskOutcome:
+    """Promote an unfinished run to PARTIAL when it actually got somewhere.
+
+    Kept out of :func:`classify` on purpose. Classify reads a status and a
+    code, and neither of those knows whether two of the four steps landed;
+    only the run's completed steps do. Putting the question here means the
+    code table stays a table, and the one caller that has the steps is the
+    one that answers it.
+
+    A cancellation and a question keep their own outcome: *why* it ended is
+    the more useful half, and PARTIAL would erase it. They still report
+    what got done -- that is task_progress's job, not this one.
+    """
+    if not made_progress or outcome.outcome in _KEEPS_ITS_REASON:
+        return outcome
+    return TaskOutcome(
+        PARTIAL,
+        outcome.verification,
+        outcome.failure_code,
+        "part of the goal was reached and the rest was not",
+    )
 
 
 def classify(

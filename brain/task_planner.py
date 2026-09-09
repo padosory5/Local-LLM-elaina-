@@ -91,6 +91,7 @@ from typing import Any
 
 from agents.preconditions import check_precondition
 from brain import task_outcome
+from brain import task_progress
 from brain.decision_log import log_information_need
 from brain.task_discovery_policy import TaskDiscoveryPolicy
 from tools.browser_control.browser_control import (
@@ -315,7 +316,7 @@ class TaskRunResult:
     pending_prepared: PreparedComputerAction | None = None
 
     def outcome(self) -> "task_outcome.TaskOutcome":
-        """Which of the five terminal states this run reached.
+        """Which terminal state this run reached, and how far it got.
 
         Read from the run's own status and its last step, rather than stored,
         so it cannot disagree with what actually happened. A "done" run only
@@ -328,20 +329,29 @@ class TaskRunResult:
             if self.task_state.completed_steps else None
         )
         code = getattr(last, "failure_code", "") if last is not None else ""
+        # Whether anything was actually accomplished, which no status and no
+        # failure code can say. A run that opened the app and then stalled
+        # is not the same event as one that never started, and reporting
+        # both as terminal_failure threw the difference away.
+        made_progress = task_progress.read(self.task_state).any
         if self.status == "done":
             if code and code in task_outcome.KNOWN_FAILURE_CODES:
                 # A completed run whose final step never confirmed its end
                 # state is not a success, whatever the summary says.
                 classified = task_outcome.classify("failed", code)
                 if not classified.succeeded:
-                    return classified
+                    return task_outcome.with_progress(classified, made_progress)
             observed = bool(
                 last is not None and getattr(last, "verified", None) is True
             )
             return task_outcome.classify("done", observed=observed)
         if self.status in {"stopped", "failed"} and code:
-            return task_outcome.classify("failed", code)
-        return task_outcome.classify(self.status, code)
+            return task_outcome.with_progress(
+                task_outcome.classify("failed", code), made_progress,
+            )
+        return task_outcome.with_progress(
+            task_outcome.classify(self.status, code), made_progress,
+        )
 
 
 class TaskPlanner:

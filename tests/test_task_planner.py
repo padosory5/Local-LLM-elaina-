@@ -111,6 +111,7 @@ def _planner(
     preview_enabled=False,
     discovery_policy=None,
     user_locale=None,
+    is_cancelled=None,
 ):
     desktop = FakeDesktopExecutor(act_results=desktop_results, resume_result=desktop_resume)
     browser = FakeBrowserExecutor(act_results=browser_results, resume_result=browser_resume)
@@ -132,6 +133,11 @@ def _planner(
         preview_enabled=preview_enabled,
         discovery_policy=discovery_policy,
         user_locale=user_locale,
+        # A5's cancellation check drives this: the planner asks the
+        # predicate at three points inside its loop, and "cancellation is
+        # noticed wherever it arrives" is only testable by arriving at
+        # each of them.
+        is_cancelled=is_cancelled,
     )
     return planner, desktop, browser
 

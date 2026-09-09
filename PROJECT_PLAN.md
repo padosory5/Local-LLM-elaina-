@@ -24,16 +24,18 @@ Elaina that exists then, not the one we imagine now.
 
 | | |
 |---|---|
-| **Branch** | `main` · last commit `9f0169b` *A2 bilingual mind, A3 context ownership* |
-| **Tests green** | **3086** / 164 modules — regression floor, must never drop |
+| **Branch** | `main` · last commit `d5badae` *A4 capability contracts* |
+| **Tests green** | **3143** / 167 modules — regression floor, must never drop |
 | **Model** | `qwen3:8b` via Ollama · vision `qwen3-vl:8b` |
 | **Router accuracy** | **97.8%** (131/134) · 0 dangerous false positives · target ≥95% ✅ |
 | **Tool selection** | **95.6%** (43/45) · 0 research→browser · 0 UI false positives · target ≥95% ✅ |
 | **Agency / consent** | 0 unrequested actions · consent cases green ✅ |
-| **Conversation quality** | **97%** clean (31/32) EN · 75% KO · target ≥85% ✅ |
+| **Conversation quality** | **97%** clean (31/32) EN · 75% KO · target ≥85% ✅ · ⚠️ ±3 turns run-to-run on identical code |
 | **Capability contracts** | **11/11** declared · **0** sentences naming internals (was 14) · ability answers bilingual ✅ |
 | **Latency** | median **3.8s** · p90 **13.0s** · ⚠️ see the latency budget below |
-| **Phase** | A1 done · A2 `[~]` (two guards English-only) · A3 done · **A4 `[~]`** — one criterion deferred to A6 |
+| **Task reporting** | **25/25** scenarios honest (was 17/22) · cancellation **10/10** ✅ |
+| **Attribute grounding** | invented specs **1/6 → 8/8** caught · true sentences **11/11** kept ✅ |
+| **Phase** | A1 done · A2 `[~]` · A3 done · A4 `[~]` · A5 done · **A6 done** |
 
 ```bash
 .venv/Scripts/python.exe tests/run_tests.py     # the full suite, nothing running
@@ -105,8 +107,8 @@ code, that speaks two languages and sounds like one person in both.
 | A2 | Bilingual mind | `[~]` | Korean scores within 10 points of English; no guard silently passes |
 | A3 | Context & state ownership | `[x]` | contamination matrix ≥95% — **12/12**; conversation quality held at 94% |
 | A4 | Capability contracts | `[~]` | every capability has typed I/O and a declared failure set — **11/11**; search payload deferred to A6 |
-| A5 | Planning gaps | `[ ]` | retry, cancel and partial completion covered by scenario tests |
-| A6 | Attribute grounding | `[ ]` | no unsourced attribute stated as fact; unknown stays unknown |
+| A5 | Planning gaps | `[x]` | retry, cancel and partial completion covered by scenario tests — **25/25**, cancellation **10/10** |
+| A6 | Attribute grounding | `[x]` | no unsourced attribute stated as fact; unknown stays unknown — **20/20**, invented specs 1/6 → 8/8 caught |
 | A7 | Memory & personal context | `[ ]` | useful across sessions, zero cross-task contamination |
 
 ---
@@ -351,7 +353,7 @@ Full record: [docs/CAPABILITY_CONTRACTS.md](docs/CAPABILITY_CONTRACTS.md).
 
 ---
 
-## A5 — Planning gaps `[ ]`
+## A5 — Planning gaps `[x]`
 
 **Goal:** a multi-step task can be retried, cancelled, and reported on halfway.
 
@@ -361,31 +363,58 @@ Replan, with per-step risk classification and a consent pause before anything
 committing. Capability chaining and replanning-after-correction exist. Do not
 rebuild them.
 
-**What is missing**
+**What was missing** — three of these four turned out to be already done, and
+reading the code before writing the phase is the rule that caught it:
 
-- [ ] **Retry strategy.** A step that fails transiently is not distinguished from
-      one that fails permanently.
-- [ ] **Cancellation mid-plan.** "Stop" is deterministic at the input layer; a
-      plan that is three steps in needs to unwind and say what it did.
-- [ ] **Partial completion reporting.** "I got two of the four done, and here is
-      where I stopped" is currently either a success or a failure.
-- [ ] **Planning vs execution as separate, inspectable phases** — so a plan can
-      be shown before it runs, which C and D will both want.
+- [x] **Retry strategy.** Already there. `task_outcome.py` separates `_RETRYABLE`
+      from `_TERMINAL`, and a terminal code short-circuits the loop instead of
+      spending the budget.
+- [x] **Cancellation mid-plan.** The stopping worked; the *reporting* did not.
+      A run that had opened Spotify said only "You took control, so I stopped."
+      And one of the four places a cancellation can arrive — during a retry —
+      had no coverage at all.
+- [x] **Partial completion reporting.** The real gap. `partial` is now a sixth
+      terminal state, decided from the run's own steps rather than from
+      `classify()`, which cannot know whether anything was accomplished.
+- [x] **Planning vs execution as separate, inspectable phases.** `_preview()`
+      already settles capabilities, verification level and stated intent before
+      the first dispatch. Showing a plan for approval before it runs is carried
+      forward to C, which will have a surface for it.
 
-**Instrument:** extend `tests/execution_matrix.json` with interruption and
-partial-failure scenarios; every scenario ends in exactly one named terminal
-state.
+**Instrument:** [`scripts/task_report_check.py`](scripts/task_report_check.py)
+(what the person hears) and
+[`scripts/cancellation_check.py`](scripts/cancellation_check.py) (does "stop"
+stop it), plus three new matrix cases including a negative one.
 
 **Exit criteria**
 
-- Every failure ends in one of the named terminal states, **0 unbounded waits**
-- Cancellation stops the plan and reports honestly, **10/10**
-- Partial completion is reported as partial, never as success or failure
-- Execution matrix green
+- ✅ Every failure ends in a named terminal state, **0 unbounded waits** — six
+  states; planner bounded by `max_steps` and `_MAX_CONSECUTIVE_FAILURES`,
+  `_wait_for_port` by a deadline, the service loop by a stop sentinel
+- ✅ Cancellation stops the plan and reports honestly — **10/10**
+- ✅ Partial completion is reported as partial — with a negative case asserting
+  a run that got nowhere is *not* softened
+- ✅ Execution matrix green — **25/25**
+
+**What the phase actually found**
+
+The five terminal states, their code table, their drift test and twenty-two
+green scenarios — **none of it was ever read outside the tests.**
+`_handle_task_action` returned the model's own final planning summary, so four
+scenarios told the person **"Done."** on a run whose last step had failed
+verification. `ex06`'s own note says *"must never report SUCCESS"*; it never
+reported success, it said "Done."
+
+Two instrument corrections, both recorded in the scripts: the report check
+condemned the single best sentence in the run (it caught "done" inside the
+progress frame), and the cancellation check scored two non-cancellations as
+failures (the stop arrived after the plan had finished).
+
+Full record: [docs/PLANNING_GAPS.md](docs/PLANNING_GAPS.md).
 
 ---
 
-## A6 — Attribute grounding `[ ]`
+## A6 — Attribute grounding `[x]`
 
 **Goal:** when she says a thing has a price, a refresh rate, a rating or a
 battery life, that number came from evidence.

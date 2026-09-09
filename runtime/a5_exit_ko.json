@@ -1,0 +1,204 @@
+[
+  {
+    "id": "ex01_browser_success",
+    "outcome": "success",
+    "expected": "success",
+    "reached": [
+      "Opened the hotel page.",
+      "Rates are $180 a night."
+    ],
+    "heard": "Done.",
+    "faults": []
+  },
+  {
+    "id": "ex02_browser_unverified",
+    "outcome": "success",
+    "expected": "success",
+    "reached": [
+      "Clicked Reviews."
+    ],
+    "heard": "Done.",
+    "faults": []
+  },
+  {
+    "id": "ex03_multi_nav",
+    "outcome": "success",
+    "expected": "success",
+    "reached": [
+      "Search results listed.",
+      "Opened the Peninsula page.",
+      "Rooms page open."
+    ],
+    "heard": "Done.",
+    "faults": []
+  },
+  {
+    "id": "ex04_local_success",
+    "outcome": "success",
+    "expected": "success",
+    "reached": [
+      "Notepad is open."
+    ],
+    "heard": "Done.",
+    "faults": []
+  },
+  {
+    "id": "ex05_local_multi",
+    "outcome": "success",
+    "expected": "success",
+    "reached": [
+      "Spotify is open.",
+      "Liked Songs is open.",
+      "Playback started."
+    ],
+    "heard": "Done.",
+    "faults": []
+  },
+  {
+    "id": "ex06_playback_unverified",
+    "outcome": "retryable_failure",
+    "expected": "retryable_failure",
+    "reached": [],
+    "heard": "Pressed play; nothing started.",
+    "faults": []
+  },
+  {
+    "id": "ex07_verification_failed",
+    "outcome": "retryable_failure",
+    "expected": "retryable_failure",
+    "reached": [],
+    "heard": "Clicked Checkout; the page did not change.",
+    "faults": []
+  },
+  {
+    "id": "ex08_unchanged_state",
+    "outcome": "retryable_failure",
+    "expected": "retryable_failure",
+    "reached": [],
+    "heard": "Pressed shuffle; state unchanged.",
+    "faults": []
+  },
+  {
+    "id": "ex09_collection_not_observed",
+    "outcome": "retryable_failure",
+    "expected": "retryable_failure",
+    "reached": [],
+    "heard": "Opened a view; the collection is not there.",
+    "faults": []
+  },
+  {
+    "id": "ex10_retry_succeeds",
+    "outcome": "success",
+    "expected": "success",
+    "reached": [
+      "Opened search results."
+    ],
+    "heard": "Found one after retrying.",
+    "faults": []
+  },
+  {
+    "id": "ex11_transient_planner",
+    "outcome": "success",
+    "expected": "success",
+    "reached": [
+      "Rate is 1,320 KRW."
+    ],
+    "heard": "Rate found.",
+    "faults": []
+  },
+  {
+    "id": "ex12_search_failed_then_ok",
+    "outcome": "success",
+    "expected": "success",
+    "reached": [
+      "Forecast retrieved."
+    ],
+    "heard": "Rain tomorrow.",
+    "faults": []
+  },
+  {
+    "id": "ex13_app_missing",
+    "outcome": "terminal_failure",
+    "expected": "terminal_failure",
+    "reached": [],
+    "heard": "Spotify is not installed.",
+    "faults": []
+  },
+  {
+    "id": "ex14_scope_violation",
+    "outcome": "terminal_failure",
+    "expected": "terminal_failure",
+    "reached": [],
+    "heard": "That host is outside the allowed sources.",
+    "faults": []
+  },
+  {
+    "id": "ex15_repeated_not_found",
+    "outcome": "terminal_failure",
+    "expected": "terminal_failure",
+    "reached": [],
+    "heard": "Still not found after retrying.",
+    "faults": []
+  },
+  {
+    "id": "ex16_ambiguous_target",
+    "outcome": "needs_user_input",
+    "expected": "needs_user_input",
+    "reached": [],
+    "heard": "There are three Johns.",
+    "faults": []
+  },
+  {
+    "id": "ex17_needs_clarification",
+    "outcome": "needs_user_input",
+    "expected": "needs_user_input",
+    "reached": [],
+    "heard": "Which song did you mean?",
+    "faults": []
+  },
+  {
+    "id": "ex18_cancel_midway",
+    "outcome": "cancelled",
+    "expected": "cancelled",
+    "reached": [
+      "Spotify is open."
+    ],
+    "heard": "직접 조작하셔서 멈췄습니다. 여기까지는 되어 있습니다 -- Spotify is open.",
+    "faults": []
+  },
+  {
+    "id": "ex19_cancel_first_step",
+    "outcome": "cancelled",
+    "expected": "cancelled",
+    "reached": [],
+    "heard": "직접 조작하셔서 멈췄습니다. 바뀐 것은 없습니다.",
+    "faults": []
+  },
+  {
+    "id": "ex20_retry_exhausted",
+    "outcome": "retryable_failure",
+    "expected": "retryable_failure",
+    "reached": [],
+    "heard": "Could not load.",
+    "faults": []
+  },
+  {
+    "id": "ex21_stalled",
+    "outcome": "terminal_failure",
+    "expected": "terminal_failure",
+    "reached": [],
+    "heard": "No further progress.",
+    "faults": []
+  },
+  {
+    "id": "ex22_compound",
+    "outcome": "success",
+    "expected": "success",
+    "reached": [
+      "Three hotels listed.",
+      "Rooms available on the 18th."
+    ],
+    "heard": "The Peninsula has rooms on the 18th.",
+    "faults": []
+  }
+]

@@ -63,6 +63,7 @@ from brain.response_policy import (
 from brain import conversation_style
 from brain import capability_contract
 from brain import guard_lines
+from brain import task_progress
 from brain import korean_register
 from brain import turn_language
 from brain.turn_context import TurnContext
@@ -113,6 +114,7 @@ from brain.action_status import (
 from brain import social_lines
 from brain.social_lines import SocialLineSelector
 from brain.answer_condenser import AnswerCondenser
+from brain import attribute_values
 from brain.grounded_values import GroundedValueGuard
 from brain import grounded_values
 from brain.grounded_values import _SENTENCE_SPLIT
@@ -1988,6 +1990,23 @@ class ChatEngine:
             str(research_evidence or ""),
             "" if disputed else user_input,
         ))
+        # Two sources disagreeing is a state, not a race -- so it is said,
+        # and it is said even when the value she chose is perfectly well
+        # supported, which is why this sits before the correction check
+        # rather than inside it. Only ever about an attribute the reply
+        # actually states: a disagreement over something she never
+        # mentioned is how honesty turns into a disclaimer footer.
+        for claim, other in attribute_values.conflicting_claims(text, evidence):
+            print(
+                f"[Grounding Guard] Sources disagree on {claim.kind}: "
+                f"{claim.text} ({attribute_values.source_of(claim, evidence) or 'unattributed'}) "
+                f"vs {other}."
+            )
+            text = text.rstrip() + " " + guard_lines.say(
+                "sources_disagree", self._turn_language,
+            ).format(other=other)
+            break
+
         if not GroundedValueGuard.needs_correction(
             text,
             evidence=evidence,
@@ -7448,8 +7467,30 @@ class ChatEngine:
             # follow-up, never as long-term memory.
             self.task_sessions.remember(task_result.task_state)
 
+        # What the person hears, built from what the run actually did.
+        #
+        # This used to be `task_result.summary or "That task is done."` --
+        # the model's own final planning summary, spoken verbatim. Measured
+        # across the execution matrix: four scenarios out of twenty-two
+        # reported "Done." on a run whose last step had failed
+        # verification, because the model wrote {"done": true, "summary":
+        # "Done."} after "Pressed play; nothing started."
+        #
+        # TaskRunResult.outcome() had said retryable_failure the whole
+        # time. Nothing outside the tests ever called it.
+        outcome = task_result.outcome()
+        print(f"[Task] {outcome.log_line()}")
+        print(task_progress.read(task_result.task_state).log_line())
+        spoken = task_progress.report(
+            outcome,
+            task_result.task_state,
+            language=self._turn_language,
+            model_summary=task_result.summary,
+        )
         return self._prefix_with_preview(
-            preview, task_result.summary or "That task is done.",
+            preview, spoken or task_result.summary or guard_lines.say(
+                "task_incomplete", self._turn_language,
+            ),
         )
 
     @staticmethod

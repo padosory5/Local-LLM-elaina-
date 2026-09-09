@@ -5,9 +5,10 @@
     "retryable_failure",
     "needs_user_input",
     "cancelled",
-    "terminal_failure"
+    "terminal_failure",
+    "partial"
   ],
-  "note": "Scripted tool results, deliberately: half of these cannot be produced reliably against a live machine. What is under test is the pipeline's response to them, not the browser's.",
+  "note": "Scripted tool results, deliberately: half of these cannot be produced reliably against a live machine. What is under test is the pipeline's response to them, not the browser's. expected_report, added in A5, is the sentence the person actually hears -- built by brain/task_progress.py from the run's own steps. It is a separate assertion from expected_outcome because for five scenarios the two disagreed: the outcome said retryable_failure and the sentence said \"Done.\", because nothing outside the tests called TaskRunResult.outcome().",
   "cases": [
     {
       "id": "ex01_browser_success",
@@ -735,6 +736,125 @@
       "expected_outcome": "success",
       "expected_verification": "verified",
       "note": "search discovers, the page verifies -- the compound strategy from 4E-D"
+    },
+    {
+      "id": "ex23_partial_scope_stop",
+      "kind": "partial",
+      "goal": "Open the reviews page and book the room.",
+      "plan": [
+        {
+          "capability": "browser_control",
+          "sub_goal": "Open the reviews page."
+        },
+        {
+          "capability": "browser_control",
+          "sub_goal": "Book the room."
+        },
+        {
+          "done": true,
+          "summary": "All set."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "browser_control",
+          "status": "done",
+          "summary": "The reviews page is open.",
+          "expected_state": "reviews are visible",
+          "verified": true
+        },
+        {
+          "tool": "browser_control",
+          "status": "failed",
+          "summary": "That booking host is outside the allowed sources.",
+          "expected_state": "booking is confirmed",
+          "failure_code": "source_scope_violation"
+        }
+      ],
+      "expected_outcome": "partial",
+      "expected_report_mentions": [
+        "reviews page is open"
+      ],
+      "note": "one step landed and one is forbidden -- neither a success nor a flat failure; before A5 this was terminal_failure and the open page went unmentioned"
+    },
+    {
+      "id": "ex24_partial_after_stall",
+      "kind": "partial",
+      "goal": "Open Spotify, open Liked Songs, and shuffle.",
+      "plan": [
+        {
+          "capability": "ui_control",
+          "sub_goal": "Open Spotify."
+        },
+        {
+          "capability": "ui_control",
+          "sub_goal": "Open Liked Songs."
+        },
+        {
+          "capability": "ui_control",
+          "sub_goal": "Shuffle."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "ui_control",
+          "status": "done",
+          "summary": "Spotify is open.",
+          "expected_state": "Spotify is foreground",
+          "observed_app": "Spotify"
+        },
+        {
+          "tool": "ui_control",
+          "status": "done",
+          "summary": "Liked Songs is open.",
+          "expected_state": "Liked Songs is shown",
+          "observed_app": "Spotify"
+        },
+        {
+          "tool": "ui_control",
+          "status": "failed",
+          "summary": "No further progress.",
+          "expected_state": "shuffle is on",
+          "failure_code": "planner_stalled"
+        }
+      ],
+      "expected_outcome": "partial",
+      "expected_report_mentions": [
+        "Spotify is open",
+        "Liked Songs is open"
+      ],
+      "note": "two of three -- the person's machine really did change twice, and the report has to say so"
+    },
+    {
+      "id": "ex25_nothing_done_is_not_partial",
+      "kind": "non_recoverable",
+      "goal": "Open the settings page.",
+      "plan": [
+        {
+          "capability": "browser_control",
+          "sub_goal": "Open settings."
+        },
+        {
+          "done": true,
+          "summary": "Done."
+        }
+      ],
+      "steps": [
+        {
+          "tool": "browser_control",
+          "status": "failed",
+          "summary": "That host is outside the allowed sources.",
+          "expected_state": "settings are shown",
+          "failure_code": "source_scope_violation"
+        }
+      ],
+      "expected_outcome": "terminal_failure",
+      "expected_report_mentions": [],
+      "note": "the negative case for PARTIAL: no progress means the outcome must not soften"
     }
   ]
 }

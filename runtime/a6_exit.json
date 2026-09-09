@@ -1,0 +1,233 @@
+[
+  {
+    "id": "at01_refresh_invented",
+    "kind": "unsupported",
+    "reply": "The LG UltraGear has a 240Hz refresh rate.",
+    "found": [
+      "240Hz"
+    ],
+    "expected": [
+      "240Hz"
+    ],
+    "money": [
+      "refresh_rate:240"
+    ],
+    "ok": true
+  },
+  {
+    "id": "at02_response_invented",
+    "kind": "unsupported",
+    "reply": "It has a 0.5ms response time.",
+    "found": [
+      "0.5ms"
+    ],
+    "expected": [
+      "0.5ms"
+    ],
+    "money": [
+      "response_time:0.5"
+    ],
+    "ok": true
+  },
+  {
+    "id": "at03_rating_invented",
+    "kind": "unsupported",
+    "reply": "It is rated 4.8 stars.",
+    "found": [
+      "rated 4.8 stars"
+    ],
+    "expected": [
+      "rated 4.8 stars"
+    ],
+    "money": [
+      "rating:4.8"
+    ],
+    "ok": true
+  },
+  {
+    "id": "at04_battery_invented",
+    "kind": "unsupported",
+    "reply": "Battery life is about 70 hours.",
+    "found": [
+      "70 hours"
+    ],
+    "expected": [
+      "70 hours"
+    ],
+    "money": [
+      "duration_h:70"
+    ],
+    "ok": true
+  },
+  {
+    "id": "at05_weight_invented",
+    "kind": "unsupported",
+    "reply": "It weighs 4.2 kg.",
+    "found": [
+      "4.2 kg"
+    ],
+    "expected": [
+      "4.2 kg"
+    ],
+    "money": [
+      "weight:4.2"
+    ],
+    "ok": true
+  },
+  {
+    "id": "at06_dpi_invented",
+    "kind": "unsupported",
+    "reply": "The sensor goes up to 16000 dpi.",
+    "found": [
+      "16000 dpi"
+    ],
+    "expected": [
+      "16000 dpi"
+    ],
+    "money": [
+      "density:16000"
+    ],
+    "ok": true
+  },
+  {
+    "id": "at07_resolution_invented",
+    "kind": "unsupported",
+    "reply": "It is a 3840x2160 panel.",
+    "found": [
+      "3840x2160"
+    ],
+    "expected": [
+      "3840x2160"
+    ],
+    "money": [
+      "resolution:3840x2160"
+    ],
+    "ok": true
+  },
+  {
+    "id": "at08_refresh_contradicted",
+    "kind": "contradicted",
+    "reply": "It runs at 144Hz.",
+    "found": [
+      "144Hz"
+    ],
+    "expected": [
+      "144Hz"
+    ],
+    "money": [
+      "refresh_rate:144"
+    ],
+    "ok": true
+  },
+  {
+    "id": "at09_refresh_grounded",
+    "kind": "grounded",
+    "reply": "It runs at 165Hz.",
+    "found": [],
+    "expected": [],
+    "money": [],
+    "ok": true
+  },
+  {
+    "id": "at10_size_spelling",
+    "kind": "grounded",
+    "reply": "It is a 27 inch screen.",
+    "found": [],
+    "expected": [],
+    "money": [],
+    "ok": true
+  },
+  {
+    "id": "at11_weight_grounded",
+    "kind": "grounded",
+    "reply": "It weighs 6.1 kg.",
+    "found": [],
+    "expected": [],
+    "money": [],
+    "ok": true
+  },
+  {
+    "id": "at12_resolution_grounded",
+    "kind": "grounded",
+    "reply": "It is 2560x1440.",
+    "found": [],
+    "expected": [],
+    "money": [],
+    "ok": true
+  },
+  {
+    "id": "at13_dpi_grounded",
+    "kind": "grounded",
+    "reply": "The sensor is 8000 dpi.",
+    "found": [],
+    "expected": [],
+    "money": [],
+    "ok": true
+  },
+  {
+    "id": "at14_rating_grounded",
+    "kind": "grounded",
+    "reply": "It is rated 4.6 stars.",
+    "found": [],
+    "expected": [],
+    "money": [],
+    "ok": true
+  },
+  {
+    "id": "at15_steeping",
+    "kind": "not_a_claim",
+    "reply": "Let it steep for 14 hours in the fridge.",
+    "found": [],
+    "expected": [],
+    "money": [],
+    "ok": true
+  },
+  {
+    "id": "at16_walking",
+    "kind": "not_a_claim",
+    "reply": "I walked 6 km this morning.",
+    "found": [],
+    "expected": [],
+    "money": [],
+    "ok": true
+  },
+  {
+    "id": "at17_counts_and_years",
+    "kind": "not_a_claim",
+    "reply": "I found three hotels and the building went up in 2026.",
+    "found": [],
+    "expected": [],
+    "money": [],
+    "ok": true
+  },
+  {
+    "id": "at18_minutes_casual",
+    "kind": "not_a_claim",
+    "reply": "Give it about 20 minutes and try again.",
+    "found": [],
+    "expected": [],
+    "money": [],
+    "ok": true
+  },
+  {
+    "id": "at19_no_numbers",
+    "kind": "not_a_claim",
+    "reply": "It is a solid pick for the money.",
+    "found": [],
+    "expected": [],
+    "money": [],
+    "ok": true
+  },
+  {
+    "id": "at20_conflict",
+    "kind": "conflict",
+    "reply": "It runs at 165Hz.",
+    "found": [
+      "refresh_rate"
+    ],
+    "expected": [
+      "refresh_rate"
+    ],
+    "ok": true
+  }
+]

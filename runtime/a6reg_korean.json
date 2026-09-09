@@ -1,0 +1,113 @@
+{
+  "arc": "korean",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "안녕하세요. 하루 시작이 좋은 것 같습니다.",
+      "statuses": [],
+      "seconds": 4.99
+    },
+    {
+      "turn": 2,
+      "arc": "korean",
+      "user": "방금 퇴근했어",
+      "act": "react",
+      "reply": "퇴근하셨나요. 오늘 하루는 힘들었겠습니다.",
+      "statuses": [],
+      "seconds": 6.43
+    },
+    {
+      "turn": 3,
+      "arc": "korean",
+      "user": "좀 피곤하네",
+      "act": "react",
+      "reply": "피로가 느껴집니다. 편안히 쉬시길 권해드립니다.",
+      "statuses": [],
+      "seconds": 5.94
+    },
+    {
+      "turn": 4,
+      "arc": "korean",
+      "user": "오늘 길었어. 84의 15%가 얼마야?",
+      "act": "answer",
+      "reply": "15% of 84은 12.60입니다. 계산 결과를 확인했습니다.",
+      "statuses": [],
+      "seconds": 5.92
+    },
+    {
+      "turn": 5,
+      "arc": "korean",
+      "user": "고마워",
+      "act": "receipt",
+      "reply": "괜찮습니다.",
+      "statuses": [],
+      "seconds": 0.82
+    },
+    {
+      "turn": 6,
+      "arc": "korean",
+      "user": "지금 런던 몇 시야?",
+      "act": "answer",
+      "reply": "런던 시간은 현재 10시 58분입니다. 한국 시간보다 8시간 빠릅니다.",
+      "statuses": [],
+      "seconds": 5.87
+    },
+    {
+      "turn": 7,
+      "arc": "korean",
+      "user": "콜드브루 만드는 법 알아?",
+      "act": "answer",
+      "reply": "콜드브루는 물을 따뜻하게 데우고 원두를 15분간 체에 넣어 추출해 만듭니다. 원두의 양과 물의 양에 따라 강도를 조절할 수 있습니다.",
+      "statuses": [],
+      "seconds": 6.17
+    },
+    {
+      "turn": 8,
+      "arc": "korean",
+      "user": "얼마나 우려야 돼?",
+      "act": "answer",
+      "reply": "지금은 걱정할 필요가 없습니다. 상황에 따라 조치를 취하시면 됩니다.",
+      "statuses": [],
+      "seconds": 6.21
+    },
+    {
+      "turn": 9,
+      "arc": "korean",
+      "user": "알겠어 해볼게",
+      "act": "receipt",
+      "reply": "알겠습니다. 말씀해 주십시오.",
+      "statuses": [],
+      "seconds": 5.76
+    },
+    {
+      "turn": 10,
+      "arc": "korean",
+      "user": "커피는 됐고, 오늘 볼 만한 영화 뭐 있어?",
+      "act": "answer",
+      "reply": "커피는 됐고, 오늘 볼 만한 영화는 '어바웃 타임'이 있습니다. 감상할 만한 영화입니다. 극장에서 보시는 게 좋습니다.",
+      "statuses": [],
+      "seconds": 7.77
+    },
+    {
+      "turn": 11,
+      "arc": "korean",
+      "user": "좀 더 가벼운 걸로",
+      "act": "answer",
+      "reply": "가벼운 영화로 '미스터 뷰티'를 추천드립니다. 코미디로 편하게 볼 수 있습니다. 집에서 보는 게 더 편할 것 같습니다.",
+      "statuses": [],
+      "seconds": 7.99
+    },
+    {
+      "turn": 12,
+      "arc": "korean",
+      "user": "아니야",
+      "act": "receipt",
+      "reply": "아니요, 다른 영화 추천드리겠습니다. '해리포터와 마법사 돌'이 있습니다. 애니메이션으로 가벼운 감정을 느낄 수 있습니다. 집에서 보시면 좋습니다.",
+      "statuses": [],
+      "seconds": 8.4
+    }
+  ]
+}
