@@ -63,6 +63,7 @@ from brain.response_policy import (
 from brain import conversation_style
 from brain import capability_contract
 from brain import guard_lines
+from brain import memory_gate
 from brain import task_progress
 from brain import korean_register
 from brain import turn_language
@@ -2570,6 +2571,33 @@ class ChatEngine:
             f"{', '.join(invented)}."
         )
         active_problem = self.task_sessions.active_recommendation()
+        # A held result is as inheritable as a held turn, and this guard is
+        # where the second one leaks. Below, the candidate is checked
+        # against ``active_problem.subject`` -- the problem's *own*
+        # subject, which it is about by construction, so the check can
+        # never fail. Measured by running A3's case seven times:
+        #
+        #     actually forget the mouse, what's a good film for tonight?
+        #     Enjoy the ride! The one I actually found is Best Wireless
+        #     Gaming Mouse under $50.
+        #
+        # Three of seven runs. Not variance in the guard -- variance in
+        # whether she invents a film name and reaches it at all.
+        #
+        # Comparing against the turn instead does not work either: this
+        # turn contains the word "mouse", because dropping something means
+        # naming it. What settles it is that the person *said* to drop it.
+        dropped = supersession.drops_a_named_subject(user_input)
+        if (
+            dropped
+            and active_problem is not None
+            and self._candidate_is_about(active_problem.subject or "", dropped)
+        ):
+            print(
+                f"[Grounding Guard] Held result dropped: the turn abandons "
+                f"{dropped!r}."
+            )
+            active_problem = None
         # Offering to look is the right answer when nothing was found. It
         # is the wrong one when something was. Measured live: the fit
         # layer had already ranked three candidates, chosen "Studio
@@ -3190,6 +3218,39 @@ class ChatEngine:
             "source": source.strip(),
         }
 
+    _FORGET_EVERYTHING = re.compile(
+        r"everything|all|any\s?thing|모두|전부|다\s*잊",
+        re.IGNORECASE,
+    )
+
+    def _forget_memories(self, user_input: str) -> str:
+        """Remove what they asked to be rid of, and say what went.
+
+        The saying is half the feature. A7's criterion is that forgetting
+        is *visible*, and a forget that reports nothing is
+        indistinguishable from a forget that did nothing -- which is
+        exactly what the previous behaviour was.
+        """
+        language = self._turn_language
+        everything = bool(self._FORGET_EVERYTHING.search(user_input))
+        try:
+            removed = self.memory_manager.forget(
+                user_input, everything=everything,
+            )
+        except Exception as error:
+            print(f"[Memory] forget failed -- {capability_contract.describe(error)}")
+            removed = []
+
+        print(f"[Memory] Forgot {len(removed)} memory(ies).")
+        if not removed:
+            return guard_lines.say("memory_nothing_to_forget", language)
+        if everything:
+            return guard_lines.say("memory_forgotten_all", language)
+        # Named, not counted: "forgotten -- 2 things" tells them nothing
+        # about whether the right two went.
+        what = "; ".join(item.strip().rstrip(".") for item in removed[:2])
+        return guard_lines.say("memory_forgotten", language).format(what=what)
+
     def _store_memory_candidate(self, user_input: str) -> None:
         """Perform expensive extraction/consolidation outside response latency."""
         if (
@@ -3351,7 +3412,19 @@ class ChatEngine:
         held_subject = getattr(self, "_subject_before_turn", "")
         current = str(getattr(goal, "subject", "") or "") or route.topic
 
-        if route.topic_shift:
+        # Read before the model's own label, because the person saying so
+        # outranks a classifier agreeing. "actually forget the mouse,
+        # what's a good film tonight?" names the subject it is dropping,
+        # and A3's case for exactly that shape passed three runs in four
+        # -- the fourth answered "The one I actually found is Best
+        # Wireless Gaming Mouse under $50." A signal that is right two
+        # times in three is not a gate.
+        dropped = supersession.drops_a_named_subject(
+            route.normalized_request or ""
+        )
+        if dropped:
+            reason = f"the turn drops {dropped!r} and asks something else"
+        elif route.topic_shift:
             reason = "the router says the topic moved"
         elif held_subject and current and not context_policy.subjects_agree(
             held_subject, current,
@@ -9146,10 +9219,22 @@ class ChatEngine:
             intensity=emotion_state.intensity,
         )
 
-        if (
-            self.memory_enabled
-            and route.intent == "conversation"
-            and route.memory_candidate
+        # Memory is a property of the sentence, not of the route.
+        #
+        # This used to require route.intent == "conversation", and
+        # "conversation" is one of twenty-four intents. The turns most
+        # likely to contain a durable fact about someone are the turns
+        # where they are asking for something -- "I'm allergic to
+        # shellfish, find me somewhere for dinner" is a web_search, and
+        # the allergy was dropped on the floor. Measured across the recall
+        # matrix: the intent gate could see 3 of the 16 turns that needed
+        # memory, before the model's boolean narrowed it further.
+        #
+        # Either gate saying yes is enough. A wrong yes costs a little
+        # latency; a wrong no loses something the person told you once.
+        if self.memory_enabled and (
+            (route.intent == "conversation" and route.memory_candidate)
+            or memory_gate.carries_something_to_remember(user_input)
         ):
             threading.Thread(
                 target=self._store_memory_candidate,
@@ -9295,10 +9380,14 @@ class ChatEngine:
             )
 
         memory_started = time.perf_counter()
-        use_memory = (
-            self.memory_enabled
-            and route.intent == "conversation"
-            and route.memory_relevant
+        use_memory = self.memory_enabled and (
+            (route.intent == "conversation" and route.memory_relevant)
+            # "what's a good restaurant near my school?" routes to
+            # web_search, so nothing was ever recalled for it and the gap
+            # was filled from the model -- which is where an invented
+            # university comes from. The subject filter below is what
+            # keeps widening this from reintroducing contamination.
+            or memory_gate.needs_what_we_know(user_input)
         )
         if use_memory:
             # Search memory for what the turn is *about*. A bare follow-up
@@ -9960,6 +10049,31 @@ class ChatEngine:
                 locked_response=self.action_status.select(StatusContext(
                     phase="closing", force=True,
                 )) or "You're welcome.",
+            )
+        if (
+            self.memory_enabled
+            and self.memory_manager is not None
+            and memory_gate.asks_to_forget(user_input)
+        ):
+            # Forgetting is an operation, not a mood. Before A7 there was
+            # no way to delete a memory at all -- store, search, update,
+            # and nothing else -- so "forget what I told you about my
+            # school" changed nothing and she went on knowing it.
+            #
+            # Handled here, deterministically, for the same reason the
+            # cancellation above is: there is nothing for a model to
+            # classify, and a request to be forgotten should not depend on
+            # one agreeing.
+            timings["route"] = time.perf_counter() - route_started
+            return TurnRouting(
+                route=IntentDecision(
+                    intent="conversation",
+                    confidence=1.0,
+                    normalized_request=user_input,
+                    reason="The user asked to be forgotten.",
+                ),
+                user_input=user_input,
+                locked_response=self._forget_memories(user_input),
             )
         if (
             _CANCELLATION.fullmatch(user_input)

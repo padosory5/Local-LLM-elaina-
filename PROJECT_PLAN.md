@@ -24,8 +24,8 @@ Elaina that exists then, not the one we imagine now.
 
 | | |
 |---|---|
-| **Branch** | `main` · last commit `d5badae` *A4 capability contracts* |
-| **Tests green** | **3143** / 167 modules — regression floor, must never drop |
+| **Branch** | `main` · last commit `c58fe9c` *A5 planning gaps, A6 attribute grounding* |
+| **Tests green** | **3167** / 168 modules — regression floor, must never drop |
 | **Model** | `qwen3:8b` via Ollama · vision `qwen3-vl:8b` |
 | **Router accuracy** | **97.8%** (131/134) · 0 dangerous false positives · target ≥95% ✅ |
 | **Tool selection** | **95.6%** (43/45) · 0 research→browser · 0 UI false positives · target ≥95% ✅ |
@@ -35,7 +35,8 @@ Elaina that exists then, not the one we imagine now.
 | **Latency** | median **3.8s** · p90 **13.0s** · ⚠️ see the latency budget below |
 | **Task reporting** | **25/25** scenarios honest (was 17/22) · cancellation **10/10** ✅ |
 | **Attribute grounding** | invented specs **1/6 → 8/8** caught · true sentences **11/11** kept ✅ |
-| **Phase** | A1 done · A2 `[~]` · A3 done · A4 `[~]` · A5 done · **A6 done** |
+| **Memory** | recall gate **4/18 → 18/18** reachable · forgetting built from nothing · local-first asserted ✅ |
+| **Phase** | A1 done · A2 `[~]` · A3 done · A4 `[~]` · A5 done · A6 done · **A7 `[~]`** |
 
 ```bash
 .venv/Scripts/python.exe tests/run_tests.py     # the full suite, nothing running
@@ -105,11 +106,11 @@ code, that speaks two languages and sounds like one person in both.
 |---|---|---|---|
 | A1 | Natural conversation | `[x]` | ≥85% clean turns on the dogfood arcs |
 | A2 | Bilingual mind | `[~]` | Korean scores within 10 points of English; no guard silently passes |
-| A3 | Context & state ownership | `[x]` | contamination matrix ≥95% — **12/12**; conversation quality held at 94% |
+| A3 | Context & state ownership | `[x]` | contamination matrix ≥95% — **12/12**; ⚠️ A7 found the matrix is flaky per case, see below |
 | A4 | Capability contracts | `[~]` | every capability has typed I/O and a declared failure set — **11/11**; search payload deferred to A6 |
 | A5 | Planning gaps | `[x]` | retry, cancel and partial completion covered by scenario tests — **25/25**, cancellation **10/10** |
 | A6 | Attribute grounding | `[x]` | no unsourced attribute stated as fact; unknown stays unknown — **20/20**, invented specs 1/6 → 8/8 caught |
-| A7 | Memory & personal context | `[ ]` | useful across sessions, zero cross-task contamination |
+| A7 | Memory & personal context | `[~]` | useful across sessions, zero cross-task contamination — recall gate **34/34**, contamination **11–12/12** (matrix is flaky) |
 
 ---
 
@@ -257,6 +258,14 @@ answer "what are we talking about?" and they do not always agree.
       subject that is stale says so.
 - [ ] **Extraction:** the routing/state half of `_answer_turn` becomes a named
       stage with a typed `Turn` hand-off (see Rule 2).
+
+> **Correction, found in A7.** A3's 12/12 was a *single run* of a matrix with at
+> least two cases that fail intermittently. Measured by re-running them alone:
+> `a_new_subject_closes_the_old_one` failed 3 of 7 (a real bug — a held
+> recommendation was checked against its own subject, so the check could never
+> fail; now 5/5 after `supersession.drops_a_named_subject` was wired into it),
+> and `arithmetic_in_a_social_thread` fails about 1 in 6. A live matrix needs
+> repeated runs before a number from it means anything.
 
 **Instrument:** a **contamination matrix** — pairs of (prior state, next turn)
 where the next turn must *not* inherit, including the two failures above. This is
@@ -450,7 +459,7 @@ there evidence, and does the stated value match it.
 
 ---
 
-## A7 — Memory & personal context `[ ]`
+## A7 — Memory & personal context `[~]`
 
 **Goal:** she is useful over weeks, not only within one conversation, without
 becoming unpredictable.

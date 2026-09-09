@@ -46,6 +46,52 @@ _CALLS_IT_OFF = re.compile(
 )
 
 
+# The same instruction, but naming what is being dropped and then asking
+# something else: "actually forget the mouse, what's a good film tonight?"
+#
+# ``_CALLS_IT_OFF`` requires the whole turn to *be* the cancellation, so a
+# named subject followed by a new question matched nothing here, and the
+# clean start depended entirely on the model setting ``topic_shift``.
+# Measured by re-running A3's own case four times: it passed three and
+# failed once, with the abandoned recommendation leaking into the answer --
+#
+#     actually forget the mouse, what's a good film for tonight?
+#     Enjoy the ride! The one I actually found is Best Wireless Gaming
+#     Mouse under $50.
+#
+# A model label that is right two times in three is not a gate. The person
+# said which subject to drop; that is deterministic and it is theirs.
+_DROPS_A_NAMED_SUBJECT = re.compile(
+    r"^\s*(?:(?:ok|okay|no|nah|actually|wait|anyway|right)[,! ]+)*"
+    r"(?:never ?mind|forget(?:\s+about)?|drop|leave)\s+"
+    r"(?:the|that|this|those|these|my|our)?\s*"
+    r"([\w][\w \-']{0,40}?)\s*[,;.]\s*(?=\S)"
+    r"|(?:은|는|말고|말구)\s*(?:됐(?:어|다|습니다)|그만)\s*[,.]?\s*(?=\S)",
+    flags=re.IGNORECASE,
+)
+
+
+def drops_a_named_subject(text: str) -> str:
+    """The subject this turn explicitly abandons, or "".
+
+    Only when something else follows it -- "forget the mouse." on its own
+    is a cancellation and ``_CALLS_IT_OFF`` already owns that. What this
+    catches is the shape where the person drops one thing and asks about
+    another in the same breath, which is how people actually change
+    subject and which left the old subject inheritable.
+    """
+    found = _DROPS_A_NAMED_SUBJECT.search(str(text or ""))
+    if not found:
+        return ""
+    named = (found.group(1) or "").strip()
+    # A pronoun is not a named subject; that is the cancellation above.
+    if named.casefold() in {
+        "it", "that", "this", "them", "those", "these", "one", "thing",
+    }:
+        return ""
+    return named
+
+
 # Why a turn supersedes what was pending. Named rather than boolean so a
 # log says which of the five reasons fired, which is the thing that was
 # impossible to see while they were scattered.
@@ -53,6 +99,7 @@ ERRAND = "names its own errand"
 CORRECTION = "corrects what she was working on"
 REVISION = "revises what was asked for"
 CANCELLED = "calls it off"
+DROPPED = "drops a named subject and asks something else"
 
 # Deliberately absent: "this turn is a question, so it is not an answer to
 # the pending one". That is true and it is a different fact -- it decides

@@ -414,8 +414,8 @@ tts:
 
   elevenlabs:
     api_key_env: "ELEVENLABS_API_KEY"
-    voice_id: "JTlYtJrcTzPC71hMLOxo"
-    model: "eleven_v3"
+    voice_id: "tga35xYnrtQZCvOPrhyN"
+    model: "eleven_multilingual_v2"
     output_format: "mp3_44100_128"
 
     # How she delivers a line. Nothing was sent before, so every reply used

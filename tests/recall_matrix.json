@@ -1,0 +1,216 @@
+{
+  "description": "Does a turn's personal content survive the route it happens to take?",
+  "note": "Every 'store' case states a durable fact while asking for something, so the router labels it web_search / calendar_action / recommendation and the old gate -- intent == conversation -- dropped it. Every 'recall' case needs a fact she was told, in a turn that is likewise not conversation. The 'transient' and 'machine' cases are the negatives: a mood is not a profile, and 'my screen' is not 'my school'. The 'asking' cases were added after the live contamination re-run: a question that names something personal must be recalled against, never stored as though it were an answer.",
+  "cases": [
+    {
+      "id": "rc01_allergy_in_a_request",
+      "kind": "store",
+      "likely_intent": "web_search",
+      "text": "I'm allergic to shellfish, find me somewhere for dinner",
+      "note": "the registry's own example of what memory is for, said the way people actually say it"
+    },
+    {
+      "id": "rc02_school_in_a_request",
+      "kind": "store",
+      "likely_intent": "web_search",
+      "text": "I go to school at UW, where is the international students office?"
+    },
+    {
+      "id": "rc03_partner_in_a_booking",
+      "kind": "store",
+      "likely_intent": "calendar_action",
+      "text": "my wife is vegetarian, put dinner on Friday at 7"
+    },
+    {
+      "id": "rc04_job_in_a_request",
+      "kind": "store",
+      "likely_intent": "web_search",
+      "text": "I work at a startup in Seattle, what's the commute like from Bellevue?"
+    },
+    {
+      "id": "rc05_explicit",
+      "kind": "store",
+      "likely_intent": "conversation",
+      "text": "remember that I use vim"
+    },
+    {
+      "id": "rc06_diet_constraint",
+      "kind": "store",
+      "likely_intent": "recommendation",
+      "text": "I don't eat pork, recommend somewhere for lunch"
+    },
+    {
+      "id": "rc07_korean_home",
+      "kind": "store",
+      "likely_intent": "conversation",
+      "text": "저는 서울에 삽니다"
+    },
+    {
+      "id": "rc08_korean_partner",
+      "kind": "store",
+      "likely_intent": "web_search",
+      "text": "제 아내는 채식합니다. 근처 식당 찾아줘"
+    },
+    {
+      "id": "rc09_near_my_school",
+      "kind": "recall",
+      "likely_intent": "web_search",
+      "text": "what's a good restaurant near my school?",
+      "note": "the live failure this phase was written for -- she invented a university"
+    },
+    {
+      "id": "rc10_last_time",
+      "kind": "recall",
+      "likely_intent": "recommendation",
+      "text": "what did I pick last time?"
+    },
+    {
+      "id": "rc11_near_me",
+      "kind": "recall",
+      "likely_intent": "web_search",
+      "text": "find somewhere for dinner near me"
+    },
+    {
+      "id": "rc12_about_me",
+      "kind": "recall",
+      "likely_intent": "conversation",
+      "text": "what do you know about me?"
+    },
+    {
+      "id": "rc13_for_my_wife",
+      "kind": "recall",
+      "likely_intent": "calendar_action",
+      "text": "book something for my wife and me"
+    },
+    {
+      "id": "rc14_my_budget",
+      "kind": "recall",
+      "likely_intent": "recommendation",
+      "text": "find a monitor that fits my budget"
+    },
+    {
+      "id": "rc15_korean_school",
+      "kind": "recall",
+      "likely_intent": "web_search",
+      "text": "제 학교 근처 맛집 알려줘"
+    },
+    {
+      "id": "rc16_korean_last_time",
+      "kind": "recall",
+      "likely_intent": "recommendation",
+      "text": "저번에 제가 고른 거 뭐였지?"
+    },
+    {
+      "id": "rc17_rough_night",
+      "kind": "transient",
+      "likely_intent": "conversation",
+      "text": "i had a rough night"
+    },
+    {
+      "id": "rc18_tired",
+      "kind": "transient",
+      "likely_intent": "conversation",
+      "text": "kind of tired honestly"
+    },
+    {
+      "id": "rc19_busy",
+      "kind": "transient",
+      "likely_intent": "conversation",
+      "text": "I'm busy today"
+    },
+    {
+      "id": "rc20_long_one",
+      "kind": "transient",
+      "likely_intent": "conversation",
+      "text": "yeah it was a long one"
+    },
+    {
+      "id": "rc21_korean_tired",
+      "kind": "transient",
+      "likely_intent": "conversation",
+      "text": "오늘 좀 피곤합니다"
+    },
+    {
+      "id": "rc22_my_screen",
+      "kind": "machine",
+      "likely_intent": "screen_analysis",
+      "text": "what's on my screen"
+    },
+    {
+      "id": "rc23_my_browser",
+      "kind": "machine",
+      "likely_intent": "conversation",
+      "text": "can you control my browser?"
+    },
+    {
+      "id": "rc24_my_project",
+      "kind": "machine",
+      "likely_intent": "project_question",
+      "text": "what does the router do in my project"
+    },
+    {
+      "id": "rc25_my_windows",
+      "kind": "machine",
+      "likely_intent": "computer_action",
+      "text": "close my windows"
+    },
+    {
+      "id": "rc26_forget_a_fact",
+      "kind": "forget",
+      "likely_intent": "conversation",
+      "text": "forget what I told you about my school"
+    },
+    {
+      "id": "rc27_forget_all",
+      "kind": "forget",
+      "likely_intent": "conversation",
+      "text": "delete everything you know about me"
+    },
+    {
+      "id": "rc28_forget_korean",
+      "kind": "forget",
+      "likely_intent": "conversation",
+      "text": "저에 대해 기억하는 거 잊어주세요"
+    },
+    {
+      "id": "rc29_forget_a_subject",
+      "kind": "not_forget",
+      "likely_intent": "conversation",
+      "text": "forget the mouse, what's a good film tonight?",
+      "note": "A1 found a bare 'forget X' could silently eat a turn -- this is a topic change, not an instruction to the memory"
+    },
+    {
+      "id": "rc30_enrolled",
+      "kind": "store",
+      "likely_intent": "conversation",
+      "text": "I'm going to UW in Seattle.",
+      "note": "the contamination matrix's own setup line -- the gate first missed it because it only knew 'I go to school'"
+    },
+    {
+      "id": "rc31_fact_then_question",
+      "kind": "store",
+      "likely_intent": "web_search",
+      "text": "I go to school at UW, where is the international students office?",
+      "note": "states a fact and then asks; judging the whole utterance by its final question mark threw the fact away"
+    },
+    {
+      "id": "rc32_a_trip_is_not_a_school",
+      "kind": "transient",
+      "likely_intent": "conversation",
+      "text": "I'm going to Seattle next week"
+    },
+    {
+      "id": "rc33_asking_is_not_telling",
+      "kind": "asking",
+      "likely_intent": "conversation",
+      "text": "where is my school again?",
+      "note": "matched the durable pattern on 'my school' and would have been stored as a fact -- a memory of the questions someone asked rather than the answers they gave"
+    },
+    {
+      "id": "rc34_asking_about_me",
+      "kind": "asking",
+      "likely_intent": "conversation",
+      "text": "what do you know about me?"
+    }
+  ]
+}

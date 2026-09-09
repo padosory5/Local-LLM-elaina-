@@ -253,6 +253,56 @@ class MemoryManager:
 
             self.db.commit()
 
+    # How close a memory has to be to what the person asked to forget.
+    # Set conservatively: the cost of forgetting too little is that they
+    # say it again, and the cost of forgetting too much is silently losing
+    # something they told you once. Both are visible, because forget()
+    # returns what it removed and the caller says it out loud -- which is
+    # the whole point of the operation being visible rather than quiet.
+    FORGET_SIMILARITY_FLOOR = 0.35
+    FORGET_LIMIT = 5
+
+    def forget(self, subject="", *, everything=False):
+        """Deactivate what the person asked to be rid of, and say what went.
+
+        A7's "forgetting works and is visible to the user". Before this
+        there was **no way to delete a memory at all** -- store, search
+        and update, and nothing else -- so "forget what I told you about
+        my school" changed nothing and she carried on knowing it.
+
+        Soft, via the ``is_active`` flag the model already carries and
+        ``search`` already honours. The FAISS vector stays in the index
+        and its row is filtered out on read, which avoids rebuilding an
+        append-only index to delete one row.
+
+        Returns the contents removed, so the caller can name them. A
+        forget that reports nothing is indistinguishable from a forget
+        that did nothing.
+        """
+        if everything:
+            memories = (
+                self.db.query(Memory).filter_by(is_active=True).all()
+            )
+            removed = [memory.content for memory in memories]
+            for memory in memories:
+                memory.is_active = False
+            self.db.commit()
+            return removed
+
+        subject = str(subject or "").strip()
+        if not subject:
+            return []
+
+        removed = []
+        for memory in self.search(subject, k=self.FORGET_LIMIT):
+            if getattr(memory, "similarity", 0.0) < self.FORGET_SIMILARITY_FLOOR:
+                continue
+            memory.is_active = False
+            removed.append(memory.content)
+        if removed:
+            self.db.commit()
+        return removed
+
     def search_memory_objects(self, text, k=5):
 
         vector = self.embedder.encode(text)

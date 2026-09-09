@@ -31,6 +31,7 @@ TEXT_GUARDS = (
     "grounded_values.py",
     "guard_lines.py",
     "korean_register.py",
+    "memory_gate.py",
     "response_policy.py",
     "response_quality.py",
     "task_progress.py",

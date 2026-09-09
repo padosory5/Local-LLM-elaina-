@@ -94,11 +94,23 @@ LINES: dict[str, dict[str, str]] = {
         KOREAN: "{name} 기능은 분명히 있습니다. {ability}. "
                 "한번 해 볼 대상을 주시면 확인해 보겠습니다.",
     },
-    # How a multi-step task reports itself when it did not succeed. The
-    # planner used to speak the model's own final summary, so a run whose
-    # last step said "Pressed play; nothing started." was reported to the
-    # person as "Done." -- see brain/task_progress.py. ``{done}`` sits
-    # after a dash in both languages so no particle has to agree with it.
+    # Forgetting, said out loud. Before A7 there was no way to delete a
+    # memory at all, so "forget what I told you about my school" changed
+    # nothing and she carried on knowing it. A forget that reports
+    # nothing is indistinguishable from a forget that did nothing, which
+    # is why {what} is named rather than counted.
+    "memory_forgotten": {
+        ENGLISH: "Forgotten -- {what}.",
+        KOREAN: "지웠습니다 -- {what}.",
+    },
+    "memory_forgotten_all": {
+        ENGLISH: "I've cleared everything I had about you.",
+        KOREAN: "기억하고 있던 내용을 모두 지웠습니다.",
+    },
+    "memory_nothing_to_forget": {
+        ENGLISH: "I don't have anything saved about that.",
+        KOREAN: "그와 관련해 저장된 내용은 없습니다.",
+    },
     # Two retrieved sources give different numbers for the same attribute.
     # Said only when the reply actually states that attribute -- a
     # disagreement about something she never mentioned is not worth a
@@ -108,6 +120,11 @@ LINES: dict[str, dict[str, str]] = {
         ENGLISH: "Sources disagree on that one -- another says {other}.",
         KOREAN: "자료마다 다릅니다. 다른 곳에서는 {other}(으)로 나옵니다.",
     },
+    # How a multi-step task reports itself when it did not succeed. The
+    # planner used to speak the model's own final summary, so a run whose
+    # last step said "Pressed play; nothing started." was reported to the
+    # person as "Done." -- see brain/task_progress.py. ``{done}`` sits
+    # after a dash in both languages so no particle has to agree with it.
     "task_incomplete": {
         ENGLISH: "I didn't get that finished.",
         KOREAN: "그 작업을 끝내지 못했습니다.",
