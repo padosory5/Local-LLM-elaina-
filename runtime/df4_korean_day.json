@@ -1,0 +1,115 @@
+{
+  "arc": "korean_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean_day",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "오늘은 어떻게 지내?",
+      "statuses": [],
+      "seconds": 2.84
+    },
+    {
+      "turn": 2,
+      "arc": "korean_day",
+      "user": "오늘 좀 힘들었어",
+      "act": "react",
+      "reply": "오늘 힘드셨군요. 조금 쉬시다 보면 됩니다.",
+      "statuses": [],
+      "seconds": 3.35
+    },
+    {
+      "turn": 3,
+      "arc": "korean_day",
+      "user": "회사에서 하루 종일 회의만 했어",
+      "act": "react",
+      "reply": "회의만 하셨군요. 힘드셨겠습니다. 조금 쉬시다 보면 됩니다.",
+      "statuses": [],
+      "seconds": 3.72
+    },
+    {
+      "turn": 4,
+      "arc": "korean_day",
+      "user": "그러게 말이야",
+      "act": "receipt",
+      "reply": "오늘 하루는 정말 힘들었겠습니다. 조금씩 휴식을 취하시면 될 것 같습니다.",
+      "statuses": [],
+      "seconds": 3.35
+    },
+    {
+      "turn": 5,
+      "arc": "korean_day",
+      "user": "요즘 볼만한 드라마 있어?",
+      "act": "answer",
+      "reply": "최근 드라마로는 '인 마이 프라임'과 '교풍'을 추천합니다. 드라마Panda에서 자세한 정보를 확인하시고, 방영일을 확인해 보십시오.",
+      "statuses": [
+        "네, 찾아보겠습니다."
+      ],
+      "seconds": 20.32
+    },
+    {
+      "turn": 6,
+      "arc": "korean_day",
+      "user": "음 별로네",
+      "act": "react",
+      "reply": "음, 그런 드라마는 아니겠습니다. 다른 장르 추천드릴 수 있습니다.",
+      "statuses": [],
+      "seconds": 4.14
+    },
+    {
+      "turn": 7,
+      "arc": "korean_day",
+      "user": "그럼 영화는?",
+      "act": "answer",
+      "reply": "영화 추천은 드라마보다 더 다양한 선택이 있습니다. '비밀의 황금길'이나 '마이웨이' 같은 작품이 인기가 많습니다. 상영정보는 넷플릭스나 넷플릭스에 확인해 보십시오.",
+      "statuses": [],
+      "seconds": 4.84
+    },
+    {
+      "turn": 8,
+      "arc": "korean_day",
+      "user": "그건 봤어",
+      "act": "react",
+      "reply": "영화는 봤어요? 다른 장르도 추천드릴 수 있습니다.",
+      "statuses": [],
+      "seconds": 3.63
+    },
+    {
+      "turn": 9,
+      "arc": "korean_day",
+      "user": "드라마는 됐고, 저녁 뭐 먹지?",
+      "act": "answer",
+      "reply": "저녁엔 떡볶이 또는 김밥이 좋습니다. [한식당 이름]에서 확인해보십시오. 아직 확인해 보지 않아서, 추측으로 말씀드리지는 않겠습니다. 원하시면 a 식사 찾아보겠습니다.",
+      "statuses": [],
+      "seconds": 5.35
+    },
+    {
+      "turn": 10,
+      "arc": "korean_day",
+      "user": "간단한 걸로",
+      "act": "answer",
+      "reply": "간단한 음식이라면 떡볶이 또는 김밥이 좋습니다. [한식당 이름]에서 확인하시면 됩니다.",
+      "statuses": [],
+      "seconds": 4.95
+    },
+    {
+      "turn": 11,
+      "arc": "korean_day",
+      "user": "오케이 그렇게 할게",
+      "act": "receipt",
+      "reply": "알겠습니다. 저녁은 떡볶이 또는 김밥으로 해결하겠습니다.",
+      "statuses": [],
+      "seconds": 3.7
+    },
+    {
+      "turn": 12,
+      "arc": "korean_day",
+      "user": "고마워 잘자",
+      "act": "close",
+      "reply": "잘 자요.",
+      "statuses": [],
+      "seconds": 3.4
+    }
+  ]
+}

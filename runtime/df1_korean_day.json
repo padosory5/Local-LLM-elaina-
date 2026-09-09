@@ -1,0 +1,115 @@
+{
+  "arc": "korean_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean_day",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "오늘은 어땠어?",
+      "statuses": [],
+      "seconds": 3.99
+    },
+    {
+      "turn": 2,
+      "arc": "korean_day",
+      "user": "오늘 좀 힘들었어",
+      "act": "react",
+      "reply": "힘드셨군요. 잠시 쉬시고, 필요하시면 도움을 드리겠습니다.",
+      "statuses": [],
+      "seconds": 4.34
+    },
+    {
+      "turn": 3,
+      "arc": "korean_day",
+      "user": "회사에서 하루 종일 회의만 했어",
+      "act": "react",
+      "reply": "오늘 하루 회의만 하셨다니 정말 힘들었겠습니다. 잠시 쉬시고, 필요하시면 도움 드리겠습니다.",
+      "statuses": [],
+      "seconds": 4.2
+    },
+    {
+      "turn": 4,
+      "arc": "korean_day",
+      "user": "그러게 말이야",
+      "act": "receipt",
+      "reply": "힘드셨겠습니다. 잠시 쉬시고, 도움이 필요하시면 언제든 말씀해주십시오.",
+      "statuses": [],
+      "seconds": 4.44
+    },
+    {
+      "turn": 5,
+      "arc": "korean_day",
+      "user": "요즘 볼만한 드라마 있어?",
+      "act": "answer",
+      "reply": "2026년에 방영된 드라마로는 'Mr. Fanboy'와 'Perfect Crown'이 있습니다. 두 작품 모두 인기 있으며, 다양한 감정선과 긴장감이 있습니다.",
+      "statuses": [
+        "그건 알아보겠습니다."
+      ],
+      "seconds": 17.15
+    },
+    {
+      "turn": 6,
+      "arc": "korean_day",
+      "user": "음 별로네",
+      "act": "react",
+      "reply": "음, 그렇군요. 좋아하는 장르에 맞는 작품을 추천해 드릴 수 있습니다.",
+      "statuses": [],
+      "seconds": 4.77
+    },
+    {
+      "turn": 7,
+      "arc": "korean_day",
+      "user": "그럼 영화는?",
+      "act": "answer",
+      "reply": "영화는 확인했습니다.",
+      "statuses": [],
+      "seconds": 3.89
+    },
+    {
+      "turn": 8,
+      "arc": "korean_day",
+      "user": "그건 봤어",
+      "act": "react",
+      "reply": "봤습니다.",
+      "statuses": [],
+      "seconds": 4.19
+    },
+    {
+      "turn": 9,
+      "arc": "korean_day",
+      "user": "드라마는 됐고, 저녁 뭐 먹지?",
+      "act": "answer",
+      "reply": "드라마는 잘 봤습니다. 저녁은 떡볶이 추천드리겠습니다. 천안 떡볶이가 유명합니다. 좋아하시면 가보십시오. 아직 확인해 보지 않아서, 추측으로 말씀드리지는 않겠습니다.",
+      "statuses": [],
+      "seconds": 5.52
+    },
+    {
+      "turn": 10,
+      "arc": "korean_day",
+      "user": "간단한 걸로",
+      "act": "answer",
+      "reply": "간단한 음식이라면 김치찌개를 추천합니다. 서울에 있는 '김치찌개 전문점'에서 10,000원에 먹을 수 있습니다.",
+      "statuses": [],
+      "seconds": 6.29
+    },
+    {
+      "turn": 11,
+      "arc": "korean_day",
+      "user": "오케이 그렇게 할게",
+      "act": "receipt",
+      "reply": "저녁은 간단하게 김치찌개로 하시면 좋습니다. 서울에 있는 '김치찌개 전문점'에서 10,000원에 드실 수 있습니다.",
+      "statuses": [],
+      "seconds": 4.25
+    },
+    {
+      "turn": 12,
+      "arc": "korean_day",
+      "user": "고마워 잘자",
+      "act": "close",
+      "reply": "잘자요. 주무세요.",
+      "statuses": [],
+      "seconds": 3.95
+    }
+  ]
+}

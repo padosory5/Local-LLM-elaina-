@@ -38,6 +38,7 @@ grounding guards precisely so that those still get the last word.
 
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass, field
 
@@ -171,6 +172,13 @@ UNNATURAL_CONFIRMATION = "unnatural_confirmation"
 TOO_VERBOSE = "too_verbose"
 STRUCTURAL_ARTIFACT = "structural_artifact"
 SELF_REPETITION = "self_repetition"
+
+# How alike two clauses have to be before the second one is the first one
+# said again. Set from the measured Korean case (a dropped particle scores
+# about 0.95) and checked against sentences that merely share a topic,
+# which land far below it. High on purpose: the cost of a false positive
+# here is a rewrite of a perfectly good sentence.
+_NEARLY_THE_SAME_SENTENCE = 0.85
 LIST_RECITAL = "list_recital"
 REGISTER_DRIFT = "register_drift"
 
@@ -881,8 +889,29 @@ class RoboticTells:
             if long_enough(sentence)
         }
         for sentence in sentences(draft):
-            if key(sentence) in said_before:
+            current = key(sentence)
+            if current in said_before:
                 return sentence[:80]
+            # Exact equality was the whole test, and it is too strict for
+            # the way a model actually repeats itself -- it re-words
+            # slightly rather than copying. Measured on an unseen Korean
+            # dogfood arc, three consecutive sympathy turns:
+            #
+            #   잠시 쉬시고, 필요하시면 도움을 드리겠습니다.
+            #   잠시 쉬시고, 필요하시면 도움 드리겠습니다.
+            #   잠시 쉬시고, 도움이 필요하시면 언제든 말씀해주십시오.
+            #
+            # One dropped particle and one reordering, and none of the
+            # three saw the others. Korean makes this worse because a
+            # particle can go without changing the sentence at all, but
+            # English does the same thing with articles and adverbs.
+            if not long_enough(sentence):
+                continue
+            for earlier in said_before:
+                if difflib.SequenceMatcher(None, current, earlier).ratio() >= (
+                    _NEARLY_THE_SAME_SENTENCE
+                ):
+                    return sentence[:80]
         return ""
 
 

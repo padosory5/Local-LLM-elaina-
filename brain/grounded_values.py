@@ -44,7 +44,23 @@ from brain import attribute_values
 _MONEY = re.compile(
     r"[$₩€£¥]\s?\d[\d,]*(?:\.\d+)?"
     r"|\b\d[\d,]*(?:\.\d+)?\s*"
-    r"(?:won|krw|usd|eur|gbp|jpy|dollars?|euros?|pounds?|yen|원)\b",
+    r"(?:won|krw|usd|eur|gbp|jpy|dollars?|euros?|pounds?|yen)\b"
+    # 원 gets its own branch, ending on "not a digit" rather than \b.
+    #
+    # Korean attaches its particles directly to the noun -- 10,000원에,
+    # 8,000원입니다 -- and \b needs a non-word character after 원 to
+    # match. It never gets one, so *every price stated in natural Korean
+    # was invisible to this guard*. "10,000원 입니다", with a space, did
+    # match, which is not how anybody writes it.
+    #
+    # Found by an unseen Korean dogfood turn: "서울에 있는 '김치찌개
+    # 전문점'에서 10,000원에 먹을 수 있습니다" -- an invented restaurant
+    # and an invented price, from a turn where nothing was looked up, and
+    # the oldest honesty guard in the project saw neither.
+    # Three digits or a thousands group, so "3원소" (three elements) is
+    # not read as a three-won price. Nothing in Korea costs single-digit
+    # won, and 원 is a syllable inside ordinary words.
+    r"|(?:\d{1,3}(?:,\d{3})+|\d{3,})(?:\.\d+)?\s*원(?!\d)",
     flags=re.IGNORECASE,
 )
 
@@ -161,6 +177,38 @@ def _mangled_numbers(reply: str, source: str) -> set[str]:
 LANGUAGES = ("en", "ko")
 
 
+# A name in quotes. English has capitals to mark a business; Korean does
+# not, and quoting is what it uses instead -- '김치찌개 전문점'. Both
+# straight and typographic pairs, because a model emits either.
+_QUOTED_NAME = re.compile(
+    "[\u2018\u201c\"']"
+    "\\s*([^\u2019\u201d\"'\\n]{2,40}?)\\s*"
+    "[\u2019\u201d\"']"
+)
+
+
+def _prices_a_named_place(reply: str) -> bool:
+    """Whether this reply puts a price on somewhere it has named.
+
+    The one shape that is a claim about the world even when nothing was
+    looked up. Stating a price from general knowledge is fine -- "a coffee
+    in Seoul is about 5,000 won" -- and this guard has always stood down
+    for it. Naming an establishment *and* what it charges is not that:
+
+        서울에 있는 '김치찌개 전문점'에서 10,000원에 먹을 수 있습니다.
+
+    Nothing was searched. The restaurant and the price were both invented,
+    and the person is being told where to go and what it costs.
+
+    Deliberately requires both halves. A quoted name alone is often a film
+    or a dish, and a price alone is ordinary conversation.
+    """
+    text = str(reply or "")
+    if not _MONEY.search(text):
+        return False
+    return bool(_QUOTED_NAME.search(text))
+
+
 class GroundedValueGuard:
     """Tell a looked-up figure from an invented one."""
 
@@ -226,7 +274,7 @@ class GroundedValueGuard:
         )
         if not grounded_subject and not contradicts_the_user and not (
             disputed and _values(reply)
-        ):
+        ) and not _prices_a_named_place(reply):
             # No grounded subject means ordinary conversation, and most
             # numbers in it are fine to state from general knowledge -- "a
             # coffee in Seoul is about 5,000 won" is not a claim about a

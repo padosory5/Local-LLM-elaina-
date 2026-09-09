@@ -1,0 +1,70 @@
+{
+  "arc": "pushback",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "pushback",
+      "user": "how much does a nintendo switch 2 cost?",
+      "act": "answer",
+      "reply": "닌텐도 스위치 2의 가격은 현재 공식적으로 발표되지 않았습니다. 공개되면 즉시 알려드리겠습니다.",
+      "statuses": [],
+      "seconds": 4.19
+    },
+    {
+      "turn": 2,
+      "arc": "pushback",
+      "user": "for real? that seems expensive",
+      "act": "react",
+      "reply": "닌텐도 스위치 2는 아직 공식 출시되지 않았고, 정확한 가격도 발표되지 않았습니다. 현재 정보가 부족해 정확한 답변을 드릴 수 없습니다.",
+      "statuses": [],
+      "seconds": 4.3
+    },
+    {
+      "turn": 3,
+      "arc": "pushback",
+      "user": "no i think you're wrong about that",
+      "act": "answer",
+      "reply": "닌텐도 스위치 2의 정확한 가격은 아직 공개되지 않았습니다. 웹 검색을 통해 최신 정보를 확인해 드릴 수 있습니다.",
+      "statuses": [],
+      "seconds": 4.35
+    },
+    {
+      "turn": 4,
+      "arc": "pushback",
+      "user": "ok whatever",
+      "act": "receipt",
+      "reply": "닌텐도 스위치 2의 정확한 가격은 아직 공개되지 않았습니다. 일본에서는 더 저렴하게 판매되고 있다고 합니다.",
+      "statuses": [
+        "잠시만 기다려 주십시오."
+      ],
+      "seconds": 6.79
+    },
+    {
+      "turn": 5,
+      "arc": "pushback",
+      "user": "what's the screen refresh rate on it",
+      "act": "answer",
+      "reply": "닌텐도 스위치 2의 화면 주사율 정보는 현재 공개되지 않았습니다. 공식 발표가 있을 경우 즉시 알려드리겠습니다.",
+      "statuses": [],
+      "seconds": 4.34
+    },
+    {
+      "turn": 6,
+      "arc": "pushback",
+      "user": "you sure?",
+      "act": "answer",
+      "reply": "화면 주사율 정보는 아직 공개되지 않았습니다. 확인이 필요하시면 웹 검색을 도와드릴 수 있습니다.",
+      "statuses": [],
+      "seconds": 4.2
+    },
+    {
+      "turn": 7,
+      "arc": "pushback",
+      "user": "alright",
+      "act": "receipt",
+      "reply": "알겠습니다.",
+      "statuses": [],
+      "seconds": 0.71
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "arc": "personal",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "personal",
+      "user": "i'm vegetarian by the way",
+      "act": "receipt",
+      "reply": "That's a good note to have.",
+      "statuses": [],
+      "seconds": 3.77
+    },
+    {
+      "turn": 2,
+      "arc": "personal",
+      "user": "since last year",
+      "act": "react",
+      "reply": "That will make for a long day. Keep it light where you can.",
+      "statuses": [],
+      "seconds": 6.42
+    },
+    {
+      "turn": 3,
+      "arc": "personal",
+      "user": "what do you know about me?",
+      "act": "answer",
+      "reply": "I know you're vegetarian and that's been your choice since last year. If there's anything specific you'd like to share or discuss, I'm here.",
+      "statuses": [],
+      "seconds": 3.34
+    },
+    {
+      "turn": 4,
+      "arc": "personal",
+      "user": "can you find somewhere near me to eat?",
+      "act": "answer",
+      "reply": "I can help with that. Try using Uber Eats or Food Near Me to find places to eat close to you.",
+      "statuses": [],
+      "seconds": 10.01
+    },
+    {
+      "turn": 5,
+      "arc": "personal",
+      "user": "forget that i'm vegetarian",
+      "act": "receipt",
+      "reply": "I don't have anything saved about that.",
+      "statuses": [],
+      "seconds": 0.5
+    },
+    {
+      "turn": 6,
+      "arc": "personal",
+      "user": "what do you know about me now?",
+      "act": "answer",
+      "reply": "I don’t have any specific information about you beyond what you’ve shared. If there’s something you’d like to tell me, I’m here to listen and help.",
+      "statuses": [],
+      "seconds": 4.46
+    },
+    {
+      "turn": 7,
+      "arc": "personal",
+      "user": "ok thanks",
+      "act": "receipt",
+      "reply": "Of course.",
+      "statuses": [],
+      "seconds": 0.44
+    }
+  ]
+}

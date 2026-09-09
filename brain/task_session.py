@@ -28,13 +28,39 @@ _SUPERLATIVE = (
     r"first|second|third|last|best|worst|cheapest|closest|nearest|"
     r"biggest|smallest|highest|lowest|top|nicest|quietest"
 )
+# Korean carries the same job on its demonstratives -- 그건, 그 중에,
+# 저거 -- and on ordinals built from 번째. None of it looks like the
+# English shapes above, so this pattern matched **nothing** in Korean, and
+# with it the follow-up subject hint that A3 added to the prompt. That is
+# the hint which stopped "which one would you choose?" being answered
+# about graphics cards; in Korean it had never once fired.
+#
+# Measured on an unseen Korean dogfood arc, straight after a drama
+# recommendation:
+#
+#     you: 그럼 영화는?     her: 영화에 대해 말씀해 주십시오.
+#     you: 그건 봤어        her: 영화는 봤습니다. 어떤 영화였어요?
+#
+# Both are follow-ups about the thing just discussed, and both reached the
+# model with nothing saying so.
+_KOREAN_DEICTIC = (
+    r"[그이저]\s*(?:건|거|걸|게|것|중|쪽)"
+    r"|[그이저]\s*중에서?"
+    r"|어느\s*(?:거|것|쪽|게)"
+    r"|어떤\s*(?:거|것|게)"
+    r"|둘\s*중|셋\s*중"
+    r"|\d+\s*번째|첫\s*번째|두\s*번째|세\s*번째"
+    r"|그럼\s*\S+\s*[은는]\s*[?？]"
+)
+
 _DEICTIC_REFERENCE = re.compile(
     r"\b(?:these|those|them|they)\b"
     rf"|\bthe\s+(?:{_SUPERLATIVE})\b"
     r"|\bwhich\s+(?:one|of|was|is|were|are|had|has|would|do|did)\b"
     r"|\bcompare\s+(?:the|them|those|these|both)\b"
     r"|\b(?:any|either|both|each)\s+of\s+(?:them|those|these)\b"
-    r"|\bof\s+(?:those|these|them)\b",
+    r"|\bof\s+(?:those|these|them)\b"
+    rf"|{_KOREAN_DEICTIC}",
     re.I,
 )
 

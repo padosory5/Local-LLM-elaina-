@@ -99,6 +99,12 @@ LINES: dict[str, dict[str, str]] = {
     # nothing and she carried on knowing it. A forget that reports
     # nothing is indistinguishable from a forget that did nothing, which
     # is why {what} is named rather than counted.
+    # One named thing removed: their own words are the confirmation, and
+    # reading the stored row back adds nothing a person would say.
+    "memory_forgotten_one": {
+        ENGLISH: "Forgotten.",
+        KOREAN: "지웠습니다.",
+    },
     "memory_forgotten": {
         ENGLISH: "Forgotten -- {what}.",
         KOREAN: "지웠습니다 -- {what}.",

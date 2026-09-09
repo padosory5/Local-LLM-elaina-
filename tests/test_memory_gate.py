@@ -320,3 +320,45 @@ class DroppingANamedSubjectIsDeterministicTests(unittest.TestCase):
                 "brain.deliberation.supersession", fromlist=["x"],
             ).drops_a_named_subject(said)
         )
+
+
+class ForgettingSaysTheRightAmountTests(unittest.TestCase):
+    """Both halves found by an unseen dogfood turn.
+
+        you: forget that i'm vegetarian
+        her: Forgotten, The user follows a vegetarian diet.
+             The user avoids drinking coffee after 2 PM.
+
+    Two faults in one sentence: it removed a second, unrelated memory, and
+    it read database rows out loud.
+    """
+
+    def test_the_contraction_is_heard(self):
+        """"forget that i'm X" is how people say it; \bi\s is not."""
+        self.assertTrue(memory_gate.asks_to_forget("forget that i'm vegetarian"))
+        self.assertTrue(memory_gate.asks_to_forget("forget that I am vegetarian"))
+
+    def test_it_still_refuses_a_bare_cancellation(self):
+        for said in ("forget it", "never mind", "forget iterations"):
+            with self.subTest(said=said):
+                self.assertFalse(memory_gate.asks_to_forget(said))
+
+    def test_naming_one_subject_does_not_clear_the_shelf(self):
+        """A margin around the closest match, not a flat floor.
+
+        The vegetarian memory and the coffee memory are both about food
+        and both cleared the floor, so naming one removed both.
+        """
+        from memory.memory_manager import MemoryManager
+
+        self.assertLess(MemoryManager.FORGET_MARGIN, 0.3)
+        self.assertGreater(MemoryManager.FORGET_MARGIN, 0.0)
+
+    def test_one_removal_is_confirmed_not_recited(self):
+        from brain import guard_lines
+
+        for language in ("en", "ko"):
+            with self.subTest(language=language):
+                said = guard_lines.say("memory_forgotten_one", language)
+                self.assertTrue(said.strip())
+                self.assertNotIn("{", said)

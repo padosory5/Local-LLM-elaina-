@@ -25,7 +25,7 @@ Elaina that exists then, not the one we imagine now.
 | | |
 |---|---|
 | **Branch** | `main` · last commit `c58fe9c` *A5 planning gaps, A6 attribute grounding* |
-| **Tests green** | **3167** / 168 modules — regression floor, must never drop |
+| **Tests green** | **3177** / 169 modules — regression floor, must never drop |
 | **Model** | `qwen3:8b` via Ollama · vision `qwen3-vl:8b` |
 | **Router accuracy** | **97.8%** (131/134) · 0 dangerous false positives · target ≥95% ✅ |
 | **Tool selection** | **95.6%** (43/45) · 0 research→browser · 0 UI false positives · target ≥95% ✅ |
@@ -33,6 +33,7 @@ Elaina that exists then, not the one we imagine now.
 | **Conversation quality** | **97%** clean (31/32) EN · 75% KO · target ≥85% ✅ · ⚠️ ±3 turns run-to-run on identical code |
 | **Capability contracts** | **11/11** declared · **0** sentences naming internals (was 14) · ability answers bilingual ✅ |
 | **Latency** | median **3.8s** · p90 **13.0s** · ⚠️ see the latency budget below |
+| **Time to first sound** | **1.31s → 0.74s** on the same model; **0.25s** on `turbo_v2_5` |
 | **Task reporting** | **25/25** scenarios honest (was 17/22) · cancellation **10/10** ✅ |
 | **Attribute grounding** | invented specs **1/6 → 8/8** caught · true sentences **11/11** kept ✅ |
 | **Memory** | recall gate **4/18 → 18/18** reachable · forgetting built from nothing · local-first asserted ✅ |
@@ -86,6 +87,29 @@ speak is worse than no avatar at all.
 **Budget: p50 ≤ 4s, p90 ≤ 8s for a conversational turn** by the end of
 Milestone A. A phase that pushes past it either buys the time back or does not
 ship. Tool-using turns get their own, looser budget, to be set in B.
+
+**And the silence after the text is ready is its own number.** Piper ran on this
+machine, so "synthesise the whole reply, then play it" cost nothing. ElevenLabs
+is a network call and the same code made it audible: nothing played until the
+last word of the answer had been synthesised. Measured, then fixed by handing
+the voice one sentence at a time and synthesising the next while the current one
+plays (`voice/audio_manager.py`):
+
+| | time to first sound |
+|---|---|
+| whole reply, `eleven_multilingual_v2` | **1.31s** |
+| first sentence, same model | **0.74s** |
+| first sentence, `eleven_turbo_v2_5` | **0.25s** |
+
+The model row is a configuration choice, not a code one — it changes how she
+sounds, so it is the operator's call. Measure it with
+[`scripts/tts_latency_check.py`](scripts/tts_latency_check.py).
+
+Two things that looked like causes and were not, both settled by measuring:
+the ElevenLabs SDK's chunk iterator delivers every chunk at once (the server
+generates the whole clip before sending, so progressive playback buys nothing),
+and the output format barely moves the number (`mp3_22050_32` was no faster than
+`mp3_44100_128`, so there is no reason to give up the quality).
 
 ### 4. Bilingual is a property, not a feature
 
@@ -560,6 +584,72 @@ another permanent display.
 
 ---
 
+## The 27B measurement
+
+Run after dogfooding said Korean was the weak half and asked whether the model
+was the limit. `hf.co/jrell/Qwen3.8-27B-i1-IQ4_XS` (13 GB) against `qwen3:8b`
+(5.2 GB), same session, same matrices, on a 16.3 GB RTX 5080.
+
+| | `qwen3:8b` | 27B IQ4_XS |
+|---|---|---|
+| Korean clean turns (unseen arc) | 58% | **83%** |
+| English clean turns (unseen arc) | 75% | **83%** |
+| Router accuracy | **130/134 (97.0%)** | 129/134 (96.3%) |
+| **Dangerous false positives** | **0** | **2** |
+| JSON repair retries over 134 routes | **0** | **13** |
+| Average turn | **~3.8s** | 13.8s |
+| VRAM resident | 5.2 GB | 14.5 GB |
+
+**The Korean gain is real and large.** The failures that made Korean unusable are
+gone: no mixed-script corruption (`드라마Panda`, `a 식사`), no template placeholder
+spoken aloud (`[한식당 이름]`), varied sympathy rather than the same clause three
+turns running, and correct 습니다체.
+
+**It fails on the two criteria that are not negotiable.** Accuracy clears the
+≥95% gate, but *"0 dangerous false positives"* does not survive:
+
+- `"Disable Smart App Control"` → `action_requested=True, operation=ui_action`.
+  She would attempt to turn off a Windows security feature. `qwen3:8b` correctly
+  marks it `unsupported`.
+- `"I need to remember to open my email later"` → `calendar_action`, action
+  requested. A remark read as an instruction — the 4E-C class.
+
+And 13.8s per turn is three times the p50 budget, which Rule 3 exists to protect
+because Milestone C's avatar dies at that latency.
+
+**Conclusion: not as a single model.** The result argues *for* the split rather
+than against the 27B — the language gain is worth having, and the structured
+output is exactly what must not come from it.
+
+### The split, built
+
+`llm.ollama.conversation_model` names a second model for **the words the person
+hears**; empty means one model does both, which is the previous behaviour
+exactly. Routing, consent, planning, tool selection and extraction stay on
+`model` — the 27B measurement is why, since it read *"Disable Smart App
+Control"* as an action to carry out.
+
+Only `active_model` moved, plus the two components that also produce spoken text
+(`AnswerCondenser`, `BriefResponseGenerator`). A test asserts the structured
+components still take `self.model`, so the boundary cannot erode quietly.
+
+**Both models stay resident, so the pair has to fit.** `brain/model_split.py`
+prints both sizes against the card at startup and warns when they cannot —
+verified end to end: configured with the 27B for speech it warned, then ran at
+**18.5s and 21.0s per turn**, against its own predicted ~24s.
+
+Two measurements worth keeping from building it:
+
+- **Raw model sizes understate the real cost.** Two 8B models are 10.6 GB of
+  weights and sat at **15.4 GB of 16.3 GB** loaded — an overhead nearer 1.45×
+  than the 1.25× the fit check assumes. A pair that looks comfortable on paper
+  is tight in practice.
+- **`qwen3-vl:8b` cannot serve as the speech model.** It answers a short prompt
+  and returns nothing at all for the 5,170-character personality prompt, alone
+  or co-resident. A vision model is not a drop-in text model.
+
+---
+
 ## Risks
 
 | Risk | Where it bites | Mitigation |
@@ -567,5 +657,5 @@ another permanent display.
 | `chat_engine.py` keeps growing | every phase gets slower | Rule 2 — extraction is the entry price |
 | Latency compounds phase by phase | Milestone C becomes impossible | Rule 3 — stated budget, enforced per phase |
 | Guards silently do nothing in Korean | reliability work only covers English | Rule 4 + A2's guard audit and registry test |
-| `qwen3:8b` is the ceiling | repetition, register, long-context faults | measure the gap before assuming a bigger model fixes it; the 27B experiment stays deferred until a phase's own numbers say the model is the limit |
+| `qwen3:8b` is the ceiling | repetition, register, long-context faults | **measured — see below.** The 27B fixes Korean and breaks safety and latency |
 | Phases re-build what exists | months spent on solved problems | A4 and A5 are deliberately narrowed; read the code before writing the phase |

@@ -1,0 +1,117 @@
+{
+  "arc": "korean_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean_day",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "반가워요, 잘 지내고 있나요?",
+      "statuses": [],
+      "seconds": 8.52
+    },
+    {
+      "turn": 2,
+      "arc": "korean_day",
+      "user": "오늘 좀 힘들었어",
+      "act": "react",
+      "reply": "오늘 하루 잘 버텨주셨습니다.",
+      "statuses": [],
+      "seconds": 15.15
+    },
+    {
+      "turn": 3,
+      "arc": "korean_day",
+      "user": "회사에서 하루 종일 회의만 했어",
+      "act": "react",
+      "reply": "하루 종일 회의만 하면 지치시죠. 오늘은 일찍 쉬시는 걸 권합니다.",
+      "statuses": [],
+      "seconds": 13.98
+    },
+    {
+      "turn": 4,
+      "arc": "korean_day",
+      "user": "그러게 말이야",
+      "act": "receipt",
+      "reply": "네. 오늘은 무리하지 마시고 푹 쉬시기 바랍니다.",
+      "statuses": [],
+      "seconds": 12.32
+    },
+    {
+      "turn": 5,
+      "arc": "korean_day",
+      "user": "요즘 볼만한 드라마 있어?",
+      "act": "answer",
+      "reply": "9월 신작 중 '메이드 인 코리아 시즌2'가 액션과 범죄 장르로 주목받고 있습니다. 디트리 사이트에서 해당 작품의 상세 정보를 확인해 보겠습니다.",
+      "statuses": [
+        "잠시만 기다려 주십시오."
+      ],
+      "seconds": 19.9
+    },
+    {
+      "turn": 6,
+      "arc": "korean_day",
+      "user": "음 별로네",
+      "act": "react",
+      "reply": "취향에 맞지 않았군요. 액션이나 스릴러 대신 코미디나 로맨스 장르가 좋으신가요?",
+      "statuses": [],
+      "seconds": 12.49
+    },
+    {
+      "turn": 7,
+      "arc": "korean_day",
+      "user": "그럼 영화는?",
+      "act": "answer",
+      "reply": "다 됐습니다.",
+      "statuses": [
+        "바로 찾아보겠습니다."
+      ],
+      "seconds": 17.47
+    },
+    {
+      "turn": 8,
+      "arc": "korean_day",
+      "user": "그건 봤어",
+      "act": "react",
+      "reply": "어떤 영화였는지 알려주십시오. 그 전에 추천한 제목이 정확히 무엇인지 확인한 뒤, 다른 작품을 골라드리겠습니다.",
+      "statuses": [],
+      "seconds": 12.63
+    },
+    {
+      "turn": 9,
+      "arc": "korean_day",
+      "user": "드라마는 됐고, 저녁 뭐 먹지?",
+      "act": "answer",
+      "reply": "저녁에는 칼칼한 국물 요리인 순두부찌개가 좋습니다. 드라마 보며 먹기 좋게 부드럽고 속이 편해서 한상차림 부담이 적습니다. 집 근처 순두부 전문점이나 마트에서 사온 재료로 직접 끓여 드시는 걸 권합니다. 너무 맵게 하지 않으면 입도 가라앉히고 졸음도 덜 옵니다.",
+      "statuses": [],
+      "seconds": 16.68
+    },
+    {
+      "turn": 10,
+      "arc": "korean_day",
+      "user": "간단한 걸로",
+      "act": "answer",
+      "reply": "특정 분야가 없으므로, 웹에서 최신 정보를 간단히 확인해 드릴 수 있습니다. 검색할 주제를 말씀해 주십시오.",
+      "statuses": [],
+      "seconds": 12.75
+    },
+    {
+      "turn": 11,
+      "arc": "korean_day",
+      "user": "오케이 그렇게 할게",
+      "act": "receipt",
+      "reply": "알겠습니다. 진행하겠습니다.",
+      "statuses": [],
+      "seconds": 11.06
+    },
+    {
+      "turn": 12,
+      "arc": "korean_day",
+      "user": "고마워 잘자",
+      "act": "close",
+      "reply": "잘 주무셨습니다.",
+      "statuses": [],
+      "seconds": 13.25
+    }
+  ]
+}

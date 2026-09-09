@@ -52,8 +52,29 @@ llm:
     # (router, task intent gate, task planner per step, each tier-2
     # planner's own rounds), so that tax was most of the wait the user saw.
     base_url: "http://127.0.0.1:11434"
-    # Fast text-only model used for normal conversation.
+    # The model that makes decisions: routing, consent, planning, tool
+    # selection, extraction. Everything whose output is read as JSON or
+    # acted on. Measured on the 134-case router matrix, this one scores
+    # 130/134 with zero dangerous false positives and zero JSON repairs.
     model: "qwen3:8b"
+
+    # The model that produces the words the person hears, when it should
+    # be a different one. Empty means "use the model above for both",
+    # which is the whole previous behaviour.
+    #
+    # The split exists because language competence and structured
+    # reliability came apart cleanly when measured. A 27B scored 83% on
+    # the Korean dogfood arc against this model's 58% -- and produced two
+    # dangerous false positives on the router matrix, including reading
+    # "Disable Smart App Control" as an action to perform. Better words,
+    # worse judgement.
+    #
+    # Both models stay resident, so the two together must fit in VRAM.
+    # Two 8B models are about 10.4 GB and fit a 16 GB card; a 13 GB model
+    # beside an 8B does not, and alternating between models that do not
+    # fit costs about 24s per turn in reloads. Elaina prints both sizes
+    # and a warning at startup.
+    conversation_model: ""
 
     # Sampling temperature, generally between 0 and 2.
     # Lower values are more predictable.
@@ -415,7 +436,7 @@ tts:
   elevenlabs:
     api_key_env: "ELEVENLABS_API_KEY"
     voice_id: "tga35xYnrtQZCvOPrhyN"
-    model: "eleven_multilingual_v2"
+    model: "eleven_turbo_v2_5"
     output_format: "mp3_44100_128"
 
     # How she delivers a line. Nothing was sent before, so every reply used

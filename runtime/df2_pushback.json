@@ -1,0 +1,70 @@
+{
+  "arc": "pushback",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "pushback",
+      "user": "how much does a nintendo switch 2 cost?",
+      "act": "answer",
+      "reply": "After a price increase took effect on September 1, 2026. I looked and couldn't find that, so I'd rather not guess.",
+      "statuses": [
+        "I'll find out."
+      ],
+      "seconds": 18.98
+    },
+    {
+      "turn": 2,
+      "arc": "pushback",
+      "user": "for real? that seems expensive",
+      "act": "react",
+      "reply": "That’s the latest info I have.",
+      "statuses": [],
+      "seconds": 3.64
+    },
+    {
+      "turn": 3,
+      "arc": "pushback",
+      "user": "no i think you're wrong about that",
+      "act": "answer",
+      "reply": "The Nintendo Switch 2 price hasn’t been officially confirmed yet.",
+      "statuses": [],
+      "seconds": 3.92
+    },
+    {
+      "turn": 4,
+      "arc": "pushback",
+      "user": "ok whatever",
+      "act": "receipt",
+      "reply": "Let me know what you need.",
+      "statuses": [],
+      "seconds": 1.35
+    },
+    {
+      "turn": 5,
+      "arc": "pushback",
+      "user": "what's the screen refresh rate on it",
+      "act": "answer",
+      "reply": "For the latest details, check official Nintendo sources. I haven't actually checked that, so I'd rather not guess.",
+      "statuses": [],
+      "seconds": 3.92
+    },
+    {
+      "turn": 6,
+      "arc": "pushback",
+      "user": "you sure?",
+      "act": "answer",
+      "reply": "I'm not sure. Could you clarify if you're asking about the Nintendo Switch 2's screen refresh rate or its price?",
+      "statuses": [],
+      "seconds": 3.65
+    },
+    {
+      "turn": 7,
+      "arc": "pushback",
+      "user": "alright",
+      "act": "receipt",
+      "reply": "Alright.",
+      "statuses": [],
+      "seconds": 0.7
+    }
+  ]
+}

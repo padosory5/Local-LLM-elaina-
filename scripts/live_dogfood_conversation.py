@@ -157,6 +157,90 @@ ARCS: dict[str, dict] = {
             ("alright i'm heading out", CLOSE),
         ),
     },
+    # ---------------------------------------------------------------- day 2
+    #
+    # Turns nothing has been tuned against. The five arcs above were the
+    # optimisation target for six phases, so re-running them measures how
+    # well the tuning fits them rather than how she actually is -- which is
+    # the whole reason dogfooding session 1 found things nine benchmark
+    # phases had not. These are written as someone would really talk, and
+    # deliberately include the shapes known to be weak: subjectless
+    # follow-ups, a correction, a topic abandoned mid-arc, and questions
+    # that invite her to invent a number.
+    "evening": {
+        "computer_control": False,
+        "turns": (
+            ("hey, long day", GREET),
+            ("just back to back meetings honestly", REACT),
+            ("do you know why someone would keep waking up at 3am?", ANSWER),
+            ("i don't drink coffee after 2 though", REACT),
+            ("hm", RECEIPT),
+            ("anyway. decent cheap headphone brand?", ANSWER),
+            ("under 100", ANSWER),
+            ("what's the battery life on that one", ANSWER),
+            ("you sure about that?", ANSWER),
+            ("ok forget the headphones, is it supposed to rain tomorrow?", ANSWER),
+            ("right", RECEIPT),
+            ("night", CLOSE),
+        ),
+    },
+    "korean_day": {
+        "computer_control": False,
+        "turns": (
+            ("안녕", GREET),
+            ("오늘 좀 힘들었어", REACT),
+            ("회사에서 하루 종일 회의만 했어", REACT),
+            ("그러게 말이야", RECEIPT),
+            ("요즘 볼만한 드라마 있어?", ANSWER),
+            ("음 별로네", REACT),
+            ("그럼 영화는?", ANSWER),
+            ("그건 봤어", REACT),
+            ("드라마는 됐고, 저녁 뭐 먹지?", ANSWER),
+            ("간단한 걸로", ANSWER),
+            ("오케이 그렇게 할게", RECEIPT),
+            ("고마워 잘자", CLOSE),
+        ),
+    },
+    # Code-switching in both directions, plus an explicit switch mid-arc.
+    "switch": {
+        "computer_control": False,
+        "turns": (
+            ("hey 오늘 날씨 어때?", ANSWER),
+            ("아 그렇구나", RECEIPT),
+            ("can you say that in english?", ANSWER),
+            ("thanks. 근데 우산 필요할까?", ANSWER),
+            ("ok got it", RECEIPT),
+            ("let's speak korean from now on", RECEIPT),
+            ("저녁에 산책 가도 될까?", ANSWER),
+            ("알겠어", RECEIPT),
+        ),
+    },
+    # A7, said the way a person says it rather than the way a matrix does.
+    "personal": {
+        "computer_control": False,
+        "turns": (
+            ("i'm vegetarian by the way", RECEIPT),
+            ("since last year", REACT),
+            ("what do you know about me?", ANSWER),
+            ("can you find somewhere near me to eat?", ANSWER),
+            ("forget that i'm vegetarian", RECEIPT),
+            ("what do you know about me now?", ANSWER),
+            ("ok thanks", RECEIPT),
+        ),
+    },
+    # Pushback. She is wrong, is told so, and has to neither cave nor dig in.
+    "pushback": {
+        "computer_control": False,
+        "turns": (
+            ("how much does a nintendo switch 2 cost?", ANSWER),
+            ("for real? that seems expensive", REACT),
+            ("no i think you're wrong about that", ANSWER),
+            ("ok whatever", RECEIPT),
+            ("what's the screen refresh rate on it", ANSWER),
+            ("you sure?", ANSWER),
+            ("alright", RECEIPT),
+        ),
+    },
 }
 
 

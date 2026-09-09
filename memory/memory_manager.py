@@ -261,6 +261,12 @@ class MemoryManager:
     # the whole point of the operation being visible rather than quiet.
     FORGET_SIMILARITY_FLOOR = 0.35
     FORGET_LIMIT = 5
+    # How far below the closest match a memory may be and still count as
+    # part of the same request. Found in a dogfood turn: "forget that I'm
+    # vegetarian" removed the vegetarian memory *and* an unrelated one
+    # about not drinking coffee after 2pm -- both were about food, both
+    # cleared the floor. Naming one subject must not clear the shelf.
+    FORGET_MARGIN = 0.15
 
     def forget(self, subject="", *, everything=False):
         """Deactivate what the person asked to be rid of, and say what went.
@@ -293,9 +299,22 @@ class MemoryManager:
         if not subject:
             return []
 
+        matches = [
+            memory for memory in self.search(subject, k=self.FORGET_LIMIT)
+            if getattr(memory, "similarity", 0.0) >= self.FORGET_SIMILARITY_FLOOR
+        ]
+        if not matches:
+            return []
+
+        # Only the cluster around the closest match. A request names one
+        # subject; anything appreciably further away is a different fact
+        # that happens to share a topic.
+        best = max(
+            getattr(memory, "similarity", 0.0) for memory in matches
+        )
         removed = []
-        for memory in self.search(subject, k=self.FORGET_LIMIT):
-            if getattr(memory, "similarity", 0.0) < self.FORGET_SIMILARITY_FLOOR:
+        for memory in matches:
+            if best - getattr(memory, "similarity", 0.0) > self.FORGET_MARGIN:
                 continue
             memory.is_active = False
             removed.append(memory.content)

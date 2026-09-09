@@ -64,6 +64,7 @@ from brain import conversation_style
 from brain import capability_contract
 from brain import guard_lines
 from brain import memory_gate
+from brain import model_split
 from brain import task_progress
 from brain import korean_register
 from brain import turn_language
@@ -481,6 +482,30 @@ class ChatEngine:
             "model",
         )
 
+        # The model that says things, which need not be the model that
+        # decides things.
+        #
+        # Measured, same session, same matrices: a 27B scored 83% on the
+        # Korean dogfood arc where this model scores 58%, and 83% against
+        # 75% on the English one -- and produced two dangerous false
+        # positives on the router matrix, reading "Disable Smart App
+        # Control" as an action to carry out and a remark about email as
+        # a calendar entry. It also needed 13 JSON repair retries over 134
+        # routes where this model needed none.
+        #
+        # Language competence and structured reliability came apart
+        # cleanly, so they get different models. Routing, consent,
+        # planning, tool selection and extraction stay here; only the
+        # words the person hears move.
+        #
+        # Empty is the previous behaviour exactly: one model for both.
+        self.conversation_model = str(
+            self.config.get(
+                "llm", "ollama", "conversation_model",
+                default="", required=False,
+            ) or ""
+        ).strip() or self.model
+
         self.temperature = self.config.get(
             "llm",
             "ollama",
@@ -550,6 +575,20 @@ class ChatEngine:
                 "base_url",
             )
         )
+
+        # Say out loud what is configured, and whether it can work. A
+        # split whose two models do not fit together is not a little
+        # slower -- Ollama evicts and reloads one every turn, which was
+        # measured at about 24s. Silence would leave that to be found as
+        # mysterious slowness weeks later.
+        try:
+            note = model_split.report(
+                self.client, self.model, self.conversation_model,
+            )
+            if note:
+                print(note)
+        except Exception as error:
+            print(f"[Models] Could not check the model split: {error}")
         self.intent_router = SemanticIntentRouter(
             client=self.client,
             model=self.model,
@@ -1007,9 +1046,10 @@ class ChatEngine:
         # by the routing phase, and reported by the interaction decision.
         self._supersedes = supersession.Supersession()
         self._last_interaction = interaction.InteractionDecision()
+        # Speaks. "Anytime." and "Got it." are words the person hears.
         self.brief_responses = BriefResponseGenerator(
             self.client,
-            self.model,
+            self.conversation_model,
             keep_alive=self.keep_alive,
         )
         # Status lines cover slow work, so they cannot afford to wait on the
@@ -1080,9 +1120,11 @@ class ChatEngine:
         # standing preference for Naver Maps.
         self._source_override = ""
         self._tool_override = ""
+        # Speaks: it rewrites a long answer into something listenable,
+        # so its output is read aloud verbatim.
         self.answer_condenser = AnswerCondenser(
             self.client,
-            self.model,
+            self.conversation_model,
             keep_alive=self.keep_alive,
         )
         self.agent_builder = AgentBuilder(
@@ -3248,7 +3290,21 @@ class ChatEngine:
             return guard_lines.say("memory_forgotten_all", language)
         # Named, not counted: "forgotten -- 2 things" tells them nothing
         # about whether the right two went.
-        what = "; ".join(item.strip().rstrip(".") for item in removed[:2])
+        if len(removed) == 1:
+            # They named one thing and one thing went. Repeating their own
+            # words back adds nothing, and the stored row is written in the
+            # third person -- "The user follows a vegetarian diet" -- which
+            # is right for a database and wrong out loud. Splicing a
+            # pronoun into it produced "you follows a vegetarian diet",
+            # which is worse than either.
+            return guard_lines.say("memory_forgotten_one", language)
+        # More went than they named, which is the case where saying which
+        # actually matters. Quoted rather than spliced, so a third-person
+        # row stays grammatical in both languages.
+        what = "; ".join(
+            f"“{' '.join(str(item).split()).rstrip('.')}”"
+            for item in removed[:2]
+        )
         return guard_lines.say("memory_forgotten", language).format(what=what)
 
     def _store_memory_candidate(self, user_input: str) -> None:
@@ -3264,8 +3320,39 @@ class ChatEngine:
             started = time.perf_counter()
             try:
                 memory = self.extractor.extract(user_input)
-                if not memory["save"]:
+                # The extractor's "save" is a model call, and it is the
+                # last model boolean left in the memory path. A7 replaced
+                # the two above it for exactly this reason and stopped one
+                # layer short. Measured on an unseen dogfood turn: "i'm
+                # vegetarian by the way" opened the gate, started the
+                # store, and was dropped here -- the database afterwards
+                # held "The user is doing well." and not the diet. She
+                # then said "I don't have anything saved about that",
+                # which was honest and was the wrong answer.
+                #
+                # The deterministic gate already decided this sentence
+                # states something durable. A model declining to agree
+                # does not un-say it.
+                worth_keeping = memory_gate.carries_something_to_remember(
+                    user_input
+                )
+                if not memory["save"] and not worth_keeping:
                     return
+                if not memory["save"]:
+                    print(
+                        "[Memory] The extractor declined; the gate did not. "
+                        f"Keeping: {user_input[:60]!r}"
+                    )
+                if not str(memory.get("content", "")).strip():
+                    # No phrasing came back with the refusal, so their own
+                    # sentence is the memory. Verbatim on purpose: a
+                    # paraphrase of something never paraphrased before is
+                    # a second chance to get it wrong.
+                    memory = {
+                        **memory,
+                        "content": " ".join(str(user_input).split()),
+                        "category": memory.get("category") or "personal",
+                    }
 
                 similar = self.memory_manager.search_memory_objects(
                     memory["content"]
@@ -8280,7 +8367,14 @@ class ChatEngine:
             use_screen_vision
             and not verified_identification
         )
-        active_model = self.vision_model if uses_vision_model else self.model
+        # Every site that produces words for the person reads this one
+        # variable, which is what made the split a one-line change here
+        # rather than a hunt: realization, retries, rewrites, the
+        # finaliser and the streaming answer itself all take active_model.
+        active_model = (
+            self.vision_model if uses_vision_model
+            else self.conversation_model
+        )
         active_keep_alive = (
             self.vision_keep_alive if uses_vision_model else self.keep_alive
         )

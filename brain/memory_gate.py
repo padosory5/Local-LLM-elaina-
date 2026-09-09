@@ -141,9 +141,16 @@ _ASKED_TO_REMEMBER = re.compile(
 # An explicit instruction to stop keeping something. Separated because
 # forgetting has to be a real, visible operation -- A1 found that a bare
 # "forget X" could silently eat a turn instead.
+# ``i\b`` rather than ``i\s``, so "forget that i'm vegetarian" is heard.
+# The same contraction bug as _DURABLE had, in the pattern next to it, and
+# it survived the phase because the recall matrix wrote its forget cases
+# out in full. Found by a dogfood turn: "forget that i'm vegetarian" was
+# answered "확인해 주시겠습니까?" -- she asked for confirmation of nothing
+# and kept the fact. ``\b`` still refuses "forget it", where the "i" has a
+# letter after it.
 _ASKED_TO_FORGET = re.compile(
     r"\b(?:forget|delete|remove)\s+(?:that\s+|what\s+)?"
-    r"(?:i\s|my\s|you\s+know|about\s+me|everything)"
+    r"(?:i\b|my\s|you\s+know|about\s+me|everything)"
     r"|\bstop\s+remembering\b"
     r"|잊어\s*(?:줘|주세요|버려)|기억(?:하지|에서)\s*(?:마|지워)",
     re.IGNORECASE,
