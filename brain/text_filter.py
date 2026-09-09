@@ -53,6 +53,57 @@ class TextFilter:
         flags=re.UNICODE,
     )
 
+    # Japanese kana, in a reply that is meant to be Korean or English.
+    #
+    # Measured, once, in a real Korean session:
+    #
+    #     안녕하세요. 도움이 되었ようで 다행입니다. 궁금한 점이 또 있으시면...
+    #
+    # "ようで" is Japanese glued onto a Korean verb stem. The draft had
+    # already been regenerated once and rewritten twice by the time it was
+    # said, so no amount of asking the model again was going to fix it --
+    # this is the CJK bleed a small multilingual model does, and per this
+    # project's standing rule a confirmed behaviour gets a deterministic
+    # guard rather than more prompt wording.
+    #
+    # Kana only, deliberately. Han ideographs are *not* included: 한자 is
+    # real Korean, and "한자로 어떻게 써?" is a question she should be able
+    # to answer. Kana has no such reading -- there is no sentence of hers
+    # in either language where it belongs.
+    KANA_PATTERN = re.compile("[぀-ヿ]", flags=re.UNICODE)
+
+    @classmethod
+    def without_foreign_script(cls, text: str) -> str:
+        """Drop any sentence carrying a script that does not belong.
+
+        The sentence, not the characters. Deleting the run leaves
+        "도움이 되었 다행입니다" -- a broken verb and a sentence she cannot
+        stand behind, which is worse out loud than not saying it, and
+        guessing the connective the model meant is generation rather than
+        repair. Whole sentences are what a reply is made of, so removing
+        one leaves something grammatical.
+
+        Returns "" when nothing is left, so the caller can decide whether
+        an empty reply or a guard line is the right answer there.
+        """
+        said = str(text or "")
+        if not cls.KANA_PATTERN.search(said):
+            return said
+        try:
+            from brain.conversation_style import sentences
+        except Exception:
+            parts = [part for part in re.split(r"(?<=[.!?])\s+", said.strip()) if part]
+        else:
+            parts = sentences(said)
+        kept = [part for part in parts if not cls.KANA_PATTERN.search(part)]
+        dropped = len(parts) - len(kept)
+        if dropped:
+            print(
+                f"[Language] Dropped {dropped} sentence(s) carrying Japanese "
+                f"kana."
+            )
+        return " ".join(kept).strip()
+
     _FAILED_ACTION_PATTERN = re.compile(
         r"(?i)\b(?:could\s+not|couldn['’]?t|did\s+not|"
         r"didn['’]?t|failed|unable|not\s+found)\b"
@@ -277,6 +328,16 @@ class TextFilter:
         # written next month. Placed here because every reply path in
         # chat_engine already ends up in this method.
         text = capability_contract.redact_internals(text)
+        if not text:
+            return ""
+
+        # Same reasoning, one script over: a reply carrying Japanese kana
+        # is a reply she cannot pronounce in either of her languages.
+        # Placed beside the redaction because it covers the same ground --
+        # every path that produces a draft ends up here -- and the styling
+        # pass that runs *after* this one checks it again, since a resaid
+        # sentence is a new sentence and can leak the same way.
+        text = cls.without_foreign_script(text)
         if not text:
             return ""
 

@@ -62,6 +62,7 @@ from brain.response_policy import (
 )
 from brain import conversation_style
 from brain import capability_contract
+from brain import existence_claims
 from brain import guard_lines
 from brain import memory_gate
 from brain import model_split
@@ -255,6 +256,40 @@ _BARE_ACKNOWLEDGEMENT = re.compile(
     r"mm-?hm+|uh-?huh|yeah|yep|yup|fair enough|makes sense|noted|"
     r"understood|cool|nice|아 그렇구나|알겠어(?:요)?|그렇구나)"
     r"\s*[.!?]*\s*$",
+    flags=re.IGNORECASE,
+)
+
+# A noise while they think. Not an acknowledgement -- "ok" agrees with
+# something, "um" agrees with nothing -- and the difference matters,
+# because the reply to an acknowledgement is closure and the reply to a
+# hesitation is silence.
+#
+# Measured live, in the middle of a Korean conversation about the user's
+# university:
+#
+#     said : 엄
+#     read : Confirm if computer engineering at Washington University in
+#            Seattle is associated with Bill Gates
+#     said : 그냥 어이가 없어서 한 표현이야
+#
+# One syllable of hesitation became a full repeat of the previous
+# question, and the user spent the next turn explaining that they had not
+# asked anything. The router has nothing to work with here: a filler
+# names no subject, so the only thing it can do is reach for the last one.
+#
+# Guarded exactly like the greeting and acknowledgement paths -- anything
+# outstanding makes even a grunt meaningful, and those branches run first.
+_HESITATION = re.compile(
+    r"^\s*(?:"
+    r"u+m+|u+h+|e+r+m?|h+m+|hmm+|ah+|oh+"
+    # Korean fillers, in two groups, because one of them is ambiguous.
+    # 음/엄/흠 are hesitation and nothing else. A bare "어" or "아" is more
+    # often agreement -- "어" is 반말 for "yeah" -- so those count only
+    # lengthened, which is how a drawn-out filler actually transcribes.
+    # Whisper writes these as it hears them, so the doubled forms are real
+    # transcripts rather than defensive padding.
+    r"|[음엄흠][음엄어아으]*|[어아으][음엄어아으]+|저기+|그+"
+    r")\s*[.!?~,]*\s*$",
     flags=re.IGNORECASE,
 )
 
@@ -2008,6 +2043,51 @@ class ChatEngine:
                 "more and I'll take it properly?"
             )
         return fresh
+
+    def _enforce_existence_claims(
+        self,
+        reply: str,
+        *,
+        research_evidence: str = "",
+        searched: bool = False,
+    ) -> str:
+        """Do not say a thing never happened on the model's memory alone.
+
+        The mirror image of :meth:`_enforce_grounded_values`, and it was
+        missing for the whole of Milestone A: every grounding guard in this
+        file checks what a reply asserts is *there*, and none of them
+        looked at a reply asserting something is not.
+
+        The two failures are not equally bad. An invented price is a value
+        the user can check; "that war never happened" is an answer that
+        ends the conversation, and it sounds more confident than the
+        honest version. Measured in Korean, from a cold model with nothing
+        looked up, on the name 육이오 전쟁 -- which she then described
+        correctly one turn later, because she had always known it.
+
+        Whole sentences are replaced, not edited: a denial with its
+        denial removed is not a shorter sentence, it is a different claim.
+        """
+        text = str(reply or "").strip()
+        if not text:
+            return text
+        evidence = " ".join((
+            str(self._grounded_context.get("statement", "")),
+            str(research_evidence or ""),
+        ))
+        denials = existence_claims.unsupported(
+            text, searched=searched, evidence=evidence,
+        )
+        if not denials:
+            return text
+        for denial in denials:
+            print(f"[Grounding Guard] Denied without checking: {denial[:80]}")
+        line = guard_lines.say("unchecked_denial", self._turn_language)
+        # The honest sentence goes where the denial was -- at the front --
+        # because whatever survives is elaboration on a claim she has just
+        # withdrawn, and reading it first states the withdrawn claim again.
+        kept = existence_claims.without(text, denials)
+        return f"{line} {kept}".strip()
 
     def _enforce_grounded_values(
         self,
@@ -5142,17 +5222,57 @@ class ChatEngine:
         request = str(getattr(route, "normalized_request", "") or "").strip()
         problem = self.task_sessions.active_recommendation()
         focus = self.task_sessions.focus()
-        if problem is not None and (
-            problem.constraints or problem.lookup_requested
+
+        # A held problem builds its query from *its own* subject, and the
+        # turn's named entity is appended to that. When the conversation
+        # has moved on and nothing retired the problem, the two are glued
+        # together and searched as one thing. Measured in a real Korean
+        # session, three turns after the subject changed from the Korean
+        # War to the user's university:
+        #
+        #     [Query] source: active_task
+        #             text: 6/25 war Washington University Seattle
+        #     [Context] Inheriting the conversation
+        #               (was Washington University in Seattle, now ...)
+        #
+        # The conversation layer had the subject right. The query did not,
+        # and the contaminated string was then *cached*, so every later
+        # question in the same thread reused it -- "6/25 war Washington
+        # University Bill Gates Seattle" two turns further on.
+        #
+        # Same rule the history and the held results already follow: both
+        # subjects have to be known before a disagreement counts, so an
+        # ordinary subjectless follow-up ("which one?") still inherits.
+        #
+        # The goal layer's subject, and only that -- ``route.topic`` is a
+        # filing label written per turn, and the test below is specified
+        # on noun phrases rather than on sentences. Falling back to the
+        # task on an unknown subject is the safe direction; falling back
+        # to the router's own query for this turn is the safe direction
+        # when they disagree.
+        builder = problem
+        if builder is not None:
+            held_subject = str(getattr(builder, "subject", "") or "").strip()
+            turn_subject = str(getattr(goal, "subject", "") or "").strip()
+            if context_policy.names_a_different_subject(
+                held_subject, turn_subject,
+            ):
+                print(
+                    f"[Query] the open task is about '{held_subject}' and this "
+                    f"turn is about '{turn_subject}'; not building from it."
+                )
+                builder = None
+        if builder is not None and (
+            builder.constraints or builder.lookup_requested
         ):
-            resolved = problem.search_query(request or router_query)
+            resolved = builder.search_query(request or router_query)
             if resolved:
                 # Strong task and conversation context comes first. Locale is
                 # only a fallback, so it cannot suppress a known destination.
                 resolved = self._with_focus(
                     resolved, focus, include_subject=False,
                 )
-                resolved = self._localised(problem, resolved, focus=focus)
+                resolved = self._localised(builder, resolved, focus=focus)
             if resolved and resolved.casefold() != router_query.casefold():
                 print("[Query]")
                 print("  source: active_task")
@@ -8953,6 +9073,16 @@ class ChatEngine:
                 keep_alive=active_keep_alive,
                 max_words=max_words,
             )
+            # Checked again after the voice pass, not only in the speech
+            # filter before it. The reply that leaked kana live had been
+            # regenerated once and rewritten twice already, and ``_resay``
+            # asks the model for a fresh sentence -- so the last string
+            # anything produced is the one that has to be clean.
+            without_kana = TextFilter.without_foreign_script(reply)
+            if without_kana != reply:
+                reply = without_kana or guard_lines.say(
+                    "no_response", self._turn_language,
+                )
             reply = self._enforce_action_commitment(
                 reply,
                 user_input=user_input,
@@ -8964,6 +9094,11 @@ class ChatEngine:
                 action_performed=action_performed,
                 research_evidence=self._last_research_evidence,
                 trusted_result=bool(effective_forced_response),
+                searched="web_search" in timings,
+            )
+            reply = self._enforce_existence_claims(
+                reply,
+                research_evidence=self._last_research_evidence,
                 searched="web_search" in timings,
             )
             active_problem = self.task_sessions.active_recommendation()
@@ -10255,6 +10390,42 @@ class ChatEngine:
                 ),
                 user_input=user_input,
                 locked_response=self.social_lines.frustration(),
+            )
+        if (
+            _HESITATION.fullmatch(user_input)
+            and not any((
+                pending_offer,
+                pending_computer,
+                pending_task,
+                pending_strategy,
+                pending_capability,
+                pending_clarification,
+            ))
+            and not has_explicit_attachment
+            and not continuing_agent_flow
+        ):
+            # A filler asks nothing, so there is nothing to route. Sent to
+            # the router it comes back as the previous question asked
+            # again, because the previous subject is the only thing in the
+            # prompt that a subjectless turn can attach to -- measured, on
+            # "엄", which returned as a full request about Bill Gates.
+            #
+            # Said rather than swallowed: she is on a microphone, and a
+            # turn that produces nothing at all is indistinguishable from
+            # her having stopped working.
+            timings["route"] = time.perf_counter() - route_started
+            return TurnRouting(
+                route=IntentDecision(
+                    intent="conversation",
+                    confidence=1.0,
+                    normalized_request=user_input,
+                    reason="A filler with nothing outstanding.",
+                    speech_act="social",
+                ),
+                user_input=user_input,
+                locked_response=guard_lines.say(
+                    "still_listening", self._turn_language,
+                ),
             )
         if (
             _BARE_ACKNOWLEDGEMENT.fullmatch(user_input)

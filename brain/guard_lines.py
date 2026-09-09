@@ -86,6 +86,25 @@ LINES: dict[str, dict[str, str]] = {
         KOREAN: "확인하지 않은 곳을 알려 드리고 싶지는 않습니다. 실제로 "
                 "찾아볼까요?",
     },
+    # She was about to say a thing does not exist, having checked nothing.
+    # Measured live: asked about 육이오 전쟁 -- the Sino-Korean reading of
+    # the date the Korean War began -- she said it never happened, and then
+    # described the war correctly one turn later. The model's recall gap
+    # was spoken as a fact about the world.
+    "unchecked_denial": {
+        ENGLISH: "I don't actually remember that one, and I'd rather not "
+                 "tell you it never happened without checking. Want me to "
+                 "look it up?",
+        KOREAN: "그건 제가 확실히 알지 못합니다. 확인 없이 아니라고 "
+                "말씀드리기는 어려우니, 한번 찾아볼까요?",
+    },
+    # They made a noise while thinking and have not asked anything yet.
+    # Short on purpose: a filler usually has the real sentence right
+    # behind it, and a long answer talks over it.
+    "still_listening": {
+        ENGLISH: "I'm listening.",
+        KOREAN: "네, 듣고 있습니다.",
+    },
     # Nothing came back from the model at all.
     "no_response": {
         ENGLISH: "I couldn't generate a response. Please try again.",
