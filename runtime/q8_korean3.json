@@ -1,0 +1,115 @@
+{
+  "arc": "korean_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean_day",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "안녕하세요. 오늘은 일이 어떻게 흘러가는지 궁금하시면 말씀해 주십시오.",
+      "statuses": [],
+      "seconds": 4.91
+    },
+    {
+      "turn": 2,
+      "arc": "korean_day",
+      "user": "오늘 좀 힘들었어",
+      "act": "react",
+      "reply": "오늘 많이 힘드셨나봐요. 조금씩 쉬어가시는 게 좋습니다.",
+      "statuses": [],
+      "seconds": 5.24
+    },
+    {
+      "turn": 3,
+      "arc": "korean_day",
+      "user": "회사에서 하루 종일 회의만 했어",
+      "act": "react",
+      "reply": "오늘 하루 회의로 시간이 많이 흘렀나요? 힘들었겠습니다.",
+      "statuses": [],
+      "seconds": 6.78
+    },
+    {
+      "turn": 4,
+      "arc": "korean_day",
+      "user": "그러게 말이야",
+      "act": "receipt",
+      "reply": "오늘 하루 회의로 많이 지쳤겠습니다. 조금씩 쉬어가시는 게 좋습니다.",
+      "statuses": [],
+      "seconds": 5.5
+    },
+    {
+      "turn": 5,
+      "arc": "korean_day",
+      "user": "요즘 볼만한 드라마 있어?",
+      "act": "answer",
+      "reply": "NetShort에서 다양한 짧은 드라마도 무료로 감상 가능합니다. I couldn't verify a specific one from the sources I checked.",
+      "statuses": [
+        "잠시만 기다려 주십시오."
+      ],
+      "seconds": 11.28
+    },
+    {
+      "turn": 6,
+      "arc": "korean_day",
+      "user": "음 별로네",
+      "act": "react",
+      "reply": "별로셨군요. 좋아하는 장르가 있다면 추천해 드릴 수 있습니다.",
+      "statuses": [],
+      "seconds": 6.09
+    },
+    {
+      "turn": 7,
+      "arc": "korean_day",
+      "user": "그럼 영화는?",
+      "act": "answer",
+      "reply": "영화는요? 방금 영화를 보셨나요?",
+      "statuses": [],
+      "seconds": 4.95
+    },
+    {
+      "turn": 8,
+      "arc": "korean_day",
+      "user": "그건 봤어",
+      "act": "react",
+      "reply": "영화는 봤습니다.",
+      "statuses": [],
+      "seconds": 4.83
+    },
+    {
+      "turn": 9,
+      "arc": "korean_day",
+      "user": "드라마는 됐고, 저녁 뭐 먹지?",
+      "act": "answer",
+      "reply": "저녁은 갈비와 김치찌개를 추천드립니다. 갈비는 1인분 1만5천 원, 김치찌개는 5천 원입니다.",
+      "statuses": [],
+      "seconds": 5.19
+    },
+    {
+      "turn": 10,
+      "arc": "korean_day",
+      "user": "간단한 걸로",
+      "act": "answer",
+      "reply": "간단한 음식으로는 김치찌개와 갈비를 추천드립니다. 아직 확인해 보지 않아서, 추측으로 말씀드리지는 않겠습니다.",
+      "statuses": [],
+      "seconds": 5.51
+    },
+    {
+      "turn": 11,
+      "arc": "korean_day",
+      "user": "오케이 그렇게 할게",
+      "act": "receipt",
+      "reply": "갈비 1인분 1만5천 원, 김치찌개 5천 원으로 간단하게 드실 수 있습니다.",
+      "statuses": [],
+      "seconds": 5.95
+    },
+    {
+      "turn": 12,
+      "arc": "korean_day",
+      "user": "고마워 잘자",
+      "act": "close",
+      "reply": "잘자요. 즐거운 꿈做个하십시오.",
+      "statuses": [],
+      "seconds": 5.14
+    }
+  ]
+}

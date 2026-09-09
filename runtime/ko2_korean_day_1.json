@@ -1,0 +1,117 @@
+{
+  "arc": "korean_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean_day",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "오늘은 어떻게 지내?",
+      "statuses": [],
+      "seconds": 4.01
+    },
+    {
+      "turn": 2,
+      "arc": "korean_day",
+      "user": "오늘 좀 힘들었어",
+      "act": "react",
+      "reply": "오늘 힘들었나요? 고생하셨습니다. 일이 해결되면 말씀해 주십시오.",
+      "statuses": [],
+      "seconds": 4.48
+    },
+    {
+      "turn": 3,
+      "arc": "korean_day",
+      "user": "회사에서 하루 종일 회의만 했어",
+      "act": "react",
+      "reply": "회사에서 하루 종일 회의만 했군요. 휴식 시간에 잠시 쉬셨나요?",
+      "statuses": [],
+      "seconds": 4.94
+    },
+    {
+      "turn": 4,
+      "arc": "korean_day",
+      "user": "그러게 말이야",
+      "act": "receipt",
+      "reply": "힘들었겠습니다. 휴식 시간 좀 가져보십시오.",
+      "statuses": [],
+      "seconds": 4.09
+    },
+    {
+      "turn": 5,
+      "arc": "korean_day",
+      "user": "요즘 볼만한 드라마 있어?",
+      "act": "answer",
+      "reply": "2026년 최신 드라마로 '그ени얼 딸'이 추천됩니다. 많은 시청자들이 즐기고 있습니다. 바로 시청할 수 있습니다.",
+      "statuses": [
+        "그건 알아보겠습니다."
+      ],
+      "seconds": 24.71
+    },
+    {
+      "turn": 6,
+      "arc": "korean_day",
+      "user": "음 별로네",
+      "act": "react",
+      "reply": "그ени얼 딸은 별로셨군요. 최근에 인기 있는 '이런 그대'라는 드라마도 추천드릴 수 있습니다.",
+      "statuses": [],
+      "seconds": 5.62
+    },
+    {
+      "turn": 7,
+      "arc": "korean_day",
+      "user": "그럼 영화는?",
+      "act": "answer",
+      "reply": "2026년 하반기 해외 영화 추천 BEST 10으로는 '아이언맨 2026', '스타트rek: 뉴 월드', '다크 나이트 리턴즈' 등이 있습니다. 넷플릭스에서는 코미디·액션·로맨스 등 다양한 장르의 영화를 추천합니다.",
+      "statuses": [
+        "잠시만 기다려 주십시오."
+      ],
+      "seconds": 15.13
+    },
+    {
+      "turn": 8,
+      "arc": "korean_day",
+      "user": "그건 봤어",
+      "act": "react",
+      "reply": "확인했습니다. 넷플릭스에서 2026년에 놓치지 말고 보아야 할 한국 영화 추천이 필요하신가요?",
+      "statuses": [],
+      "seconds": 4.28
+    },
+    {
+      "turn": 9,
+      "arc": "korean_day",
+      "user": "드라마는 됐고, 저녁 뭐 먹지?",
+      "act": "answer",
+      "reply": "드라마도 잘 봤습니다. 저녁은 떡볶이 or 탕수육 추천드리겠습니다. 가기 전에 위치 알려주시면 더 좋겠습니다. 아직 확인해 보지 않아서, 추측으로 말씀드리지는 않겠습니다.",
+      "statuses": [],
+      "seconds": 5.28
+    },
+    {
+      "turn": 10,
+      "arc": "korean_day",
+      "user": "간단한 걸로",
+      "act": "answer",
+      "reply": "간단한 음식이라면 김치찌개 또는 김밥 추천드립니다. 집에서 만들어보시거나, 배달 앱으로 주문하셔도 좋습니다. 아직 확인해 보지 않아서, 추측으로 말씀드리지는 않겠습니다.",
+      "statuses": [],
+      "seconds": 5.86
+    },
+    {
+      "turn": 11,
+      "arc": "korean_day",
+      "user": "오케이 그렇게 할게",
+      "act": "receipt",
+      "reply": "저녁은 간단하게 김치찌개 or 김밥으로 해결하십시오. 가기 전에 위치 알려주시면 배달 앱으로 주문해드리겠습니다.",
+      "statuses": [],
+      "seconds": 4.28
+    },
+    {
+      "turn": 12,
+      "arc": "korean_day",
+      "user": "고마워 잘자",
+      "act": "close",
+      "reply": "잘 주무십시오.",
+      "statuses": [],
+      "seconds": 3.93
+    }
+  ]
+}

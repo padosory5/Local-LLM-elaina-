@@ -1,0 +1,115 @@
+{
+  "arc": "korean_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean_day",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "안녕하세요! 오늘은 어떻게 보내고 있나요?",
+      "statuses": [],
+      "seconds": 7.49
+    },
+    {
+      "turn": 2,
+      "arc": "korean_day",
+      "user": "오늘 좀 힘들었어",
+      "act": "react",
+      "reply": "오늘 많이 힘드셨나봐요. 잠을 충분히 자시고, 필요하시면 언제든 말씀해 주십시오.",
+      "statuses": [],
+      "seconds": 5.27
+    },
+    {
+      "turn": 3,
+      "arc": "korean_day",
+      "user": "회사에서 하루 종일 회의만 했어",
+      "act": "react",
+      "reply": "오늘 하루 회의로 지쳤겠습니다. 휴식 시간 잘 갖으세요.",
+      "statuses": [],
+      "seconds": 5.02
+    },
+    {
+      "turn": 4,
+      "arc": "korean_day",
+      "user": "그러게 말이야",
+      "act": "receipt",
+      "reply": "오늘 하루 정말 지쳤겠습니다. 편안히 쉬시고, 필요하시면 언제든 말씀해 주십시오.",
+      "statuses": [],
+      "seconds": 6.11
+    },
+    {
+      "turn": 5,
+      "arc": "korean_day",
+      "user": "요즘 볼만한 드라마 있어?",
+      "act": "answer",
+      "reply": "NetShort에서 다양한 짧은 드라마도 무료로 감상 가능합니다. I couldn't verify a specific one from the sources I checked.",
+      "statuses": [
+        "바로 찾아보겠습니다."
+      ],
+      "seconds": 15.28
+    },
+    {
+      "turn": 6,
+      "arc": "korean_day",
+      "user": "음 별로네",
+      "act": "react",
+      "reply": "재미있는 드라마 찾으셨나요? 더 알려주시면 도와드리겠습니다.",
+      "statuses": [],
+      "seconds": 6.32
+    },
+    {
+      "turn": 7,
+      "arc": "korean_day",
+      "user": "그럼 영화는?",
+      "act": "answer",
+      "reply": "영화는 현재 확인된 정보가 없습니다. 드라마보다 영화를 선호하시면 더 구체적으로 말씀해 주시면 도와드릴 수 있습니다.",
+      "statuses": [],
+      "seconds": 5.38
+    },
+    {
+      "turn": 8,
+      "arc": "korean_day",
+      "user": "그건 봤어",
+      "act": "react",
+      "reply": "그렇게 말씀하셨군요. 다른 영화 추천이 필요하시면 더 구체적인 장르나 테마를 알려주시면 도와드릴 수 있습니다.",
+      "statuses": [],
+      "seconds": 7.02
+    },
+    {
+      "turn": 9,
+      "arc": "korean_day",
+      "user": "드라마는 됐고, 저녁 뭐 먹지?",
+      "act": "answer",
+      "reply": "드라마 끝나고 저녁으로 갈비나 해산물구이가 좋습니다. 가격은 대략 3만 원대부터 시작합니다.",
+      "statuses": [],
+      "seconds": 6.17
+    },
+    {
+      "turn": 10,
+      "arc": "korean_day",
+      "user": "간단한 걸로",
+      "act": "answer",
+      "reply": "간단한 식사로는 삼겹살 or 떡볶이 추천입니다. 2만 원대에서 맛있게 즐길 수 있습니다. a 저녁 한번 알아볼까요?",
+      "statuses": [],
+      "seconds": 5.76
+    },
+    {
+      "turn": 11,
+      "arc": "korean_day",
+      "user": "오케이 그렇게 할게",
+      "act": "receipt",
+      "reply": "알겠습니다. 떡볶이 준비해드릴게요.",
+      "statuses": [],
+      "seconds": 6.35
+    },
+    {
+      "turn": 12,
+      "arc": "korean_day",
+      "user": "고마워 잘자",
+      "act": "close",
+      "reply": "잘자요. 안녕히 주무세요.",
+      "statuses": [],
+      "seconds": 4.84
+    }
+  ]
+}

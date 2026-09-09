@@ -80,6 +80,27 @@ _ENDINGS: tuple[tuple[str, str], ...] = (
     ("주세요", "주십시오"),
     ("하세요", "하십시오"),
     ("보세요", "보십시오"),
+    # The honorific copula, before the general 세요 rule below can reach
+    # it. "선생님이세요" is "you are a teacher", so it takes 이십니다 --
+    # turning it into an imperative would tell them to *be* one.
+    ("이세요", "이십니다"),
+    ("아니세요", "아니십니다"),
+    # Every other 세요 is an imperative, and 세요 and 십시오 attach after
+    # the same honorific 시-, so the swap needs no stem surgery:
+    # 갖으세요 -> 갖으십시오, 주무세요 -> 주무십시오. Three specific cases
+    # were already listed above; this is the rule they were instances of.
+    #
+    # Only reached for statements: questions return earlier, which is what
+    # keeps "잘 지내세요?" from becoming an order instead of 지내십니까.
+    #
+    # Measured on an unseen Korean arc, register_drift was 7 of 12 turns
+    # and forms like "갖으세요" were most of it -- the largest single
+    # Korean failure class, and ours rather than the model's.
+    ("세요", "십시오"),
+    # A farewell, said the way this register says it. Same speech act,
+    # same meaning, and she really does produce the 해요체 form.
+    ("잘자요", "안녕히 주무십시오"),
+    ("잘 자요", "안녕히 주무십시오"),
 )
 
 # Phrases that stopped being grammar. 안녕하세요 is -세요 by shape, and the

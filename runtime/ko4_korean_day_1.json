@@ -1,0 +1,115 @@
+{
+  "arc": "korean_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean_day",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "안녕하세요. 무엇을 도와드릴까요?",
+      "statuses": [],
+      "seconds": 0.38
+    },
+    {
+      "turn": 2,
+      "arc": "korean_day",
+      "user": "오늘 좀 힘들었어",
+      "act": "react",
+      "reply": "어제는 힘들었겠습니다. 오늘은 좀 쉬어 보십시오.",
+      "statuses": [],
+      "seconds": 4.06
+    },
+    {
+      "turn": 3,
+      "arc": "korean_day",
+      "user": "회사에서 하루 종일 회의만 했어",
+      "act": "react",
+      "reply": "회사에서 하루 종일 회의만 했네요. 쉬는 시간에 잠시 휴식을 취하셨으면 좋겠습니다.",
+      "statuses": [],
+      "seconds": 4.9
+    },
+    {
+      "turn": 4,
+      "arc": "korean_day",
+      "user": "그러게 말이야",
+      "act": "receipt",
+      "reply": "오늘은 정말 힘들었겠습니다. 잠시 쉬어 보시는 게 좋습니다.",
+      "statuses": [],
+      "seconds": 4.82
+    },
+    {
+      "turn": 5,
+      "arc": "korean_day",
+      "user": "요즘 볼만한 드라마 있어?",
+      "act": "answer",
+      "reply": "최근 드라마로는 《미스터 션샤인》을 추천해 드립니다. 2026년에 방영된 작품으로, 감정 깊은 이야기와 훌륭한 연기로 많은 사랑을 받았어요. 다음에 더 궁금한 점이 있으면 언제든 물어보십시오.",
+      "statuses": [
+        "네, 찾아보겠습니다."
+      ],
+      "seconds": 17.17
+    },
+    {
+      "turn": 6,
+      "arc": "korean_day",
+      "user": "음 별로네",
+      "act": "react",
+      "reply": "음, 그렇군요. 다른 장르나 연령층 드라마도 좋아하시나요?",
+      "statuses": [],
+      "seconds": 5.24
+    },
+    {
+      "turn": 7,
+      "arc": "korean_day",
+      "user": "그럼 영화는?",
+      "act": "answer",
+      "reply": "영화는 《마션》을 추천드립니다. 2015년 개봉작으로, 우주 탐사와 인간의 의지가 잘 묶여 있어 감동적입니다.",
+      "statuses": [],
+      "seconds": 5.0
+    },
+    {
+      "turn": 8,
+      "arc": "korean_day",
+      "user": "그건 봤어",
+      "act": "react",
+      "reply": "확인했습니다. 새로운 드라마 추천이나 영화 정보가 필요하시면 언제든 말씀해주십시오.",
+      "statuses": [],
+      "seconds": 4.41
+    },
+    {
+      "turn": 9,
+      "arc": "korean_day",
+      "user": "드라마는 됐고, 저녁 뭐 먹지?",
+      "act": "answer",
+      "reply": "저녁엔 떡볶이가 맛있습니다. 식사 후 산책도 추천드립니다. 아직 확인해 보지 않아서, 추측으로 말씀드리지는 않겠습니다.",
+      "statuses": [],
+      "seconds": 6.46
+    },
+    {
+      "turn": 10,
+      "arc": "korean_day",
+      "user": "간단한 걸로",
+      "act": "answer",
+      "reply": "간단한 음식이라면 김치찌개와 김밥 조합이 좋습니다. 식사 후 가볍게 산책하시면 더 좋습니다. 아직 확인해 보지 않아서, 추측으로 말씀드리지는 않겠습니다.",
+      "statuses": [],
+      "seconds": 5.43
+    },
+    {
+      "turn": 11,
+      "arc": "korean_day",
+      "user": "오케이 그렇게 할게",
+      "act": "receipt",
+      "reply": "저녁은 간단하게 김치찌개와 김밥으로 해결하겠습니다. 가볍게 산책하시면 건강에도 좋습니다.",
+      "statuses": [],
+      "seconds": 4.07
+    },
+    {
+      "turn": 12,
+      "arc": "korean_day",
+      "user": "고마워 잘자",
+      "act": "close",
+      "reply": "안녕히 주무십시오. 늦은 밤엔 조용히 쉬는 게 좋습니다.",
+      "statuses": [],
+      "seconds": 4.11
+    }
+  ]
+}

@@ -191,14 +191,39 @@ def _word_count(text: str) -> int:
     return len(_ANY_WORD.findall(str(text or "")))
 
 
+# A greeting opens a conversation, and you open it in the language you
+# mean to have it in. That makes it evidence however short it is, which
+# nothing else this brief is.
+#
+# The floor cannot tell these apart by length: "안녕" is two syllables and
+# "고마워" is three, and only the second is an acknowledgement. Measured:
+# "안녕" left the turn in English, so the curated Korean greeting bank
+# answered a Korean hello with "Hello. Ready when you are." The same held
+# for a bare "hi" against a Korean conversation.
+_GREETING = re.compile(
+    r"^\s*(?:안녕(?:하세요|하십니까)?|하이|헬로우?|"
+    r"좋은\s*(?:아침|오후|저녁))\s*[!.?~]*$"
+    r"|^\s*(?:hi|hey|hello|hiya|good\s+(?:morning|afternoon|evening))"
+    r"\s*[!.?~]*$",
+    re.IGNORECASE,
+)
+
+
 def _long_enough_to_mean_something(text: str) -> bool:
     """Whether this turn carries enough to be evidence of a language.
 
     Each script is measured in its own unit. A Korean sentence of two
     words is a sentence; an English turn of two words is usually "ok
     thanks".
+
+    A greeting is the exception, and it is an exception about *what the
+    turn is doing* rather than about its size: an acknowledgement responds
+    inside a conversation someone is already having, while a greeting
+    starts one.
     """
     said = str(text or "")
+    if _GREETING.match(said.strip()):
+        return True
     syllables = len(_HANGUL.findall(said))
     if syllables:
         return syllables >= MIN_SWITCH_SYLLABLES

@@ -258,12 +258,21 @@ _EN_PHASES = {
 }
 
 _KO_EXECUTION = {
+    # "그건 알아보겠습니다." was here and it read stiff: 그건 points at
+    # something, and this pool is generic, so the demonstrative referred
+    # to nothing and just made the line formal. 한번 is what softens an
+    # offer to go and look in Korean, and 검색 is the natural verb when
+    # the question is one a search answers:
+    #
+    #     시애틀에서 인천까지 가는데 몇 시간 걸려?  ->  검색해보겠습니다.
     "searching": (
         "확인해 보겠습니다.",
         "네, 찾아보겠습니다.",
-        "그건 알아보겠습니다.",
-        "잠시만 기다려 주십시오.",
+        "한번 알아보겠습니다.",
+        "한번 찾아보겠습니다.",
+        "검색해보겠습니다.",
         "바로 찾아보겠습니다.",
+        "잠시만 기다려 주십시오.",
     ),
     "opening": (
         "바로 열겠습니다.",
@@ -323,7 +332,7 @@ _KO_EXECUTION = {
 
 _KO_HEDGED = (
     "찾아보면 나올 것 같습니다. 확인해 보겠습니다.",
-    "더 나은 것이 있을 듯합니다. 알아보겠습니다.",
+    "더 나은 것이 있을 듯합니다. 한번 알아보겠습니다.",
     "확실하지는 않지만 한번 찾아보겠습니다.",
     "잠시만, 무엇이 있는지 보겠습니다.",
 )

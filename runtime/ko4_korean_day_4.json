@@ -1,0 +1,115 @@
+{
+  "arc": "korean_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean_day",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "안녕하세요. 무엇을 도와드릴까요?",
+      "statuses": [],
+      "seconds": 0.4
+    },
+    {
+      "turn": 2,
+      "arc": "korean_day",
+      "user": "오늘 좀 힘들었어",
+      "act": "react",
+      "reply": "오늘 힘드셨나 보네요. 쉬고 싶으시면 언제든 말해주십시오.",
+      "statuses": [],
+      "seconds": 4.42
+    },
+    {
+      "turn": 3,
+      "arc": "korean_day",
+      "user": "회사에서 하루 종일 회의만 했어",
+      "act": "react",
+      "reply": "회사에서 하루 종일 회의만 했나 보네요. 힘드셨겠습니다.",
+      "statuses": [],
+      "seconds": 4.65
+    },
+    {
+      "turn": 4,
+      "arc": "korean_day",
+      "user": "그러게 말이야",
+      "act": "receipt",
+      "reply": "오늘 하루 회의만 하셨나 보네요. 힘드셨겠습니다.",
+      "statuses": [],
+      "seconds": 4.78
+    },
+    {
+      "turn": 5,
+      "arc": "korean_day",
+      "user": "요즘 볼만한 드라마 있어?",
+      "act": "answer",
+      "reply": "최근 방영된 드라마로는 '미스터 셸샤인'이 있습니다. 역사적 사건을 감동적으로 다뤘고, 많은 이들이 좋아했습니다. 다음에 보시면 좋습니다.",
+      "statuses": [
+        "한번 찾아보겠습니다."
+      ],
+      "seconds": 21.35
+    },
+    {
+      "turn": 6,
+      "arc": "korean_day",
+      "user": "음 별로네",
+      "act": "react",
+      "reply": "미스터 셸샤인은 개인적으로 별로셨나요? 혹시 다른 장르나 배우를 선호하시면 추천드릴 수 있습니다.",
+      "statuses": [],
+      "seconds": 4.11
+    },
+    {
+      "turn": 7,
+      "arc": "korean_day",
+      "user": "그럼 영화는?",
+      "act": "answer",
+      "reply": "영화 추천은 드라마보다 다양한 선택지가 있습니다. 최근에 '어바웃 타임'이 감동적이었고, '인사이드 아웃'은 힐링에 좋습니다. 좋아하는 장르가 있으신가요?",
+      "statuses": [],
+      "seconds": 6.55
+    },
+    {
+      "turn": 8,
+      "arc": "korean_day",
+      "user": "그건 봤어",
+      "act": "react",
+      "reply": "확인했습니다. 다른 내용이 궁금하다면 물어보십시오.",
+      "statuses": [],
+      "seconds": 4.0
+    },
+    {
+      "turn": 9,
+      "arc": "korean_day",
+      "user": "드라마는 됐고, 저녁 뭐 먹지?",
+      "act": "answer",
+      "reply": "드라마 보고 배고파요? 추천은 '삼성 캡슐'입니다. 저녁에 드실 만한 건물이죠? 아직 확인해 보지 않아서, 추측으로 말씀드리지는 않겠습니다. a 식사 한번 알아볼까요?",
+      "statuses": [],
+      "seconds": 6.34
+    },
+    {
+      "turn": 10,
+      "arc": "korean_day",
+      "user": "간단한 걸로",
+      "act": "answer",
+      "reply": "간단한 걸로 '부대찌개'를 추천합니다. 간단하면서도 포만감 있는 메뉴로, 저녁에 드시면 배고픔이 줄어들 거입니다.",
+      "statuses": [],
+      "seconds": 6.62
+    },
+    {
+      "turn": 11,
+      "arc": "korean_day",
+      "user": "오케이 그렇게 할게",
+      "act": "receipt",
+      "reply": "부대찌개로 해결했습니다. 간단하게 드시면 배고픔도 덜어질 거입니다.",
+      "statuses": [],
+      "seconds": 3.97
+    },
+    {
+      "turn": 12,
+      "arc": "korean_day",
+      "user": "고마워 잘자",
+      "act": "close",
+      "reply": "안녕히 주무십시오. 부대찌개로 배고픔도 덜어졌을 거입니다.",
+      "statuses": [],
+      "seconds": 4.03
+    }
+  ]
+}

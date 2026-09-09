@@ -326,7 +326,19 @@ _OPEN_REQUEST = re.compile(
 # the request behind the greeting.
 _SIMPLE_GREETING = re.compile(
     r"^\s*(?:hi|hey|hello|hiya|good\s+(?:morning|afternoon|evening))"
-    r"(?:\s+elaina)?\s*[!.?]*\s*$",
+    r"(?:\s+elaina)?\s*[!.?]*\s*$"
+    # Korean greetings took the model path instead, because this pattern
+    # only knew English ones -- so the one turn with a curated,
+    # guaranteed-register answer was the one turn Korean never reached.
+    # Measured: "안녕" was answered "오늘은 어떻게 지내?", 반말, on the
+    # opening line of the conversation. The register converter could not
+    # save it either, because it skips questions by design.
+    #
+    # The bank in brain/social_lines.py has 습니다체 greetings for every
+    # part of the day. This is the whole fix: let Korean reach it.
+    r"|^\s*(?:안녕|안녕하세요|안녕하십니까|하이|헬로우?|"
+    r"좋은\s*(?:아침|오후|저녁))"
+    r"(?:\s*엘라이나)?\s*[!.?~]*\s*$",
     flags=re.IGNORECASE,
 )
 
@@ -2197,10 +2209,7 @@ class ChatEngine:
             if sentence.strip()
             and not grounded_values.claims_a_find(sentence)
         ]
-        honest = (
-            "I couldn't get actual listing names out of that search -- "
-            "want me to open it in the browser and read them off?"
-        )
+        honest = guard_lines.say("no_listing_names", self._turn_language)
         rebuilt = " ".join(kept).strip()
         return f"{rebuilt} {honest}" if rebuilt else honest
 
@@ -2274,7 +2283,9 @@ class ChatEngine:
                 f"From what I actually found: {' and '.join(real)}."
             )
         else:
-            honest = "I couldn't confirm a specific one from what I found."
+            honest = guard_lines.say(
+                "unconfirmed_specific", self._turn_language,
+            )
         return f"{rebuilt} {honest}".strip() if rebuilt else honest
 
     def _enforce_named_recommendation(
@@ -2316,8 +2327,8 @@ class ChatEngine:
             if sentence.strip()
             and not any(name in sentence for name in invented)
         ]
-        honest = (
-            "I couldn't verify a specific one from the sources I checked."
+        honest = guard_lines.say(
+            "unverified_named_thing", self._turn_language,
         )
         rebuilt = " ".join(kept).strip()
         return f"{rebuilt} {honest}" if rebuilt else honest
@@ -2662,9 +2673,8 @@ class ChatEngine:
             print(f"[Grounding Guard] Naming what was found: {already_found}")
             offer = f"The one I actually found is {already_found}."
         else:
-            offer = (
-                "I don't want to send you somewhere I haven't checked -- "
-                "want me to look up real ones?"
+            offer = guard_lines.say(
+                "unchecked_place_offer", self._turn_language,
             )
         # Park what answers it. This guard asked a question and left
         # nothing to accept, so "Yeah." took the bare-acknowledgement fast

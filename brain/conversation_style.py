@@ -462,7 +462,39 @@ _WORD = re.compile(r"\b[\w'$%-]+\b", re.UNICODE)
 # instead and missed 반말 entirely -- a rewrite turned 해요체 into 반말 and
 # passed, which is a worse register going out under a clean review.
 _FORMAL_ENDING = re.compile(
-    r"(?:니다|니까|십시오|시죠|까요|을까|ㄹ까)\s*[.!?~]*$"
+    # ``군요`` was missing, and it was the single largest source of Korean
+    # findings in this whole metric -- 16 of 23 across three runs of one
+    # arc. It is the ordinary way to acknowledge what someone just told
+    # you, and it is natural in this register:
+    #
+    #     회사에서 하루 종일 회의만 했군요. 힘들었겠습니다.
+    #     그 드라마는 마음에 들지 않으셨군요.
+    #
+    # Confirmed by the Korean speaker this is being built for. Every one
+    # of those was counted as a register failure, so Korean's score was
+    # being held down by the instrument rather than by her.
+    #
+    # **Recorded because loosening a detector makes a number go up.** The
+    # justification has to be that the sentences were always fine, not
+    # that the score was always low -- and the check is that the forms it
+    # still rejects are ones a 비서 really would not use: 반말 ("오늘은
+    # 어떻게 지내?") and plain 해요체 ("흥미로워요", "궁금해요").
+    # Confirmed natural by the Korean speaker this is built for, after an
+    # audit of every sentence this rule had flagged across every Korean
+    # transcript. ``군요`` was the first; these came out of the same pass:
+    #
+    #   나요?   오늘은 어떻게 보내고 있나요?      a softer polite question
+    #   네요    좋은 시작이네요.                  a mild remark
+    #
+    # ``가요?`` is the same family as ``까요?``, which this rule already
+    # accepted -- "할까요?" passed and "있으신가요?" did not, which was an
+    # inconsistency rather than a distinction. It is accepted **only as a
+    # question**, because "집에 가요" is ordinary 해요체 and still drift.
+    #
+    # Deliberately still rejected, and confirmed as such: ``나 봐요`` and
+    # ``보죠`` (피로가 느껴지시나 봐요), plain 해요체, and 반말.
+    r"(?:니다|니까|십시오|시죠|까요|을까|ㄹ까|군요|네요|나요)\s*[.!?~]*$"
+    r"|가요\s*[?？]+[\s.!?~]*$"
 )
 # Said on their own, and correct in this register whatever their form.
 # "네." would otherwise read as drift for ending in a bare syllable, and

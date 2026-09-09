@@ -1,0 +1,115 @@
+{
+  "arc": "korean_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean_day",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "Hi. Good to see you.",
+      "statuses": [],
+      "seconds": 0.44
+    },
+    {
+      "turn": 2,
+      "arc": "korean_day",
+      "user": "오늘 좀 힘들었어",
+      "act": "react",
+      "reply": "오늘은 정말 힘들었겠습니다. 쉬는 시간에 조금씩 풀어보시죠.",
+      "statuses": [],
+      "seconds": 4.11
+    },
+    {
+      "turn": 3,
+      "arc": "korean_day",
+      "user": "회사에서 하루 종일 회의만 했어",
+      "act": "react",
+      "reply": "회사에서 하루 종일 회의만 했군요. 피로가 심하시겠습니다.",
+      "statuses": [],
+      "seconds": 4.65
+    },
+    {
+      "turn": 4,
+      "arc": "korean_day",
+      "user": "그러게 말이야",
+      "act": "receipt",
+      "reply": "피로가 심하시겠습니다. 쉬는 시간에 조금씩 풀어보시죠.",
+      "statuses": [],
+      "seconds": 4.43
+    },
+    {
+      "turn": 5,
+      "arc": "korean_day",
+      "user": "요즘 볼만한 드라마 있어?",
+      "act": "answer",
+      "reply": "최근에 방영된 '더 퍼즐'은 흥미로운 스토리와 캐릭터로 주목받고 있습니다. 바로 시청하시면 좋습니다.",
+      "statuses": [
+        "확인해 보겠습니다."
+      ],
+      "seconds": 18.17
+    },
+    {
+      "turn": 6,
+      "arc": "korean_day",
+      "user": "음 별로네",
+      "act": "react",
+      "reply": "다음 드라마는 어떤 부분이 마음에 들지 않았어요? 다른 작품 추천해드릴 수 있습니다.",
+      "statuses": [],
+      "seconds": 4.47
+    },
+    {
+      "turn": 7,
+      "arc": "korean_day",
+      "user": "그럼 영화는?",
+      "act": "answer",
+      "reply": "영화는 '오징어 게임'이 있습니다. 최근 개봉해서 인기 많고, 재미있고 긴장감도 있습니다. 보시면 좋습니다.",
+      "statuses": [],
+      "seconds": 5.8
+    },
+    {
+      "turn": 8,
+      "arc": "korean_day",
+      "user": "그건 봤어",
+      "act": "react",
+      "reply": "그건 봤습니다. 다른 영화나 드라마 추천해드릴 수 있습니다.",
+      "statuses": [],
+      "seconds": 4.79
+    },
+    {
+      "turn": 9,
+      "arc": "korean_day",
+      "user": "드라마는 됐고, 저녁 뭐 먹지?",
+      "act": "answer",
+      "reply": "저녁 메뉴는 드라마를 보고 편하게 먹을 수 있는 간편한 음식이 좋겠습니다. 스테이크나 해산물 요리가 추천드려요; 1인분으로 1만 5천 원 정도면 충분합니다. 필요하시면 a 식사 더 보겠습니다.",
+      "statuses": [],
+      "seconds": 6.5
+    },
+    {
+      "turn": 10,
+      "arc": "korean_day",
+      "user": "간단한 걸로",
+      "act": "answer",
+      "reply": "간단한 음식으로 드십시오. 핫도그나 샌드위치 같은 간편한 메뉴가 좋습니다. 필요하시면 더 추천해 드리겠습니다. 아직 확인해 보지 않아서, 추측으로 말씀드리지는 않겠습니다.",
+      "statuses": [],
+      "seconds": 6.11
+    },
+    {
+      "turn": 11,
+      "arc": "korean_day",
+      "user": "오케이 그렇게 할게",
+      "act": "receipt",
+      "reply": "간단한 음식으로 해결해드리겠습니다. 햄버거나 피자 같은 메뉴가 좋습니다. 1만 5천 원 정도면 충분합니다. 필요하시면 더 추천해 드리겠습니다.",
+      "statuses": [],
+      "seconds": 5.37
+    },
+    {
+      "turn": 12,
+      "arc": "korean_day",
+      "user": "고마워 잘자",
+      "act": "close",
+      "reply": "안녕히 주무십시오. 늦은 밤엔 조용히 쉬는 게 좋습니다.",
+      "statuses": [],
+      "seconds": 3.96
+    }
+  ]
+}

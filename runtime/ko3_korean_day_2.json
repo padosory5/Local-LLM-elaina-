@@ -1,0 +1,115 @@
+{
+  "arc": "korean_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean_day",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "Hi. What are we working on?",
+      "statuses": [],
+      "seconds": 0.38
+    },
+    {
+      "turn": 2,
+      "arc": "korean_day",
+      "user": "오늘 좀 힘들었어",
+      "act": "react",
+      "reply": "지금 많이 힘드셨군요. 쉬어가실 시간을 가지십시오.",
+      "statuses": [],
+      "seconds": 4.08
+    },
+    {
+      "turn": 3,
+      "arc": "korean_day",
+      "user": "회사에서 하루 종일 회의만 했어",
+      "act": "react",
+      "reply": "회사에서 하루 종일 회의만 했군요. 피로가 느껴집니다.",
+      "statuses": [],
+      "seconds": 4.97
+    },
+    {
+      "turn": 4,
+      "arc": "korean_day",
+      "user": "그러게 말이야",
+      "act": "receipt",
+      "reply": "다시는군요. 피로가 느껴집니다.",
+      "statuses": [],
+      "seconds": 4.06
+    },
+    {
+      "turn": 5,
+      "arc": "korean_day",
+      "user": "요즘 볼만한 드라마 있어?",
+      "act": "answer",
+      "reply": "최근 방영된 드라마로는 '미스터 션샤인'이 추천됩니다. 감동적인 이야기와 훌륭한 연기로 많은 사랑을 받았습니다. 다음에 보시면 좋습니다.",
+      "statuses": [
+        "확인해 보겠습니다."
+      ],
+      "seconds": 19.1
+    },
+    {
+      "turn": 6,
+      "arc": "korean_day",
+      "user": "음 별로네",
+      "act": "react",
+      "reply": "미스터 션샤인은 별로셨나요? \"신의 퀘스트\"도 감정이 풍부하고 재미있습니다.",
+      "statuses": [],
+      "seconds": 4.77
+    },
+    {
+      "turn": 7,
+      "arc": "korean_day",
+      "user": "그럼 영화는?",
+      "act": "answer",
+      "reply": "영화에 대해 말씀해 주십시오. 무엇을 알고 싶으신가요?",
+      "statuses": [],
+      "seconds": 4.08
+    },
+    {
+      "turn": 8,
+      "arc": "korean_day",
+      "user": "그건 봤어",
+      "act": "react",
+      "reply": "영화는 봤습니다. 어떤 영화였나요?",
+      "statuses": [],
+      "seconds": 4.26
+    },
+    {
+      "turn": 9,
+      "arc": "korean_day",
+      "user": "드라마는 됐고, 저녁 뭐 먹지?",
+      "act": "answer",
+      "reply": "저녁 메뉴는 드라마처럼 흥미로운 선택이 필요합니다. 치킨과 떡볶이가 매운 걸 좋아하시면 추천드려요; 1인 기준으로 약 1만 5천 원입니다.",
+      "statuses": [],
+      "seconds": 5.75
+    },
+    {
+      "turn": 10,
+      "arc": "korean_day",
+      "user": "간단한 걸로",
+      "act": "answer",
+      "reply": "간단한 메뉴로 추천해드립니다. 떡볶이와 김치찌개로 1인당 약 1만 5천 원입니다. 간단하게 드시면 될 것 같습니다.",
+      "statuses": [],
+      "seconds": 5.55
+    },
+    {
+      "turn": 11,
+      "arc": "korean_day",
+      "user": "오케이 그렇게 할게",
+      "act": "receipt",
+      "reply": "요즘 저녁 메뉴로 떡볶이와 김치찌개를 선택하셨군요. 아직 확인해 보지 않아서, 추측으로 말씀드리지는 않겠습니다.",
+      "statuses": [],
+      "seconds": 4.76
+    },
+    {
+      "turn": 12,
+      "arc": "korean_day",
+      "user": "고마워 잘자",
+      "act": "close",
+      "reply": "안녕히 주무십시오. 잠들기 전에 한 가지 확인해 주십시오. 오늘 하루는 힘드셨나요?",
+      "statuses": [],
+      "seconds": 4.38
+    }
+  ]
+}

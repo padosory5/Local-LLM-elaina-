@@ -1,0 +1,117 @@
+{
+  "arc": "evening",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "evening",
+      "user": "hey, long day",
+      "act": "greet",
+      "reply": "That sounds rough. Take a moment to breathe.",
+      "statuses": [],
+      "seconds": 3.25
+    },
+    {
+      "turn": 2,
+      "arc": "evening",
+      "user": "just back to back meetings honestly",
+      "act": "react",
+      "reply": "Sounds like a marathon. Take a breath and reset.",
+      "statuses": [],
+      "seconds": 3.15
+    },
+    {
+      "turn": 3,
+      "arc": "evening",
+      "user": "do you know why someone would keep waking up at 3am?",
+      "act": "answer",
+      "reply": "Waking up at 3am can be linked to stress, hormonal changes, or disrupted sleep cycles. It often reflects unresolved thoughts or anxiety, as the brain becomes more active during lighter sleep in the early morning hours.",
+      "statuses": [
+        "I'll find out."
+      ],
+      "seconds": 22.12
+    },
+    {
+      "turn": 4,
+      "arc": "evening",
+      "user": "i don't drink coffee after 2 though",
+      "act": "react",
+      "reply": "That’s a good habit. Avoiding caffeine later can help keep your system calm, which might make waking up at 3am less likely.",
+      "statuses": [],
+      "seconds": 3.92
+    },
+    {
+      "turn": 5,
+      "arc": "evening",
+      "user": "hm",
+      "act": "receipt",
+      "reply": "Hmm, sounds like your body is trying to process something.",
+      "statuses": [],
+      "seconds": 5.82
+    },
+    {
+      "turn": 6,
+      "arc": "evening",
+      "user": "anyway. decent cheap headphone brand?",
+      "act": "answer",
+      "reply": "Over-ear or in-ear?",
+      "statuses": [],
+      "seconds": 5.08
+    },
+    {
+      "turn": 7,
+      "arc": "evening",
+      "user": "under 100",
+      "act": "answer",
+      "reply": "Over-ear or in-ear?",
+      "statuses": [],
+      "seconds": 0.4
+    },
+    {
+      "turn": 8,
+      "arc": "evening",
+      "user": "what's the battery life on that one",
+      "act": "answer",
+      "reply": "The battery life of the headphone depends on the model. Could you tell me the specific brand or model you're considering?",
+      "statuses": [],
+      "seconds": 3.47
+    },
+    {
+      "turn": 9,
+      "arc": "evening",
+      "user": "you sure about that?",
+      "act": "answer",
+      "reply": "You're asking about battery life, but I didn't mention a specific model yet. Could you name the brand or model you're thinking of?",
+      "statuses": [],
+      "seconds": 3.35
+    },
+    {
+      "turn": 10,
+      "arc": "evening",
+      "user": "ok forget the headphones, is it supposed to rain tomorrow?",
+      "act": "answer",
+      "reply": "The evidence doesn’t confirm rain for tomorrow. Check the forecast again closer to the date for updates.",
+      "statuses": [
+        "I'll see what I can find."
+      ],
+      "seconds": 11.53
+    },
+    {
+      "turn": 11,
+      "arc": "evening",
+      "user": "right",
+      "act": "receipt",
+      "reply": "Okay.",
+      "statuses": [],
+      "seconds": 0.6
+    },
+    {
+      "turn": 12,
+      "arc": "evening",
+      "user": "night",
+      "act": "close",
+      "reply": "Sounds like you're winding down.",
+      "statuses": [],
+      "seconds": 3.74
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+{
+  "arc": "evening",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "evening",
+      "user": "hey, long day",
+      "act": "greet",
+      "reply": "A long day? Take a break. You got this.",
+      "statuses": [],
+      "seconds": 3.88
+    },
+    {
+      "turn": 2,
+      "arc": "evening",
+      "user": "just back to back meetings honestly",
+      "act": "react",
+      "reply": "Another meeting? That’s back-to-back. Take a breath between them. You’ve got this.",
+      "statuses": [],
+      "seconds": 3.85
+    },
+    {
+      "turn": 3,
+      "arc": "evening",
+      "user": "do you know why someone would keep waking up at 3am?",
+      "act": "answer",
+      "reply": "People often wake up at 3am due to stress, anxiety, or an overactive mind. It can also signal sleep disorders, hormonal shifts, or disruptions from light or noise.",
+      "statuses": [],
+      "seconds": 3.82
+    },
+    {
+      "turn": 4,
+      "arc": "evening",
+      "user": "i don't drink coffee after 2 though",
+      "act": "react",
+      "reply": "That’s a good habit. Waking up at 3am can still happen for other reasons like stress or a disrupted sleep cycle, but avoiding caffeine later might help reset your rhythm.",
+      "statuses": [],
+      "seconds": 3.65
+    },
+    {
+      "turn": 5,
+      "arc": "evening",
+      "user": "hm",
+      "act": "receipt",
+      "reply": "I heard that. It’s okay to be quiet sometimes.",
+      "statuses": [],
+      "seconds": 10.04
+    },
+    {
+      "turn": 6,
+      "arc": "evening",
+      "user": "anyway. decent cheap headphone brand?",
+      "act": "answer",
+      "reply": "Over-ear or in-ear?",
+      "statuses": [],
+      "seconds": 3.19
+    },
+    {
+      "turn": 7,
+      "arc": "evening",
+      "user": "under 100",
+      "act": "answer",
+      "reply": "Over-ear or in-ear?",
+      "statuses": [],
+      "seconds": 0.4
+    },
+    {
+      "turn": 8,
+      "arc": "evening",
+      "user": "what's the battery life on that one",
+      "act": "answer",
+      "reply": "If you're looking for decent cheap headphones under 100, brands like Anker, JBL, and Sony offer good value. Would you prefer over-ear or in-ear style?",
+      "statuses": [],
+      "seconds": 3.87
+    },
+    {
+      "turn": 9,
+      "arc": "evening",
+      "user": "you sure about that?",
+      "act": "answer",
+      "reply": "Are you looking for over-ear or in-ear style headphones?",
+      "statuses": [],
+      "seconds": 3.47
+    },
+    {
+      "turn": 10,
+      "arc": "evening",
+      "user": "ok forget the headphones, is it supposed to rain tomorrow?",
+      "act": "answer",
+      "reply": "The evidence doesn’t confirm rain for tomorrow. Check the local forecast for precise details.",
+      "statuses": [
+        "I'll see what I can find."
+      ],
+      "seconds": 8.33
+    },
+    {
+      "turn": 11,
+      "arc": "evening",
+      "user": "right",
+      "act": "receipt",
+      "reply": "Okay.",
+      "statuses": [],
+      "seconds": 0.72
+    },
+    {
+      "turn": 12,
+      "arc": "evening",
+      "user": "night",
+      "act": "close",
+      "reply": "It’s already dark where you are. Need anything before bed?",
+      "statuses": [],
+      "seconds": 3.96
+    }
+  ]
+}

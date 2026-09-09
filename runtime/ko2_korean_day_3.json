@@ -1,0 +1,115 @@
+{
+  "arc": "korean_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean_day",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "오늘은 어떻게 지내고 있니?",
+      "statuses": [],
+      "seconds": 3.83
+    },
+    {
+      "turn": 2,
+      "arc": "korean_day",
+      "user": "오늘 좀 힘들었어",
+      "act": "react",
+      "reply": "오늘 힘드셨군요. 조금씩 다가가면서 해결해 보시죠.",
+      "statuses": [],
+      "seconds": 3.63
+    },
+    {
+      "turn": 3,
+      "arc": "korean_day",
+      "user": "회사에서 하루 종일 회의만 했어",
+      "act": "react",
+      "reply": "오늘 하루 종일 회의만 하셨군요. 피로가 많이 쌓였겠습니다. 쉬는 시간에 잠시 휴식 취하시면 어떨까요?",
+      "statuses": [],
+      "seconds": 5.07
+    },
+    {
+      "turn": 4,
+      "arc": "korean_day",
+      "user": "그러게 말이야",
+      "act": "receipt",
+      "reply": "지금 하루 종일 회의만 하셨군요. 피로가 많이 쌓였겠습니다. 조금씩 다가가면서 해결해 보시죠.",
+      "statuses": [],
+      "seconds": 5.54
+    },
+    {
+      "turn": 5,
+      "arc": "korean_day",
+      "user": "요즘 볼만한 드라마 있어?",
+      "act": "answer",
+      "reply": "2026년 드라마로 '10 이야기 사랑과 죽음'을 추천합니다. 시리즈로 구성되어 모든 에피소드가 무료로 볼 수 있습니다. 플랫폼 확인해보십시오.",
+      "statuses": [
+        "잠시만 기다려 주십시오."
+      ],
+      "seconds": 18.29
+    },
+    {
+      "turn": 6,
+      "arc": "korean_day",
+      "user": "음 별로네",
+      "act": "react",
+      "reply": "음, 그렇군요. 혹시 어떤 장르를 좋아하시나요.",
+      "statuses": [],
+      "seconds": 5.23
+    },
+    {
+      "turn": 7,
+      "arc": "korean_day",
+      "user": "그럼 영화는?",
+      "act": "answer",
+      "reply": "영화 추천을 도와드릴 수 있습니다. 어떤 장르를 선호하시나요?",
+      "statuses": [],
+      "seconds": 4.27
+    },
+    {
+      "turn": 8,
+      "arc": "korean_day",
+      "user": "그건 봤어",
+      "act": "react",
+      "reply": "영화는 봤습니다. 더 알려드릴까요?",
+      "statuses": [],
+      "seconds": 3.83
+    },
+    {
+      "turn": 9,
+      "arc": "korean_day",
+      "user": "드라마는 됐고, 저녁 뭐 먹지?",
+      "act": "answer",
+      "reply": "저녁 메뉴로는 '부대찌개'나 '된장찌개'가 추천됩니다. 가성비 좋은 식당은 '보성'이나 '도원'이에요; 2인 분량으로 3만 원대에 맛있게 즐길 수 있습니다.",
+      "statuses": [],
+      "seconds": 5.9
+    },
+    {
+      "turn": 10,
+      "arc": "korean_day",
+      "user": "간단한 걸로",
+      "act": "answer",
+      "reply": "간단한 메뉴로는 '김치찌개'나 '김밥'이 추천됩니다. 가성비 좋은 식당은 '미도미도'나 '김밥이야'입니다; 2인 분량으로 2만 원대에 즐길 수 있습니다.",
+      "statuses": [],
+      "seconds": 5.99
+    },
+    {
+      "turn": 11,
+      "arc": "korean_day",
+      "user": "오케이 그렇게 할게",
+      "act": "receipt",
+      "reply": "저녁은 간단하게 김치찌개와 김밥으로 해결하셨나요? 다음에 또 고민이 있으시면 도와드리겠습니다.",
+      "statuses": [],
+      "seconds": 4.09
+    },
+    {
+      "turn": 12,
+      "arc": "korean_day",
+      "user": "고마워 잘자",
+      "act": "close",
+      "reply": "안녕히 주무십시오. 늦게까지 일하别십시오.",
+      "statuses": [],
+      "seconds": 3.89
+    }
+  ]
+}

@@ -24,13 +24,14 @@ Elaina that exists then, not the one we imagine now.
 
 | | |
 |---|---|
-| **Branch** | `main` · last commit `c58fe9c` *A5 planning gaps, A6 attribute grounding* |
-| **Tests green** | **3177** / 169 modules — regression floor, must never drop |
-| **Model** | `qwen3:8b` via Ollama · vision `qwen3-vl:8b` |
+| **Branch** | `main` · last commit `ff9b5c4` *korean model* |
+| **Tests green** | **3206** / 171 modules — regression floor, must never drop |
+| **Model** | `qwen3:8b` decides *and* speaks · a second speech model is configurable and currently unused — no candidate beat it, see the model trials |
 | **Router accuracy** | **97.8%** (131/134) · 0 dangerous false positives · target ≥95% ✅ |
 | **Tool selection** | **95.6%** (43/45) · 0 research→browser · 0 UI false positives · target ≥95% ✅ |
 | **Agency / consent** | 0 unrequested actions · consent cases green ✅ |
-| **Conversation quality** | **97%** clean (31/32) EN · 75% KO · target ≥85% ✅ · ⚠️ ±3 turns run-to-run on identical code |
+| **Conversation quality** | *unseen arcs, pooled, n=120 each:* **EN 80%** · **KO 74%** · gap 6 points, p=0.28 — no longer distinguishable |
+| **Measuring it** | [`scripts/dogfood_session.py`](scripts/dogfood_session.py) — repeats, pools, and refuses a single run |
 | **Capability contracts** | **11/11** declared · **0** sentences naming internals (was 14) · ability answers bilingual ✅ |
 | **Latency** | median **3.8s** · p90 **13.0s** · ⚠️ see the latency budget below |
 | **Time to first sound** | **1.31s → 0.74s** on the same model; **0.25s** on `turbo_v2_5` |
@@ -110,6 +111,27 @@ the ElevenLabs SDK's chunk iterator delivers every chunk at once (the server
 generates the whole clip before sending, so progressive playback buys nothing),
 and the output format barely moves the number (`mp3_22050_32` was no faster than
 `mp3_44100_128`, so there is no reason to give up the quality).
+
+### 3b. One run is not a measurement
+
+Every Korean figure in this project was quoted from a single run until this
+rule existed. The same arc, the same code, eight times:
+
+    58%  58%  33%  50%  58%  42%  42%  58%
+
+A twenty-five point spread. Against that, "the 27B scored 83%" and "EXAONE
+scored 50%" -- both single runs -- were never comparisons, and a real ten-point
+improvement would have been invisible.
+
+The cause is granularity as much as the model: one arc is twelve turns, so a
+single turn flipping moves the score eight points. So
+[`scripts/dogfood_session.py`](scripts/dogfood_session.py) repeats each arc
+against a fresh backend, **pools every turn from every run into one rate**, and
+prints a margin beside it. It refuses `--runs 1` outright.
+
+Sixty turns instead of twelve takes the uncertainty from ±25 to ±13. Quote the
+pooled figure with its margin, and treat two numbers whose margins overlap as
+the same number.
 
 ### 4. Bilingual is a property, not a feature
 
@@ -620,6 +642,128 @@ because Milestone C's avatar dies at that latency.
 **Conclusion: not as a single model.** The result argues *for* the split rather
 than against the 27B — the language gain is worth having, and the structured
 output is exactly what must not come from it.
+
+### Which speech model — measured, and the answer is none of them
+
+The split was built to carry a Korean-specialised model. Two were pulled and
+run through the same unseen Korean arc:
+
+| speech model | size | Korean clean | avg turn |
+|---|---|---|---|
+| `qwen3:8b` (no split) | 4.9 GB | 58% | **3.8s** |
+| **27B IQ4_XS** | 12.6 GB | **83%** | 13.8s |
+| `exaone3.5:7.8b` | 4.4 GB | **50%** | 6.6s |
+| `dnotitia/dna:8b` | 8.0 GB | **25%** | 50.4s |
+
+**Neither Korean-specialised 8B beat plain `qwen3:8b`**, and both failed in ways
+it does not:
+
+- Both answered `안녕` in **English**. The language layer was correct --
+  `[Language] ko (switched): the whole turn is in it`, Korean personality
+  loaded -- and the models replied in English anyway.
+- EXAONE hallucinated a **Russian** drama title into a Korean reply
+  (`"Вот это драма!"`, recommending Kinopoisk) and recommended horror films to
+  someone asking for something light.
+- `dnotitia` leaked its own prompt compliance out loud: *"I'll respond in
+  Korean, following the guidelines you've set."*
+
+A third candidate was inspected rather than run:
+[`supermon2018/qwen3-8b-korean-finetuned`](https://huggingface.co/supermon2018/qwen3-8b-korean-finetuned).
+It is a **LoRA adapter, not a model** -- no GGUF, so testing it means fetching
+the 16 GB base, merging, converting and quantising. Its construction predicts
+nothing: rank 4, alpha 8, **16.5 MB of weights against a 16 GB base** (~0.1% of
+parameters), stopped at step 88, no dataset or evaluation documented.
+
+And it has a real defect. `target_modules` names `qkv_proj`, which does not
+exist in Qwen3 -- it uses separate `q_proj`/`k_proj`/`v_proj`. Reading the
+adapter's own tensor names back confirms what actually trained:
+
+    mlp.down_proj, mlp.gate_proj, mlp.up_proj, self_attn.o_proj
+
+**Attention was never adapted at all.** The judgement was that a rank-4 adapter
+with attention untouched cannot clear a bar that two full Korean finetunes by
+LG AI Research and a Korean AI company had already missed.
+
+### And then most of the gap turned out to be the instrument
+
+`~군요` -- 회의만 **했군요**, 마음에 들지 않으**셨군요** -- is the ordinary way to
+acknowledge what someone has just told you, and it is natural in this register.
+The drift detector did not list it, so **every one of them counted as a register
+failure**: 16 of 23 findings across three runs of one arc. Korean's score was
+being held down by the measuring stick.
+
+Confirmed with the Korean speaker this is built for, then fixed. Measured after,
+pooled over five runs each:
+
+| | pooled | margin |
+|---|---|---|
+| English, unseen arc | **80%** (48/60) | ±13 |
+| Korean, unseen arc | **70%** (42/60) | ±13 |
+
+Then the audit was widened: every Korean sentence the rule had ever flagged was
+grouped by grammatical family and put to the same reader. Three more families
+came back natural -- `~나요?`, `~(으)신가요?`, `~네요` -- and one was confirmed as
+real drift, `~나 봐요 / ~보죠`. One objective inconsistency fell out of it too:
+`~할까요?` was accepted and `~있으신가요?` was not, which was not a distinction.
+
+Measured after the full audit, five runs each side, pooled to 120 turns:
+
+| | pooled | margin |
+|---|---|---|
+| English, unseen arc | **80%** (96/120) | ±9 |
+| Korean, unseen arc | **68%** (82/120) | ±9 |
+
+**Gap 12 points, p = 0.039 -- small, and real.**
+
+Worth recording how that conclusion was nearly wrong: at ±9 each the two
+intervals overlap, and reading overlap as "no difference" is the usual mistake.
+A two-proportion test on the same numbers gives z = 2.06. Overlapping error
+bars are not a significance test.
+
+So the gap is genuine, and it is *twelve points* rather than the forty the
+early single-run figures implied.
+
+### Then three fixes closed most of what was left
+
+All three were ours, and each was an English-shaped rule quietly excluding
+Korean from something curated:
+
+- **`_SIMPLE_GREETING` listed only English greetings**, so "안녕" never reached
+  the hand-written greeting bank -- the one turn in the product with a
+  guaranteed-register answer was the one turn Korean could not get to. It went
+  to the model instead, which opened conversations in 반말: "오늘은 어떻게 지내?"
+- **The language floor could not see a greeting.** With "안녕" routed to the
+  bank, it then answered *in English*, because two syllables is under the
+  switch threshold. The floor exists because "네" and "ok" are evidence of
+  nothing, and it cannot separate those from a greeting by length -- "안녕" is
+  two syllables and "고마워" is three. What separates them is what the turn
+  *does*: an acknowledgement answers inside a conversation, a greeting starts
+  one, and you start it in the language you mean to have it in.
+- **`"그건 알아보겠습니다."`** pointed at nothing -- the pool is generic, so the
+  demonstrative referred to no particular thing and only made the line stiff.
+  Replaced with the 한번/검색 forms the operator asked for.
+
+| | pooled | margin |
+|---|---|---|
+| English | **80%** (96/120) | ±9 |
+| Korean, after the fixes | **74%** (89/120) | ±9 |
+
+**Gap 6 points, z = 1.08, p = 0.28 -- no longer distinguishable.** Not proof
+there is no gap: at this sample size anything under ~11 points is below
+resolution, and settling 6 points would take roughly 480 turns a side. What can
+be said is that the measurable difference is gone. Most of what looked like a Korean deficit was
+the instrument counting natural Korean as an error. What remains is real and
+visible in the transcripts: 반말 in greetings ("오늘은 어떻게 지내?"), the
+`~나 보죠` family, plain 해요체, and the occasional invented drama title.
+
+**So the Korean gap is capacity, not Korean training.** The only thing that
+improved Korean was a *bigger general* model, and it cost 13.8s a turn and two
+dangerous false positives. On a 16 GB card the speech half has to be ≤ ~5 GB,
+and nothing at that size is better than what is already there.
+
+The split stays: it is built, tested, and costs nothing while
+`conversation_model` is empty. It is waiting for a model that does not exist on
+this card yet, and the measurement above is the bar a candidate has to clear.
 
 ### The split, built
 

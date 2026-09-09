@@ -275,10 +275,18 @@ class KoreanRegisterTests(unittest.TestCase):
         )
 
     def test_haeyo_is_caught(self):
+        """Plain 해요체, which is drift.
+
+        "퇴근하셨다니 힘들었겠네요." used to be asserted here too, and it
+        is not drift. ~네요 was put to the Korean speaker this is built
+        for during the detector audit -- with that very sentence as the
+        example -- and came back natural, along with ~군요, ~나요? and
+        ~(으)신가요?. See tests/test_korean_register.py, which holds the
+        whole answer and the forms it did *not* cover.
+        """
         from brain.conversation_style import _drifts_from_the_register
 
-        for said in ("고마워요.", "천만에요.", "좋아요.",
-                     "퇴근하셨다니 힘들었겠네요."):
+        for said in ("고마워요.", "천만에요.", "좋아요."):
             self.assertTrue(_drifts_from_the_register(said), said)
 
     def test_banmal_is_caught(self):

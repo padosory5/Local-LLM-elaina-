@@ -54,6 +54,38 @@ LINES: dict[str, dict[str, str]] = {
         ENGLISH: "I haven't actually checked that, so I'd rather not guess.",
         KOREAN: "아직 확인해 보지 않아서, 추측으로 말씀드리지는 않겠습니다.",
     },
+    # The reply named something the search never found, and the name was
+    # removed. Found in a Korean dogfood turn, where this arrived as a
+    # hardcoded English sentence at the end of an otherwise Korean reply:
+    #
+    #     NetShort에서 다양한 짧은 드라마도 무료로 감상 가능합니다.
+    #     I couldn't verify a specific one from the sources I checked.
+    #
+    # Exactly what this table exists to stop -- a guard that *replaces*
+    # text, written in English by whoever wrote the guard.
+    "unverified_named_thing": {
+        ENGLISH: "I couldn't verify a specific one from the sources I checked.",
+        KOREAN: "확인한 자료에서는 특정한 곳을 확인하지 못했습니다.",
+    },
+    # The search ran but produced no usable names, and browser control
+    # could go and read them off the page properly.
+    "no_listing_names": {
+        ENGLISH: "I couldn't get actual listing names out of that search -- "
+                 "want me to open it in the browser and read them off?",
+        KOREAN: "검색 결과에서 실제 이름을 확인하지 못했습니다. 브라우저로 "
+                "직접 열어서 읽어 드릴까요?",
+    },
+    "unconfirmed_specific": {
+        ENGLISH: "I couldn't confirm a specific one from what I found.",
+        KOREAN: "찾은 자료로는 특정한 것을 확정하지 못했습니다.",
+    },
+    # She was about to name somewhere to go that nothing had verified.
+    "unchecked_place_offer": {
+        ENGLISH: "I don't want to send you somewhere I haven't checked -- "
+                 "want me to look up real ones?",
+        KOREAN: "확인하지 않은 곳을 알려 드리고 싶지는 않습니다. 실제로 "
+                "찾아볼까요?",
+    },
     # Nothing came back from the model at all.
     "no_response": {
         ENGLISH: "I couldn't generate a response. Please try again.",

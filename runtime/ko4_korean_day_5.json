@@ -1,0 +1,115 @@
+{
+  "arc": "korean_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean_day",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "늦은 시간입니다. 필요하신 게 있으십니까?",
+      "statuses": [],
+      "seconds": 0.47
+    },
+    {
+      "turn": 2,
+      "arc": "korean_day",
+      "user": "오늘 좀 힘들었어",
+      "act": "react",
+      "reply": "오늘 힘들었군요. 쉬어가십시오.",
+      "statuses": [],
+      "seconds": 4.06
+    },
+    {
+      "turn": 3,
+      "arc": "korean_day",
+      "user": "회사에서 하루 종일 회의만 했어",
+      "act": "react",
+      "reply": "회사에서 하루 종일 회의만 했습니다. 힘들었겠습니다.",
+      "statuses": [],
+      "seconds": 4.63
+    },
+    {
+      "turn": 4,
+      "arc": "korean_day",
+      "user": "그러게 말이야",
+      "act": "receipt",
+      "reply": "그만두셨어요? 힘드셨겠습니다.",
+      "statuses": [],
+      "seconds": 4.73
+    },
+    {
+      "turn": 5,
+      "arc": "korean_day",
+      "user": "요즘 볼만한 드라마 있어?",
+      "act": "answer",
+      "reply": "9월 방영 예정인 메이드 인 코리아 시즌2를 추천합니다. 하윤빈, 정우성, 우도환 등이 출연하며 재미있을 것 같습니다. 다음 주에 방영됩니다.",
+      "statuses": [
+        "한번 찾아보겠습니다."
+      ],
+      "seconds": 20.05
+    },
+    {
+      "turn": 6,
+      "arc": "korean_day",
+      "user": "음 별로네",
+      "act": "react",
+      "reply": "그 드라마는 별로셨나요? '메이드 인 코리아 시즌2'도 9월에 방영됩니다.",
+      "statuses": [],
+      "seconds": 5.41
+    },
+    {
+      "turn": 7,
+      "arc": "korean_day",
+      "user": "그럼 영화는?",
+      "act": "answer",
+      "reply": "영화는 '신과 함께: 인셉션'을 추천합니다. 공상과학과 액션을 결합한 흥미로운 이야기입니다. 다음 주에 보시면 좋습니다.",
+      "statuses": [],
+      "seconds": 5.22
+    },
+    {
+      "turn": 8,
+      "arc": "korean_day",
+      "user": "그건 봤어",
+      "act": "react",
+      "reply": "확인했습니다. 필요하시면 말씀해주십시오.",
+      "statuses": [],
+      "seconds": 4.21
+    },
+    {
+      "turn": 9,
+      "arc": "korean_day",
+      "user": "드라마는 됐고, 저녁 뭐 먹지?",
+      "act": "answer",
+      "reply": "드라마는 끝났고, 저녁은 라멘이나 해산물 요리가 좋습니다. 아직 확인해 보지 않아서, 추측으로 말씀드리지는 않겠습니다.",
+      "statuses": [],
+      "seconds": 6.6
+    },
+    {
+      "turn": 10,
+      "arc": "korean_day",
+      "user": "간단한 걸로",
+      "act": "answer",
+      "reply": "간단한 음식으로는 떡볶이 또는 김치찌개가 추천됩니다. 간단하게 즐길 수 있습니다.",
+      "statuses": [],
+      "seconds": 4.15
+    },
+    {
+      "turn": 11,
+      "arc": "korean_day",
+      "user": "오케이 그렇게 할게",
+      "act": "receipt",
+      "reply": "드라마는 끝났고, 저녁은 간단하게 떡볶이로 해결하시면 될 것 같습니다. 간단한 음식으로 만족할 수 있을 거입니다.",
+      "statuses": [],
+      "seconds": 4.19
+    },
+    {
+      "turn": 12,
+      "arc": "korean_day",
+      "user": "고마워 잘자",
+      "act": "close",
+      "reply": "안녕히 주무십시오.",
+      "statuses": [],
+      "seconds": 4.18
+    }
+  ]
+}

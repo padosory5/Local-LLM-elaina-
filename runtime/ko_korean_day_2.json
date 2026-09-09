@@ -1,0 +1,115 @@
+{
+  "arc": "korean_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean_day",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "오늘은 어떻게 지내고?",
+      "statuses": [],
+      "seconds": 3.46
+    },
+    {
+      "turn": 2,
+      "arc": "korean_day",
+      "user": "오늘 좀 힘들었어",
+      "act": "react",
+      "reply": "오늘 힘드셨군요. 조금 쉬시고, 필요하시면 도와드리겠습니다.",
+      "statuses": [],
+      "seconds": 3.46
+    },
+    {
+      "turn": 3,
+      "arc": "korean_day",
+      "user": "회사에서 하루 종일 회의만 했어",
+      "act": "react",
+      "reply": "회사에서 하루 종일 회의만 했군요. 피로가 느껴집니다.",
+      "statuses": [],
+      "seconds": 4.21
+    },
+    {
+      "turn": 4,
+      "arc": "korean_day",
+      "user": "그러게 말이야",
+      "act": "receipt",
+      "reply": "피로가 느껴지시나 봐요. 지금은 쉬시고, 필요하시면 도와드리겠습니다.",
+      "statuses": [],
+      "seconds": 4.38
+    },
+    {
+      "turn": 5,
+      "arc": "korean_day",
+      "user": "요즘 볼만한 드라마 있어?",
+      "act": "answer",
+      "reply": "최근 드라마로는 '피치 앤드 프리저', '언어드저스트드 어스'를 추천합니다. 넷플릭스에서 방영 중이니 스트리밍 플랫폼을 확인해 주십시오.",
+      "statuses": [
+        "그건 알아보겠습니다."
+      ],
+      "seconds": 16.15
+    },
+    {
+      "turn": 6,
+      "arc": "korean_day",
+      "user": "음 별로네",
+      "act": "react",
+      "reply": "음, 그렇군요. 다른 작품도 궁금하시면 추천해 드릴 수 있습니다.",
+      "statuses": [],
+      "seconds": 3.68
+    },
+    {
+      "turn": 7,
+      "arc": "korean_day",
+      "user": "그럼 영화는?",
+      "act": "answer",
+      "reply": "영화 추천은 드라마와 유사한 분위기의 작품을 말씀드리겠습니다. '미드나잇 인 파리' 또는 '라라랜드'를 고려해 보시면 어떨까요?",
+      "statuses": [],
+      "seconds": 3.94
+    },
+    {
+      "turn": 8,
+      "arc": "korean_day",
+      "user": "그건 봤어",
+      "act": "react",
+      "reply": "영화는 봤어요? 다른 장르도 좋아하시면 추천해드리겠습니다.",
+      "statuses": [],
+      "seconds": 3.93
+    },
+    {
+      "turn": 9,
+      "arc": "korean_day",
+      "user": "드라마는 됐고, 저녁 뭐 먹지?",
+      "act": "answer",
+      "reply": "저녁은 김치찌개와 함께 김밥을 먹는 게 좋습니다. 맛있고 간편합니다.",
+      "statuses": [],
+      "seconds": 3.66
+    },
+    {
+      "turn": 10,
+      "arc": "korean_day",
+      "user": "간단한 걸로",
+      "act": "answer",
+      "reply": "간단한 저녁 메뉴로 김치찌개와 김밥이 좋습니다. 따뜻한 음료도 함께 드시면 더 좋습니다.",
+      "statuses": [],
+      "seconds": 5.4
+    },
+    {
+      "turn": 11,
+      "arc": "korean_day",
+      "user": "오케이 그렇게 할게",
+      "act": "receipt",
+      "reply": "저녁은 간단하게 김치찌개와 김밥으로 해결하시면 좋습니다. 따뜻한 음료도 함께 드시면 더 편안하게 즐기실 수 있습니다.",
+      "statuses": [],
+      "seconds": 3.82
+    },
+    {
+      "turn": 12,
+      "arc": "korean_day",
+      "user": "고마워 잘자",
+      "act": "close",
+      "reply": "안녕히 주무십시오. 꿈에서 김치찌개 맛있게 먹는 꿈做个吧.",
+      "statuses": [],
+      "seconds": 3.66
+    }
+  ]
+}

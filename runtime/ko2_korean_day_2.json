@@ -1,0 +1,115 @@
+{
+  "arc": "korean_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean_day",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "오늘은 어떻게 지내?",
+      "statuses": [],
+      "seconds": 3.66
+    },
+    {
+      "turn": 2,
+      "arc": "korean_day",
+      "user": "오늘 좀 힘들었어",
+      "act": "react",
+      "reply": "오늘 힘들었나 보입니다. 쉬시고, 도움 필요하시면 말씀해주십시오.",
+      "statuses": [],
+      "seconds": 3.97
+    },
+    {
+      "turn": 3,
+      "arc": "korean_day",
+      "user": "회사에서 하루 종일 회의만 했어",
+      "act": "react",
+      "reply": "오늘 하루 회의만 하셨군요. 힘들었겠습니다. 쉬는 시간이나 점심시간에 잠깐 휴식 취하셨으면 좋겠습니다.",
+      "statuses": [],
+      "seconds": 4.94
+    },
+    {
+      "turn": 4,
+      "arc": "korean_day",
+      "user": "그러게 말이야",
+      "act": "receipt",
+      "reply": "그러게 말이야 힘들었겠습니다. 쉬시고, 필요하시면 도와드리겠습니다.",
+      "statuses": [],
+      "seconds": 4.81
+    },
+    {
+      "turn": 5,
+      "arc": "korean_day",
+      "user": "요즘 볼만한 드라마 있어?",
+      "act": "answer",
+      "reply": "2026년 드라마 추천은 태국의 '우즈el'입니다. 로맨스와 드라마가 섞인 작품으로, 10화까지 방영 중입니다. 바로 시청할 수 있습니다.",
+      "statuses": [
+        "바로 찾아보겠습니다."
+      ],
+      "seconds": 19.76
+    },
+    {
+      "turn": 6,
+      "arc": "korean_day",
+      "user": "음 별로네",
+      "act": "react",
+      "reply": "제가 추천한 드라마는 마음에 들지 않으셨군요. 다른 작품을 찾아볼 수 있도록 도와드리겠습니다. 어떤 장르를 좋아하시나요?",
+      "statuses": [],
+      "seconds": 4.4
+    },
+    {
+      "turn": 7,
+      "arc": "korean_day",
+      "user": "그럼 영화는?",
+      "act": "answer",
+      "reply": "영화는 상영 중인 목록을 알려드릴까요?",
+      "statuses": [],
+      "seconds": 4.16
+    },
+    {
+      "turn": 8,
+      "arc": "korean_day",
+      "user": "그건 봤어",
+      "act": "react",
+      "reply": "영화는 봤습니다. 다른 영화는 안 봤습니다.",
+      "statuses": [],
+      "seconds": 4.17
+    },
+    {
+      "turn": 9,
+      "arc": "korean_day",
+      "user": "드라마는 됐고, 저녁 뭐 먹지?",
+      "act": "answer",
+      "reply": "저녁은 김치찌개와 김밥으로 먹으면 좋겠습니다. 따뜻하고 맛있을 거입니다.",
+      "statuses": [],
+      "seconds": 4.27
+    },
+    {
+      "turn": 10,
+      "arc": "korean_day",
+      "user": "간단한 걸로",
+      "act": "answer",
+      "reply": "간단한 음식이라면 떡볶이 또는 탕수육이 좋겠습니다. 김치찌개도 맛있지만, 더 간단하게 먹을 수 있습니다.",
+      "statuses": [],
+      "seconds": 4.18
+    },
+    {
+      "turn": 11,
+      "arc": "korean_day",
+      "user": "오케이 그렇게 할게",
+      "act": "receipt",
+      "reply": "김치찌개와 김밥으로 해결하겠습니다. 간단하고 맛있을 거입니다.",
+      "statuses": [],
+      "seconds": 3.94
+    },
+    {
+      "turn": 12,
+      "arc": "korean_day",
+      "user": "고마워 잘자",
+      "act": "close",
+      "reply": "안녕히 주무십시오. 꿀잠 드십시오.",
+      "statuses": [],
+      "seconds": 3.96
+    }
+  ]
+}

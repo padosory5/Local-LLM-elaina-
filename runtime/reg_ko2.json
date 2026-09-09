@@ -1,0 +1,115 @@
+{
+  "arc": "korean_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "korean_day",
+      "user": "안녕",
+      "act": "greet",
+      "reply": "안녕하세요. 잘 주무십시오.",
+      "statuses": [],
+      "seconds": 4.09
+    },
+    {
+      "turn": 2,
+      "arc": "korean_day",
+      "user": "오늘 좀 힘들었어",
+      "act": "react",
+      "reply": "오늘 힘들었군요. 조금 쉬시고, 필요하시면 도와드리겠습니다.",
+      "statuses": [],
+      "seconds": 4.05
+    },
+    {
+      "turn": 3,
+      "arc": "korean_day",
+      "user": "회사에서 하루 종일 회의만 했어",
+      "act": "react",
+      "reply": "회사에서 하루 종일 회의만 했군요. 힘드셨겠습니다.",
+      "statuses": [],
+      "seconds": 4.73
+    },
+    {
+      "turn": 4,
+      "arc": "korean_day",
+      "user": "그러게 말이야",
+      "act": "receipt",
+      "reply": "아, 그런가요. 오늘 하루는 정말 힘들었겠어요.",
+      "statuses": [],
+      "seconds": 3.97
+    },
+    {
+      "turn": 5,
+      "arc": "korean_day",
+      "user": "요즘 볼만한 드라마 있어?",
+      "act": "answer",
+      "reply": "2026년 드라마 추천은 '그것이 진실이다'입니다. 러브스토리와 스릴러 요소가 섞여 있어 흥미로워요. 다음날부터 시청할 수 있도록 미리 준비해 두십시오.",
+      "statuses": [
+        "잠시만 기다려 주십시오."
+      ],
+      "seconds": 11.85
+    },
+    {
+      "turn": 6,
+      "arc": "korean_day",
+      "user": "음 별로네",
+      "act": "react",
+      "reply": "그 드라마는 마음에 들지 않으셨군요. 다른 장르의 드라마도 추천드릴 수 있습니다. 재미있는 콘텐츠를 찾으시려면 어떤 장르를 선호하시나요?",
+      "statuses": [],
+      "seconds": 5.08
+    },
+    {
+      "turn": 7,
+      "arc": "korean_day",
+      "user": "그럼 영화는?",
+      "act": "answer",
+      "reply": "영화를 말씀하시는 거군요. 어떤 영화를 보셨나요? 재미있었나요?",
+      "statuses": [],
+      "seconds": 4.26
+    },
+    {
+      "turn": 8,
+      "arc": "korean_day",
+      "user": "그건 봤어",
+      "act": "react",
+      "reply": "영화는 봤습니다. 어떤 영화였는지 궁금해요?",
+      "statuses": [],
+      "seconds": 3.85
+    },
+    {
+      "turn": 9,
+      "arc": "korean_day",
+      "user": "드라마는 됐고, 저녁 뭐 먹지?",
+      "act": "answer",
+      "reply": "저녁엔 김치찌개와 라멘으로 해결하셨으면 좋겠습니다. 간단하게 즐길 수 있습니다.",
+      "statuses": [],
+      "seconds": 3.83
+    },
+    {
+      "turn": 10,
+      "arc": "korean_day",
+      "user": "간단한 걸로",
+      "act": "answer",
+      "reply": "간단한 음식으로 해결하셨으면 좋겠습니다. 김치찌개와 라멘은 간편하고 맛있습니다.",
+      "statuses": [],
+      "seconds": 3.98
+    },
+    {
+      "turn": 11,
+      "arc": "korean_day",
+      "user": "오케이 그렇게 할게",
+      "act": "receipt",
+      "reply": "저녁 메뉴는 간단하게 김치찌개와 라멘으로 하시겠습니다. 간편하게 즐길 수 있습니다.",
+      "statuses": [],
+      "seconds": 3.84
+    },
+    {
+      "turn": 12,
+      "arc": "korean_day",
+      "user": "고마워 잘자",
+      "act": "close",
+      "reply": "안녕히 주무십시오.",
+      "statuses": [],
+      "seconds": 3.6
+    }
+  ]
+}
