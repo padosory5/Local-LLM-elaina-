@@ -815,7 +815,132 @@ def off_target(name: str, url: str, summary: str, shape: str) -> str:
     commentary = reads_as_commentary(name, url)
     if commentary:
         return commentary
+    page = reads_as_a_page(name, url)
+    if page:
+        return page
     return ""
+
+
+# ------------------------- the title of a page, not a thing ------------------
+#
+# Measured over every session log under runtime/: these titles all reached
+# the candidate list, most were *selected*, and several were said out loud
+# as the recommendation --
+#
+#     "We Really Cooking Now Butterbean'S Cafe GIF is the one I'd start with."
+#     Selected: Gaming Mice Under                          (four times)
+#     Selected: Best Gaming Mice Under $50                 (four times)
+#     Selected: Today's Weather in Seoul - Hourly Forecast and Conditions
+#
+# Scored on tests/candidate_title_matrix.json before this existed: 0 of 18
+# page titles refused. The card layer (brain/response_surface.py) already
+# refuses many of these -- but only as *cards*; this is the check that
+# decides what can be recommended, and it had none of them.
+#
+# Its round-up rules are not reused wholesale, deliberately. "Starts with a
+# superlative" refuses Best Western and Best Buy, and "reads as an article"
+# refuses My Mister and Our Beloved Summer, which is right for a hotel card
+# and wrong for a recommendation that might be a drama. Every rule here was
+# kept only if the other half of the matrix -- real products, places, and
+# films whose names are sentences ("Don't Look Up", "Get Out", "Watch Dogs")
+# -- still passed.
+
+_A_PAGE = (
+    # "Gaming Mice Under", "Wireless Trackball Under": a title cut off
+    # before its price. A name does not end on the word that introduces
+    # the next thing.
+    (re.compile(r"\b(?:under|over|below|above|around|from|for|with|and|or|"
+                r"of|to|near|by|vs)\s*[.…]*\s*$", re.IGNORECASE),
+     "a title cut off mid-phrase"),
+    # "Беспроводные/проводные наушники Nothing Headphone (a) черный..." --
+    # a storefront listing truncated by the search page, said out loud in
+    # the paired Korean baseline as "... is the one I'd start with". A name
+    # is not written with an ellipsis where it stops; a listing that ran
+    # out of room is.
+    (re.compile(r"(?:\.{3}|…)\s*$"),
+     "a title cut off mid-phrase"),
+    # "Gaming Mouse Under $50" -- a list bounded by a price. A mouse is not
+    # called that; a page of mice is.
+    (re.compile(r"\b(?:under|below|less\s+than)\s*[$₩€£¥]?"
+                r"\s?\d", re.IGNORECASE),
+     "a list bounded by a price, not one of them"),
+    # A GIF, a stream, a "full movie" upload. Watch Dogs and the Apple Watch
+    # are untouched: it takes "watch online / free / now / live" to be one.
+    (re.compile(r"\bgifs?\b|\bmemes?\b|\bstickers?\b|\bwallpapers?\b"
+                r"|\bfull\s+movie\b"
+                r"|\bwatch\s+(?:online|free|now|right\s+now|live)\b"
+                r"|\bstreams?\b.*\b(?:free|hd|online)\b"
+                r"|\bfree\b.*\bstreams?\b", re.IGNORECASE),
+     "a media page, not a thing"),
+    (re.compile(r"\b(?:hourly|daily|\d+[- ]day)\s+forecast\b"
+                r"|\bweather\s+(?:forecast|in|today)\b", re.IGNORECASE),
+     "a forecast page"),
+    # "Code RAPOOBg10 Apply" -- a discount field read off a storefront. Not
+    # "^code": Code Geass is a series.
+    (re.compile(r"\bcode\b.*\bapply\s*$|\b(?:promo|coupon|discount)\s+codes?\b",
+                re.IGNORECASE),
+     "a coupon field"),
+    (re.compile(r"\brecommendations\b|\breviews\s*&"
+                r"|\b(?:summary|synopsis|recap)\b"
+                r"|\b(?:ending|plot)\s+explained\b", re.IGNORECASE),
+     "writing about things, not one of them"),
+    # "What Should I Watch: Top Movie and TV Picks You'll Love", "What to
+    # Watch Tonight · Daily Streaming Picks" -- offered live as what was
+    # found, after "No, I meant a TV series".
+    (re.compile(r"\bwhat\s+(?:to|should\s+(?:i|you|we))\s+(?:watch|read|play|eat|buy|cook)\b"
+                r"|\btop\s+(?:\d+\s+)?(?:[\w-]+\s+){0,4}picks\b"
+                r"|\bpicks\s+(?:you'?ll|for\s+(?:you|tonight|today))\b"
+                r"|\byou'?ll\s+love\b|\bdaily\s+\w+\s+picks\b", re.IGNORECASE),
+     "a list of picks, not one of them"),
+    # "On TV Tonight", "local TV guide by ZIP code" -- a listings site,
+    # offered live as the series she found.
+    (re.compile(r"\btv\s+(?:guide|listings?|schedules?)\b|\bon\s+tv\s+tonight\b"
+                r"|\bwhat'?s\s+on\s+(?:tv|tonight)\b", re.IGNORECASE),
+     "a listings page, not a show"),
+)
+
+# A GIF has an address shaped like one, whatever its title says.
+_MEDIA_URL = re.compile(r"-gif-\d|\.gif\b|/gifs?/", re.IGNORECASE)
+
+
+def reads_as_a_page(name: str, url: str = "") -> str:
+    """Why this title belongs to a page rather than a thing, or ""."""
+    if _MEDIA_URL.search(str(url or "")):
+        return "a media page, not a thing"
+    said = " ".join(str(name or "").split())
+    for pattern, reason in _A_PAGE:
+        if pattern.search(said):
+            return reason
+    return ""
+
+
+# ---------------------- asking for a method, not a thing ---------------------
+#
+# Some titles cannot be told from a name by their words at all. "Realize
+# Cooking Doesn't Really Burn Off" is a headline; "Don't Look Up" is a film
+# -- the same shape, and a rule that refused one would refuse the other.
+# What decided that case was the question: "search how to make it really
+# tasty, not the obvious stuff" asks for a *method*, and a method has no
+# candidates. Nothing found for it should be put forward as the pick.
+#
+# Closed grammatical classes in both languages (Rule 4), like the request
+# endings in brain/intent_router.py.
+
+_ASKS_FOR_A_METHOD = re.compile(
+    r"\bhow\s+to\b"
+    r"|\bhow\s+(?:do|does|did|can|could|should|would)\s+(?:i|you|we|one|they)\b"
+    r"|\b(?:way|ways|steps|instructions|method|technique|tips)\s+(?:to|for)\b"
+    r"|\brecipe\b"
+    r"|어떻게\s*(?:만들|하|해|요리|끓이|굽|볶|사용|써)"
+    r"|(?:만드는|하는|끓이는|요리하는|사용하는|쓰는|굽는|볶는)\s*(?:법|방법)"
+    r"|레시피|요리법|조리법|비법|꿀팁",
+    re.IGNORECASE,
+)
+
+
+def asks_for_a_method(text: str) -> bool:
+    """Whether the turn asks how to do something, rather than which thing."""
+    return bool(_ASKS_FOR_A_METHOD.search(str(text or "")))
 
 
 def looks_like(name: str, url: str, summary: str, shape: str) -> bool:

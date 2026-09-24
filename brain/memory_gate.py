@@ -89,7 +89,35 @@ _DURABLE = re.compile(
     r"|(?:저|제|나|내)(?:는|가)?\s*\S*\s*(?:삽니다|살아요|다닙니다|다녀요|"
     r"일합니다|일해요|씁니다|써요|좋아합니다|좋아해요|싫어합니다|싫어해요)"
     r"|(?:제|내|우리|저희)\s*(?:이름|생일|아내|남편|아이|아들|딸|학교|대학|"
-    r"회사|직장|팀|예산|주소|동네)",
+    r"회사|직장|팀|예산|주소|동네)"
+    # Measured by the restart check: of ten facts told in one session, the
+    # three it missed were all said the way people say them --
+    # "내 여동생은 부산에 살아", "나 수업 끝나고 보통 젠레스 존 제로 해",
+    # "다음 주 금요일에 시애틀로 돌아가" -- casual endings, family, a habit,
+    # a plan. The gate knew only the polite endings and the office nouns.
+    r"|\bmy\s+(?:sister|brother|mom|mother|dad|father|parents|grandma|"
+    r"grandpa|friend|best\s+friend|girlfriend|boyfriend|roommate|major|"
+    r"hometown|pet|hobby|hobbies)\b"
+    r"|\bi\s+(?:usually|always|never|often)\s+\w+"
+    + r"|" + _I_AM + r"\s+(?:from|originally\s+from|majoring|studying)\b"
+    r"|(?:여동생|남동생|동생|언니|누나|오빠|형|엄마|아빠|어머니|아버지|부모님|"
+    r"할머니|할아버지|친구|여자\s*친구|남자\s*친구|룸메이트|강아지|고양이|"
+    r"전공|생일|고향|취미)\s*(?:은|는|이|가|을|를)?\s*\S"
+    # A frequency word as a word: "늘" is also the end of "오늘", and
+    # "오늘 좀 피곤합니다" is a mood.
+    r"|(?:^|\s)(?:보통|매일|항상|주로|늘|자주|맨날)\s+\S.*(?:해|해요|합니다|마셔|먹어|봐|가)\s*[.!~]?$"
+    r"|(?:살아|다녀|일해|전공해|전공하고\s*있어|좋아해|싫어해)\s*[.!~]?$",
+    re.IGNORECASE,
+)
+
+# A plan with a day on it is worth keeping too -- "I'm going back to
+# Seattle next Friday" is exactly what "when am I going back?" asks later.
+# (Not a place they study: _ENROLLED still refuses a trip.)
+_PLAN = re.compile(
+    r"\bi(?:'?m|\s+am)\s+(?:going|flying|heading|moving|leaving|returning|"
+    r"travel(?:l)?ing)\b.*\b(?:next|this|tomorrow|on\s+\w+day|in\s+\w+)\b"
+    r"|(?:다음\s*주|다음\s*달|내일|모레|이번\s*주말?|\S+요일에?)\s*.*"
+    r"(?:가|돌아가|간다|갈\s*거야|떠나|출발|이사|여행)",
     re.IGNORECASE,
 )
 
@@ -239,11 +267,159 @@ def carries_something_to_remember(text) -> bool:
             continue
         if _ENROLLED.search(clause) and not _SOON.search(clause):
             return True
+        if _PLAN.search(clause):
+            return True
         if _TRANSIENT.search(clause) and not _DURABLE.search(clause):
             continue
         if _DURABLE.search(clause):
             return True
     return False
+
+
+# A question about themselves: the answer is something they told her, or
+# something she does not know. Measured after a restart: "What's my name?",
+# "When's my birthday?", "우리 강아지 이름 뭐였지?" -- the recall gate said no
+# to all of them, so nothing was recalled, and she answered "Your birthday
+# is September 11, 2026" (today's date) and "제일 좋아하는 색깔은
+# 파란색이었습니다" (never told).
+_ABOUT_THEMSELVES = re.compile(
+    # "what's my name?", "when is my birthday?" -- something of theirs.
+    # Not "which one should I go to?" or "what should I eat?": those ask
+    # for advice, and taken for a question about themselves one was
+    # answered from memory with no search -- "The Silver Star Casino is the
+    # only casino on Bainbridge Island", which does not exist.
+    r"\b(?:what|when|where|who|which|how)\b[^.!?]*\bmy\b[^.!]*\?"
+    r"|\b(?:where|which\s+\w+)\s+do\s+i\s+(?:live|work|study|go(?:\s+to)?)\b"
+    r"|\b(?:do|did|am|was|have)\s+i\s+(?:have|follow|like|eat|drink|play|"
+    r"live|work|study|own|hate|love|prefer|usually|allergic|vegetarian|vegan)\b"
+    r"|\bdo\s+you\s+(?:know|remember)\s+(?:my|what\s+i|where\s+i|when\s+i|who\s+i|me)\b"
+    r"|\bremember\s+(?:my|what\s+i|where\s+i|when\s+i)\b"
+    # "우리 강아지 이름 뭐였지?" -- asked back, with a recall ending. Not
+    # "우리 뭐 먹을까?", which is a suggestion.
+    r"|(?:내|제|우리|저희)\s*(?:\S+\s*){1,3}?(?:은|는|이|가)?\s*(?:뭐|무엇|언제|어디|누구|몇)"
+    r".*(?:였지|이었지|였어|였더라|더라|했지|했더라|이야|야|예요|에요|입니까|인가요|이지)"
+    r"\s*[?？]?\s*$"
+    r"|(?:내가|제가)\s+.*(?:했지|였지|더라|했더라|했나|한다고\s*했|라고\s*했|이었지)"
+    r"|기억\s*(?:해|나|하니|하세요|하십니까)\s*[?？]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def asks_about_themselves(text) -> bool:
+    """A question whose answer is a fact about the person."""
+    said = _said(text)
+    if not said:
+        return False
+    stripped = _THEIR_MACHINE.sub(" ", said)
+    return bool(_ABOUT_THEMSELVES.search(stripped))
+
+
+# The same thing, said the ways people say it -- in either language, and
+# the way the extractor rewrites it ("what school" is answered by "the
+# University of Washington").
+_TOPICS = (
+    ("school", "university", "college", "uni", "학교", "대학", "대학교"),
+    ("allerg", "알레르기"),
+    ("diet", "vegetarian", "vegan", "채식", "식단", "비건"),
+    ("birthday", "born", "생일"),
+    ("name", "called", "이름"),
+    ("major", "study", "studies", "studying", "majoring", "전공"),
+    ("sister", "여동생", "언니", "누나"),
+    ("brother", "남동생", "오빠", "형"),
+    ("dog", "puppy", "강아지"),
+    ("cat", "kitten", "고양이"),
+    ("game", "play", "게임"),
+    ("coffee", "커피"),
+    ("live", "lives", "living", "살", "사는", "산다"),
+    ("work", "job", "직장", "회사"),
+    ("hometown", "from", "고향"),
+    ("seattle", "시애틀"),
+    ("back", "returning", "trip", "돌아가", "돌아"),
+)
+_QUESTION_WORDS = {
+    "what", "whats", "when", "whens", "where", "who", "whos", "which", "how",
+    "my", "mine", "do", "did", "does", "have", "has", "the", "is", "are",
+    "was", "were", "you", "remember", "know", "tell", "me", "i", "am", "any",
+    "particular", "again", "still", "can", "should", "could", "would",
+    "about", "going", "get", "go", "to", "a", "an", "follow", "of",
+}
+
+
+_GENERIC_TOPICS = {"name", "names", "이름", "이름은", "이름이"}
+
+
+def _topic_words(text: str) -> set[str]:
+    words = set()
+    for word in re.findall(r"[a-z]+|[가-힣]+", str(text or "").casefold()):
+        if word in _QUESTION_WORDS or len(word) < 2:
+            continue
+        words.add(word)
+    # "What's my brother's name?" is about the brother. Matched on "name"
+    # it would find their own name and answer with it.
+    if words - _GENERIC_TOPICS:
+        words -= _GENERIC_TOPICS
+    return words
+
+
+# A detail of their own life -- the kind of question whose only honest
+# answers are what they said, or that they have not said it. Narrow on
+# purpose: "do I need an umbrella?" and "what's my schedule?" are questions
+# about them that a tool answers, and are left to the router.
+_PERSONAL_DETAIL = re.compile(
+    r"\b(?:name|birthday|age|brother|sister|mom|mother|dad|father|parents|family|"
+    r"wife|husband|partner|girlfriend|boyfriend|friend|favou?rite|colou?r|pet|dog|"
+    r"cat|school|university|college|major|hometown|allerg\w*|diet|hobby|hobbies)\b"
+    r"|이름|생일|나이|형|오빠|누나|언니|동생|엄마|아빠|부모님|가족|아내|남편|친구|"
+    r"여자\s*친구|남자\s*친구|좋아하는|색깔|강아지|고양이|학교|전공|고향|알레르기|취미",
+    re.IGNORECASE,
+)
+
+
+def asks_for_a_personal_detail(text) -> bool:
+    """A question about themselves whose answer is a detail of their life."""
+    said = _said(text)
+    return asks_about_themselves(said) and bool(_PERSONAL_DETAIL.search(said))
+
+
+def facts_on_topic(question, facts) -> list[str]:
+    """The things they told her that are about what this asks."""
+    asked = _topic_words(question)
+    if not asked:
+        return []
+    terms = set()
+    for word in asked:
+        group = next((g for g in _TOPICS if any(word.startswith(t) or t.startswith(word)
+                                                  for t in g if len(t) >= 2)), (word,))
+        terms.update(term for term in group if len(term) >= 2)
+    def mentions(fact: str, term: str) -> bool:
+        # A whole English word, or a Korean word's start (Korean attaches
+        # its particles). Substrings matched "one" inside "someone".
+        if re.fullmatch(r"[a-z]+", term):
+            return bool(re.search(rf"\b{re.escape(term)}", fact))
+        return term in fact
+
+    return [
+        str(fact) for fact in facts
+        if any(mentions(str(fact or "").casefold(), term) for term in terms)
+    ]
+
+
+def shares_a_topic(question, facts) -> bool:
+    """Whether something they told her is about what this asks."""
+    return bool(facts_on_topic(question, facts))
+
+
+def is_question(text) -> bool:
+    """Every clause asks; nothing is stated. Such a turn is never stored --
+    measured: "내가 무슨 전공인지 기억해?" left behind "The user studies
+    Electrical Engineering", which nobody said."""
+    said = _said(text)
+    if not said:
+        return False
+    clauses = [c.strip() for c in _CLAUSES.split(said) if c.strip()]
+    if said.rstrip().endswith(("?", "？")) and len(clauses) <= 1:
+        return True
+    return bool(clauses) and all(_IS_A_QUESTION.search(c) for c in clauses)
 
 
 def needs_what_we_know(text) -> bool:
@@ -258,6 +434,8 @@ def needs_what_we_know(text) -> bool:
     said = _said(text)
     if not said:
         return False
+    if asks_about_themselves(said):
+        return True
     if not _ABOUT_THEIR_WORLD.search(said):
         return False
     # "my screen" and "my browser" are about the machine in front of them.

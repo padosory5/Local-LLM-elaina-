@@ -40,6 +40,7 @@ import uuid
 from dataclasses import dataclass, replace
 from typing import Any
 
+from brain import context_policy
 from brain.deliberation.goal import (
     SOURCE_ASKED,
     SOURCE_RESEARCH,
@@ -241,6 +242,66 @@ _VARIANTS: dict[str, tuple[str, str]] = {
     "watch": ("smart", "analogue"),
     "car": ("new", "used"),
 }
+
+# The same kinds in Korean: the word she asks with first, then the others
+# people answer with. Asked in Korean, the question has to be *written* in
+# Korean. It was written in English only, the ask act is locked against
+# rewording, and the reply-language guard's translation of "Over-ear or
+# in-ear?" came back in two of three paired Korean runs as
+#
+#     이어폰은 이어폰이냐, 이어폰이냐?
+#
+# -- both options the same word, in 반말.
+_VARIANTS_KO: dict[str, tuple[str, ...]] = {
+    "electric": ("일렉", "일렉트릭"),
+    "acoustic": ("어쿠스틱", "통기타"),
+    "upright": ("업라이트", "콘트라베이스"),
+    "digital": ("디지털", "전자"),
+    "digital piano": ("디지털 피아노", "전자 피아노", "디지털", "전자"),
+    "synth": ("신디사이저", "신디"),
+    "electronic": ("전자", "디지털"),
+    "over-ear": ("오버이어", "헤드셋형", "오버 이어"),
+    "in-ear": ("인이어", "이어폰", "커널형"),
+    "wireless": ("무선", "블루투스"),
+    "wired": ("유선",),
+    "road": ("로드",),
+    "mountain": ("산악", "마운틴"),
+    "Windows": ("윈도우", "윈도"),
+    "Mac": ("맥", "맥북"),
+    "mirrorless": ("미러리스",),
+    "DSLR": ("DSLR",),
+    "smart": ("스마트",),
+    "analogue": ("아날로그",),
+    "new": ("신차", "새 차", "새차"),
+    "used": ("중고", "중고차"),
+}
+
+# What may follow a Korean word and leave it the same word: "인이어로",
+# "무선이요", "오버이어형". Anything else makes it a different word -- 맥
+# is not in 맥주, and 새 is not in 새벽.
+_KO_TAIL = (
+    r"(?:으로요|으로|로요|로|이요|요|이면|면|이랑|랑|이죠|죠|"
+    r"이|가|은|는|을|를|도|쪽|형|용)?"
+)
+
+
+def _names_in_korean(said: str, word: str) -> bool:
+    """Whether ``said`` contains ``word`` as a word of its own."""
+    if not re.search(r"[가-힣]", word):
+        return bool(re.search(
+            rf"\b{re.escape(word.casefold())}\b", said.casefold(),
+        ))
+    return bool(re.search(
+        rf"(?<![가-힣]){re.escape(word)}{_KO_TAIL}(?![가-힣])", said,
+    ))
+
+
+def _and(word: str) -> str:
+    """The word with 와 or 과, whichever its last sound takes."""
+    last = word[-1:]
+    if "가" <= last <= "힣" and (ord(last) - 0xAC00) % 28:
+        return word + "과"
+    return word + "와"
 
 # The order questions are worth asking in. Type first: it splits the
 # candidate set in two, and a budget for the wrong kind of thing is a
@@ -1208,9 +1269,14 @@ def _option_named(text: str, options) -> str:
     """
     said = str(text or "").casefold()
     words = set(re.findall(r"[a-z0-9가-힣'-]+", said))
+    # Asked in Korean, answered in Korean: "인이어로" names in-ear.
     found = [
         option for option in (options or ())
         if set(re.findall(r"[a-z0-9가-힣'-]+", option.casefold())) <= words
+        or any(
+            _names_in_korean(str(text or ""), word)
+            for word in _VARIANTS_KO.get(option, ())
+        )
     ]
     # Both named is a question, not an answer.
     return found[0] if len(found) == 1 else ""
@@ -1430,17 +1496,34 @@ class RecommendationProblem:
             return BUDGET
         return ""
 
-    def question_for(self, dimension: str) -> str:
-        """How to ask for that dimension, in one short sentence."""
+    def question_for(self, dimension: str, language: str = "en") -> str:
+        """How to ask for that dimension, in one short sentence.
+
+        In the turn's language, written rather than translated: see
+        ``_VARIANTS_KO`` for what translation made of it.
+        """
         thing = self._thing()
+        korean = str(language or "").strip().lower().startswith("ko")
         if dimension == TYPE:
             variants = _VARIANTS.get(thing)
+            if variants and korean:
+                first, second = (
+                    _VARIANTS_KO.get(variant, (variant,))[0]
+                    for variant in variants
+                )
+                return f"{_and(first)} {second} 중 어느 쪽이 좋으신가요?"
             if variants:
                 return f"{variants[0].capitalize()} or {variants[1]}?"
+            if korean:
+                return "어떤 종류를 생각하고 계신가요?"
             return f"What kind of {thing or 'one'} did you have in mind?"
         if dimension == HOUSING_TYPE:
+            if korean:
+                return "어떤 형태의 집을 생각하고 계신가요?"
             return "What type of housing did you have in mind?"
         if dimension == BUDGET:
+            if korean:
+                return "예산은 어느 정도로 생각하고 계신가요?"
             return "What sort of budget are you thinking?"
         return ""
 
@@ -2064,8 +2147,35 @@ def about_the_same_thing(
     #
     # Only after the different-named-thing check above, so a follow-up that
     # names something else still starts a new problem.
+    #
+    # That sentence was true of the check above and false of this branch,
+    # and the gap between them is where a Korean session lost its task
+    # boundary for eleven turns. The check above reads named things out of
+    # ``read_constraints``, which finds preference slots in English
+    # request grammar and finds almost nothing in a Korean sentence -- so
+    # every Korean turn arrived here with ``named`` empty, and
+    # ``follow_up`` decided everything:
+    #
+    #     [Task Continuity]
+    #       previous_thing: war
+    #       current_thing:  fee
+    #       follow_up: True
+    #       decision: CONTINUE
+    #
+    # Both nouns were printed and neither was consulted. The subject the
+    # goal layer resolved is the other place a turn says what it is about,
+    # it is filled in on turns where no constraint is, and comparing it
+    # here is what makes the comment above true in both languages.
+    #
+    # Deliberately after ``revises``: "actually my throat hurts, something
+    # soft" names a different subject and is still about the problem it
+    # revises.
     if follow_up and not topic_shift:
-        return True
+        if not context_policy.names_a_different_subject(
+            problem.subject, subject,
+        ):
+            return True
+        return False
     if refers_to_the_options(text) and getattr(problem, "candidates", ()):
         # A question about the options in hand is about the problem that
         # holds them, whatever the router made of the sentence.
@@ -2180,7 +2290,19 @@ def about_the_same_thing(
         # entirely and starts another. What separates them is whether the
         # word is a thing rather than a quality.
         lone = next(iter(words))
-        if lone not in _VARIANTS and not category_for(lone):
+        # Unless the subject says otherwise. Measured in a Korean session:
+        # "quit" after a kimchi-stew recipe, subjects "Cooking" and
+        # "Conversation", printed subjects_differ: true and continued --
+        # one word, so it was read as a quality refining the recipe. A lone
+        # answer to her own question ("Electric.") has either no subject of
+        # its own or the one being held, and still continues.
+        if (
+            lone not in _VARIANTS
+            and not category_for(lone)
+            and not context_policy.names_a_different_subject(
+                problem.subject, subject,
+            )
+        ):
             return True
     subject_words = {
         word for word in re.findall(r"[a-z0-9가-힣]+", _clean(subject).casefold())

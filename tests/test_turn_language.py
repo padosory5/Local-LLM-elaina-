@@ -75,12 +75,24 @@ class LanguageRequestTests(unittest.TestCase):
 class StickinessTests(unittest.TestCase):
     """The rule that matters most: she must not flip constantly."""
 
-    def test_a_short_turn_never_switches(self):
-        # "ok", "네", "yeah" are the most frequent turns in real use and
-        # evidence of nothing.
-        self.assertEqual(decide("ok", current=KOREAN).language, KOREAN)
-        self.assertEqual(decide("응", current=ENGLISH).language, ENGLISH)
-        self.assertEqual(decide("yeah", current=KOREAN).language, KOREAN)
+    def test_a_word_shared_by_both_languages_never_switches(self):
+        # "ok" and "lol" are typed mid-Korean as readily as mid-English.
+        for said in ("ok", "okay", "lol", "OK!"):
+            with self.subTest(said=said):
+                self.assertEqual(decide(said, current=KOREAN).language, KOREAN)
+                self.assertEqual(decide(said, current=ENGLISH).language, ENGLISH)
+
+    def test_a_short_turn_in_one_language_is_in_that_language(self):
+        # The person's rule for a mixed conversation: answer in Korean when
+        # I speak Korean, in English when I speak English. Before it, a
+        # length floor held these in the previous language -- measured on a
+        # mixed session, 4 of 14 replies came back in the wrong one, and
+        # every one was a short turn.
+        self.assertEqual(decide("응", current=ENGLISH).language, KOREAN)
+        self.assertEqual(decide("yeah", current=KOREAN).language, ENGLISH)
+        self.assertEqual(decide("서울은?", current=ENGLISH).language, KOREAN)
+        self.assertEqual(decide("thanks", current=KOREAN).language, ENGLISH)
+        self.assertEqual(decide("ok cool", current=KOREAN).language, ENGLISH)
 
     def test_a_full_turn_switches(self):
         chosen = decide("can you check the weather for me", current=KOREAN)
@@ -348,13 +360,12 @@ class EachLanguageIsMeasuredInItsOwnUnitTests(unittest.TestCase):
             with self.subTest(said=said):
                 self.assertEqual(decide(said, current=ENGLISH).language, KOREAN)
 
-    def test_the_acknowledgements_still_do_not(self):
-        # The whole point of the floor. These must stay put in either
-        # direction, which is what sets the syllable threshold.
+    def test_a_korean_acknowledgement_is_answered_in_korean(self):
+        # These used to be held in whichever language came before. By the
+        # person's own rule they are Korean, and they are answered in Korean.
         for said in ("응", "네", "고마워", "알겠어"):
             with self.subTest(said=said):
-                self.assertEqual(decide(said, current=ENGLISH).language,
-                                 ENGLISH)
+                self.assertEqual(decide(said, current=ENGLISH).language, KOREAN)
                 self.assertEqual(decide(said, current=KOREAN).language, KOREAN)
 
 

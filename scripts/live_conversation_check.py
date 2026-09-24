@@ -12,7 +12,7 @@ Usage::
 
 Start the backend first, without the Electron window::
 
-    ELAINA_OPEN_DESKTOP=0 .venv/Scripts/python.exe main.py
+    ELAINA_TTS=off ELAINA_OPEN_DESKTOP=0 .venv/Scripts/python.exe main.py
 """
 
 from __future__ import annotations

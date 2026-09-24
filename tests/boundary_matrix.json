@@ -1,0 +1,408 @@
+{
+  "_about": [
+    "When one task ends and the next one begins.",
+    "",
+    "Measured through the real TaskSessionStore, one held problem and one",
+    "turn at a time, because that is the whole decision: about_the_same_thing",
+    "is asked once per turn and everything downstream -- candidates,",
+    "constraints, evidence, the search query -- follows whatever it says.",
+    "",
+    "Both directions are in here on purpose, and the continue half is the",
+    "half that matters. Splitting too eagerly loses three turns of",
+    "established context and is the failure the whole branch exists to",
+    "prevent; a case list of only the splits would score 100% on a function",
+    "that always said no.",
+    "",
+    "open        the task already open: what was said, and the subject the",
+    "            routing layer offered for it",
+    "turn        the turn under test, with the router's own two flags",
+    "expect      continue = the same task; split = a new one",
+    "why         the conversation this came from, or the rule it holds"
+  ],
+  "cases": [
+    {
+      "id": "war_to_visa",
+      "language": "ko",
+      "open": {
+        "said": "육이오 전쟁에 대해 알려줘",
+        "subject": "6/25 war"
+      },
+      "turn": {
+        "said": "내가 방금 i20를 받았는데 sevis fee가 얼마인지 알아봐줘",
+        "subject": "SEVIS fee",
+        "follow_up": true,
+        "topic_shift": false
+      },
+      "expect": "split",
+      "why": "koreanSession.log: printed previous_thing war, current_thing fee, and continued anyway"
+    },
+    {
+      "id": "war_to_university",
+      "language": "ko",
+      "open": {
+        "said": "육이오 전쟁에 대해 알려줘",
+        "subject": "6/25 war"
+      },
+      "turn": {
+        "said": "내가 다니는 학교는 미국 시애틀에 위치한 워싱턴 대학교야. 우리 학교에 대해서 소개시켜줘.",
+        "subject": "Washington University in Seattle",
+        "follow_up": true,
+        "topic_shift": false
+      },
+      "expect": "split",
+      "why": "koreanSession.log: the same task was still open three subjects later"
+    },
+    {
+      "id": "visa_to_university",
+      "language": "ko",
+      "open": {
+        "said": "sevis fee가 얼마야",
+        "subject": "SEVIS fee"
+      },
+      "turn": {
+        "said": "우리 학교에 대해서 소개시켜줘",
+        "subject": "Washington University in Seattle",
+        "follow_up": true,
+        "topic_shift": false
+      },
+      "expect": "split",
+      "why": "koreanSession.log: two unrelated subjects in a row, both continued"
+    },
+    {
+      "id": "monitors_to_restaurants",
+      "language": "en",
+      "open": {
+        "said": "find me a good gaming monitor",
+        "subject": "gaming monitor"
+      },
+      "turn": {
+        "said": "find me some good restaurants in Gangnam",
+        "subject": "restaurants in Gangnam",
+        "follow_up": false,
+        "topic_shift": false
+      },
+      "expect": "split",
+      "why": "dogfood session 1: the restaurant turn held two monitors as its candidates"
+    },
+    {
+      "id": "monitors_to_restaurants_as_follow_up",
+      "language": "en",
+      "open": {
+        "said": "find me a good gaming monitor",
+        "subject": "gaming monitor"
+      },
+      "turn": {
+        "said": "find me some good restaurants in Gangnam",
+        "subject": "restaurants in Gangnam",
+        "follow_up": true,
+        "topic_shift": false
+      },
+      "expect": "split",
+      "why": "the router calling it a follow-up does not make it one"
+    },
+    {
+      "id": "apartments_to_phone_number",
+      "language": "en",
+      "open": {
+        "said": "find me a studio apartment near campus",
+        "subject": "studio apartment"
+      },
+      "turn": {
+        "said": "the phone number is 206-221-7857, you are wrong",
+        "subject": "phone number",
+        "follow_up": true,
+        "topic_shift": false
+      },
+      "expect": "split",
+      "why": "dogfood session 1: the query became 'studio apartments September 13th 206-221 in South Korea'"
+    },
+    {
+      "id": "laptop_to_monitor_korean",
+      "language": "ko",
+      "open": {
+        "said": "노트북 추천해줘",
+        "subject": "노트북"
+      },
+      "turn": {
+        "said": "모니터는 뭐가 좋아?",
+        "subject": "모니터",
+        "follow_up": true,
+        "topic_shift": false
+      },
+      "expect": "split",
+      "why": "Rule 4: the same boundary, asked in Korean"
+    },
+    {
+      "id": "which_one",
+      "language": "en",
+      "open": {
+        "said": "find me a few good hotels in Seoul",
+        "subject": "hotels in Seoul"
+      },
+      "turn": {
+        "said": "which one would you choose?",
+        "subject": "hotels in Seoul",
+        "follow_up": true,
+        "topic_shift": false
+      },
+      "expect": "continue",
+      "why": "the reference the whole branch exists for; a fresh problem loses the candidates it asks about"
+    },
+    {
+      "id": "which_one_no_subject",
+      "language": "en",
+      "open": {
+        "said": "find me a few good hotels in Seoul",
+        "subject": "hotels in Seoul"
+      },
+      "turn": {
+        "said": "which one would you choose?",
+        "subject": "",
+        "follow_up": true,
+        "topic_shift": false
+      },
+      "expect": "continue",
+      "why": "a turn that names nothing says nothing about identity"
+    },
+    {
+      "id": "show_me_options",
+      "language": "en",
+      "open": {
+        "said": "somewhere easy to eat, my throat hurts",
+        "subject": "dinner"
+      },
+      "turn": {
+        "said": "pull up some spots for me",
+        "subject": "",
+        "follow_up": true,
+        "topic_shift": false
+      },
+      "expect": "continue",
+      "why": "three turns of constraints, and the turn's own words carry none of them"
+    },
+    {
+      "id": "revision",
+      "language": "en",
+      "open": {
+        "said": "where should we get Korean BBQ",
+        "subject": "Korean BBQ"
+      },
+      "turn": {
+        "said": "actually my throat hurts, something soft",
+        "subject": "soft food",
+        "follow_up": false,
+        "topic_shift": false
+      },
+      "expect": "continue",
+      "why": "a revision is about the problem it revises; splitting here loses the preference it retires"
+    },
+    {
+      "id": "cheaper",
+      "language": "en",
+      "open": {
+        "said": "find me a mechanical keyboard",
+        "subject": "mechanical keyboard"
+      },
+      "turn": {
+        "said": "anything cheaper?",
+        "subject": "mechanical keyboard",
+        "follow_up": true,
+        "topic_shift": false
+      },
+      "expect": "continue",
+      "why": "a refinement names no new thing"
+    },
+    {
+      "id": "same_thing_said_again",
+      "language": "en",
+      "open": {
+        "said": "find me a hotel in Seoul",
+        "subject": "hotel in Seoul"
+      },
+      "turn": {
+        "said": "good hotels, not too expensive",
+        "subject": "good hotels",
+        "follow_up": true,
+        "topic_shift": false
+      },
+      "expect": "continue",
+      "why": "a plural is the same noun"
+    },
+    {
+      "id": "korean_follow_up",
+      "language": "ko",
+      "open": {
+        "said": "노트북 추천해줘",
+        "subject": "노트북"
+      },
+      "turn": {
+        "said": "그중에 어떤게 제일 좋아?",
+        "subject": "노트북",
+        "follow_up": true,
+        "topic_shift": false
+      },
+      "expect": "continue",
+      "why": "Rule 4: a Korean reference to the options in hand"
+    },
+    {
+      "id": "korean_same_subject_other_words",
+      "language": "ko",
+      "open": {
+        "said": "한국전쟁에 대해 알려줘",
+        "subject": "한국전쟁"
+      },
+      "turn": {
+        "said": "육이오 전쟁은 남침이야 아니면 북침이야?",
+        "subject": "육이오 전쟁",
+        "follow_up": true,
+        "topic_shift": false
+      },
+      "expect": "continue",
+      "why": "koreanSession.log: two names for one war, and this one was right"
+    },
+    {
+      "id": "korean_refinement",
+      "language": "ko",
+      "open": {
+        "said": "서울 호텔 찾아줘",
+        "subject": "서울 호텔"
+      },
+      "turn": {
+        "said": "더 싼거 없어?",
+        "subject": "",
+        "follow_up": true,
+        "topic_shift": false
+      },
+      "expect": "continue",
+      "why": "Rule 4: a Korean refinement that names nothing"
+    },
+    {
+      "id": "explicit_topic_shift",
+      "language": "en",
+      "open": {
+        "said": "find me a good gaming monitor",
+        "subject": "gaming monitor"
+      },
+      "turn": {
+        "said": "by the way, what does OLED mean?",
+        "subject": "OLED",
+        "follow_up": false,
+        "topic_shift": true
+      },
+      "expect": "split",
+      "why": "the router said so, and nothing here should argue"
+    },
+    {
+      "id": "subject_is_a_whole_sentence",
+      "language": "en",
+      "open": {
+        "said": "find me a few good hotels in Seoul",
+        "subject": "find me a few good hotels in Seoul"
+      },
+      "turn": {
+        "said": "which one would you pick?",
+        "subject": "which one would you pick?",
+        "follow_up": true,
+        "topic_shift": false
+      },
+      "expect": "continue",
+      "why": "the router names no topic sometimes and the subject falls back to the utterance; a sentence is not a subject and must not be compared as one"
+    },
+    {
+      "id": "farewell_after_a_recipe",
+      "language": "en",
+      "open": {
+        "said": "김치찌개를 만드는법을 알려줘",
+        "subject": "Cooking"
+      },
+      "turn": {
+        "said": "quit",
+        "subject": "Conversation",
+        "follow_up": false,
+        "topic_shift": false
+      },
+      "expect": "continue",
+      "why": "koreanSession2.log printed subjects_differ: true and CONTINUE. The contradiction was in the log, not the decision: 'Conversation' is the router's filing label, not a subject, so nothing disagrees"
+    },
+    {
+      "id": "korean_new_subject_not_a_follow_up",
+      "language": "ko",
+      "open": {
+        "said": "노트북 추천해줘",
+        "subject": "노트북"
+      },
+      "turn": {
+        "said": "김치찌개 만드는 법",
+        "subject": "김치찌개",
+        "follow_up": false,
+        "topic_shift": false
+      },
+      "expect": "split",
+      "why": "the router did not call it a follow-up and the subjects differ; nothing is left to argue for continuing"
+    },
+    {
+      "id": "one_word_answer_to_her_question",
+      "language": "en",
+      "open": {
+        "said": "I want a guitar",
+        "subject": "guitar"
+      },
+      "turn": {
+        "said": "Electric.",
+        "subject": "",
+        "follow_up": false,
+        "topic_shift": false
+      },
+      "expect": "continue",
+      "why": "answers the question just asked; the lone-word rule exists for exactly this"
+    },
+    {
+      "id": "one_word_answer_subject_resolved",
+      "language": "en",
+      "open": {
+        "said": "I want a guitar",
+        "subject": "guitar"
+      },
+      "turn": {
+        "said": "Electric.",
+        "subject": "electric guitar",
+        "follow_up": false,
+        "topic_shift": false
+      },
+      "expect": "continue",
+      "why": "the goal layer resolved the subject to the held one"
+    },
+    {
+      "id": "compare_the_ones_in_hand",
+      "language": "en",
+      "open": {
+        "said": "find me a good gaming monitor",
+        "subject": "gaming monitors"
+      },
+      "turn": {
+        "said": "compare them",
+        "subject": "compare them",
+        "follow_up": false,
+        "topic_shift": false
+      },
+      "expect": "continue",
+      "why": "the subject is the utterance; 'compare' names nothing, and the monitors are the point"
+    },
+    {
+      "id": "answer_filed_under_a_label",
+      "language": "en",
+      "open": {
+        "said": "I want a guitar.",
+        "subject": "guitar"
+      },
+      "turn": {
+        "said": "Electric.",
+        "subject": "personal desire",
+        "follow_up": false,
+        "topic_shift": false
+      },
+      "expect": "continue",
+      "why": "'personal desire' is the router filing the turn, not what it is about"
+    }
+  ]
+}

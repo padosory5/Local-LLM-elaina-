@@ -22,7 +22,7 @@ Usage::
 
 Start the backend first, without the Electron window::
 
-    ELAINA_OPEN_DESKTOP=0 .venv/Scripts/python.exe main.py
+    ELAINA_TTS=off ELAINA_OPEN_DESKTOP=0 .venv/Scripts/python.exe main.py
 """
 
 from __future__ import annotations
@@ -202,6 +202,45 @@ ARCS: dict[str, dict] = {
         ),
     },
     # Code-switching in both directions, plus an explicit switch mid-arc.
+    # The same two conversations in the other language, so that Korean and
+    # English can be compared on identical content. "korean_day" at 73% and
+    # "evening" at 80% were never a comparison: the gap mixed the language
+    # with what was being talked about. Same turns, same acts, translated
+    # the way each language would actually say them.
+    "english_day": {
+        "computer_control": False,
+        "turns": (
+            ("hi", GREET),
+            ("today was kind of rough", REACT),
+            ("i was stuck in meetings all day at work", REACT),
+            ("tell me about it", RECEIPT),
+            ("any good dramas to watch these days?", ANSWER),
+            ("hmm not really", REACT),
+            ("what about movies then?", ANSWER),
+            ("already seen that one", REACT),
+            ("forget the dramas, what should i have for dinner?", ANSWER),
+            ("something simple", ANSWER),
+            ("ok i'll do that", RECEIPT),
+            ("thanks, good night", CLOSE),
+        ),
+    },
+    "korean_evening": {
+        "computer_control": False,
+        "turns": (
+            ("안녕, 오늘 진짜 길었어", GREET),
+            ("회의만 연달아 했어", REACT),
+            ("사람이 왜 새벽 3시에 계속 깨는지 알아?", ANSWER),
+            ("근데 난 2시 이후엔 커피 안 마셔", REACT),
+            ("흠", RECEIPT),
+            ("아무튼. 싸고 괜찮은 헤드폰 브랜드 있어?", ANSWER),
+            ("10만원 이하로", ANSWER),
+            ("그거 배터리 얼마나 가?", ANSWER),
+            ("확실해?", ANSWER),
+            ("헤드폰은 됐고, 내일 비 온대?", ANSWER),
+            ("그렇구나", RECEIPT),
+            ("잘자", CLOSE),
+        ),
+    },
     "switch": {
         "computer_control": False,
         "turns": (

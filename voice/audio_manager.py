@@ -7,6 +7,7 @@ import threading
 import time
 
 from core import timing
+from core import turn_trace
 
 from voice.manager import VoiceManager
 from core.event_bus import EventBus
@@ -184,12 +185,14 @@ class AudioManager:
             self._response_language = language
 
     def speak(self, text: str) -> None:
+        said = text
         text = TextFilter.for_configured_speech(
             text,
             response_language=self._response_language,
         )
 
         if not text:
+            turn_trace.note_speech(said, "", ())
             return
 
         with self._lock:
@@ -202,7 +205,12 @@ class AudioManager:
         # first sentence is synthesised rather than the whole reply. The
         # worker synthesises the next chunk while this one plays, so the
         # split costs nothing in continuity.
-        for chunk in _speakable_chunks(text):
+        chunks = _speakable_chunks(text)
+        # What the voice is actually given, beside what was displayed: the
+        # two are the same string today, and the turn's record is where
+        # the day they stop being the same will show.
+        turn_trace.note_speech(said, text, chunks)
+        for chunk in chunks:
             self._queue.put((generation, chunk))
 
     def _worker_loop(self) -> None:

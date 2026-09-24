@@ -90,6 +90,16 @@ _VIRTUAL_KEYS = {
     "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
     "f5": 0x74, "ctrl": 0x11, "shift": 0x10, "alt": 0x12,
     "a": 0x41, "c": 0x43, "v": 0x56, "l": 0x4C, "t": 0x54, "w": 0x57,
+    # Everything a repeated shortcut can name (brain/replay_runner.py): the
+    # activity recorder names keys this way -- letters, digits, F-keys, the
+    # Windows key and the punctuation keys.
+    **{chr(code).lower(): code for code in range(0x41, 0x5B)},
+    **{str(digit): 0x30 + digit for digit in range(10)},
+    **{f"f{number}": 0x6F + number for number in range(1, 25)},
+    **{f"num{digit}": 0x60 + digit for digit in range(10)},
+    "win": 0x5B, "insert": 0x2D, "printscreen": 0x2C,
+    ";": 0xBA, "=": 0xBB, ",": 0xBC, "-": 0xBD, ".": 0xBE, "/": 0xBF,
+    "`": 0xC0, "[": 0xDB, "\\": 0xDC, "]": 0xDD, "'": 0xDE,
 }
 # Keys that must carry the extended-key flag or Windows delivers the numpad
 # equivalent instead.

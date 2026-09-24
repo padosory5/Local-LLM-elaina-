@@ -337,9 +337,33 @@ _A_FACT = re.compile(
     re.IGNORECASE,
 )
 
+# An acknowledgement in front of the instruction. "Ok, from now on keep it
+# short" and "그래 다음부턴 그렇게 설명해라" are how people actually say it,
+# and anchoring on the first word refused both.
+_LEAD_IN = (
+    r"(?:(?:ok(?:ay)?|alright|sure|yes|yeah|그래|응|네|좋아|알았어|알겠어)"
+    r"[,.!\s]+)?"
+)
+
 _A_NOTE = re.compile(
-    rf"^\s*(?:{_ALWAYS})[,\s]+(?P<note>.+?)\s*[.!]?\s*$",
+    rf"^\s*{_LEAD_IN}(?:{_ALWAYS})[,\s]+(?P<note>.+?)\s*[.!]?\s*$",
     re.IGNORECASE,
+)
+
+# The Korean form, which the English one above cannot reach -- Rule 4.
+# Measured in a Korean session: "그래 다음부턴 그렇게 설명해라" was answered
+# by repeating the previous answer, because nothing read it as an
+# instruction at all.
+#
+# Korean puts the verb last, so the marker at the front says "from now on"
+# and the ending says whether it is an instruction. Both are required:
+# "앞으로 비가 온대" also opens with 앞으로, and it is a weather report.
+_A_NOTE_KO = re.compile(
+    rf"^\s*{_LEAD_IN}"
+    r"(?:앞으로(?:는)?|다음부터(?:는)?|다음부턴|이제부터(?:는)?|이제부턴)\s+"
+    r"(?P<note>.+?(?:해|해줘|해라|해요|해주세요|하지\s*마|말아|말아줘|"
+    r"줘|주세요|라|십시오))"
+    r"\s*[.!~]?\s*$",
 )
 
 _FORGET = re.compile(
@@ -381,7 +405,7 @@ def read_instruction(text: str) -> tuple[str, str, str]:
         }:
             return "forget", phrase, ""
 
-    note = _A_NOTE.match(said)
+    note = _A_NOTE.match(said) or _A_NOTE_KO.match(said)
     if note:
         return "note", note.group("note").strip(), ""
     return "", "", ""

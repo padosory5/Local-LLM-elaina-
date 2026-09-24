@@ -257,14 +257,23 @@ class AGreetingSetsTheLanguageTests(unittest.TestCase):
             with self.subTest(said=said):
                 self.assertEqual(decide(said, current=current).language, wanted)
 
-    def test_the_acknowledgement_floor_is_untouched(self):
-        """The exception is about what the turn does, not about length."""
+    def test_an_acknowledgement_is_answered_in_its_own_language(self):
         from brain.turn_language import decide
 
-        for said in ("응", "네", "고마워", "알겠어", "ok", "yeah"):
+        # This used to assert the opposite: a short acknowledgement held her
+        # in whatever language came before. The person's rule for a mixed
+        # conversation replaced it -- answer in the language I just used --
+        # and on a mixed session the old floor put 4 of 14 replies in the
+        # wrong language, every one of them a short turn. "ok" is the same
+        # word in both languages and still moves nothing.
+        for said in ("응", "네", "고마워", "알겠어"):
             with self.subTest(said=said):
-                self.assertEqual(decide(said, current="en").language, "en")
+                self.assertEqual(decide(said, current="en").language, "ko")
                 self.assertEqual(decide(said, current="ko").language, "ko")
+        self.assertEqual(decide("yeah", current="ko").language, "en")
+        for current in ("en", "ko"):
+            with self.subTest(said="ok", current=current):
+                self.assertEqual(decide("ok", current=current).language, current)
 
     def test_code_switching_still_does_not_flip_her(self):
         from brain.turn_language import decide

@@ -86,11 +86,17 @@
       ],
       "turn": "아니야",
       "must_not_mention": [
-        "추천해",
-        "추천드리",
-        "추천할"
+        "추천드릴",
+        "추천드리겠",
+        "추천드립니다",
+        "추천해 드릴",
+        "추천해드릴",
+        "추천해 드리겠",
+        "추천해드리겠",
+        "추천을 해드릴",
+        "추천을 해 드릴"
       ],
-      "why": "Measured live across several runs: a plain refusal produced another film recommendation instead of being accepted. Marker corrected after the fact: the bare noun 추천 also appears in '영화 추천은 잠시 보류하겠습니다', which is the refusal being accepted. The failure is offering another film, so the markers are the verb forms that offer one."
+      "why": "Measured live across several runs: a plain refusal produced another film recommendation instead of being accepted. Markers corrected twice, both times because they were measuring the wrong sentence. First: the bare noun 추천 also appears in '영화 추천은 잠시 보류하겠습니다', which is the refusal being accepted. Second, on 2026-09-23, in both directions at once -- '추천해' matched the honesty guard's own line, '확인하지 않은 것을 추천해 드리고 싶지는 않습니다', which is her declining to recommend and the opposite of the failure; and the three most common real offers ('다른 영화도 추천드릴 수 있습니다', '다른 영화 추천을 해드릴 수 있습니다') matched nothing, so a run that offered another film passed. The markers are now the offer forms only -- 드릴/드리겠, never 드리고. Known residue: a recommendation offered as '추천은 지금 바로 해드리겠습니다' still slips through, because no substring of it is an offer on its own. A substring list cannot say 'offered anything at all'; the reply's offer count can, and conversation_style._OFFER_RE is what counts it."
     },
     {
       "id": "acknowledgement_is_not_a_constraint",
@@ -103,10 +109,13 @@
       "turn": "Yeah.",
       "must_not_mention": [
         "budget",
-        "studio apartments",
-        "$1000"
+        "$1000",
+        "$1,000",
+        "$1300",
+        "$1,300",
+        "1000 to 1300"
       ],
-      "why": "Dogfooding session 1: an open rental task absorbed every later turn containing a number, a date or a noun. By turn 30 the query read 'studio apartments September 13th 206-221 in South Korea'."
+      "why": "Dogfooding session 1: an open rental task absorbed every later turn containing a number, a date or a noun. By turn 30 the query read 'studio apartments September 13th 206-221 in South Korea'. Markers corrected 2026-09-23: 'studio apartments' is the task's own subject, not something inherited, and it fired on a reply that was doing the task correctly -- 'I found a few studio apartments near schools in your price range', after the previous turn had parked an offer and this 'Yeah.' accepted it ('[Router] web_search (1.00): The user accepted the offered ability'). What a bare acknowledgement can never do is supply a constraint, so the markers are the constraint values, the same way a_number_that_is_not_a_budget below reads 206-555 rather than the word rent. Known residue: she said 'in your price range' where the failure would say 'within your budget of $1000 to $1300' -- the same claim in words no substring list can tell apart, and a reply that re-asserts the constraints without naming a figure still passes."
     },
     {
       "id": "a_number_that_is_not_a_budget",

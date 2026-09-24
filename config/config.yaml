@@ -160,7 +160,14 @@ llm:
 user:
   # ISO country code (KR, US, JP, GB, ...), or "auto" to read
   # it from the Windows regional settings on startup.
-  country: "auto"
+  #
+  # Pinned to US in September 2026, when the person moved there. "auto"
+  # would still say KR: the laptop's clock followed the move and its
+  # Windows region did not, so every boot resolved South Korea and priced
+  # things in won. The unit a temperature is said in is a separate
+  # question, decided by the language of the turn -- a Korean question is
+  # answered in Celsius (brain/units.py).
+  country: "US"
 
   # Optional. Used for "near me"-style requests and spoken as
   # part of Elaina's own sense of where you are.
@@ -495,7 +502,13 @@ stt:
   provider: "faster_whisper"
 
   faster_whisper:
-    model_size: "small"
+    # Measured on the same 24 clips (Korean and English, clean and with
+    # noise), app settings: mean character error small -> large-v3-turbo
+    # clean 0.052 -> 0.012, 10 dB 0.310 -> 0.121, 3 dB 0.599 -> 0.288; the
+    # person's "인천공항에서 미국 시애틀까지" came back exactly right, where
+    # small heard "시의틀". ~230 ms per clip, +2.6 GB on the GPU.
+    # docs/SPEECH_REPAIR.md.
+    model_size: "large-v3-turbo"
 
     # Use null for automatic detection. Detected languages outside the
     # allowlist below are retried as English instead of accepting a random
@@ -516,6 +529,43 @@ stt:
     # Keep this empty. A long initial prompt can be repeated verbatim when
     # Whisper receives a quiet or unclear clip.
     initial_prompt: ""
+
+    # Decoding beam. Measured on synthesised Korean speech (14 clips, clean
+    # and with noise): character error at 5 dB noise 0.62 -> 0.35 with the
+    # changes below, and key terms (CPT, UW, 베인브리지) 2/8 -> 8/8. Beam 5
+    # costs ~25 ms per clip on the GPU (79 -> 104 ms).
+    beam_size: 5
+
+    # Hand the transcriber the names and acronyms the conversation is about
+    # (at most eight, 60 characters), so the words it is most likely to
+    # mishear are the ones it is listening for. A transcript that only reads
+    # the hints back is dropped. See voice/stt.py set_conversation_context.
+    hotwords_from_conversation: true
+
+    # A transcript whose words are all guesses gets "잘 못 들었습니다. 다시
+    #한번 말씀해 주시겠습니까?" instead of an answer -- at most once in a
+    # row. Unclear means the least sure word is below the first number AND
+    # the average is below the second; one-word replies are never judged.
+    # Measured on 112 clips (large-v3-turbo, synthesised voice with noise):
+    # catches 7 of 19 garbled transcripts, flags 0 of 64 good ones, and
+    # leaves a 0.05 margin to the closest good sentence. Each voice turn
+    # logs "[STT] Word confidence: lowest .., average .." -- tune these on
+    # the person's own voice.
+    unclear_lowest_word: 0.30
+    unclear_average_word: 0.65
+
+    # The transcriber can also be sure of words nobody said: "해수에서 슬프
+    # 당선까지 버스있어" scored like a correct sentence. A spoken transcript
+    # whose average word probability is below this is read for sense by the
+    # resident model (brain/sense_check.py) -- "could a person have said
+    # this?" -- and if not, she repeats what she heard and asks again (the
+    # same once-in-a-row limit). Clear speech averages 0.85-0.99 and is
+    # never second-guessed; typed turns never are. Measured: 23 of 36
+    # garbled transcripts caught, 1 of 205 sound ones flagged (a slip the
+    # near-miss repair settles first); on unseen sentences 5 of 14 caught,
+    # 0 of 59 flagged. Every unseen garble averaged below 0.80; ~0.22 s a
+    # call.
+    sense_check_below: 0.80
 
     # Discard segments that Whisper itself considers silence and low quality.
     no_speech_threshold: 0.60
@@ -549,6 +599,40 @@ vad:
     device_name: "PRO X 2 LIGHTSPEED"
     preferred_host_api: "Windows WASAPI"
     capture_sample_rate: null
+
+
+############################################################
+# Activity: what you do on the computer
+############################################################
+
+# Elaina keeps a local log of what you do -- which button you clicked in
+# which app, which page you opened, which setting you switched, which app
+# you moved to -- so you can ask "what did I do this morning?" or "which
+# site was I on earlier?", say "repeat my last 5 actions" (she lists them
+# and does them on your yes), or "what did I do after I turned on my PC?
+# do that every time" (she offers it when she starts). Nothing to start or
+# stop: it is always on. See tools/screen_control/activity_recorder.py and
+# brain/replay_plan.py.
+#
+# Never recorded: password fields, anything inside a private browsing
+# window (only that one was used), Elaina's own window, and what happens
+# inside a full-screen app (a game or a video: one row says it was used,
+# and until when). Say "pause the activity log" / "활동 기록 꺼 줘" to stop
+# it, "forget what I did today" / "오늘 한 거 지워 줘" to delete it.
+activity:
+  enabled: true
+  # Rows older than this are deleted (0 keeps everything).
+  retention_days: 14
+  # What happens to the text you type:
+  #   memory_only -- kept in memory for a few hours so "repeat what I just
+  #                  did" can type it again; the log on disk says only
+  #                  "typed in <field>"; gone when she closes;
+  #   always      -- kept in the log on disk too;
+  #   never       -- never read at all (a repeat then skips typing).
+  # A password field is never read, whatever this says.
+  typed_text: memory_only
+  # Executables never to look into, e.g. ["KakaoTalk.exe"].
+  skip_apps: []
 
 
 ############################################################
@@ -711,3 +795,12 @@ debug:
   print_tool_calls: true
   print_timings: true
   print_router_confidence: true
+
+  # One record per turn of what happened between the model's first draft
+  # and what she said: every stage that rewrote the reply, every model call
+  # with its latency and tokens per second, the evidence, the displayed and
+  # spoken text (core/turn_trace.py). runtime/turn_trace/ holds every turn;
+  # runtime/failure_bank/ holds the turns a stage changed. Local, git-ignored,
+  # and deleted after the retention window. ELAINA_TURN_TRACE=off overrides.
+  turn_trace: true
+  turn_trace_retention_days: 30

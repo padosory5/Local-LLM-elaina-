@@ -218,9 +218,14 @@ class ResponseLimits:
         return max(256, min(requested, 768))
 
 
-# English only. Every pattern below is an English deferral phrase
-# ("let me calculate that"), and Korean deferrals share none of their shape.
-# A Korean draft that defers is currently not caught.
+# English only, still. Every deferral phrase below is English ("let me
+# calculate that") and Korean deferrals share none of their shape, so a
+# Korean draft that defers is not caught. One exception, declared here
+# rather than in the tuple so the audit does not read as finished:
+# ``AnswerCompletionGuard.asks_for_a_value`` matches both languages
+# (몇 도, 얼마, how many, the freezing point of), because the failure it was
+# built for -- a value question answered without the value -- was measured
+# in both.
 LANGUAGES = ("en",)
 
 
@@ -234,8 +239,63 @@ class AnswerCompletionGuard:
         flags=re.IGNORECASE,
     )
 
+    # A bare number, the way both a question and an answer write one.
+    _NUMBER = re.compile(r"(?<![\d.,])\d[\d,]*(?:\.\d+)?(?![\d,])")
+
     @classmethod
-    def needs_retry(cls, text: str, *, calculation: bool) -> bool:
+    def _numbers(cls, text: str) -> set[str]:
+        return {
+            match.group(0).replace(",", "").rstrip(".")
+            for match in cls._NUMBER.finditer(str(text or ""))
+        }
+
+    @classmethod
+    def worked_out(cls, text: str, *, question: str) -> set[str]:
+        """The values this answer produced, as against the ones it was given.
+
+        "what's 2+2" already contains a 2, so a reply that says "That's the
+        result of 2 plus 2" is made entirely of the question's own numbers.
+        The answer is the number that was not there before.
+        """
+        return cls._numbers(text) - cls._numbers(question)
+
+    # A question that asks for a value without asking for arithmetic.
+    # Measured: "What is the freezing point of water in Fahrenheit?" ->
+    # "This is the temperature at which water turns into ice under standard
+    # atmospheric conditions." The 32 never appeared, and every check below
+    # was off because nothing had been calculated.
+    _ASKS_FOR_A_VALUE = re.compile(
+        r"\bhow\s+(?:many|much|long|old|far|tall|deep|heavy|hot|cold)\b"
+        r"|\bwhat(?:'s|\s+is)\s+the\s+(?:freezing|boiling|melting)\s+point\b"
+        r"|\bwhat\s+percent\b"
+        r"|\bwhat(?:'s|\s+is)\s+the\s+(?:temperature|population|distance|price|cost|total)\b"
+        r"|몇\s*(?:도|개|시|명|년|살|달|주|분|초|퍼센트|프로|킬로|미터)"
+        r"|얼마",
+        flags=re.IGNORECASE,
+    )
+    # A value can be spelled: "Seven." answers "how many continents".
+    _SPELLED_VALUE = re.compile(
+        r"\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven"
+        r"|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen"
+        r"|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety"
+        r"|dozen|half|hundred|thousand|million|billion)\b"
+        r"|하나|둘|셋|넷|다섯|여섯|일곱|여덟|아홉|열|백|천|만|절반",
+        flags=re.IGNORECASE,
+    )
+
+    @classmethod
+    def asks_for_a_value(cls, question: str) -> bool:
+        """Whether the question asks for a quantity, arithmetic or not."""
+        return bool(cls._ASKS_FOR_A_VALUE.search(str(question or "")))
+
+    @classmethod
+    def _states_a_value(cls, text: str) -> bool:
+        return bool(cls._SPELLED_VALUE.search(str(text or "")))
+
+    @classmethod
+    def needs_retry(
+        cls, text: str, *, calculation: bool, question: str = "",
+    ) -> bool:
         if not calculation:
             return False
 
@@ -248,7 +308,70 @@ class AnswerCompletionGuard:
             return True
         if cls._DEFERRAL.search(cleaned):
             return True
+        if question.strip():
+            # Measured live, answering "what's 2+2" after three turns of
+            # sympathy: "That's the result of 2 plus 2." The digit test
+            # below passed it -- the operands are digits -- and the one
+            # number the person asked for was the one that was missing.
+            #
+            # A false positive costs a single regeneration and nothing
+            # else: an answer whose result happens to equal one of the
+            # operands ("what's 4-0" -> "It's 4.") is asked for again, and
+            # the draft is kept when the second attempt reads no better.
+            if cls.worked_out(cleaned, question=question):
+                return False
+            # A spelled value answers it too: "How many continents are
+            # there?" -> "Seven."
+            return not cls._states_a_value(cleaned)
         return not bool(re.search(r"\d", cleaned))
+
+    @classmethod
+    def dropped_the_result(
+        cls, final: str, *, draft: str, question: str,
+    ) -> bool:
+        """Whether a later stage took the answer out of a complete draft.
+
+        Between the draft and the person sit an advice rewrite, a finalizer,
+        the condenser, the voice pass and a dozen guards, each of which may
+        hand back text the completion check above would have rejected -- and
+        none of them runs it again. This is the check that can: the draft
+        worked something out, and the finished reply no longer says it.
+
+        Only a *total* loss counts. An answer that keeps its result and
+        drops a working step ("The total is 45 dollars" from "An 8 percent
+        tip on 42 makes the total 45 dollars") is a shorter answer, not a
+        missing one.
+        """
+        worked_out = cls.worked_out(draft, question=question)
+        if not worked_out:
+            return False
+        # A finished reply that worked out a value of its own has not lost
+        # anything -- it was replaced on purpose. Measured twice: a repair
+        # re-answered "물은 몇 도에서 끓어?" without the history that had
+        # made it about the freezing point, and this guard put the freezing
+        # point back, because the draft's 32 was no longer anywhere in the
+        # answer. The case this guard was built for is the opposite shape:
+        # "That's the result of 2 plus 2." states no value at all.
+        if cls.worked_out(final, question=question):
+            return False
+        return not (cls._numbers(final) & worked_out)
+
+    @classmethod
+    def the_result_sentence(cls, draft: str, *, question: str) -> str:
+        """The draft's own sentence stating what it worked out.
+
+        The draft as a whole is not what goes back. It may carry the very
+        thing a guard removed on the way out -- the sympathy sentence that
+        made the arithmetic turn fail the contamination matrix in the first
+        place -- so only the sentence with the answer in it is restored.
+        """
+        worked_out = cls.worked_out(draft, question=question)
+        if not worked_out:
+            return ""
+        for sentence in re.split(r"(?<=[.!?])\s+", str(draft or "").strip()):
+            if cls._numbers(sentence) & worked_out:
+                return sentence.strip()
+        return ""
 
 
 class ClosingOfferGuard:

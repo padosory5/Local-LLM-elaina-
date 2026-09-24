@@ -46,7 +46,10 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 from scripts.conversation_quality_report import score  # noqa: E402
 
-PYTHON = str(PROJECT_ROOT / ".venv" / "Scripts" / "python.exe")
+# The project's own interpreter, or the one running this -- a frozen copy
+# of the project made for a baseline has no .venv of its own.
+_VENV_PYTHON = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+PYTHON = str(_VENV_PYTHON if _VENV_PYTHON.exists() else Path(sys.executable))
 PORT = 8765
 BACKEND_TIMEOUT_SECONDS = 400
 
@@ -64,6 +67,24 @@ def _port_open() -> bool:
         probe.close()
 
 
+def _fresh_runtime() -> dict[str, str]:
+    """A runtime folder of its own for this run, when ELAINA_RUNTIME_BASE
+    names where to make them.
+
+    Each run already gets a fresh *process*; without this it shares the
+    runtime -- memory, profile, standing orders -- with every run before
+    it. Once what the person said is in every prompt, that is the previous
+    run leaking into this one. Set the base and nothing a run writes
+    reaches the person's own runtime/ either.
+    """
+    base = os.environ.get("ELAINA_RUNTIME_BASE", "").strip()
+    if not base:
+        return {}
+    folder = Path(base) / f"run-{time.strftime('%H%M%S')}-{os.getpid()}-{time.time_ns() % 10**6}"
+    folder.mkdir(parents=True, exist_ok=True)
+    return {"ELAINA_RUNTIME_ROOT": str(folder)}
+
+
 def _start_backend(log_path: Path):
     handle = log_path.open("w", encoding="utf-8")
     process = subprocess.Popen(
@@ -71,7 +92,10 @@ def _start_backend(log_path: Path):
         cwd=str(PROJECT_ROOT),
         stdout=handle,
         stderr=subprocess.STDOUT,
-        env={**os.environ, "ELAINA_OPEN_DESKTOP": "0"},
+        # Silent unless the environment says otherwise: a dogfood arc
+        # measures what she says, and her voice is billed per character.
+        env={"ELAINA_TTS": "off", **os.environ, "ELAINA_OPEN_DESKTOP": "0",
+             **_fresh_runtime()},
     )
     deadline = time.time() + BACKEND_TIMEOUT_SECONDS
     while not _port_open() and time.time() < deadline:
@@ -85,7 +109,17 @@ def _start_backend(log_path: Path):
 def _stop_backend(process) -> None:
     if process is None:
         return
-    process.terminate()
+    if os.name == "nt":
+        # terminate() ends the venv launcher and leaves the interpreter it
+        # started still holding the port -- and the next run's start check
+        # then found the port open and measured the *previous* backend.
+        # The whole tree goes.
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            capture_output=True,
+        )
+    else:
+        process.terminate()
     try:
         process.wait(timeout=30)
     except subprocess.TimeoutExpired:

@@ -220,6 +220,82 @@ _REQUEST_SHAPE = re.compile(
     flags=re.IGNORECASE,
 )
 
+
+# Korean asks in a shape none of the patterns above can see.
+#
+# Every English line up there looks at the *front* of the sentence: the
+# wh-word moves there, or the auxiliary inverts there. Korean does neither.
+# The question word stays where the answer would go, and spoken Korean
+# reaches this from speech-to-text without a question mark -- so the only
+# Korean that passed was the imperative stems on the last line. Measured on
+# tests/request_shape_matrix.json: 2 of 16 Korean questions read as
+# questions, 7 of 7 English ones. In a real session that sent
+#
+#     얼마나 많은 사람들이 봤는데
+#
+# down the "remark" path, where the lookup is withheld and she answers from
+# memory -- with an invented viewer count.
+#
+# Still a closed grammatical class and nothing else: question words, the
+# verb endings that ask, and the polite request forms. Each question word
+# carries the exclusions for the places it is not asking -- 언제나 is
+# "always", 왜냐하면 is "because", 뭐 before 그냥 is a filler, and 몇 in a
+# concessive ("몇 번을 봐도 좋더라") is not counting anything.
+
+
+def _syllables_ending_in_nieun() -> str:
+    # Every Hangul syllable whose final consonant is ㄴ: the syllable in
+    # front of the question ending -ㄴ가/-는가/-인가 ("빠른가", "인가").
+    return "".join(chr(0xAC00 + index * 28 + 4) for index in range(19 * 21))
+
+
+_KOREAN_QUESTION = re.compile(
+    # Question words, wherever they fall.
+    r"몇(?![^.?!]*?(?:아도|어도|해도|봐도|와도|워도|여도|라도)(?:\s|$))"
+    r"|얼마"
+    r"|어디(?!\s*보자)"
+    r"|언제(?!나|든)"
+    r"|누구(?!나|든)|누가"
+    r"|왜(?!냐)"
+    r"|어느"
+    r"|어떻게|어떡|어때|어떤지|어떤\s*(?:게|거|걸|것)"
+    r"|무엇(?!이든)|무슨"
+    r"|뭐(?:야|가|지|냐|예요|에요|하|였|죠|니|\s*[?？]*\s*$)|뭘|뭔(?:지|데|가)"
+    # Verb endings that ask. With the question mark gone, they are the only
+    # mark of a question that is left.
+    r"|(?:나요|냐|(?<!아)까요?|는지|은지|"
+    rf"[{_syllables_ending_in_nieun()}]가)"
+    r"\s*[?？!~.]*\s*$"
+    r"|(?<!언)(?<!머)니\s*[?？]*\s*$"
+    # Polite request forms the imperative line above does not reach.
+    r"|주세요|주십시오|해\s*주|부탁|검색",
+)
+
+
+def reads_as_request(text: str) -> bool:
+    """Whether a turn has the shape of asking for something, in either language."""
+    said = str(text or "")
+    return bool(_REQUEST_SHAPE.search(said) or _KOREAN_QUESTION.search(said))
+
+
+# Popularity, sales and rankings: counts somebody measured, which is what
+# makes them records rather than knowledge. Deliberately about *measured
+# popularity* and not every superlative -- "the tallest mountain in the
+# world" is settled and stays a direct answer; "the most watched drama in
+# Korea" is a ratings figure and goes to a source. Read from the router's
+# own English paraphrase and query as well as Korean, because the router
+# rewrites a Korean question into English before this sees it.
+_ASKS_FOR_A_RECORD = re.compile(
+    r"\b(?:most|highest|top)[-\s]+(?:watched|viewed|popular|sold|selling|"
+    r"streamed|played|downloaded|rated|grossing|ranked|subscribed)\b"
+    r"|\bbest[-\s]?sell(?:ing|er)\b|\bnumber[-\s]one\b|#\s?1\b"
+    r"|\bbox[-\s]office\b|\b(?:tv|viewer(?:ship)?)\s+ratings?\b"
+    r"|\bviewership\b"
+    r"|(?:가장|제일|최고로?)\s*(?:많이|인기|잘\s*팔|흥행)"
+    r"|시청률|흥행|판매량|조회수|순위|1위|역대\s*최",
+    re.IGNORECASE,
+)
+
 # Intents whose whole job is to fetch evidence. Acting on one is cheap and
 # reversible, which is why they never ask permission -- and exactly why the
 # only thing standing between a passing remark and an unrequested lookup is
@@ -1425,7 +1501,7 @@ class SemanticIntentRouter:
             return decision
         if not decision.action_requested:
             return decision
-        if _REQUEST_SHAPE.search(str(original_input or "")):
+        if reads_as_request(original_input):
             return decision
         return replace(
             decision,
@@ -1512,7 +1588,18 @@ class SemanticIntentRouter:
         if decision.intent != "knowledge_question":
             return decision
 
-        can_use_local_knowledge = (
+        # A ranking is a record, not a settled fact. Measured live in Korean:
+        # "한국에서 가장 많이 보는 드라마는 뭐야" came back stable, was answered
+        # from memory with the wrong drama, and the next three turns were
+        # spent defending it -- the premise echoed back as fact after a
+        # search, then an invented viewer count. The model calls these
+        # stable because the answer sounds like trivia; what makes it a
+        # record is that it is a count someone has to have measured.
+        asks_for_a_record = bool(
+            _ASKS_FOR_A_RECORD.search(decision.normalized_request or "")
+            or _ASKS_FOR_A_RECORD.search(decision.search_query or "")
+        )
+        can_use_local_knowledge = not asks_for_a_record and (
             decision.information_freshness == "stable"
             and not decision.requires_external_evidence
             and decision.time_scope not in {"current", "future"}

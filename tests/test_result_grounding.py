@@ -132,6 +132,64 @@ class ARealResultIsLeftAloneTests(unittest.TestCase):
         )
 
 
+class ItSaysWhyItCannotNameOneTests(unittest.TestCase):
+    """Not "I couldn't verify a specific one from the sources I checked."
+
+    Measured, and objected to by the person it was said to: "Recommend a
+    wireless mouse under $50." -> "You can find it at Best Buy. ... I
+    couldn't verify a specific one from the sources I checked." The guard
+    knows which of the two happened, and both can be acted on.
+    """
+
+    def _engine(self, language="en"):
+        quiet = io.StringIO()
+        with contextlib.redirect_stdout(quiet):
+            engine = build_engine(routes={})
+        engine._turn_language = language
+        return engine, quiet
+
+    def test_an_empty_search_says_so_and_offers_other_words(self):
+        engine, quiet = self._engine()
+        with contextlib.redirect_stdout(quiet):
+            said = engine._why_nothing_was_named("")
+
+        self.assertIn("came back empty", said)
+        self.assertNotIn("verify a specific one", said)
+
+    def test_pages_with_no_names_offer_the_browser(self):
+        engine, quiet = self._engine()
+        with contextlib.redirect_stdout(quiet):
+            said = engine._why_nothing_was_named(
+                "SEARCH 1: wireless mouse under 50\nbestbuy.com - Mice - Shop mice",
+            )
+
+        self.assertIn("browser", said)
+        self.assertNotIn("verify a specific one", said)
+
+    def test_both_reasons_exist_in_korean(self):
+        engine, quiet = self._engine("ko")
+        with contextlib.redirect_stdout(quiet):
+            empty = engine._why_nothing_was_named("")
+            pages = engine._why_nothing_was_named("SEARCH 1: 무선 마우스\n쿠팡 - 마우스")
+
+        for line in (empty, pages):
+            with self.subTest(line=line):
+                self.assertTrue(any("가" <= ch <= "힣" for ch in line), line)
+        self.assertNotEqual(empty, pages)
+
+    def test_the_recommendation_guard_gives_the_reason(self):
+        engine, quiet = self._engine()
+        with contextlib.redirect_stdout(quiet):
+            rewritten = engine._enforce_named_recommendation(
+                "The Logitech M330 Silent Plus is a great pick under $50.",
+                candidates=(), searched=True, evidence="",
+                request="Recommend a wireless mouse under $50.",
+            )
+
+        self.assertNotIn("M330", rewritten)
+        self.assertIn("came back empty", rewritten)
+
+
 class TheReplyIsRewrittenTests(unittest.TestCase):
 
     def _engine(self):

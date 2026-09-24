@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import re
 import sysconfig
 import tempfile
 import wave
@@ -16,6 +17,8 @@ from faster_whisper import WhisperModel
 from config.loader import Config
 from voice.vad import VoiceActivityDetector
 from voice.transcription_policy import (
+    heard_unclearly,
+    reads_as_silence,
     retry_language_for_detection,
     segment_is_usable,
 )
@@ -158,6 +161,41 @@ class SpeechToText:
             default="",
             required=False,
         )).strip()
+        self.beam_size = max(1, int(config.get(
+            "stt",
+            "faster_whisper",
+            "beam_size",
+            default=1,
+            required=False,
+        )))
+        self.hotwords_from_conversation = bool(config.get(
+            "stt",
+            "faster_whisper",
+            "hotwords_from_conversation",
+            default=True,
+            required=False,
+        ))
+        # What the conversation is about right now, set by the voice loop
+        # before each listen. Whisper hears every clip cold otherwise, so
+        # the names and acronyms the person has been saying for ten minutes
+        # are guessed from scratch every time.
+        self.conversation_language = ""
+        self.hotwords = ""
+        # When a whole transcript is a guess (voice/transcription_policy),
+        # the engine asks to hear it again instead of answering it.
+        self.unclear_lowest_word = float(config.get(
+            "stt", "faster_whisper", "unclear_lowest_word",
+            default=0.30, required=False,
+        ))
+        self.unclear_average_word = float(config.get(
+            "stt", "faster_whisper", "unclear_average_word",
+            default=0.65, required=False,
+        ))
+        self.last_heard_unclearly = False
+        # The mean word probability of the last transcript (0.0 when there
+        # were no words). The engine reads a doubtful one for sense
+        # (brain/sense_check.py); a clear one is never second-guessed.
+        self.last_word_average = 0.0
 
         self.sample_rate = int(config.get(
             "vad",
@@ -285,6 +323,8 @@ class SpeechToText:
             return ""
 
     def _run_transcription(self, audio_path: str) -> str:
+        self.last_heard_unclearly = False
+        self.last_word_average = 0.0
         segments, info = self._transcribe_once(
             audio_path,
             language=self.language,
@@ -309,6 +349,7 @@ class SpeechToText:
             probability=language_probability,
             allowed_languages=self.allowed_languages,
             minimum_probability=self.language_retry_threshold,
+            preferred_language=self.conversation_language or None,
         )
         if retry_language is not None:
             print(
@@ -323,6 +364,7 @@ class SpeechToText:
             )
 
         accepted_text: list[str] = []
+        word_probabilities: list[float] = []
         for segment in segments:
             segment_text = str(
                 self._value(segment, "text", "")
@@ -343,13 +385,102 @@ class SpeechToText:
             ):
                 continue
             accepted_text.append(segment_text)
+            for word in self._value(segment, "words", None) or ():
+                probability = self._value(word, "probability", None)
+                if probability is not None:
+                    word_probabilities.append(float(probability))
 
         text = " ".join(accepted_text).strip()
+        if text and reads_as_silence(
+            text,
+            detected_language=detected_language,
+            probability=language_probability,
+        ):
+            # "감사합니다." from a clip Whisper could not even place in a
+            # language -- the phrase it ends videos with, not speech.
+            print(f"[STT] Ignored {text!r}: Whisper's habit on silence "
+                  f"(first read as {detected_language or '?'} at "
+                  f"{language_probability:.2f}).")
+            text = ""
+        if text and self._reads_back_the_hints(text):
+            # Whisper's known failure with a prompt: on a quiet clip it
+            # reads the prompt back as if it had been said.
+            print("[STT] Ignored a transcript that only repeats the "
+                  "listening hints.")
+            text = ""
         if text:
             print(f"You said: {text}")
+            if word_probabilities:
+                # Logged every time, so the thresholds can be tuned on the
+                # person's own voice rather than a synthesised one.
+                average = sum(word_probabilities) / len(word_probabilities)
+                print(f"[STT] Word confidence: lowest "
+                      f"{min(word_probabilities):.2f}, average {average:.2f}")
+                self.last_word_average = average
+            self.last_heard_unclearly = heard_unclearly(
+                word_probabilities,
+                lowest_below=self.unclear_lowest_word,
+                average_below=self.unclear_average_word,
+            )
+            if self.last_heard_unclearly:
+                print("[STT] Heard too unclearly to act on; she will ask to "
+                      "hear it again.")
         else:
             print("[STT] No speech detected.")
         return text
+
+    def set_conversation_context(self, *, language: str = "", terms=()) -> None:
+        """Listen for the conversation's own words, in its language.
+
+        At most eight terms and sixty characters: a long prompt is what
+        Whisper repeats verbatim on an unclear clip, which is why the
+        configured ``initial_prompt`` is kept empty.
+        """
+        self.conversation_language = str(language or "").strip().lower()[:2]
+        if not self.hotwords_from_conversation:
+            self.hotwords = ""
+            return
+        chosen: list[str] = []
+        length = 0
+        for term in terms or ():
+            term = " ".join(str(term or "").split())
+            if not term or term in chosen:
+                continue
+            if len(chosen) >= 8 or length + len(term) > 60:
+                break
+            chosen.append(term)
+            length += len(term) + 2
+        self.hotwords = ", ".join(chosen)
+
+    def _reads_back_the_hints(self, text: str) -> bool:
+        """Whether a transcript is the hints read back, not speech.
+
+        Measured with noisy clips and a list of place names as hints: at
+        5 dB Whisper answered "인천공항, 시애틀, 김포공항, 제주도, ..." and
+        "워싱턴 대학, 제주도, 밴쿠버, 샌프란시스코, 로스앤젤레스" -- the list,
+        sometimes with a word of its own in front. Both are dropped: all
+        hints, or three or more of them in a comma list that is mostly them.
+        A real sentence naming three places is not a comma list.
+        """
+        if not self.hotwords:
+            return False
+        hints = [hint.strip() for hint in self.hotwords.split(",") if hint.strip()]
+        hint_words = {
+            word.casefold() for hint in hints
+            for word in re.findall(r"[\w'-]+", hint)
+        }
+        words = [word.casefold() for word in re.findall(r"[\w'-]+", text)]
+        if not words:
+            return False
+        if all(word in hint_words for word in words):
+            return True
+        present = [hint for hint in hints if hint.casefold() in text.casefold()]
+        covered = sum(1 for word in words if word in hint_words)
+        return (
+            len(present) >= 3
+            and text.count(",") >= 2
+            and covered >= 0.6 * len(words)
+        )
 
     def _transcribe_once(
         self,
@@ -360,12 +491,16 @@ class SpeechToText:
         return self.model.transcribe(
             audio_path,
             language=language,
-            beam_size=1,
+            beam_size=self.beam_size,
             # Silero already captured a speech-only clip. Running Whisper's VAD
             # again caused legitimate soft sentences to disappear.
             vad_filter=False,
             condition_on_previous_text=False,
             initial_prompt=self.initial_prompt or None,
+            hotwords=self.hotwords or None,
+            # Each word's own probability, for heard_unclearly. Measured at
+            # no cost: ~425 ms per clip without, ~430 ms with.
+            word_timestamps=True,
             no_speech_threshold=self.no_speech_threshold,
             log_prob_threshold=self.log_probability_threshold,
         )

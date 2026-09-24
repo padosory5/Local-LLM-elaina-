@@ -109,6 +109,27 @@ _SAYS_NOTHING = frozenset({
 })
 
 
+# Two more kinds of word that sit in a subject field without naming one.
+#
+# The router's filing labels. It files a turn under "personal desire" or
+# "Conversation" the way a clerk labels a folder, and that label arrives as
+# the subject. Read as a subject, "Electric." -- the answer to "acoustic or
+# electric?" -- was "about" personal desire, disagreed with the guitar it was
+# answering, and split the task.
+#
+# And bare request verbs. When the router names no topic the subject is the
+# utterance itself, so "compare them" arrived as the subject "compare them",
+# "compare" counted as a thing, and asking to compare the monitors in hand
+# started a new task holding none of them.
+_NAMES_NO_SUBJECT = frozenset({
+    "conversation", "chat", "chatting", "personal", "desire", "general",
+    "misc", "miscellaneous", "information", "info", "greeting", "farewell",
+    "compare", "comparing", "comparison", "check", "checking", "open", "find",
+    "look", "search", "see", "try", "rank", "sort", "list", "recommend",
+    "suggest", "explain", "help", "need", "use", "buy", "quit", "exit",
+})
+
+
 def _named_tokens(text: str) -> tuple[frozenset[str], frozenset[str]]:
     """The Latin and Hangul words of a subject, separately.
 
@@ -122,11 +143,16 @@ def _named_tokens(text: str) -> tuple[frozenset[str], frozenset[str]]:
     "spots" ends up naming a thing in one layer and nothing in the other.
     """
     said = str(text or "").casefold()
-    skip = _SAYS_NOTHING
+    skip = _SAYS_NOTHING | _NAMES_NO_SUBJECT
     try:
         from brain import recommendation_state
         skip = skip | recommendation_state._EMPTY_SUBJECTS
         skip = skip | recommendation_state._WEAK_SUBJECTS
+    except Exception:
+        pass
+    try:
+        from brain.recommendation import _FILING_WORDS
+        skip = skip | _FILING_WORDS
     except Exception:
         pass
     latin = frozenset(_LATIN_TOKEN.findall(said)) - skip
@@ -152,6 +178,17 @@ def _shares_a_word(mine: frozenset[str], theirs: frozenset[str], *, floor: int) 
     return False
 
 
+# Where a subject stops being a subject. Six is the figure
+# ``ChatEngine._offerable_subject`` already refuses to say out loud for the
+# same reason -- past it, the router named no topic and this is the whole
+# utterance wearing the field.
+_SUBJECT_WORD_LIMIT = 6
+
+
+def _reads_as_a_sentence(subject: str) -> bool:
+    return len(str(subject or "").split()) > _SUBJECT_WORD_LIMIT
+
+
 def names_a_different_subject(held_subject: str, current_subject: str) -> bool:
     """Whether this turn is about something other than what is held.
 
@@ -160,6 +197,13 @@ def names_a_different_subject(held_subject: str, current_subject: str) -> bool:
     is what makes the stop list above finite: a sentence is made of verbs
     and connectives that no list of "words that name nothing" ever
     finishes covering, and passing one in can read as naming something.
+
+    It is enforced rather than merely documented, because the callers
+    cannot always honour it: when the router names no topic the subject
+    falls back to the whole utterance, and "find me a few good hotels in
+    Seoul" would then be compared word-for-word against "which one would
+    you pick?". Over the limit, the side is read as unknown -- which is
+    the safe answer, and the one the code had before this function.
 
     Conservative by construction, in the direction that keeps working
     conversations working: either side naming nothing is *not* a
@@ -173,6 +217,10 @@ def names_a_different_subject(held_subject: str, current_subject: str) -> bool:
     translating: the two share no evidence a deterministic test can see.
     Callers must be able to fall back to something safe.
     """
+    if _reads_as_a_sentence(held_subject) or _reads_as_a_sentence(
+        current_subject,
+    ):
+        return False
     held_latin, held_hangul = _named_tokens(held_subject)
     turn_latin, turn_hangul = _named_tokens(current_subject)
     if not (held_latin or held_hangul) or not (turn_latin or turn_hangul):

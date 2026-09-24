@@ -1,0 +1,48 @@
+{
+  "_about": [
+    "Does a search run in the language the person was speaking?",
+    "",
+    "Every `said` here is a real Korean turn from runtime/koreanSession.log",
+    "or runtime/koreanSession2.log, or a turn of the same shape; every",
+    "`router_query` is what the router produced for it, or its shape.",
+    "",
+    "expect  rewritten = the search runs on the person's own words",
+    "        kept      = the router's wording stands, and why",
+    "",
+    "The kept half is not padding. A turn that leans on the one before it",
+    "does not carry its own subject, and searching those words alone is",
+    "worse than the English query rather than better -- the subject the",
+    "conversation is holding is stored in English, so there is nothing in",
+    "Korean to put back. Korean leans back in two ways a first version of",
+    "this rule missed: from the middle of the sentence ('그 섬에 카지노가",
+    "있는지'), and by simply leaving the subject out ('얼마나 많은 사람들이",
+    "봤는데'). A matrix without those would score 100% on a rule that",
+    "rewrote everything."
+  ],
+  "cases": [
+    {"id": "korean_war_sides", "language": "ko", "said": "육이오 전쟁은 남침이야 아니면 북침이야?", "router_query": "Korean War origin southern invasion northern invasion", "expect": "rewritten"},
+    {"id": "sevis_fee", "language": "ko", "said": "내가 방금 i20를 받았는데 sevis fee가 얼마인지 알아봐줘", "router_query": "SEVIS fee amount for I-20 2026", "expect": "rewritten"},
+    {"id": "university_majors", "language": "ko", "said": "워싱턴 대학교는 어떤 과가 유명해?", "router_query": "famous majors at Washington University", "expect": "rewritten", "why": "the router named a school in St. Louis; the person's own words name theirs"},
+    {"id": "latest_gpt", "language": "ko", "said": "가장 최신 버전의 gpt모델을 알려줘", "router_query": "latest GPT model version", "expect": "rewritten"},
+    {"id": "flight_time", "language": "ko", "said": "시애틀에서 인천까지 가는데 몇시간 걸려?", "router_query": "travel time from Seattle to Incheon", "expect": "rewritten"},
+    {"id": "naengmyeon", "language": "ko", "said": "서울에서 제일 유명한 냉면집 알려줘", "router_query": "seoul most famous cold noodles restaurant", "expect": "rewritten", "why": "the pages that answer this are Korean ones"},
+    {"id": "session2_flight_no_question_mark", "language": "ko", "said": "시애틀에서 인천공항까지가는데 몇시간 걸려", "router_query": "travel time from Seattle to Incheon Airport", "expect": "rewritten"},
+    {"id": "session2_university", "language": "ko", "said": "워싱턴 대학교에 유명한거 어떤게 있어", "router_query": "What are some famous things associated with the University of Washington?", "expect": "rewritten"},
+    {"id": "session2_kimchi_stew", "language": "ko", "said": "김치찌개를 만드는법을 알려줘", "router_query": "How to make kimchi jjigae", "expect": "rewritten"},
+    {"id": "session2_drama_named", "language": "ko", "said": "응답하라 1997이 왜 가장 많이 시청한 드라마인지 알려줘", "router_query": "why is Reply 1997 the most viewed drama in Korea", "expect": "rewritten"},
+    {"id": "bare_object_before_the_request", "language": "ko", "said": "삼성전자 주가 알려줘", "router_query": "Samsung Electronics stock price", "expect": "rewritten", "why": "a request drops the object particle; what sits before the verb is the thing"},
+
+    {"id": "already_korean", "language": "ko", "said": "삼성전자 주가 알려줘", "router_query": "삼성전자 주가", "expect": "kept", "why": "the router already wrote it in Korean; nothing to do"},
+    {"id": "leans_on_the_last_turn", "language": "ko", "said": "그런 뻔한거 말고 뭐가 유명한지 알려줘", "router_query": "famous things about University of Washington besides the obvious", "expect": "kept", "why": "no subject of its own, and the held subject is stored in English"},
+    {"id": "opens_on_an_acknowledgement", "language": "ko", "said": "그렇구나. 컴퓨터공학이 빌게이츠가 후원 많이 하는걸로 유명한것 같은데 맞아?", "router_query": "Bill Gates support for computer engineering", "expect": "kept"},
+    {"id": "korean_reference_to_options", "language": "ko", "said": "그중에 어떤게 제일 좋아?", "router_query": "best gaming monitor comparison", "expect": "kept"},
+    {"id": "session2_agreeing_opener", "language": "ko", "said": "그렇겠지? 비행기가 제일 빠른건", "router_query": "travel time from Seattle to Incheon Airport", "expect": "kept", "why": "koreanSession2.log: searched as '그렇겠지? 비행기가 제일 빠른건'"},
+    {"id": "session2_that_island", "language": "ko", "said": "그 섬에 카지노가 있는지 알려줘", "router_query": "Bainbridge Island casino", "expect": "kept", "why": "koreanSession2.log: searched as '그 섬에 카지노가 있는지' -- which island?"},
+    {"id": "session2_mid_sentence_anaphor", "language": "ko", "said": "맛있게 만드는법을 좀 검색해서 알려줘 그런 뻔한거 말고", "router_query": "search for unique and detailed methods to make Kimchi Jjigae", "expect": "kept", "why": "koreanSession2.log: the search never said what dish"},
+    {"id": "session2_dropped_subject", "language": "ko", "said": "얼마나 많은 사람들이 봤는데", "router_query": "How many people have watched Reply 1997", "expect": "kept", "why": "Korean leaves the subject out; nothing here names the drama"},
+    {"id": "session2_evidence_request", "language": "ko", "said": "데이터로 알려줘", "router_query": "most watched drama in Korea ratings data", "expect": "kept", "why": "asks for proof of the last answer, not about data"},
+    {"id": "bare_acknowledgement_in_a_korean_conversation", "language": "ko", "said": "ok", "router_query": "latest GPT model version", "expect": "kept", "why": "the turn is not written in the language it was decided to be"},
+    {"id": "english_turn_english_query", "language": "en", "said": "what is famous about the University of Washington?", "router_query": "University of Washington famous aspects", "expect": "kept"},
+    {"id": "english_follow_up", "language": "en", "said": "and what about the second one?", "router_query": "Seoul hotels comparison", "expect": "kept", "why": "Rule 4: the same refusal on the English side"}
+  ]
+}

@@ -126,6 +126,88 @@ class ResponsePolicyTests(unittest.TestCase):
             calculation=True,
         ))
 
+    def test_the_questions_own_numbers_are_not_an_answer(self):
+        # Measured live, 2026-09-12: "what's 2+2" after three turns of
+        # sympathy came back "That's the result of 2 plus 2." and, on
+        # another run, "That's the result." The first walked through the
+        # digit test -- the operands are digits -- and the number the
+        # person asked for was the one that had gone.
+        for reply in (
+            "That’s the result of 2 plus 2.",
+            "That’s the result.",
+            "2 plus 2 gives you the total.",
+        ):
+            with self.subTest(reply=reply):
+                self.assertTrue(AnswerCompletionGuard.needs_retry(
+                    reply, calculation=True, question="what's 2+2",
+                ))
+
+    def test_an_answer_that_states_its_result_is_complete(self):
+        for reply in (
+            "2 + 2 equals 4. That’s straightforward.",
+            "That’s 4.",
+            "The answer is 4.",
+        ):
+            with self.subTest(reply=reply):
+                self.assertFalse(AnswerCompletionGuard.needs_retry(
+                    reply, calculation=True, question="what's 2+2",
+                ))
+
+    def test_a_question_without_numbers_keeps_the_old_reading(self):
+        self.assertFalse(AnswerCompletionGuard.needs_retry(
+            "There are 24 hours in a day.",
+            calculation=True,
+            question="how many hours in a day",
+        ))
+
+
+class CalculationResultSurvivesTests(unittest.TestCase):
+    """The value a draft worked out, still there when she says it.
+
+    Between the draft and the person sit the advice rewrite, the voice
+    pass and a dozen guards. Any of them may hand back something the
+    completion check would have rejected, and none of them runs it again.
+    """
+
+    DRAFT = "2 + 2 equals 4. That’s straightforward."
+    QUESTION = "what's 2+2"
+
+    def test_the_measured_reply_is_caught(self):
+        for final in (
+            "That’s the result of 2 plus 2.",
+            "That’s the result.",
+        ):
+            with self.subTest(final=final):
+                self.assertTrue(AnswerCompletionGuard.dropped_the_result(
+                    final, draft=self.DRAFT, question=self.QUESTION,
+                ))
+
+    def test_the_sentence_put_back_is_the_one_with_the_answer(self):
+        self.assertEqual(
+            AnswerCompletionGuard.the_result_sentence(
+                "You had a rough night, but I’m here. 2 + 2 equals 4.",
+                question=self.QUESTION,
+            ),
+            "2 + 2 equals 4.",
+        )
+
+    def test_a_shorter_answer_that_keeps_its_result_is_left_alone(self):
+        self.assertFalse(AnswerCompletionGuard.dropped_the_result(
+            "It’s 4.", draft=self.DRAFT, question=self.QUESTION,
+        ))
+        self.assertFalse(AnswerCompletionGuard.dropped_the_result(
+            "The total is 45 dollars.",
+            draft="An 8 percent tip on 42 makes the total 45 dollars.",
+            question="what is a 8 percent tip on 42 dollars",
+        ))
+
+    def test_an_answer_that_worked_nothing_out_is_not_policed(self):
+        self.assertFalse(AnswerCompletionGuard.dropped_the_result(
+            "It’s still 4.",
+            draft="4 minus 0 is 4.",
+            question="what's 4-0",
+        ))
+
 
 class ClosingOfferGuardTests(unittest.TestCase):
     """The canned "anything else?" footer her personality file already bans.
@@ -303,6 +385,92 @@ class ClosingOfferGuardTests(unittest.TestCase):
             ClosingOfferGuard.strip(reply, keep_offers=True),
             "Discord is open.",
         )
+
+
+class ADeliberateReplacementIsNotALossTests(unittest.TestCase):
+    """The restoring guard may not resurrect a draft a repair replaced.
+
+    Measured twice on the everyday-answers check: the router carried the
+    previous turn's subject into a Korean question, a repair re-answered it
+    without that history, and this guard put the stale answer back -- the
+    draft's 32 was no longer in the reply, so it read as a loss. The shape
+    it was built for states no value at all.
+    """
+
+    def test_a_reply_with_a_value_of_its_own_is_kept(self):
+        self.assertFalse(AnswerCompletionGuard.dropped_the_result(
+            "물의 끓는점은 100도입니다.",
+            draft="물의 동결점은 32도 화씨입니다.",
+            question="물은 몇 도에서 끓어?",
+        ))
+
+    def test_the_parroted_calculation_is_still_restored(self):
+        # The case this guard exists for: no value anywhere in the reply.
+        self.assertTrue(AnswerCompletionGuard.dropped_the_result(
+            "That's the result of 2 plus 2.",
+            draft="4 is the result of 2 plus 2.",
+            question="what's 2+2",
+        ))
+
+    def test_and_a_reply_that_says_nothing_numeric(self):
+        self.assertTrue(AnswerCompletionGuard.dropped_the_result(
+            "That's the result.",
+            draft="The total is 45 dollars.",
+            question="what's an 8 percent tip on 42",
+        ))
+
+
+class AValueAskedForTests(unittest.TestCase):
+    """A question can ask for a number without asking for arithmetic.
+
+    Measured on scripts/live_basics_check.py: "What is the freezing point of
+    water in Fahrenheit?" was answered "This is the temperature at which
+    water turns into ice under standard atmospheric conditions." -- the 32
+    missing, and every completeness check off because the route was not
+    ``calculation``.
+    """
+
+    def test_what_asks_for_a_value(self):
+        for question in ("How many ounces are in a pound?",
+                         "how much does it cost?",
+                         "How long is the flight?",
+                         "What is the freezing point of water in Fahrenheit?",
+                         "What's the temperature in Seattle?",
+                         "물은 몇 도에서 끓어?",
+                         "일 년은 몇 주야?",
+                         "그거 얼마야?"):
+            with self.subTest(question=question):
+                self.assertTrue(AnswerCompletionGuard.asks_for_a_value(question))
+
+    def test_what_does_not(self):
+        for question in ("What's the capital of France?",
+                         "Who wrote Pride and Prejudice?",
+                         "Recommend a film for tonight.",
+                         "tell me a joke",
+                         "영화 하나 추천해줘"):
+            with self.subTest(question=question):
+                self.assertFalse(AnswerCompletionGuard.asks_for_a_value(question))
+
+    def test_an_answer_without_the_value_is_regenerated(self):
+        self.assertTrue(AnswerCompletionGuard.needs_retry(
+            "This is the temperature at which water turns into ice.",
+            calculation=True,
+            question="What is the freezing point of water in Fahrenheit?",
+        ))
+
+    def test_an_answer_with_it_is_kept(self):
+        for reply in ("Water freezes at 32 degrees Fahrenheit.", "Sixteen.", "Seven."):
+            with self.subTest(reply=reply):
+                self.assertFalse(AnswerCompletionGuard.needs_retry(
+                    reply, calculation=True,
+                    question="How many ounces are in a pound?",
+                ))
+
+    def test_the_parroted_calculation_is_still_caught(self):
+        # The fix this rides on must keep working: no spelled value in it.
+        self.assertTrue(AnswerCompletionGuard.needs_retry(
+            "That's the result of 2 plus 2.", calculation=True, question="what's 2+2",
+        ))
 
 
 if __name__ == "__main__":

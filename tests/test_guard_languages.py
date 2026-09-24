@@ -28,6 +28,9 @@ TEXT_GUARDS = (
     "attribute_values.py",
     "capability_contract.py",
     "conversation_style.py",
+    "units.py",
+    "where_we_are.py",
+    "world_facts.py",
     "grounded_values.py",
     "guard_lines.py",
     "korean_register.py",
@@ -109,7 +112,8 @@ class WhatIsAndIsNotCoveredTests(unittest.TestCase):
     def test_the_bilingual_ones(self):
         for name in ("conversation_style.py", "guard_lines.py",
                      "text_filter.py", "turn_language.py",
-                     "grounded_values.py", "action_commitment.py"):
+                     "grounded_values.py", "action_commitment.py",
+                     "world_facts.py", "where_we_are.py", "units.py"):
             with self.subTest(module=name):
                 self.assertIn("ko", declared_languages(name) or ())
 

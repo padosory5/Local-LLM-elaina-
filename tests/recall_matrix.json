@@ -194,8 +194,9 @@
       "note": "states a fact and then asks; judging the whole utterance by its final question mark threw the fact away"
     },
     {
-      "id": "rc32_a_trip_is_not_a_school",
-      "kind": "transient",
+      "id": "rc32_a_trip_is_a_plan_not_a_school",
+      "note": "Was 'transient'. Plans are kept now -- the restart check asked 'when am I going back to Seattle?' and nothing had kept the answer. It is stored as a plan with the day it was said (MemoryManager.profile), never as where they study (_ENROLLED still refuses a trip).",
+      "kind": "store",
       "likely_intent": "conversation",
       "text": "I'm going to Seattle next week"
     },

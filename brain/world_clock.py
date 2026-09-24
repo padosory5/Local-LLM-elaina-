@@ -199,7 +199,28 @@ def clock_in(place: str) -> tuple[str, datetime] | None:
         return None
 
 
-def describe(place: str) -> str:
+def local_now(zone: str = "") -> datetime:
+    """Now, on the clock to treat as local.
+
+    ``zone`` is an IANA name; "local", or nothing at all, means the
+    machine's own -- which is what "here" has always meant. config.yaml
+    has advertised the alternative since the time section was written
+    ("You can later use an IANA name such as Asia/Seoul"), and nothing
+    read it; this is where it is read.
+
+    An unknown name falls back to the machine rather than raising. A
+    typo in the config should cost the intended zone, not the clock.
+    """
+    name = str(zone or "").strip()
+    if name and name.casefold() != "local":
+        try:
+            return datetime.now(ZoneInfo(name))
+        except Exception:
+            pass
+    return datetime.now().astimezone()
+
+
+def describe(place: str, here: datetime | None = None) -> str:
     """One line stating the time and date there, computed not guessed.
 
     The gap between the two clocks is stated too. Measured live, the local
@@ -211,6 +232,10 @@ def describe(place: str) -> str:
     Seattle is sixteen hours behind Korea on that date, not thirteen. The
     two clocks were both in the prompt and the difference between them was
     not, so the one number nobody had computed was the one that was wrong.
+
+    ``here`` is the clock to measure that difference from. The caller
+    passes the same moment it put in the prompt as the local time, so the
+    two clocks and the gap between them can never disagree.
     """
     found = clock_in(place)
     if found is None:
@@ -221,15 +246,16 @@ def describe(place: str) -> str:
         f"{moment.strftime('%I:%M %p on %A, %B %d, %Y')} "
         f"({moment.strftime('%Z')})."
     )
-    gap = _hours_from_here(moment)
+    gap = _hours_from_here(moment, here)
     if gap:
         line += f" That is {gap}."
     return line
 
 
-def _hours_from_here(moment: datetime) -> str:
-    """How far that clock is from this machine's, in plain words."""
-    here = datetime.now().astimezone()
+def _hours_from_here(moment: datetime, here: datetime | None = None) -> str:
+    """How far that clock is from the local one, in plain words."""
+    if here is None:
+        here = local_now()
     # %Z is localised by the OS -- on Korean Windows it comes back as
     # "대한민국 표준시", which reads oddly inside an English sentence and
     # is not what the abbreviation is for. Use it when it is one.

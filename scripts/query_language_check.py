@@ -21,19 +21,32 @@ as "Washington University in Seattle". "University of Washington" is in
 Seattle; "Washington University" is in St. Louis. The query names a real
 university, and not the one the person goes to.
 
-Reads a session log rather than running turns, so it costs nothing and can
-be pointed at any transcript the app has already produced::
+Two modes, one question.
+
+**A session log**, which measures what actually went out::
 
     python scripts/query_language_check.py runtime/koreanSession.log
 
-Deliberately reports, and does not fix. Making the query follow the turn's
-language is a change to what every Korean search does, and this is the
-number that would have to move for it to count as an improvement.
+**The case list**, which measures the rule that decides it, without a model
+or a network::
+
+    python scripts/query_language_check.py --matrix
+
+The log mode came first and was the reason for the fix: 4 of 5 searches in
+a real Korean session ran in a language the turn was not. It stays, because
+the matrix can only score turns someone thought to write down.
+
+Asking the router to write the query in the turn's language was tried
+first, and measured, because it is the cheap fix and would have been the
+right one if it worked: pooled over three runs against qwen3:8b it moved
+9/30 to 9/30. Prompt wording does not fix a confirmed behaviour here. The
+rule below uses the person's own words instead.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -112,6 +125,54 @@ def report(log: str) -> int:
     return disagreed
 
 
+MATRIX = ROOT_MATRIX = Path(__file__).resolve().parents[1] / "tests" / "query_language_matrix.json"
+
+
+def score(case: dict) -> str:
+    """What the rule does with this case: "rewritten" or "kept"."""
+    import sys as _sys
+
+    root = str(Path(__file__).resolve().parents[1])
+    if root not in _sys.path:
+        _sys.path.insert(0, root)
+    from brain import search_language
+
+    query, _ = search_language.in_the_turns_language(
+        case["router_query"], said=case["said"], language=case["language"],
+    )
+    return "kept" if query == case["router_query"] else "rewritten"
+
+
+def report_matrix(cases: list[dict]) -> int:
+    wrong = 0
+    counts: dict[str, list[bool]] = {"rewritten": [], "kept": []}
+    print(f"{'case':<44} {'lang':<5} {'want':<10} {'got':<10}")
+    print("-" * 78)
+    for case in cases:
+        want = case["expect"]
+        got = score(case)
+        ok = want == got
+        counts[want].append(ok)
+        if not ok:
+            wrong += 1
+        print(
+            f"{case['id']:<44} {case['language']:<5} {want:<10} {got:<10} "
+            f"{'' if ok else '<-- wrong'}"
+        )
+    print()
+    for want, results in counts.items():
+        if results:
+            right = sum(1 for value in results if value)
+            print(
+                f"must be {want:<10} {right}/{len(results)} "
+                f"({right / len(results):.0%})"
+            )
+    total = len(cases)
+    print(f"{'overall':<18} {total - wrong}/{total} "
+          f"({(total - wrong) / total:.0%})")
+    return wrong
+
+
 def main(argv: list[str]) -> int:
     # A report about Korean that a Windows console renders as mojibake is
     # not a report. cp949 is still the default codepage here.
@@ -121,9 +182,19 @@ def main(argv: list[str]) -> int:
         pass
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "log", type=Path, help="a session log written by the app",
+        "log", type=Path, nargs="?",
+        help="a session log written by the app",
+    )
+    parser.add_argument(
+        "--matrix", nargs="?", const=MATRIX, type=Path, default=None,
+        help="score tests/query_language_matrix.json instead of a log",
     )
     args = parser.parse_args(argv)
+    if args.matrix is not None:
+        cases = json.loads(args.matrix.read_text(encoding="utf-8"))["cases"]
+        return 1 if report_matrix(cases) else 0
+    if args.log is None:
+        parser.error("give a session log, or --matrix")
     if not args.log.exists():
         print(f"No such log: {args.log}")
         return 2

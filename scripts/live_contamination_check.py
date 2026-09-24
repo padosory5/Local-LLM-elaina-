@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import time
@@ -44,7 +45,14 @@ except ImportError:  # pragma: no cover - operator-facing message
 
 MATRIX = PROJECT_ROOT / "tests" / "contamination_matrix.json"
 BACKEND_LOG = PROJECT_ROOT / "runtime" / "contamination_backend.log"
-URL = "ws://127.0.0.1:8765"
+# --backend-log points this somewhere else. The backend's own stdout is
+# the only place the answer path narrates itself ("[Style]", "[Response
+# Guard]"), and the default path both lands in the person's runtime/ and
+# is truncated by the next case.
+# ELAINA_WS_PORT keeps a verification run off the default channel when
+# another backend already holds it.
+PORT = os.environ.get("ELAINA_WS_PORT") or "8765"
+URL = f"ws://127.0.0.1:{PORT}"
 
 
 def load_cases(only: str = "") -> list[dict]:
@@ -55,28 +63,66 @@ def load_cases(only: str = "") -> list[dict]:
 # --------------------------------------------------------------- the backend
 
 
+_BACKEND: subprocess.Popen | None = None
+_LOG_IN_USE = BACKEND_LOG
+
+
 def stop_backend() -> None:
+    """Stop the backend this script started -- and only that one.
+
+    It used to stop every python.exe whose command line mentioned main.py,
+    which on a machine where the person has Elaina open is their Elaina.
+    """
+    global _BACKEND
+    process, _BACKEND = _BACKEND, None
+    if process is None:
+        return
     subprocess.run(
-        ["powershell.exe", "-NoProfile", "-Command",
-         "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-         "Where-Object { $_.CommandLine -like '*main.py*' } | "
-         "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
-        capture_output=True,
+        ["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True,
     )
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
 
 
-def start_backend() -> subprocess.Popen:
-    BACKEND_LOG.parent.mkdir(parents=True, exist_ok=True)
-    handle = BACKEND_LOG.open("w", encoding="utf-8")
+def _fresh_runtime() -> dict[str, str]:
+    """A runtime folder of its own for this case, when ELAINA_RUNTIME_BASE
+    names where to make them -- so no case reads another's memory, and
+    nothing reaches the person's own runtime/."""
+    base = os.environ.get("ELAINA_RUNTIME_BASE", "").strip()
+    if not base:
+        return {}
+    folder = Path(base) / f"case-{time.time_ns()}"
+    folder.mkdir(parents=True, exist_ok=True)
+    return {"ELAINA_RUNTIME_ROOT": str(folder)}
+
+
+def backend_log_path(tag: str = "") -> Path:
+    """Where this case's backend stdout goes."""
+    if not tag:
+        return BACKEND_LOG
+    return BACKEND_LOG.with_name(f"{BACKEND_LOG.stem}-{tag}{BACKEND_LOG.suffix}")
+
+
+def start_backend(tag: str = "") -> subprocess.Popen:
+    global _BACKEND, _LOG_IN_USE
+    _LOG_IN_USE = backend_log_path(tag)
+    _LOG_IN_USE.parent.mkdir(parents=True, exist_ok=True)
+    handle = _LOG_IN_USE.open("w", encoding="utf-8")
     process = subprocess.Popen(
         [str(PROJECT_ROOT / ".venv/Scripts/python.exe"), "-u", "main.py"],
         cwd=str(PROJECT_ROOT),
         stdout=handle, stderr=subprocess.STDOUT,
-        env={**__import__("os").environ, "ELAINA_OPEN_DESKTOP": "0"},
+        # Silent unless the environment says otherwise: the matrix measures
+        # what she says, and her voice is billed per character.
+        env={"ELAINA_TTS": "off", **os.environ, "ELAINA_OPEN_DESKTOP": "0",
+             **_fresh_runtime()},
     )
+    _BACKEND = process
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
-        text = BACKEND_LOG.read_text(encoding="utf-8", errors="replace")
+        text = _LOG_IN_USE.read_text(encoding="utf-8", errors="replace")
         if "Lifecycle] READY" in text:
             return process
         if process.poll() is not None:
@@ -145,7 +191,16 @@ def main() -> int:
     parser.add_argument("--case", default="")
     parser.add_argument("--timeout", type=float, default=240.0)
     parser.add_argument("--out", default="runtime/contamination_result.json")
+    parser.add_argument(
+        "--backend-log", default="",
+        help="where to write the backend's stdout; one file per case, the "
+             "case id appended when more than one case runs",
+    )
     args = parser.parse_args()
+
+    global BACKEND_LOG
+    if args.backend_log:
+        BACKEND_LOG = Path(args.backend_log)
 
     cases = load_cases(args.case)
     if not cases:
@@ -159,7 +214,8 @@ def main() -> int:
             print(f"  turn : {case['turn']}")
             stop_backend()
             time.sleep(2)
-            process = start_backend()
+            process = start_backend(case["id"] if len(cases) > 1 else "")
+            print(f"  log  : {backend_log_path(case['id'] if len(cases) > 1 else '')}")
             try:
                 result = asyncio.run(run_case(case, args.timeout))
             finally:

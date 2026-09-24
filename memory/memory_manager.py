@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta
 import json
+import re
 
-from memory.database import SessionLocal
+from memory.database import Base, SessionLocal, engine
 
 from memory.models import (
     Memory,
@@ -29,10 +30,77 @@ RESEARCH_CATEGORY = "research_evidence"
 # answering from it would be worse than looking again.
 RESEARCH_TTL_SECONDS = 30 * 60
 
+_RELATIVE_TIME = re.compile(
+    r"\b(?:next|this|tomorrow|tonight|yesterday|last)\b|다음|이번|내일|모레|어제|지난",
+    re.IGNORECASE,
+)
+
+# How someone was, not who they are. Stores from before the memory gate
+# learned the difference still hold them -- a real one kept "The user feels
+# exhausted due to lack of sleep." and "The user is doing well." as facts,
+# and a profile that says so in every turn is a caricature.
+_MOOD = re.compile(
+    r"\b(?:feels?|feeling|is\s+doing|expressed|seems?)\b"
+    r"|\b(?:tired|exhausted|sleepy|stressed|bored|in\s+a\s+good\s+state)\b",
+    re.IGNORECASE,
+)
+# A real store held fourteen variations of "the user is working on a
+# project". The newest few say it; the rest crowd out the facts.
+_PER_CATEGORY = {"project": 3}
+# How the extractor starts every memory; not what any of them says.
+_SHARED_WORDS = {
+    "the", "user", "users", "user's", "their", "they", "them", "and", "has",
+    "have", "had", "was", "are", "who", "with", "that", "this", "for", "from",
+    "does", "not", "into", "words",
+}
+
+
+def select_profile(rows, *, limit=24):
+    """Which of their memories go in front of her, from (category, content,
+    created_at) rows newest first: no moods, each near-duplicate once, a few
+    project notes at most, and a relative day ("next Friday") dated to when
+    it was said."""
+    seen = []
+    counts = {}
+    facts = []
+    for category, content, created_at in rows:
+        text = " ".join(str(content or "").split())
+        # Compared on what the fact says, not on how every fact starts:
+        # "The user is vegetarian." shares "the" and "user" with every other
+        # memory, and that alone once made it a duplicate -- measured, the
+        # diet was dropped and "Do I follow any particular diet?" was told
+        # she had not been told.
+        words = set(re.findall(r"[^\W_]{3,}", text.casefold())) - _SHARED_WORDS
+        if not text or not words or _MOOD.search(text):
+            continue
+        cap = _PER_CATEGORY.get(category)
+        if cap is not None and counts.get(category, 0) >= cap:
+            continue
+        if any(
+            len(words & other) >= max(1, int(0.8 * min(len(words), len(other))))
+            for other in seen
+        ):
+            continue
+        seen.append(words)
+        counts[category] = counts.get(category, 0) + 1
+        if _RELATIVE_TIME.search(text) and created_at is not None:
+            text = f"{text} (said on {created_at:%Y-%m-%d})"
+        facts.append(text)
+        if len(facts) >= limit:
+            break
+    return facts
+
 
 class MemoryManager:
 
     def __init__(self):
+
+        # Nothing else ever created the tables. A database that already
+        # existed kept working; a new one -- a fresh install, a deleted
+        # file, a new runtime folder -- failed every store with "no such
+        # table: memories", silently, so she remembered nothing at all.
+        # Idempotent: an existing table is left exactly as it is.
+        Base.metadata.create_all(engine)
 
         self.db = SessionLocal()
 
@@ -166,6 +234,46 @@ class MemoryManager:
             results.append(memory)
 
         return results
+
+    # ------------------------------------------------------------ profile
+
+    # What the person has told her about themselves. "general" is left out
+    # on purpose: in a real store it holds world knowledge the extractor
+    # mistook for a memory ("Hatsune Miku is a virtual singer...").
+    # Every category the extractor can write, "general" included -- it is
+    # also the extractor's fallback for anything it did not classify, so
+    # leaving it out hides whatever it was unsure about. Measured after a
+    # restart: "I'm allergic to peanuts." was filed as general, never
+    # reached the profile, and "Do I have any food allergies?" was answered
+    # "You haven't told me that yet." What is *not* a fact about someone is
+    # dropped by ``select_profile`` (moods), not by the label here.
+    PROFILE_CATEGORIES = (
+        "personal", "education", "preference", "relationship", "goal", "project",
+        "general",
+    )
+
+    def profile(self, limit=24):
+        """Everything they have told her about themselves, newest first,
+        each near-duplicate once.
+
+        Retrieval by similarity cannot carry this: measured on a store of
+        seven facts, "tell me a joke" scored 0.53 against them and "which
+        school do I go to?" 0.50 -- no threshold separates a question about
+        the person from one about anything else. A person knows who they
+        are talking to; so does she, from this list.
+        """
+        rows = (
+            self.db.query(Memory)
+            .filter(Memory.is_active.is_(True))
+            .filter(Memory.category.in_(self.PROFILE_CATEGORIES))
+            .order_by(Memory.created_at.desc())
+            .limit(300)
+            .all()
+        )
+        return select_profile(
+            [(row.category, row.content, row.created_at) for row in rows],
+            limit=limit,
+        )
 
     # ------------------------------------------------- research evidence
 

@@ -140,18 +140,24 @@ def launch_electron_if_requested():
     ).start()
 
 
-def run_response(user_input, selected_screen, spoken_language, confidence):
+def run_response(
+    user_input, selected_screen, spoken_language, confidence,
+    heard_unclearly=False, word_average=0.0,
+):
     """Generate one response without blocking the microphone listener."""
     engine.chat(
         user_input,
         screen_snapshot=selected_screen,
         spoken_language=spoken_language,
         spoken_confidence=confidence,
+        heard_unclearly=heard_unclearly,
+        spoken_word_average=word_average,
     )
 
 
 def dispatch_response(
     user_input, selected_screen, spoken_language="", confidence=0.0,
+    heard_unclearly=False, word_average=0.0,
 ):
     """
     Start one response turn, whether it came from the microphone or a typed
@@ -176,7 +182,10 @@ def dispatch_response(
 
         response_thread = threading.Thread(
             target=run_response,
-            args=(user_input, selected_screen, spoken_language, confidence),
+            args=(
+                user_input, selected_screen, spoken_language, confidence,
+                heard_unclearly, word_average,
+            ),
             name="elaina-response",
             daemon=True,
         )
@@ -348,10 +357,13 @@ def handle_desktop_command(message):
 
 
 def _start_websocket_server():
+    # ELAINA_WS_PORT moves this backend off the default port, so a
+    # verification run can hold its own channel while the person's own
+    # Elaina (or another run) keeps 8765. Unset, nothing changes.
     server = WebSocketServer(
         event_bus=engine.events,
         host="127.0.0.1",
-        port=8765,
+        port=int(os.environ.get("ELAINA_WS_PORT") or 8765),
         command_handler=handle_desktop_command,
     )
     server.start()
@@ -517,6 +529,21 @@ print(
 print("Say 'goodbye Elaina' to quit.")
 print("Press Ctrl+C to stop manually.")
 
+# The start-up routine the person asked for, if any, offered once she is
+# ready -- a question, never an action. Their answer arrives as an ordinary
+# turn (brain/chat_engine.py: offer_startup_routine).
+try:
+    engine.offer_startup_routine()
+except Exception as error:
+    print(f"[Activity] Start-up offer failed: {type(error).__name__}: {error}")
+
+# And whether the machine moved since she was last on -- also a question,
+# never a change (brain/where_we_are.py).
+try:
+    engine.notice_where_we_are()
+except Exception as error:
+    print(f"[Locale] Move check failed: {type(error).__name__}: {error}")
+
 
 try:
     while True:
@@ -534,6 +561,15 @@ try:
         # what the person experiences as the response time.
         timing.begin(label="voice", cold=_first_turn)
         _first_turn = False
+        # The transcriber hears best what it is told to listen for: the
+        # names and acronyms the conversation is about, in its language.
+        try:
+            speech_to_text.set_conversation_context(
+                language=engine.response_language,
+                terms=engine.listening_terms(),
+            )
+        except Exception as error:
+            print(f"[STT] Could not set the listening context: {error}")
         user_input = speech_to_text.listen_and_transcribe(
             on_speech_start=engine.on_speech_start,
             is_tts_speaking=engine.audio.is_speaking,
@@ -567,6 +603,16 @@ try:
             ),
             confidence=getattr(
                 speech_to_text, "last_language_probability", 0.0,
+            ),
+            # Whether the transcriber itself could barely decode the clip.
+            # Typed turns never set it.
+            heard_unclearly=getattr(
+                speech_to_text, "last_heard_unclearly", False,
+            ),
+            # How sure it was of its words: a doubtful transcript is read
+            # for sense before it is answered.
+            word_average=getattr(
+                speech_to_text, "last_word_average", 0.0,
             ),
         )
 

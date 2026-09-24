@@ -562,12 +562,37 @@ _CONFIRMATION_RE = _compiled(_UNNATURAL_CONFIRMATION)
 # An offer to *act*, counted so that two of them in one reply can be. Kept
 # separate from ClosingOfferGuard's list, which decides what to strip; this
 # one only counts.
+# The Korean half was missing, and this module declares ``ko``. A counter
+# that reads zero in one of its two languages is the failure
+# tests/test_guard_languages.py exists to prevent: measured live on the
+# contamination matrix, a plain "아니야" was answered "다른 영화 추천을
+# 해드릴 수 있습니다. 지금 보시겠나요?" -- two offers on a receipt, whose
+# contract allows none, and the count came back 0.
+#
+# The same two shapes as the English half, and the same narrowness: a
+# question that offers to act ("찾아볼까요?", "도와드릴까요?",
+# "확인하시겠나요?") and a statement that says she can or will
+# ("알려드릴 수 있습니다", "검색해드리겠습니다"). Keyed to the endings
+# that mean "shall I do this for you" -- a bare "~까요" is an ordinary
+# question ("재미있을까요?") and not an offer, and "추천드리겠습니다" is no
+# more an offer than "I'll recommend a film", which the English verb list
+# does not match either.
+#
+# Measured against 38 real Korean replies taken from live backend logs:
+# 18 matched, and each of the 18 was an offer.
+_KOREAN_OFFER = (
+    r"드릴까요|드릴게요|드릴\s*수\s*있|"
+    r"(?:찾아|알아|해|확인해|열어|살펴)\s*볼까요|할까요|"
+    r"시겠어요|시겠습니까|시겠나요|"
+    r"(?:찾아|검색해|확인해|알아|열어|보여|알려)\s*드리겠"
+)
 _OFFER_RE = re.compile(
     r"\bwant\s+me\s+to\b|\bwould\s+you\s+like\s+me\s+to\b|"
     r"\bshall\s+i\b|\bshould\s+i\s+(?:look|search|check|find|pull|show|open)\b|"
     r"\bi\s+(?:can|could|'ll|will)\s+(?:also\s+)?"
     r"(?:look|search|check|find|pull|show|open|dig)\b|"
-    r"\bwould\s+you\s+like\s+(?:help|me)\b",
+    r"\bwould\s+you\s+like\s+(?:help|me)\b|"
+    + _KOREAN_OFFER,
     re.IGNORECASE,
 )
 
@@ -1156,6 +1181,86 @@ def review(
     return StyleVerdict(findings=findings, repaired=repaired, act=act)
 
 
+# A sentence that says nothing by itself, and so the first to go when a
+# reply has to lose one.
+_BARE_SENTENCE = re.compile(
+    r"^\s*(?:i\s+see|i\s+hear\s+you|hmm+|oh|ah|ok(?:ay)?|got\s+it|"
+    r"understood|right|네|예|알겠습니다|그렇군요)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def without_offers(text: str, act: str) -> str:
+    """``text`` without the offers an act that allows none may not carry.
+
+    The re-say is asked first, and on a refusal it measured out badly:
+
+        You:     아니야
+        Elaina:  영화 추천을 도와드릴 수 있습니다. 어떤 장르를 좋아하시나요?
+        [Style] receipt: duplicate_offer(1 offer(s) where the receipt act
+                allows 0)
+        [Style] The re-said version still reads as duplicate_offer; kept
+                the original.
+
+    Asked for the same sentence without the offer, the model offered
+    again, and the original went out. A receipt carries no facts -- the
+    same reason ``cut_to_length`` may shorten one -- so the sentence that
+    offers can simply go, deterministically and without a model call.
+
+    Never empties a reply. A draft that is nothing but an offer is a
+    different failure, and silence is a worse answer than an offer.
+
+    Only a receipt, though ``greet``, ``react`` and ``close`` allow no
+    offers either. On a reaction the offer is usually real: 4F.1's
+    headline is that a valid offer is no longer deleted, and the gate it
+    is parked in is filled *after* this pass -- so there is nothing here
+    to tell "I can pull up a few current options if you want" apart from
+    filler, and removing it left the gate holding nothing. Measured: doing
+    this by contract alone broke twelve offer-lifecycle tests. A receipt
+    is where it was measured and where it is safe -- "I heard you" has
+    nothing to offer about.
+    """
+    said = str(text or "").strip()
+    if not said or act != RECEIPT or contract_for(act).offers_allowed:
+        return text
+    kept = [part for part in sentences(said) if not _OFFER_RE.search(part)]
+    return " ".join(kept).strip() or text
+
+
+def cut_to_length(text: str, act: str) -> str:
+    """A reply for an act that carries no facts, cut to that act's length.
+
+    Length on a reaction or a receipt is register, not content (see
+    ``_LENGTH_IS_STYLE``), so the re-say is asked to shorten it -- and on
+    the paired baseline it mostly did not. English too_verbose was 6 of 72
+    turns against Korean's 2, and the log line each time was "The re-said
+    version still reads as too_verbose; kept the original":
+
+        You:     today was kind of rough
+        Elaina:  That sounds tough. Take some time to breathe and let it
+                 settle. You've got this.
+
+    Three sentences where the act allows two, and nothing in the third that
+    the first two lack. Cut, a bare "I see." goes first, then whatever runs
+    past the act's sentences, then past its words. Never below one
+    sentence, and never on an act whose sentences might carry a value --
+    those are the condenser's, under its own faithfulness rules.
+    """
+    said = str(text or "").strip()
+    if act not in _LENGTH_IS_STYLE or not said:
+        return text
+    contract = contract_for(act)
+    parts = sentences(said)
+    too_many_words = 0 < contract.max_words < word_count(said)
+    if len(parts) <= contract.max_sentences and not too_many_words:
+        return text
+    kept = [part for part in parts if not _BARE_SENTENCE.match(part)] or parts
+    kept = kept[: contract.max_sentences]
+    while len(kept) > 1 and 0 < contract.max_words < word_count(" ".join(kept)):
+        kept.pop()
+    return " ".join(kept)
+
+
 # --------------------------------------------------------------------------
 # The instruction the model is given
 # --------------------------------------------------------------------------
@@ -1203,7 +1308,25 @@ i ll try that do will can well so and but then just now
 you your my me a an the is are was s t m re ve d
 please much a-lot
 응 어 네 예 아니 아니요 그래 좋아 알겠어 알았어 고마워 감사 ㅇㅋ ㅋㅋ ㅎㅎ 응응
+아니야 아냐 아니에요 아니예요 아닙니다 아니오 됐어 됐어요 됐습니다 싫어 싫어요
+오케이 오키 넵 네네 예예 그래요 좋아요 좋습니다 좋네 맞아 맞아요 괜찮아 괜찮아요
+알겠어요 알겠습니다 알았어요 고마워요 고맙습니다 감사해요 감사합니다 땡큐
+흠 음 아 오 와 헐 아하 그렇구나 그렇군 그렇군요 ㅋㅋㅋ ㅎㅎㅎ
+그렇게 할게 할께 할게요 해볼게 해볼께 해볼게요 그럴게 그럴게요 그냥 이제
 """.split())
+# A second gap of the same shape, measured on the contamination matrix:
+# "아니야" is how a person actually says no out loud, and only the bare
+# "아니" and the polite "아니요" were listed -- so a plain refusal was
+# classified as an answer, and answered with another film recommendation.
+# Declining is receiving too: "no", "nah" and "nope" were always in the
+# English half, and these are their counterparts, not new ground.
+#
+# The Korean lines were the bare words and none of the forms Korean
+# acknowledges in. Measured on the paired arcs: "ok i'll do that" was a
+# receipt in three of three English runs and "오케이 그렇게 할게", the same
+# sentence, an answer in three of three Korean ones -- and "흠" was not the
+# receipt "hm" was. Counterparts of the English entries, not new ground:
+# "그러게 말이야" stays out, because "tell me about it" is not in either.
 
 _RECEIPT_MAX_WORDS = 6
 

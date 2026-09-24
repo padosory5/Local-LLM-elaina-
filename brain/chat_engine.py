@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from memory.memory_manager import MemoryManager
 from memory import memory_manager as memory_categories
 from memory.extractor import MemoryExtractor
-from memory.consolidator import MemoryConsolidator
+from memory.consolidator import MemoryConsolidator, same_fact
 from memory.context_builder import ContextBuilder
 from brain.prompt_builder import PromptBuilder
 from brain.deliberation import ClarificationGate, Goal
@@ -45,6 +45,7 @@ from brain.memory_ranker import MemoryRanker
 from voice.audio_manager import AudioManager
 from brain.emotion_engine import EmotionEngine
 from core import timing
+from core import turn_trace
 from core.event_bus import EventBus
 from brain.text_filter import TextFilter
 from tools.web_search import WebSearchTool
@@ -64,13 +65,31 @@ from brain import conversation_style
 from brain import capability_contract
 from brain import existence_claims
 from brain import guard_lines
+from brain import search_language
 from brain import memory_gate
 from brain import model_split
 from brain import task_progress
 from brain import korean_register
+from brain import premise_check
+from brain import units
+from brain import where_we_are
+from brain import world_facts
 from brain import turn_language
+from brain import near_miss
+from brain import known_names
+from brain import sense_check
+from brain import told_not_asked
+from brain import activity_commands
+from brain import activity_describe
+from memory.activity_log import KINDS as ACTIVITY_KINDS, ActivityLog
+from memory.routines import RoutineBook
+from brain import replay_plan
+from brain.replay_plan import PendingReplay, ReplayStep
+from brain.replay_runner import ReplayRunner
+from tools.screen_control.activity_recorder import ActivityRecorder
 from brain.turn_context import TurnContext
 from brain.calculation_planner import CalculationPlanner
+from tools.calculator import CalculationError, evaluate_expression
 from brain.desktop_action_planner import (
     DesktopActionPlanner,
     DesktopSurfaceContext,
@@ -135,7 +154,7 @@ from brain.context_policy import should_include_grounded_context
 from brain.brief_response import BriefResponseGenerator
 from datetime import datetime
 from vision.screen_monitor import ScreenMonitor
-from brain.intent_router import IntentDecision, SemanticIntentRouter
+from brain.intent_router import IntentDecision, SemanticIntentRouter, reads_as_request
 from agents.builder import AgentBuilder
 from agents.calendar_agent import GoogleCalendarAgent
 from agents.coordinator import AgentCoordinator
@@ -295,6 +314,25 @@ _HESITATION = re.compile(
 
 # Calling it off. A closed class, and the right response is to stop and
 # say so -- not to ask a model what kind of request it was.
+# A refusal and nothing else, said to an open recommendation. The offer
+# gate already handles "no" to a parked offer -- measured live, that path
+# answers in 0.18s with the declined bank -- but a recommendation she made
+# without parking anything had no such path, and the same word went to the
+# model with the film thread still in its history. It came back
+# recommending another film, which is the one thing a refusal rules out:
+#
+#     You:     아니야
+#     Elaina:  어제 영화보다는 오늘 영화를 추천드리겠습니다.
+#
+# Guarded like the bare-acknowledgement path below it: anything pending
+# gives the word a different meaning, and those branches run first.
+_BARE_REFUSAL = re.compile(
+    r"^\s*(?:no|nah|nope|no,?\s*thanks?|not\s+(?:now|really|interested)|"
+    r"아니(?:야|요|에요|예요|오)?|아냐|아닙니다|싫어(?:요)?|별로(?:야|요|입니다)?)"
+    r"\s*[.!?]*\s*$",
+    flags=re.IGNORECASE,
+)
+
 _CANCELLATION = re.compile(
     r"^\s*(?:(?:no|nah|actually|wait)[,! ]+)?"
     r"(?:never ?mind|forget\s+(?:about\s+)?(?:it|that)|cancel(?: that| it)?|"
@@ -615,13 +653,26 @@ class ChatEngine:
         if self.vision_keep_alive in {None, 0, "0", "0s"}:
             self.vision_keep_alive = "10m"
 
-        self.client = ollama.Client(
+        # What happened in each turn, from the draft to what was said, is
+        # written to runtime/turn_trace/ (core/turn_trace.py). The client is
+        # wrapped so every model call a turn makes lands in its record; the
+        # wrapper is a pass-through, and every component below receives it.
+        turn_trace.configure(
+            enabled=self.config.get(
+                "debug", "turn_trace", default=True, required=False,
+            ),
+            retention_days=self.config.get(
+                "debug", "turn_trace_retention_days",
+                default=30, required=False,
+            ),
+        )
+        self.client = turn_trace.TracingClient(ollama.Client(
             host=self.config.get(
                 "llm",
                 "ollama",
                 "base_url",
             )
-        )
+        ))
 
         # Say out loud what is configured, and whether it can work. A
         # split whose two models do not fit together is not a little
@@ -669,6 +720,31 @@ class ChatEngine:
         self._active_topic = ""
         self._active_entity = ""
         self._entity_aliases: dict[str, str] = {}
+        # A word that is almost what the conversation is about, asked about
+        # and waiting for its answer (brain/near_miss.py); the pairs the
+        # person has said are two different things; and what she took a
+        # misheard name to be this turn, to be said with the answer.
+        self._pending_slip: near_miss.PendingSlip | None = None
+        self._distinct_terms: set[frozenset] = set()
+        self._slip_assumed = ""
+        # Slips the person confirmed ("CBT? -- yes, CPT"), so the same one is
+        # corrected and said rather than asked about again; and the one she
+        # assumed on the turn before, which a "no, CBT" can still undo.
+        self._known_slips: dict[str, str] = {}
+        self._last_assumed_slip: near_miss.Slip | None = None
+        # Set for the one turn a corrected question runs on, so it is looked
+        # up rather than answered from memory.
+        self._search_the_correction = False
+        # Place names and acronyms from what the person has told her about
+        # themselves, read from memory at most every ten minutes.
+        self._memory_names: tuple[str, ...] | None = None
+        self._memory_names_at = 0.0
+        # A clip heard too unclearly to answer, and whether she asked to hear
+        # the last one again -- so she never asks twice in a row.
+        self._heard_unclearly = False
+        self._asked_to_repeat = False
+        self._asked_last_turn = False
+        self._spoken_word_average = 0.0
         self._grounded_context = {
             "subject": "",
             "statement": "",
@@ -911,6 +987,39 @@ class ChatEngine:
         print(self.standing_orders.log_block())
         self.input_watcher = InputWatcher()
         watching = self.input_watcher.start()
+        # What the person does on the machine: an activity log they can ask
+        # about, and recordings they start by voice. Built on the same hooks
+        # that tell their input from hers -- see
+        # tools/screen_control/activity_recorder.py.
+        self.routines = RoutineBook.load()
+        self._pending_replay = None
+        self._last_listed_steps = []
+        self.activity_log = None
+        self.activity_recorder = None
+        if self.config.get("activity", "enabled", default=True, required=False):
+            try:
+                self.activity_log = ActivityLog(retention_days=float(self.config.get(
+                    "activity", "retention_days", default=14, required=False,
+                )))
+                self.activity_recorder = ActivityRecorder(
+                    watcher=self.input_watcher,
+                    log=self.activity_log,
+                    typed_text=str(self.config.get(
+                        "activity", "typed_text", default="recordings_only",
+                        required=False,
+                    )),
+                    skip_apps=tuple(self.config.get(
+                        "activity", "skip_apps", default=[], required=False,
+                    ) or ()),
+                )
+                recording = self.activity_recorder.start()
+            except Exception as error:
+                print(f"[Activity] could not start: {type(error).__name__}: {error}")
+                recording = False
+            print(f"[Activity] {'on' if recording else 'off'}"
+                  + (f" ({self.activity_recorder.error})"
+                     if self.activity_recorder is not None
+                     and self.activity_recorder.error else ""))
         self.cursor_driver = CursorDriver(input_watcher=self.input_watcher)
         print(
             f"[Desktop] driver={self.desktop_driver} "
@@ -1336,6 +1445,631 @@ class ChatEngine:
         for gate in (self.agent_consent, self.computer_consent, self.task_consent,
                      self.task_strategy_consent, self.capability_offer, self.clarification):
             gate.clear()
+        self._pending_slip = None
+
+    def _recent_messages(
+        self, *, exclude: str = "", limit: int = 12,
+        roles: tuple[str, ...] = ("user", "assistant"),
+    ) -> list[str]:
+        """The last turns of the conversation, this one excluded."""
+        conversation = getattr(self, "conversation", None)
+        try:
+            history = list(conversation.get_history()) if conversation else []
+        except Exception:
+            history = []
+        if (
+            history and exclude
+            and history[-1].get("role") == "user"
+            and str(history[-1].get("content", "") or "").strip() == exclude.strip()
+        ):
+            history = history[:-1]
+        return [
+            str(item.get("content", "") or "")
+            for item in history[-limit:]
+            if item.get("role") in roles
+        ]
+
+    def listening_terms(self, *, exclude: str = "") -> tuple[str, ...]:
+        """What the conversation is about, as the names and acronyms in it.
+
+        Read by the near-miss guard, and handed to the transcriber before
+        each listen, so the words it is most likely to mishear are the ones
+        it is listening for.
+        """
+        extra = list(dict.fromkeys(getattr(self, "_entity_aliases", {}).values()))
+        try:
+            problem = self.task_sessions.active_recommendation()
+        except Exception:
+            problem = None
+        if problem is not None and getattr(problem, "subject", ""):
+            extra.append(problem.subject)
+        extra.extend(self._names_from_memory())
+        return near_miss.held_terms(
+            self._recent_messages(exclude=exclude),
+            extra=extra,
+            said_by_them=self._recent_messages(exclude=exclude, roles=("user",)),
+        )
+
+    def _asks_to_hear_it_again(self, user_input: str) -> "TurnRouting | None":
+        """A clip the transcriber could barely decode is asked about, once.
+
+        Measured with the harvested mishearings: "인산부한테 인산비날 가는
+        것이 있죠" -- noise that decoded into words nobody said -- was
+        answered "인산비날은 인산부한테 가는 것이 있습니다", as if it made
+        sense. The transcriber knows when it is guessing
+        (voice/transcription_policy.heard_unclearly), and a person would say
+        they did not catch it.
+
+        Never twice in a row: asked once and still unclear, the best reading
+        is answered rather than asking again. A question she was waiting on
+        is left in place, so the repeated answer still reaches it.
+        """
+        # Read once per turn, here at the top of routing: whether she asked
+        # on the turn before. This check and the sense check further down
+        # (_does_not_make_sense) share it, so between them she never asks
+        # twice in a row.
+        self._asked_last_turn = bool(getattr(self, "_asked_to_repeat", False))
+        self._asked_to_repeat = False
+        if not getattr(self, "_heard_unclearly", False):
+            return None
+        if self._reads_as_her_own_command(user_input):
+            print("[STT] Word confidence was low, but it reads as one of her "
+                  "own commands or answers; answering it.")
+            return None
+        return self._ask_to_hear_it_again(
+            user_input,
+            why="heard too unclearly to answer",
+            line=guard_lines.say("didnt_catch", self._turn_language),
+        )
+
+    def _does_not_make_sense(self, user_input: str) -> "TurnRouting | None":
+        """A doubtful spoken transcript whose words do not fit together is
+        asked about, once.
+
+        The transcriber can be sure of words nobody said: "해수에서 슬프
+        당선까지 버스있어" scored no lower than a correct "간단한 걸로" in the
+        same noise, so the confidence check above cannot see it. Reading
+        the sentence can (brain/sense_check.py). Run after the near-miss
+        repair, so a slip it can settle ("빈천공항" -> 인천공항, "CLT" ->
+        시애틀?) is settled rather than asked about from scratch, and never
+        on a typed turn or a clearly heard one.
+        """
+        if self._reads_as_her_own_command(user_input):
+            return None
+        average = float(getattr(self, "_spoken_word_average", 0.0) or 0.0)
+        below = float(self.config.get(
+            "stt", "faster_whisper", "sense_check_below",
+            default=sense_check.READ_BELOW, required=False,
+        ))
+        if not sense_check.worth_reading(user_input, average, below=below):
+            return None
+        # The repair already recognised what they meant, or is waiting on
+        # their answer to its question.
+        if self._slip_assumed or self._pending_slip is not None:
+            return None
+        her_lines = self._recent_messages(
+            exclude=user_input, limit=2, roles=("assistant",),
+        )
+        started = time.perf_counter()
+        try:
+            response = self.client.chat(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": sense_check.PROMPT},
+                    {"role": "user", "content": sense_check.message(
+                        user_input,
+                        her_last_line=her_lines[-1] if her_lines else "",
+                    )},
+                ],
+                stream=False,
+                format="json",
+                options={"temperature": 0, "num_predict": 16},
+                keep_alive=self.keep_alive,
+                think=False,
+            )
+            content = self._value(self._value(response, "message", {}), "content", "")
+        except Exception as error:
+            # Never loses the turn: it is answered as heard.
+            print(f"[Sense Check] Failed; answering as heard: "
+                  f"{type(error).__name__}: {error}")
+            return None
+        garbled = sense_check.reads_as_garbled(content)
+        print(f"[Sense Check] {'garbled' if garbled else 'sense'} "
+              f"({time.perf_counter() - started:.2f}s, word average "
+              f"{average:.2f}): {user_input!r}")
+        if not garbled:
+            return None
+        return self._ask_to_hear_it_again(
+            user_input,
+            why="its words do not fit together",
+            line=guard_lines.say("heard_as_nonsense", self._turn_language).format(
+                heard=sense_check.quoted(user_input),
+            ),
+        )
+
+    def _reads_as_her_own_command(self, user_input: str) -> bool:
+        """A transcript that parses as one of her deterministic commands --
+        or as a yes/no to the question she just asked -- was understood,
+        whatever the transcriber's word confidence. Live, "Record this" and
+        "Stop Recording" were heard exactly right at an average of 0.59 and
+        0.40, and she asked to hear them again, twice."""
+        if activity_commands.read(user_input) is not None:
+            return True
+        if getattr(self, "_pending_replay", None) is not None:
+            return bool(activity_commands.read_consent(user_input))
+        return False
+
+    def _ask_to_hear_it_again(
+        self, user_input: str, *, why: str, line: str,
+    ) -> "TurnRouting | None":
+        if self._asked_last_turn:
+            print(f"[STT] {why.capitalize()}, but she asked once already; "
+                  "answering the best reading.")
+            return None
+        self._asked_to_repeat = True
+        print(f"[STT] Asking to hear it again ({why}): {user_input!r}")
+        return TurnRouting(
+            route=IntentDecision(
+                intent="conversation",
+                confidence=1.0,
+                normalized_request=user_input,
+                reason=f"The transcript was not usable: {why}.",
+            ),
+            user_input=user_input,
+            locked_response=line,
+        )
+
+    def _activity_turn(self, said: str) -> "TurnRouting | None":
+        """What the person did on the computer: asked about, repeated, or
+        made the start-up routine.
+
+        A repeat is never done on the turn that asks for it: the steps are
+        listed and she asks, and only a yes on the next turn does anything
+        (``_pending_replay``). Any other answer lets the offer lapse --
+        the conversation simply goes on.
+        """
+        pending = getattr(self, "_pending_replay", None)
+        if pending is not None:
+            self._pending_replay = None
+            if not pending.expired:
+                answer = activity_commands.read_consent(said)
+                if answer == "yes":
+                    return self._activity_routing(said, "replay", self._do_replay(pending))
+                if answer == "no":
+                    return self._activity_routing(
+                        said, "declined",
+                        guard_lines.say("replay_declined", self._turn_language),
+                    )
+        command = activity_commands.read(said)
+        if command is None:
+            return None
+        line = self._activity_reply(command)
+        if not line:
+            return None
+        return self._activity_routing(said, command.kind, line)
+
+    def _activity_routing(self, said: str, kind: str, line: str) -> "TurnRouting":
+        print(f"[Activity] {kind}: {line[:160]!r}")
+        return TurnRouting(
+            route=IntentDecision(
+                intent="conversation",
+                confidence=1.0,
+                normalized_request=said,
+                reason=f"Activity: {kind}.",
+            ),
+            user_input=said,
+            locked_response=line,
+        )
+
+    def _activity_reply(self, command) -> str:
+        language = self._turn_language
+
+        def say(key: str, **values) -> str:
+            return guard_lines.say(key, language).format(**values)
+
+        recorder = getattr(self, "activity_recorder", None)
+        log = getattr(self, "activity_log", None)
+        kind = command.kind
+
+        if kind == "replay_last":
+            plan = replay_plan.build(self._recent_for_replay())
+            if not plan.steps:
+                return say("replay_nothing")
+            count = command.count or self._last_burst(plan)
+            chosen = replay_plan.last(plan, count)
+            n = len(chosen.steps)
+            if language == "ko":
+                what = "방금 하신 동작" if n == 1 else f"최근 동작 {n}개"
+            else:
+                what = "Your last action" if n == 1 else f"Your last {n} actions"
+            return self._offer_replay(chosen, "replay_offer", what=what)
+
+        if kind in ("recall_boot", "replay_boot"):
+            found = self._boot_plan()
+            if found is None:
+                return say("boot_actions_none")
+            plan, key, at = found
+            return self._offer_replay(
+                plan, key, time=activity_describe.clock(at),
+            )
+
+        if kind == "save_startup":
+            steps = list(getattr(self, "_last_listed_steps", None) or ())
+            if not steps:
+                found = self._boot_plan()
+                steps = list(found[0].steps) if found is not None else []
+            if not steps:
+                return say("startup_nothing")
+            self.routines.save_plan(
+                "startup", [step.as_dict() for step in steps], said=command.kind,
+            )
+            return say("startup_saved",
+                       steps=replay_plan.steps_text(steps, language))
+
+        if kind == "forget_startup":
+            self.routines.forget("startup")
+            return say("startup_forgotten")
+
+        if kind in ("pause", "resume"):
+            if recorder is None:
+                return say("activity_unavailable")
+            recorder.paused = kind == "pause"
+            return say("activity_paused" if kind == "pause" else "activity_resumed")
+
+        if kind == "recall":
+            if log is None:
+                return say("activity_unavailable")
+            kinds = command.kinds or tuple(k for k in ACTIVITY_KINDS if k != "start")
+            rows = [
+                row for row in log.recent(
+                    since=command.since, until=command.until, kinds=kinds,
+                    containing=command.about, limit=300,
+                )
+                if not activity_describe.is_shell(row)
+            ]
+            when = activity_describe.when_phrase(command.when, language)
+            if not rows:
+                return say("activity_recall_empty", when=when)
+            items, more = activity_describe.timeline_text(rows, language, limit=10)
+            line = say("activity_recall", when=when, items=items)
+            if more:
+                line += say("activity_recall_more", more=more)
+            return line
+
+        if kind == "forget_activity":
+            if log is None:
+                return say("activity_unavailable")
+            if recorder is not None:
+                recorder.recent.clear()
+            if command.everything:
+                return say("activity_forgotten_all", count=log.forget(everything=True))
+            count = log.forget(since=command.since, until=command.until)
+            return say(
+                "activity_forgotten", count=count,
+                when=activity_describe.when_phrase(command.when, language),
+            )
+        return ""
+
+    # ----------------------------------------------------------- repeating
+
+    def _can_replay(self) -> bool:
+        return bool(getattr(self.computer_control, "enabled", False))
+
+    def _offer_replay(self, plan, key: str, **values) -> str:
+        language = self._turn_language
+        if not self._can_replay():
+            return guard_lines.say("replay_unavailable", language)
+        self._pending_replay = PendingReplay(list(plan.steps))
+        self._last_listed_steps = list(plan.steps)
+        line = guard_lines.say(key, language).format(
+            steps=replay_plan.steps_text(plan.steps, language), **values,
+        )
+        if plan.skipped:
+            line += guard_lines.say("replay_skipped", language).format(
+                skipped=replay_plan.skipped_text(plan.skipped, language),
+            )
+        return line
+
+    def _recent_for_replay(self) -> list:
+        recorder = getattr(self, "activity_recorder", None)
+        recent = recorder.recent_activities() if recorder is not None else []
+        if recent:
+            return recent
+        log = getattr(self, "activity_log", None)
+        if log is None:
+            return []
+        return log.recent(since=time.time() - 3 * 3600, limit=300)
+
+    @staticmethod
+    def _last_burst(plan) -> int:
+        """"What I just did": the steps since the last pause of two minutes,
+        at most eight."""
+        steps = plan.steps
+        count = 1
+        for later, earlier in zip(reversed(steps), list(reversed(steps))[1:]):
+            if later.at and earlier.at and later.at - earlier.at > 120:
+                break
+            count += 1
+        return max(1, min(count, 8, len(steps)))
+
+    def _boot_plan(self):
+        """What they did first after the PC started: (plan, line key, time)."""
+        log = getattr(self, "activity_log", None)
+        if log is None:
+            return None
+        try:
+            import psutil
+
+            booted = float(psutil.boot_time())
+        except Exception:
+            return None
+        rows = log.recent(since=booted, limit=2000)
+        if not rows:
+            return None
+        first = rows[0].at
+        plan = replay_plan.build([row for row in rows if row.at <= first + 600])
+        plan.steps = plan.steps[:8]
+        if not plan.steps:
+            return None
+        if first - booted > 300:
+            return plan, "boot_actions_late", first
+        return plan, "boot_actions", booted
+
+    def _replay_runner(self) -> ReplayRunner:
+        return ReplayRunner(
+            computer_control=self.computer_control,
+            desktop_control=self.desktop_action_planner.control,
+            browser_service=self.browser_service,
+            observer=self.computer_control.ui_observer,
+            input_watcher=self.input_watcher,
+        )
+
+    def _do_replay(self, pending) -> str:
+        """Do the steps they said yes to. Desktop Control Mode is switched on
+        for this run only if it was off -- the yes to a listed plan is the
+        consent -- and put back afterwards."""
+        language = self._turn_language
+
+        def say(key: str, **values) -> str:
+            return guard_lines.say(key, language).format(**values)
+
+        if not self._can_replay():
+            return say("replay_unavailable")
+        was_on = bool(self.computer_control_mode.enabled)
+        if not was_on and not self.set_computer_control_mode(True):
+            return say("replay_unavailable")
+        try:
+            outcome = self._replay_runner().run(pending.steps)
+        finally:
+            if not was_on:
+                self.set_computer_control_mode(False)
+        total = len(pending.steps)
+        print(f"[Replay] {len(outcome.done)}/{total} done"
+              + (f"; stopped at {outcome.failed.action} {outcome.failed.target!r}: "
+                 f"{outcome.reason}" if outcome.failed is not None else ""))
+        if outcome.finished:
+            return say("replay_done",
+                       steps=replay_plan.steps_text(outcome.done, language))
+        if outcome.interrupted:
+            return say("replay_interrupted", done=len(outcome.done), total=total)
+        return say(
+            "replay_failed", done=len(outcome.done), total=total,
+            step=replay_plan.step_text(outcome.failed, language),
+            reason=outcome.reason if language != "ko" else "",
+        ).strip()
+
+    def notice_where_we_are(self) -> str:
+        """At start-up: say so if the machine moved since she was last on.
+
+        Called once by main.py, beside the routine offer, and a question in
+        exactly the same way -- where someone shops is not settled by which
+        zone their laptop is in. Measured on this machine: the clock was
+        Pacific, Windows still said 한국, and she went on pricing things in
+        won with nothing to tell the person why (brain/where_we_are.py).
+        """
+        from datetime import datetime
+
+        from core.paths import DATA_DIRECTORY
+
+        path = DATA_DIRECTORY / "where_we_are.json"
+        clock = datetime.now().astimezone()
+        offset = clock.utcoffset()
+        context = getattr(self.user_locale, "context", None)
+        here = where_we_are.Place(
+            country=str(getattr(context, "home", "") or ""),
+            currency=str(getattr(context, "currency", "") or ""),
+            timezone=str(clock.tzname() or ""),
+            offset_hours=(offset.total_seconds() / 3600.0) if offset else 0.0,
+        )
+        before = where_we_are.read(path)
+        where_we_are.write(path, here)
+        if not where_we_are.moved(before, here):
+            return ""
+        language = getattr(self, "_turn_language", "") or self.response_language
+        line = where_we_are.sentence(before, here, language)
+        print(f"[Locale] The clock moved: {before.timezone!r} -> "
+              f"{here.timezone!r}; asking about it.")
+        self.events.emit("assistant_started")
+        self.events.emit("assistant_finished", text=line)
+        try:
+            self.audio.speak(line)
+        except Exception as error:
+            print(f"[Locale] could not say it: {error}")
+        return line
+
+    def offer_startup_routine(self) -> str:
+        """At start-up: offer the routine they asked for, and wait for a yes.
+
+        Called once by main.py when she is ready. Never runs anything by
+        itself -- the answer arrives as an ordinary turn.
+        """
+        steps = [
+            ReplayStep.from_dict(step) for step in self.routines.plan("startup")
+        ]
+        if not steps or not self._can_replay():
+            return ""
+        language = getattr(self, "_turn_language", "") or self.response_language
+        self._pending_replay = PendingReplay(steps, seconds=600.0)
+        self._last_listed_steps = steps
+        line = guard_lines.say("startup_offer", language).format(
+            steps=replay_plan.steps_text(steps, language),
+        )
+        print(f"[Activity] start-up offer: {line[:160]!r}")
+        self.events.emit("assistant_started")
+        self.events.emit("assistant_finished", text=line)
+        try:
+            self.audio.speak(line)
+        except Exception as error:
+            print(f"[Activity] could not say the start-up offer: {error}")
+        return line
+
+    def _names_from_memory(self) -> tuple[str, ...]:
+        """Place names and acronyms from what they have told her before.
+
+        Measured live: "인천공항에서 미국 시애틀까지" was heard as "... 미국
+        CLT까지" in a conversation that had not mentioned Seattle -- but the
+        person had told her long before that they study at UW in Seattle.
+        What she already knows about them is part of what she should be
+        listening for. Only names: the place list's own names (an English
+        memory's "Seattle" becomes 시애틀) and acronyms, never an ordinary
+        word from a remembered sentence.
+        """
+        now = time.monotonic()
+        if self._memory_names is not None and now - self._memory_names_at < 600:
+            return self._memory_names
+        names: list[str] = []
+        if getattr(self, "memory_enabled", False):
+            try:
+                found = self.memory_manager.search(
+                    "where the person lives, studies, works and travels",
+                    k=20,
+                    exclude_categories={memory_categories.RESEARCH_CATEGORY},
+                )
+            except Exception as error:
+                print(f"[Near Miss] Could not read names from memory: "
+                      f"{type(error).__name__}")
+                found = []
+            for memory in found or ():
+                text = str(getattr(memory, "content", "") or "")
+                names.extend(known_names.korean_for(text))
+                names.extend(
+                    korean for korean in known_names.korean_names()
+                    if len(korean) >= 3 and korean in text
+                )
+                names.extend(near_miss.acronyms_in(text))
+        self._memory_names = tuple(dict.fromkeys(names))
+        self._memory_names_at = now
+        return self._memory_names
+
+    def _near_miss_turn(self, user_input: str) -> "TurnRouting | str":
+        """Settle a word that is almost what the conversation is about.
+
+        The person has been asking about CPT and says "CBT"; the transcriber
+        hears "배인브리지" for the "베인브리지" the conversation has been
+        using. An acronym is asked about -- one letter is the whole
+        difference, and only they know which they meant -- and the answer
+        to that question is read here on the next turn. A longer name is
+        taken as the held one, and she says so with the answer.
+        """
+        pending, self._pending_slip = self._pending_slip, None
+        assumed, self._last_assumed_slip = self._last_assumed_slip, None
+        if pending is not None and not pending.expired:
+            slip = pending.slip
+            meaning = near_miss.read_answer(user_input, slip)
+            if meaning == near_miss.MEANT:
+                print(f"[Near Miss] Confirmed {slip.meant!r}, not {slip.heard!r}.")
+                self._known_slips[near_miss.slip_key(slip)] = slip.meant
+                return self._corrected_turn(slip.corrected)
+            if meaning == near_miss.HEARD:
+                print(f"[Near Miss] {slip.heard!r} was meant; "
+                      "not asking about it again.")
+                self._distinct_terms.add(near_miss.settled_pair(slip))
+                return slip.said
+            print("[Near Miss] The reply is a new turn; the question is dropped.")
+        if (
+            assumed is not None
+            and near_miss.names_the_heard(user_input, assumed)
+            and near_miss.read_answer(user_input, assumed) == near_miss.HEARD
+        ):
+            # "아니 CBT 맞아" right after she took it as CPT: undone, and not
+            # taken that way again this session.
+            print(f"[Near Miss] {assumed.heard!r} was meant after all; not "
+                  f"taking it as {assumed.meant!r} again.")
+            self._known_slips.pop(near_miss.slip_key(assumed), None)
+            self._distinct_terms.add(near_miss.settled_pair(assumed))
+            return user_input
+        known = near_miss.known_slip(user_input, self._known_slips)
+        if known is not None:
+            print(known.log_line())
+            self._last_assumed_slip = known
+            self._slip_assumed = guard_lines.say(
+                "slip_assumed", self._turn_language,
+            ).format(meant=known.meant)
+            return known.corrected
+        terms = self.listening_terms(exclude=user_input)
+        seen = " ".join(self._recent_messages(exclude=user_input))
+        places = known_names.korean_names()
+        # Every name taken first -- "빈천공항에서 미국 CLT까지" has two, and
+        # the question about one should not leave the other uncorrected --
+        # then at most one question about what is left.
+        text, assumed_lines, last = user_input, [], None
+        for _ in range(3):
+            slip = near_miss.find(
+                text, terms, seen=seen, distinct=self._distinct_terms,
+                known=places, only="assume",
+            )
+            if slip is None:
+                break
+            print(slip.log_line())
+            assumed_lines.append(guard_lines.say(
+                "slip_assumed", self._turn_language,
+            ).format(meant=slip.meant))
+            last, text = slip, slip.corrected
+        slip = near_miss.find(
+            text, terms, seen=seen, distinct=self._distinct_terms,
+            known=places, only="ask",
+        )
+        if slip is not None:
+            print(slip.log_line())
+            # One outstanding question at a time, across every kind.
+            self._retire_pending_interpretations()
+            self._pending_slip = near_miss.PendingSlip(slip)
+            question = guard_lines.say(
+                "slip_question", self._turn_language,
+            ).format(
+                heard=slip.heard, meant=slip.meant,
+                quote=near_miss.quoted_particle(slip.heard),
+            )
+            return TurnRouting(
+                route=IntentDecision(
+                    intent="conversation",
+                    confidence=1.0,
+                    normalized_request=text,
+                    reason=(
+                        "The turn names a near-miss of a term the "
+                        "conversation holds."
+                    ),
+                ),
+                user_input=text,
+                locked_response=" ".join([*assumed_lines, question]),
+            )
+        if not assumed_lines:
+            return user_input
+        self._slip_assumed = " ".join(assumed_lines)
+        self._last_assumed_slip = last
+        return text
+
+    def _corrected_turn(self, corrected: str) -> "TurnRouting | str":
+        """The request as they meant it -- and looked up, when it asks.
+
+        The person asked for this outright: once the right term is settled,
+        what they wanted to know is searched, not answered from what she
+        half-remembers. Measured in the English demo: "yes" after "did you
+        mean CPT?" was answered from memory, and said CPT goes through "your
+        immigration office" -- it goes through the school.
+        """
+        self._search_the_correction = reads_as_request(corrected)
+        return corrected
 
     def _retire_machine_target(self):
         self._last_computer_action = ""
@@ -1610,9 +2344,19 @@ class ChatEngine:
         session catches a bank line coming back around, which is invisible
         turn-to-turn and obvious across a conversation.
         """
+        # Read defensively. Guards call this on every reply now -- a
+        # disclaimer is said once, a question is not asked twice in a row --
+        # and an engine without a conversation (a test's bare instance, or
+        # one still being built) must mean "nothing said yet", never an
+        # exception in the middle of producing a reply.
+        conversation = getattr(self, "conversation", None)
+        try:
+            history = conversation.get_history() if conversation else []
+        except Exception:
+            history = []
         spoken = [
             str(item.get("content", "") or "")
-            for item in self.conversation.get_history()
+            for item in history
             if item.get("role") == "assistant"
             and str(item.get("content", "") or "").strip()
         ]
@@ -1665,6 +2409,24 @@ class ChatEngine:
             names(candidate, skip_sentence_openers=False)
         )
 
+    def _holds_a_parked_offer(self, text: str) -> bool:
+        """Whether this draft carries the offer the gate is waiting on.
+
+        The style pass runs before the guards that park one, so in practice
+        it is looking at the model's own offers. In practice is not a rule:
+        removing a parked offer would leave the gate holding a question
+        nobody was asked, which is the failure ``_one_offer_per_reply``
+        exists to prevent, so the same check is made here.
+        """
+        try:
+            pending = self.capability_offer.peek()
+        except Exception:
+            return False
+        if pending is None:
+            return False
+        parked = " ".join(str(pending.offer_text or "").split())
+        return bool(parked) and parked in " ".join(str(text or "").split())
+
     def _say_it_in_her_voice(
         self,
         reply: str,
@@ -1705,6 +2467,12 @@ class ChatEngine:
         """
         draft = str(reply or "")
         if not draft.strip():
+            return draft
+        # A guard's own line is what the guard decided to say, word for
+        # word. Said twice it is still true; re-said by the model it was
+        # not ("Sorry, I didn't catch that" came back "Sure. Stop
+        # recording.").
+        if guard_lines.is_fixed_line(draft):
             return draft
 
         # Fix the register mechanically before judging it. Measured over
@@ -1753,6 +2521,34 @@ class ChatEngine:
             # question, and it should be visible in the log.
             print(f"[Style] {act} is locked; left as written.")
             return repaired
+
+        # Too long and nothing else, on an act that carries no facts: cut
+        # rather than re-said. The re-say mostly came back just as long (see
+        # conversation_style.cut_to_length), and a cut costs no call.
+        if all(
+            finding.failure == conversation_style.TOO_VERBOSE
+            for finding in verdict.findings
+        ):
+            cut = self._cut_to_the_acts_length(
+                repaired, act=act, user_input=user_input,
+                previous=previous, earlier=earlier, language=spoken_language,
+            )
+            if cut != repaired:
+                return cut
+
+        # An act that may not offer, offering anyway. Deterministic and
+        # first: this is the one failure whose repair needs no new
+        # sentence, only the removal of one, and the re-say measured live
+        # came back offering again on a plain refusal.
+        if all(
+            finding.failure == conversation_style.DUPLICATE_OFFER
+            for finding in verdict.findings
+        ) and not self._holds_a_parked_offer(repaired):
+            without = conversation_style.without_offers(repaired, act)
+            if without != repaired:
+                print(f"[Style] An offer where a {act} allows none; "
+                      f"took it out.")
+                return without
 
         said_again = self._resay(
             repaired,
@@ -1805,12 +2601,163 @@ class ChatEngine:
             if len(second.findings) < len(verdict.findings):
                 print(f"[Style] The re-said version still reads as "
                       f"{', '.join(second.classes)}, but less so; taking it.")
-                return second.repaired
+                shorter = self._cut_to_the_acts_length(
+                    second.repaired, act=act, user_input=user_input,
+                    previous=previous, earlier=earlier,
+                    language=spoken_language,
+                )
+                if self._holds_a_parked_offer(shorter):
+                    return shorter
+                return conversation_style.without_offers(shorter, act)
             print(f"[Style] The re-said version still reads as "
                   f"{', '.join(second.classes)}; kept the original.")
-            return repaired
+            shorter = self._cut_to_the_acts_length(
+                repaired, act=act, user_input=user_input,
+                previous=previous, earlier=earlier,
+                language=spoken_language,
+            )
+            if self._holds_a_parked_offer(shorter):
+                return shorter
+            return conversation_style.without_offers(shorter, act)
         print(f"[Style] Said again in her own voice: {said_again[:90]!r}")
         return second.repaired
+
+    def _cut_to_the_acts_length(
+        self,
+        text: str,
+        *,
+        act: str,
+        user_input: str,
+        previous: str,
+        earlier,
+        language: str,
+    ) -> str:
+        """``text`` cut to its act's length when that reads better, else as is."""
+        cut = conversation_style.cut_to_length(text, act)
+        if not cut or cut == text:
+            return text
+        context = dict(
+            act=act, user_input=user_input, previous_reply=previous,
+            earlier_replies=earlier, language=language,
+        )
+        before = conversation_style.review(text, **context)
+        after = conversation_style.review(cut, **context)
+        if len(after.findings) >= len(before.findings):
+            return text
+        print(f"[Style] Still too long for a {act}; cut to "
+              f"{len(conversation_style.sentences(after.repaired))} "
+              f"sentence(s).")
+        return after.repaired
+
+    def _answered_in_the_turns_language(
+        self,
+        reply: str,
+        *,
+        model: str,
+        keep_alive,
+        max_words: int,
+    ) -> str:
+        """The reply, in the language the person just spoke.
+
+        Their rule for a two-language conversation, stated outright: answer
+        in Korean when I speak Korean, in English when I speak English. The
+        language *decision* has followed it since the mixed-session fix --
+        14 of 14 on the replay -- but the decision only names the language
+        in the prompt, and nothing checked what came back. Measured on the
+        final mixed run:
+
+            You:     김치찌개 만드는 법 알려줘
+            Elaina:  김치찌개는 김치, 고기, ... 끓여 만듭니다.
+            You:     can you make it shorter?
+            Elaina:  김치찌개는 김치, 고기, ... 끓여 만듭니다.
+
+        Asked to shorten her own Korean answer, the model shortened it in
+        Korean. One run earlier the same turn came back in English, so it is
+        the model's choice, not the decision -- and a confirmed behaviour of
+        the model gets a check rather than more wording in the prompt.
+
+        Detection is deterministic: the script the reply is written in. The
+        repair is one call asking for the same content in the turn's
+        language, and it is kept only if it actually comes back in that
+        language. Otherwise the original stands -- a reply in the wrong
+        language is still better than no reply.
+        """
+        text = str(reply or "").strip()
+        written = turn_language.script_language(text)
+        wanted = self._turn_language
+        if not text or not written or written == wanted:
+            return reply
+        from brain.user_locale import language_name
+
+        # A plain translation request, and deliberately a short one. The
+        # first version was a rewrite brief with a list of instructions,
+        # and measured live the model answered one of them back:
+        #
+        #     You:     can you make it shorter?
+        #     Elaina:  Do not mention the draft or the language.
+        #
+        # That is English, so a check on the script alone accepted it.
+        instruction = (
+            f"Translate the text below into {language_name(wanted)}. Keep "
+            "every number, name, price and time exactly. Output only the "
+            "translation."
+        )
+        try:
+            response = self.client.chat(
+                model=model,
+                messages=[
+                    {"role": "system", "content": self.system_prompt.strip()},
+                    {"role": "user", "content": f"{instruction}\n\n{text}"},
+                ],
+                stream=False,
+                options={"temperature": 0.2, "num_predict": 220},
+                keep_alive=keep_alive,
+                think=False,
+            )
+        except Exception as error:
+            print(f"[Language] Could not re-say the reply in {wanted}: "
+                  f"{type(error).__name__}: {error}")
+            return reply
+        message = self._value(response, "message", {})
+        said = TextFilter.for_voice_response(
+            str(self._value(message, "content", "") or ""),
+            max_words=max_words,
+        ).strip()
+        if wanted == turn_language.KOREAN:
+            # The rest of her Korean has been through the register pass by
+            # now; a translation arriving after it has not.
+            said = korean_register.to_formal(said)
+        problem = self._unusable_re_say(said, wanted=wanted,
+                                        instruction=instruction)
+        if not problem:
+            print(f"[Language] The reply came back in {written}; the turn "
+                  f"is {wanted}. Said it again in {wanted}.")
+            return said
+        print(f"[Language] The reply came back in {written}; the re-say "
+              f"was not usable ({problem}); kept the original.")
+        return reply
+
+    @staticmethod
+    def _unusable_re_say(said: str, *, wanted: str, instruction: str) -> str:
+        """Why a re-said reply cannot be spoken, or "" if it can.
+
+        Three ways it goes wrong, each seen or one step from seen: it is
+        empty, it is still in the other language, or it is the request
+        rather than the answer -- a run of the instruction's own words, or
+        a sentence about translating.
+        """
+        if not said:
+            return "empty"
+        if turn_language.script_language(said) != wanted:
+            return "still the wrong language"
+        words = re.findall(r"[a-z']+", said.casefold())
+        asked = re.findall(r"[a-z']+", instruction.casefold())
+        grams = {tuple(asked[i:i + 4]) for i in range(len(asked) - 3)}
+        if any(tuple(words[i:i + 4]) in grams for i in range(len(words) - 3)):
+            return "it repeated the instruction"
+        if re.search(r"\b(?:translat\w*|draft)\b|번역", said, re.IGNORECASE):
+            return "it talked about the translation"
+        return ""
 
     def _resay(
         self,
@@ -2038,10 +2985,12 @@ class ChatEngine:
             # Twice is enough. Saying so is better than saying the same
             # wrong thing a third time.
             print("[Response Guard] The retry repeated it too; saying so.")
-            return (
-                "Sorry -- I answered the wrong thing there. Say it once "
-                "more and I'll take it properly?"
-            )
+            return guard_lines.say("answered_wrong_thing", self._turn_language)
+        # This regeneration happens after the voice pass, so it never met
+        # the register conversion there. Measured in a paired Korean run:
+        # "지금은 조금 힘들었겠어요." went out in 해요체 from exactly here.
+        if any("가" <= ch <= "힣" for ch in fresh):
+            fresh = korean_register.to_formal(fresh)
         return fresh
 
     def _enforce_existence_claims(
@@ -2124,6 +3073,9 @@ class ChatEngine:
             str(self._grounded_context.get("statement", "")),
             str(research_evidence or ""),
             "" if disputed else user_input,
+            # A date or a number they told her about themselves ("my
+            # birthday is March 14th") is evidence about their own life.
+            " ".join(self._what_they_told_her()),
         ))
         # Two sources disagreeing is a state, not a race -- so it is said,
         # and it is said even when the value she chose is perfectly well
@@ -2137,9 +3089,17 @@ class ChatEngine:
                 f"{claim.text} ({attribute_values.source_of(claim, evidence) or 'unattributed'}) "
                 f"vs {other}."
             )
-            text = text.rstrip() + " " + guard_lines.say(
-                "sources_disagree", self._turn_language,
-            ).format(other=other)
+            line = guard_lines.say("sources_disagree", self._turn_language)
+            opening = line.split("{other}")[0].strip()
+            previous, _ = self._things_she_has_said()
+            if opening and opening in str(previous or ""):
+                # Said last turn. Measured in English dogfood runs: "you sure
+                # about that?" got the same "Sources disagree on that one"
+                # the answer before it had just ended on.
+                print("[Grounding Guard] Said the disagreement last turn; "
+                      "not again.")
+            else:
+                text = text.rstrip() + " " + line.format(other=other)
             break
 
         if not GroundedValueGuard.needs_correction(
@@ -2192,13 +3152,51 @@ class ChatEngine:
                 "unverified_searched" if searched else "unverified_unsearched",
                 self._turn_language,
             )
+        # Said instead when the rest of the answer survives. Not for the
+        # browser offer above: that one is parked and classified against its
+        # own words, so it has to be said exactly as written.
+        partial = "" if CapabilityRegistry.is_available(
+            "browser_control", state,
+        ) else guard_lines.say(
+            "unverified_figure_searched" if searched
+            else "unverified_figure_unsearched",
+            self._turn_language,
+        )
+        # Which value, not only that there was one. A Korean flight-time
+        # answer came back with its number gone, and telling "the evidence
+        # had no such figure" apart from "the guard misread a rounded
+        # duration" meant re-running both searches offline -- the log had
+        # said only "a value".
+        removed = sorted(
+            GroundedValueGuard.unsupported_values(text, evidence)
+            | grounded_values._mangled_numbers(text, evidence)
+        )
         print(
             "[Grounding Guard] Removed "
             f"{'a disputed value' if disputed else 'a value'} "
-            "nothing had verified."
+            f"nothing had verified: {', '.join(removed) or '(unnamed)'}."
         )
+        # Said once. Measured in Korean dogfood runs: three dinner turns in
+        # a row each ended "아직 확인해 보지 않아서, 추측으로 말씀드리지는
+        # 않겠습니다." Dropping the value was right every time; announcing it
+        # three times was not, and the metric counted it as self-repetition.
+        # When she said it last turn and the rest of the answer survives, the
+        # value goes quietly. Never for the browser offer (``partial`` is
+        # empty there): that one is parked and has to be said as written.
+        previous, _ = self._things_she_has_said()
+        said_last_time = any(
+            line and line in str(previous or "") for line in (offer, partial)
+        )
+        if said_last_time and partial:
+            quiet = GroundedValueGuard.correct_values(
+                text, evidence=evidence, offer="", partial_offer="",
+            )
+            if quiet and quiet != text:
+                print("[Grounding Guard] Said that last turn; dropping the "
+                      "value without saying so again.")
+                return quiet
         return GroundedValueGuard.correct_values(
-            text, evidence=evidence, offer=offer,
+            text, evidence=evidence, offer=offer, partial_offer=partial,
         )
 
     def _last_claim(self) -> str:
@@ -2234,6 +3232,38 @@ class ChatEngine:
             text, user_input, self.conversation.get_history(),
         )
 
+    def _say_the_arithmetic(self, request: str) -> str:
+        """The value of a plain arithmetic request, computed rather than asked.
+
+        The last resort on a calculation, and measured into existence. Live,
+        running the contamination matrix: "what's 2+2" after three turns of
+        sympathy was drafted without the number, the completion guard asked
+        for it again, and the second draft had no number either --
+
+            [Response Guard] Calculation did not provide the requested result
+            [Style] answer: service_phrasing(Let me know if you need anything)
+            That's the result.
+
+        Asking a third time is not a plan. The router has already written
+        the request as an expression ("2 + 2"), and the sandboxed evaluator
+        behind the calculation planner computes it exactly, so the number
+        is available without the model's cooperation. Only a plain
+        arithmetic expression qualifies: a word problem is the planner's
+        job and is left to it.
+        """
+        text = str(request or "").strip().rstrip("?!. ")
+        if not text or not re.fullmatch(r"[\d\s+\-*/().,%]+", text):
+            return ""
+        try:
+            value = evaluate_expression(text.replace(",", ""))
+        except CalculationError:
+            return ""
+        rounded = round(value, 2)
+        said = str(int(rounded)) if rounded == int(rounded) else f"{rounded:.2f}"
+        return guard_lines.say("calculated_result", self._turn_language).format(
+            expression=text, value=said,
+        )
+
     def _progress_report(self) -> str:
         """What is actually going on, for someone who just asked.
 
@@ -2249,14 +3279,20 @@ class ChatEngine:
                 self._active_turn_cancel is not None
                 and not self._active_turn_cancel.is_set()
             )
+        # In the turn's language: the question is recognised in Korean
+        # ("아직이야?", "어떻게 돼 가?") and all three answers were English.
         if working:
-            return "Still on it -- give me a moment."
+            return guard_lines.say("progress_working", self._turn_language)
         pending = self.capability_offer.peek()
         if pending is not None:
+            if self._turn_language.startswith("ko"):
+                # The parked goal is written for the planner, in English;
+                # inside a Korean sentence it would be half a translation.
+                return guard_lines.say("progress_waiting", "ko")
             goal = str(getattr(pending, "goal", "") or "").strip()
             tail = f" -- {goal}" if goal and len(goal.split()) <= 12 else ""
             return f"I haven't started; I was waiting for you to say go{tail}."
-        return "Nothing's running right now. Want me to start it?"
+        return guard_lines.say("progress_idle", self._turn_language)
 
     def _enforce_found_claim(
         self, reply: str, *, candidates=(), searched: bool = False,
@@ -2363,14 +3399,63 @@ class ChatEngine:
                 f"From what I actually found: {' and '.join(real)}."
             )
         else:
+            # Candidates existed but none of them could be said, so the
+            # reason is the same one the browser can fix.
             honest = guard_lines.say(
-                "unconfirmed_specific", self._turn_language,
+                "no_listing_names", self._turn_language,
             )
         return f"{rebuilt} {honest}".strip() if rebuilt else honest
 
+    def _checked_against_the_encyclopedia(self, said: str, reply: str) -> str:
+        """A number she gave from her own knowledge, against Wikipedia.
+
+        Measured twice: "No, I meant Portland, Maine." -> "Portland's
+        population is around 694,000." It is about 68,000, and no guard
+        here could catch it -- the grounded-value guard checks a reply
+        against evidence, and a turn answered from the model's own memory
+        has none. That is the whole failure: the model states facts it does
+        not have, and the only fix is to put the fact in front of it
+        (brain/world_facts.py).
+
+        One lookup, ~0.45 s, and only when all of it lines up: the answer
+        states a number, the question names something an encyclopedia has
+        an article about, and that article speaks to the attribute asked
+        for. Anything else leaves the answer alone.
+        """
+        if not world_facts.numbers(reply):
+            return reply
+        fact = world_facts.lookup(said, language=self._turn_language)
+        if fact is None:
+            return reply
+        if not world_facts.covers_the_attribute(said, fact):
+            return reply
+        if not world_facts.contradicts(reply, fact):
+            return reply
+        sourced = fact.sentence(2)
+        if not sourced:
+            return reply
+        print(f"[World] The number was not the encyclopedia's; "
+              f"said {fact.title!r} instead.")
+        return sourced
+
+    def _why_nothing_was_named(self, evidence: str) -> str:
+        """Why she cannot name one -- not that she could not.
+
+        Measured, and objected to: "Recommend a wireless mouse under $50."
+        -> "You can find it at Best Buy. ... I couldn't verify a specific
+        one from the sources I checked." True, and no use to anybody. The
+        guard already knows which of the two happened, and both are things
+        a person can act on: the search came back empty, or it came back
+        with pages that name nothing -- in which case the browser can go
+        and read them.
+        """
+        if str(evidence or "").strip():
+            return guard_lines.say("no_listing_names", self._turn_language)
+        return guard_lines.say("found_nothing_usable", self._turn_language)
+
     def _enforce_named_recommendation(
         self, reply: str, *, candidates=(), searched: bool = False,
-        evidence: str = "", request: str = "",
+        evidence: str = "", request: str = "", recommendation: bool = False,
     ) -> str:
         """A search that found nothing may not still name the answer.
 
@@ -2396,6 +3481,19 @@ class ChatEngine:
             text, evidence=evidence, request=request,
         )
         if not invented:
+            # Nothing invented -- and, on a recommendation, nothing named
+            # either. Measured after the punt line was retired: "Recommend
+            # a wireless mouse under $50." -> "You can find it on Best Buy.
+            # Make sure to check the battery life before purchasing." No
+            # invented name to remove, no mouse, and no reason. A person
+            # asked for one thing and got neither it nor an explanation.
+            if (
+                recommendation
+                and searched
+                and not text.rstrip().endswith(("?", "？"))
+                and not grounded_values.names_something_specific(text)
+            ):
+                return f"{text} {self._why_nothing_was_named(evidence)}".strip()
             return text
         print(
             "[Grounding Guard] Named something the search did not find: "
@@ -2407,9 +3505,7 @@ class ChatEngine:
             if sentence.strip()
             and not any(name in sentence for name in invented)
         ]
-        honest = guard_lines.say(
-            "unverified_named_thing", self._turn_language,
-        )
+        honest = self._why_nothing_was_named(evidence)
         rebuilt = " ".join(kept).strip()
         return f"{rebuilt} {honest}" if rebuilt else honest
 
@@ -2693,6 +3789,22 @@ class ChatEngine:
             str(evidence or ""),
             str(self._grounded_context.get("statement", "")),
             "" if grounded_values.reads_as_dispute(user_input) else user_input,
+            # What the person told her is evidence about their own life.
+            # Measured after a restart: "Which school do I go to?" was
+            # answered from memory -- University of Washington -- and this
+            # guard replaced it with "I don't want to recommend something I
+            # haven't checked".
+            " ".join(self._what_they_told_her()),
+        ))
+        # A place named in one language is grounded by the other. Measured
+        # once memories began being written in the person's own language:
+        # the profile said 워싱턴 대학교, the answer said "University of
+        # Washington", and this guard replaced a remembered fact with "I
+        # don't want to send you somewhere I haven't checked".
+        grounding = " ".join((
+            grounding,
+            *known_names.english_for(grounding),
+            *known_names.korean_for(grounding),
         ))
         invented = grounded_values.unverified_entities(
             text, evidence=grounding, request=user_input,
@@ -2749,12 +3861,21 @@ class ChatEngine:
             # whatever the ranking said.
             if self._candidate_is_about(first, active_problem.subject):
                 already_found = first
+        korean = self._turn_language.startswith("ko")
         if already_found:
             print(f"[Grounding Guard] Naming what was found: {already_found}")
-            offer = f"The one I actually found is {already_found}."
+            offer = (
+                f"실제로 찾은 것은 {already_found}입니다." if korean
+                else f"The one I actually found is {already_found}."
+            )
         else:
+            # The place line is for places. After a drama or a film it said
+            # "I don't want to send you somewhere I haven't checked".
             offer = guard_lines.say(
-                "unchecked_place_offer", self._turn_language,
+                "unchecked_place_offer"
+                if grounded_values.sends_somewhere(text)
+                else "unchecked_name_offer",
+                self._turn_language,
             )
         # Park what answers it. This guard asked a question and left
         # nothing to accept, so "Yeah." took the bare-acknowledgement fast
@@ -2776,13 +3897,38 @@ class ChatEngine:
                     if active_problem is not None else ""
                 ),
             )
-        kept = [
-            sentence.strip()
-            for sentence in _SENTENCE_SPLIT.split(text)
-            if sentence.strip()
-            and not any(name in sentence for name in invented)
-        ]
+        kept = []
+        for sentence in _SENTENCE_SPLIT.split(text):
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            if not any(name in sentence for name in invented):
+                kept.append(sentence)
+                continue
+            # The clause that does not name it survives. Measured: "Since
+            # there's a casino on Bainbridge Island, which one should I go
+            # to?" was answered with the correction and a nearby casino in
+            # one sentence -- and the whole sentence went, correction and
+            # all, leaving only "I don't want to recommend something I
+            # haven't checked".
+            for clause in re.split(r",\s*(?:but|however|though|although)\s+|;\s*|\s+but\s+",
+                                   sentence):
+                clause = clause.strip(" ,;")
+                if (
+                    len(clause.split()) >= 4
+                    and not any(name in clause for name in invented)
+                ):
+                    kept.append(clause.rstrip(".") + ".")
         rebuilt = " ".join(kept).strip()
+        # Said once. Measured in the paired English runs: two turns in a
+        # row about dramas each ended with the same offer, and the second
+        # was counted as her repeating herself. The offer is still parked
+        # above; it only is not said twice while something else survives.
+        previous, _ = self._things_she_has_said()
+        if rebuilt and offer in previous:
+            print("[Grounding Guard] Offered to look on the turn before; "
+                  "not saying it again.")
+            return rebuilt
         return f"{rebuilt} {offer}".strip() if rebuilt else offer
 
     def _rescue_capability_route(
@@ -3220,9 +4366,15 @@ class ChatEngine:
             # A short question, not the whole ability inventory: reciting
             # everything Elaina can do is a non-sequitur when the user just
             # said "ok" and the model invented something to promise.
+            # In the turn's language. This was an English literal, and the
+            # guard runs after the reply-language check -- measured in a
+            # paired Korean run: "그렇구나" -> "What would you like me to do
+            # next?", the only reply of 576 Korean turns with no Korean in it.
             return ActionCommitmentGuard.strip_promise(
                 text,
-                replacement="What would you like me to do next?",
+                replacement=guard_lines.say(
+                    "next_step_question", self._turn_language,
+                ),
             )
 
         blocked = CapabilityRegistry.blocked_reason(capability, state)
@@ -3397,6 +4549,633 @@ class ChatEngine:
         )
         return guard_lines.say("memory_forgotten", language).format(what=what)
 
+    def _what_they_told_her(self) -> list[str]:
+        """The person's profile, without what they took back."""
+        return self._without_what_they_took_back(self._stored_profile())
+
+    # Words an initialism skips: "University of Washington" is UW.
+    _NOT_AN_INITIAL = frozenset({
+        "of", "the", "and", "for", "at", "in", "de", "la", "von",
+    })
+
+    @classmethod
+    def _spells_out(cls, abbreviation: str, text: str) -> bool:
+        """Whether ``text`` writes out what ``abbreviation`` stands for.
+
+        The one signal that survives the store's rewriting. "I'm going to
+        UW in Seattle." is kept as "The user is attending the University of
+        Washington in Seattle." -- two words in common with the sentence,
+        one of them "in" -- and the only thing tying the two together is
+        that UW is what those capitals spell.
+        """
+        wanted = str(abbreviation or "").upper()
+        if len(wanted) < 2:
+            return False
+        initials = ""
+        for word in re.findall(r"[^\W_]+", str(text or "")):
+            if word.casefold() in cls._NOT_AN_INITIAL:
+                continue  # a connector, which an initialism leaves out
+            if word[:1].isupper():
+                initials += word[0].upper()
+            else:
+                initials = ""
+            if wanted in initials:
+                return True
+        return False
+
+    def _without_what_they_took_back(self, facts: list[str]) -> list[str]:
+        """The profile without a fact stored from a sentence they then said
+        differently. Measured on the contamination matrix: "I'm going to UW
+        in Seattle." -> "no I mean I'm going to UW in Tacoma" -> "where is
+        my school again?" answered "...in Seattle" -- the Seattle fact was
+        stored, the Tacoma one still being written.
+
+        Two readings, because one was not enough. The word-overlap test
+        finds a fact that is plainly their sentence again; it cannot find
+        one the store has rewritten, and the store rewrites everything --
+        that sentence is kept as "The user is attending the University of
+        Washington in Seattle.", which shares "in" and "Seattle" with it
+        and nothing else. So a fact still asserting a *value* they took
+        back, with no sign of what replaced it, is left out too.
+
+        Narrow on purpose: the value alone is not enough, or "The user is
+        returning to Seattle next Friday." would go with it. The fact has
+        to spell out an abbreviation their sentence used, which is exactly
+        what the store did to it."""
+        taken_back = getattr(self, "_said_differently", None) or []
+        if not taken_back:
+            return facts
+        kept = []
+        for fact in facts:
+            words = {w.casefold() for w in re.findall(r"[^\W_]{2,}", str(fact))}
+            if any(
+                gone & words
+                and (
+                    # Plainly the sentence they corrected, said again.
+                    len(words & before) >= 3
+                    # Or: it still asserts a value they took back and says
+                    # nothing of what they replaced it with. The overlap
+                    # test above cannot see this one, because the store
+                    # does not keep their sentence -- "I'm going to UW in
+                    # Seattle." is written down as "The user is attending
+                    # the University of Washington in Seattle.", which
+                    # shares two words with it, and one of them is "in".
+                    # Measured on the contamination matrix: that fact went
+                    # into the prompt and "where is my school again?" was
+                    # answered Seattle, two turns after Tacoma.
+                    or (
+                        values & words
+                        and not instead & words
+                        and any(
+                            self._spells_out(short, str(fact))
+                            for short in abbreviations
+                        )
+                    )
+                )
+                for before, gone, values, instead, abbreviations in taken_back
+            ):
+                # Once per fact. The profile is read several times a turn
+                # -- the router, the grounding evidence, the answer -- and
+                # seven identical lines say no more than one.
+                announced = getattr(self, "_took_back_announced", None)
+                if announced is None:
+                    announced = self._took_back_announced = set()
+                if fact not in announced:
+                    announced.add(fact)
+                    print(f"[Memory] Left out what they took back: {fact!r}")
+                continue
+            kept.append(fact)
+        return kept
+
+    def _stored_profile(self) -> list[str]:
+        """The person's profile (MemoryManager.profile), cached briefly and
+        read only when no memory is being written -- the session is shared
+        with the background store."""
+        manager = (
+            getattr(self, "memory_manager", None)
+            if getattr(self, "memory_enabled", False) else None
+        )
+        if manager is None or not hasattr(manager, "profile"):
+            return []
+        cached = getattr(self, "_profile_cache", None)
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < 30.0:
+            return cached[1]
+        lock = getattr(self, "_memory_store_lock", None)
+        if lock is not None and not lock.acquire(timeout=0.5):
+            return cached[1] if cached is not None else []
+        try:
+            facts = list(manager.profile())
+        except Exception as error:
+            print(f"[Memory] Could not read what they told me: "
+                  f"{type(error).__name__}: {error}")
+            facts = cached[1] if cached is not None else []
+        finally:
+            if lock is not None:
+                lock.release()
+        self._profile_cache = (now, facts)
+        return facts
+
+    # "No, I meant X" / "아니 X 말하는 거야" / "X 말고 Y".
+    _I_MEANT = (
+        re.compile(
+            r"^(?:no|nah|nope|sorry|not\s+that(?:\s+one)?)[,.!\s]+"
+            r"(?:i\s+(?:meant|mean)|i'?m\s+talking\s+about|i\s+was\s+talking\s+about)"
+            r"\s+(?P<meant>.+?)\s*[.!?]*$",
+            re.IGNORECASE,
+        ),
+        re.compile(r"^i\s+meant\s+(?P<meant>.+?)\s*[.!?]*$", re.IGNORECASE),
+        re.compile(
+            r"^아니(?:요)?[,.\s]+(?P<meant>.+?)\s*"
+            r"(?:를|을)?\s*(?:말하는\s*거(?:야|예요|에요|였어)?|말한\s*거(?:야|예요|에요)?|"
+            r"말이야|말이에요|말하는\s*건데|얘기(?:야|예요|에요)?)\s*[.!?~]*$"
+        ),
+    )
+    _NOT_THIS_BUT = re.compile(
+        r"^(?:아니[,\s]*)?(?P<wrong>\S+(?:\s+\S+)?)\s*말고\s*(?P<meant>.+?)\s*[.!?~]*$"
+    )
+    _NOT_X = re.compile(
+        r"^(?P<meant>.+?),?\s+not\s+(?:a\s+|an\s+|the\s+)?(?P<wrong>[^,.!?]+)$",
+        re.IGNORECASE,
+    )
+    _NOT_A_REFERENT = {
+        "it", "that", "this", "them", "what", "you", "him", "her", "the",
+        "a", "an", "so", "yes", "no",
+    }
+    # Words that only tie what they meant to a place ("텍사스에 있는 파리").
+    _ONLY_BINDS = {"있는", "하는", "말하는", "되는", "사는"}
+    _ASKS_THEIR_NAME = re.compile(r"\bmy\s+name\b|(?:내|제)\s*이름", re.IGNORECASE)
+    _HER_NAME_AS_THEIRS = re.compile(
+        r"\byour\s+name\s+is\s+elaina\b"
+        r"|이름은\s*(?:엘레나|엘라이나|일레이나|elaina)",
+        re.IGNORECASE,
+    )
+
+    def _their_name_not_hers(self, said: str, reply: str) -> str:
+        """Her own name given as theirs, put right.
+
+        Measured twice, once after every other memory fix was in: "What's
+        my name?" -> "Your name is Elaina." Their name is in the profile in
+        front of her; the model reached for its own instead.
+        """
+        if not (self._ASKS_THEIR_NAME.search(str(said or ""))
+                and self._HER_NAME_AS_THEIRS.search(str(reply or ""))):
+            return reply
+        for fact in self._what_they_told_her():
+            match = re.search(r"name is ([^.(\"]+)", str(fact), re.IGNORECASE)
+            name = match.group(1).strip(" '\"") if match else ""
+            if not name or "elaina" in name.casefold():
+                continue
+            print(f"[Memory] Said her own name as theirs; theirs is {name!r}.")
+            return (f"이름은 {name}입니다." if self._turn_language == "ko"
+                    else f"Your name is {name}.")
+        return reply
+
+    @classmethod
+    def _names_what_they_meant(cls, reply: str, term: str) -> bool:
+        """Whether an answer is about what they said they meant: every word
+        of it, Korean by its first two syllables ("텍사스에" is in
+        "텍사스주"), English as a whole word ("OPT" is not in "option")."""
+        text = str(reply or "")
+        words = [w for w in re.findall(r"[^\W_]{2,}", str(term or ""))
+                 if w.casefold() not in cls._NOT_A_REFERENT and w not in cls._ONLY_BINDS]
+        for word in words:
+            if re.match(r"[가-힣]", word):
+                if word[:2] not in text:
+                    return False
+            elif not re.search(rf"(?<![^\W_]){re.escape(word)}(?![^\W_])", text,
+                               re.IGNORECASE):
+                return False
+        return True
+
+    def _with_correction_applied(self, said: str) -> str:
+        """Their previous question, with the one they meant in it.
+
+        Measured: "What's the population of Portland?" -> "No, I meant
+        Portland, Maine." was answered "Portland, Maine is a great place for
+        seafood" -- the correction heard, the question lost -- and "파리
+        날씨 어때?" -> "아니 텍사스에 있는 파리 말하는 거야" with "어떤 정보를
+        찾으시려는 건가요?". Unchanged when there is nothing to put right.
+        """
+        text = " ".join(str(said or "").split())
+        if not text or len(text.split()) > 14:
+            return said
+        meant = wrong = ""
+        match = self._NOT_THIS_BUT.match(text)
+        if match:
+            meant, wrong = match.group("meant"), match.group("wrong")
+        else:
+            for pattern in self._I_MEANT:
+                match = pattern.match(text)
+                if match:
+                    meant = match.group("meant")
+                    break
+        if not meant:
+            return said
+        meant = re.sub(r"^(?:그게\s*아니라|그게\s*아니고|그거\s*말고)\s*", "", meant.strip())
+        spelled = self._NOT_X.match(meant)
+        if spelled:
+            meant, wrong = spelled.group("meant"), spelled.group("wrong")
+        meant = meant.strip(" ,.\"'“”")
+        # "아니 CBT 맞아, 인지행동치료 말하는 거야" confirms what they said and
+        # takes back her assumption -- the near-miss repair's to settle, not
+        # a different thing they meant.
+        if re.search(r"맞아|맞다|맞는|맞고|맞습니다|\b(?:right|correct)\b", meant, re.IGNORECASE):
+            return said
+        content = [w for w in re.findall(r"[^\W_]+", meant.casefold())
+                   if len(w) >= 2 and w not in self._NOT_A_REFERENT]
+        previous = self._recent_messages(exclude=text, limit=6, roles=("user",))
+        question = previous[-1] if previous else ""
+        if not content or not question or question.strip() == text:
+            return said
+        core = re.sub(r"^(?:a|an|the)\s+", "", meant, flags=re.IGNORECASE)
+        corrected = ""
+        if wrong:
+            spot = re.search(re.escape(wrong.strip(" ,.")), question, re.IGNORECASE)
+            if spot:
+                corrected = question[:spot.start()] + core + question[spot.end():]
+        if not corrected:
+            # "I'm going to UW in Seattle." -> "no I mean I'm going to UW in
+            # Tacoma": said again, whole. Measured on the contamination
+            # matrix: put in at the first word they share, it became "I'm
+            # I'm going to UW in Tacoma to UW in Seattle."
+            before = {w.casefold() for w in re.findall(r"[^\W_]{2,}", question)}
+            words = re.findall(r"[^\W_]{2,}", meant)
+            repeated = [w for w in words if w.casefold() in before]
+            if len(repeated) >= 2 and len(repeated) * 2 >= len(words):
+                new = [w for w in words if w.casefold() not in before]
+                if not new:
+                    return said
+                # What they took back ("Seattle"): a fact already stored from
+                # the sentence they corrected is kept out of her profile
+                # while the corrected one is still being written.
+                gone = before - {w.casefold() for w in words}
+                # Which of those was a *value*, and what replaced it. A
+                # value is a fact she may have stored; "going" and "to"
+                # are not. The first word is skipped for the reason every
+                # other reader here skips it: a capital at the start of a
+                # sentence says nothing about the word.
+                values = gone & {
+                    word.casefold()
+                    for word in re.findall(r"[^\W_]{2,}", question)[1:]
+                    if word[:1].isupper() or word.isdigit()
+                }
+                instead = {w.casefold() for w in new}
+                # An abbreviation they used ("UW"), because the store will
+                # have written it out in full and nothing else ties the
+                # two sentences together.
+                abbreviations = {
+                    word for word in re.findall(r"[^\W_]{2,5}", question)
+                    if word.isupper()
+                }
+                self._said_differently = [
+                    *getattr(self, "_said_differently", []),
+                    (before, gone, values, instead, abbreviations),
+                ]
+                ending = question.rstrip()[-1:]
+                corrected = meant.rstrip(" .!?") + (ending if ending in ".!?" else "")
+                core = " ".join(new)
+        if not corrected:
+            for word in re.findall(r"[^\W_]{2,}", meant):
+                spot = re.search(rf"(?<![^\W_]){re.escape(word)}(?![^\W_])", question,
+                                 re.IGNORECASE)
+                if spot:
+                    corrected = question[:spot.start()] + meant + question[spot.end():]
+                    break
+        if not corrected:
+            # Nothing in their last question to put right: a bolted-on
+            # "(…)" made "UW 유학생인데 CPT 신청하려고 해 (CBT 맞아, …)".
+            return said
+        print(f"[Correction] {question!r} -> {corrected!r}")
+        self._corrected_from = question
+        # What changed, not the whole phrase: "Portland, Maine" is about
+        # Maine; "텍사스에 있는 파리" is about 텍사스.
+        asked = {w.casefold() for w in re.findall(r"[^\W_]{2,}", question)}
+        changed = [w for w in re.findall(r"[^\W_]{2,}", core) if w.casefold() not in asked]
+        self._corrected_to = " ".join(changed) or core.strip()
+        return corrected
+
+    def _premise_corrected(self, said: str, reply: str) -> str | None:
+        """What to say instead, when they took something false for granted
+        and her answer did not tell them (brain/premise_check.py).
+
+        Measured on the misunderstanding check: "한국은 엔화 쓰잖아, 환전할
+        때 엔으로 바꾸면 되지?" -> "환전 시 엔화 사용은 가능합니다"; "물은
+        100도에서 얼잖아" answered with the freezer's temperature and the 100
+        left standing -- with a prompt telling her to check the assumption.
+        """
+        if not str(reply or "").strip() or not told_not_asked.worth_checking(said):
+            return None
+        if guard_lines.is_fixed_line(reply):
+            return None
+        try:
+            response = self.client.chat(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": premise_check.PROMPT},
+                    {"role": "user", "content": premise_check.message(said)},
+                ],
+                stream=False,
+                format="json",
+                options={"temperature": 0, "num_predict": 220},
+                keep_alive=self.keep_alive,
+                think=False,
+            )
+            content = self._value(self._value(response, "message", {}), "content", "")
+        except Exception as error:
+            print(f"[Premise] Could not check it: {type(error).__name__}: {error}")
+            return None
+        correction = premise_check.correction(content)
+        if not correction or premise_check.already_said(reply, correction, said):
+            return None
+        # Measured: an English question got its correction in Korean.
+        if bool(re.search(r"[가-힣]", correction)) != (self._turn_language == "ko"):
+            return None
+        if self._turn_language == "ko":
+            correction = korean_register.to_formal(correction)
+        # Common knowledge is the judge's; a name is not. "Bainbridge has no
+        # casino" stays, a casino named beside it goes unless it was checked.
+        correction = self._enforce_grounded_entities(
+            correction, user_input=said, action_performed=False,
+        )
+        if not str(correction or "").strip():
+            return None
+        print(f"[Premise] They took something false for granted; said instead: {correction!r}")
+        return correction
+
+    def _answered_on_its_own(self, question: str) -> str:
+        """The question answered with no conversation behind it -- what she
+        copied from is the history, so the second attempt does not have it."""
+        try:
+            messages = self._build_factual_messages(question, "", reset_history=True)
+            response = self.client.chat(
+                model=self.model,
+                messages=messages,
+                stream=False,
+                options={"temperature": 0, "num_predict": 220},
+                keep_alive=self.keep_alive,
+                think=False,
+            )
+            text = str(
+                self._value(self._value(response, "message", {}), "content", "") or ""
+            ).strip()
+        except Exception as error:
+            print(f"[Answer] Could not answer it again: "
+                  f"{type(error).__name__}: {error}")
+            return ""
+        if self._turn_language == "ko" and text:
+            text = korean_register.to_formal(text)
+        return text
+
+    def _answer_the_corrected_question(self, question: str, term: str) -> str:
+        """The corrected question answered on its own, without the history.
+
+        Measured: "CPT 신청 서류 뭐가 필요해?" -> "아니 CPT 말고 OPT" was
+        rewritten to "OPT 신청 서류 뭐가 필요해?", routed as that -- and
+        answered with the previous CPT answer word for word, because the
+        strongest thing in the prompt was her own last reply. Kept only when
+        it names what they meant.
+        """
+        text = self._answered_on_its_own(question)
+        if text and self._names_what_they_meant(text, term):
+            print(f"[Correction] The answer was about the old one; answered "
+                  f"{question!r} on its own.")
+            return text
+        return ""
+
+    def _not_her_last_answer(self, said: str, reply: str) -> str:
+        """A new question answered with the answer to the last one.
+
+        Measured on the basics check: asked "물은 몇 도에서 끓어?" one turn
+        after a question about Fahrenheit, she said "물의 동결점은 32도
+        화씨입니다" -- the previous answer, with the new question's own word
+        (끓) nowhere in it. Asked again without the history; the second
+        attempt is kept only when it says something else.
+        """
+        previous, _ = self._things_she_has_said()
+        if not str(previous or "").strip():
+            return reply
+        said_again = (
+            told_not_asked.repeats(reply, previous)
+            or told_not_asked.answers_the_one_before(reply, said, previous)
+        )
+        if not said_again:
+            return reply
+        fresh = self._answered_on_its_own(said)
+        if (fresh and not told_not_asked.repeats(fresh, previous)
+                and not told_not_asked.answers_the_one_before(fresh, said, previous)):
+            print(f"[Answer] That was the answer to the question before it; "
+                  f"answered {said[:40]!r} on its own.")
+            return fresh
+        return reply
+
+    _POINTS_AT_NOTHING = (
+        re.compile(
+            r"^(?:(?:ok(?:ay)?|hey|please|can\s+you|could\s+you|just)\s+)*"
+            r"(?:open|close|play|pause|stop|start|delete|remove|send|show|read|buy|"
+            r"book|save|download|install|turn\s+(?:on|off)|do|use|try|fix|check|"
+            r"run|launch)\s+(?:it|that|this|them|those|these)"
+            r"(?:\s+(?:up|out|now|please|for\s+me|again))?\s*[.!?]*$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"^(?:how\s+(?:long|much)\s+(?:does|will|is|would)\s+(?:it|that|this)"
+            r"(?:\s+(?:take|cost|be))?|what\s+about\s+(?:it|that|this)|"
+            r"is\s+(?:it|that)\s+(?:good|open|far|expensive|safe|any\s+good))\s*[?.!]*$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"^(?:그거|이거|저거|그것|이것|저것|그걸|이걸|저걸)\s*(?:을|를|은|는|이|가|도)?\s*"
+            r"(?:좀\s*)?(?:열어|닫아|틀어|꺼|켜|해|보여|지워|보내|사|예약|실행|읽어)\S{0,4}"
+            r"\s*[.!?~]*$"
+        ),
+        re.compile(
+            r"^(?:그거|이거|저거|그건|이건|저건)\s*(?:은|는|이|가)?\s*"
+            r"(?:얼마나\s*걸려|얼마야|얼마|어때|뭐야|괜찮아)\S{0,3}\s*[?.!~]*$"
+        ),
+    )
+
+    def _refers_to_nothing(self, said: str) -> "TurnRouting | None":
+        """A bare "it/그거" before anything has been said for it to mean.
+
+        Only when she has not spoken yet in this conversation: afterwards
+        the continuity layer resolves "open it" against what she said, and
+        it is right to. Nothing to resolve against is the one case where
+        every answer is a guess.
+        """
+        text = " ".join(str(said or "").split())
+        if not text or len(text.split()) > 7:
+            return None
+        if not any(pattern.match(text) for pattern in self._POINTS_AT_NOTHING):
+            return None
+        if self._recent_messages(exclude=text, limit=8, roles=("assistant",)):
+            return None
+        print("[Context] A reference with nothing said yet to refer to; asking.")
+        return TurnRouting(
+            route=IntentDecision(
+                intent="conversation",
+                confidence=1.0,
+                normalized_request=text,
+                reason="A reference to nothing yet said.",
+            ),
+            user_input=text,
+            locked_response=guard_lines.say("refers_to_nothing", self._turn_language),
+        )
+
+    def _acknowledgement_if_missed(self, said: str, reply: str) -> str | None:
+        """What to say instead, when they told her something about their
+        life and her answer does not show she understood it.
+
+        Measured on the misunderstanding check, the ordinary answer to such
+        a turn -- with the whole conversation, the profile and the tools in
+        its prompt -- missed what was said as often as not: "내 여동생은
+        부산에 살아" -> "제가 잘 지내고 있습니다", "My birthday is March
+        14th." -> "That will make for a long day.", "저 다음 달에 이사가요"
+        -> "다음 달에 이사하시나요?". Then the model is asked one small thing
+        with only their sentence in front of it, and what comes back is
+        checked (told_not_asked.takes_it_in); failing that, a fixed line.
+
+        A check on the answer, not a route of its own: the turn is routed
+        and answered as usual first. Answering it before routing lost what
+        the router notes -- "I am going to UW in Seattle." then "I need
+        rent near my school" had no school to be near. An answer that
+        already took it in is left alone; so is a turn that answers her
+        own question, one inside an open recommendation, and one while she
+        waits on a yes.
+        """
+        if not told_not_asked.only_tells(said):
+            return None
+        if told_not_asked.takes_it_in(reply, said):
+            return None
+        # "Remember that I'm vegetarian" is an instruction the standing
+        # orders keep in about_me.yaml; answering it here skipped them.
+        if (
+            memory_gate.asks_to_remember(said)
+            or memory_gate.asks_to_forget(said)
+            or standing_orders.read_instruction(said)[0]
+        ):
+            return None
+        if getattr(self, "_pending_replay", None) is not None:
+            return None
+        if getattr(self, "_pending_slip", None) is not None:
+            return None
+        task_sessions = getattr(self, "task_sessions", None)
+        if task_sessions is not None and task_sessions.active_recommendation() is not None:
+            return None
+        previous, _ = self._things_she_has_said()
+        if str(previous or "").strip().endswith(("?", "？")):
+            return None
+        language = self._turn_language
+        line = ""
+        try:
+            response = self.client.chat(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": (
+                        "You are Elaina, talking with the person in front of "
+                        "you. They just told you something about their own "
+                        "life. Reply with ONE short, warm sentence that shows "
+                        "you understood exactly what they said and that you "
+                        "will remember it. It is THEIR life: say \"your ...\" "
+                        "(in Korean use 님/분 or no pronoun -- never 우리/내/제 "
+                        "for their things). Do not ask a question. Do not "
+                        "congratulate them or wish them well as if it were "
+                        "happening today. Do not talk about yourself. "
+                        + ("Reply in Korean, in 습니다체." if language == "ko"
+                           else "Reply in English.")
+                    )},
+                    {"role": "user", "content": said},
+                ],
+                stream=False,
+                options={"temperature": 0, "num_predict": 70},
+                keep_alive=self.keep_alive,
+                think=False,
+            )
+            line = str(
+                self._value(self._value(response, "message", {}), "content", "") or ""
+            )
+        except Exception as error:
+            print(f"[Acknowledge] Failed: {type(error).__name__}: {error}")
+        line = " ".join(line.split())
+        if language == "ko" and line:
+            line = korean_register.to_formal(line)
+            # The prompt says 님/분 and the model still reaches for 당신,
+            # which reads cold: "당신의 여동생이 부산에 살아 있다는 걸
+            # 알았습니다." Dropping it leaves the sentence standing.
+            line = " ".join(re.sub(r"당신(?:의|은|이|께서|께)?\s*", "", line).split())
+        if len(line) > 180 or not told_not_asked.takes_it_in(line, said):
+            print(f"[Acknowledge] Did not show it understood ({line[:80]!r}); "
+                  "saying the fixed line.")
+            line = guard_lines.say("noted_fact", language)
+        print(f"[Acknowledge] The answer missed what they told me "
+              f"({reply[:60]!r}); said instead: {line[:80]!r}")
+        return line
+
+    def _not_told_yet(self, said: str) -> "TurnRouting | None":
+        """A question about a detail of their life that nothing they told
+        her answers. Measured after a restart, asked "내가 제일 좋아하는
+        색깔이 뭐였지?" with a prompt saying never to guess: "파랑이었습니다".
+        Answered by a fixed line instead; the model is not asked."""
+        if not self.memory_enabled or self.memory_manager is None:
+            return None
+        if not memory_gate.asks_for_a_personal_detail(said):
+            return None
+        told = self._what_they_told_her()
+        if told and memory_gate.shares_a_topic(said, told):
+            return None
+        # "Never told" cannot be said while what they told her is still
+        # being written -- measured on the contamination matrix, "where is
+        # my school again?" came a second after "I'm going to UW in Tacoma"
+        # -- nor about something said in this conversation, which is in
+        # front of her anyway.
+        if any(thread.is_alive() for thread in getattr(self, "_memory_stores", [])):
+            return None
+        said_here = [
+            line for line in self._recent_messages(exclude=said, limit=12, roles=("user",))
+            if memory_gate.carries_something_to_remember(line)
+        ]
+        if said_here and memory_gate.shares_a_topic(said, said_here):
+            return None
+        print("[Memory] Asked about something they never told me; saying so.")
+        return TurnRouting(
+            route=IntentDecision(
+                intent="conversation",
+                confidence=1.0,
+                normalized_request=said,
+                reason="A personal detail they have not told her.",
+            ),
+            user_input=said,
+            locked_response=guard_lines.say("not_told_yet", self._turn_language),
+        )
+
+    def _replaces_what_they_took_back(self, similar, content: str):
+        """The stored memory this new one corrects, if it corrects one.
+
+        The consolidator is a model being asked whether two sentences say
+        the same thing, and a correction looks exactly like a duplicate to
+        it. Measured on the contamination matrix, 2026-09-23: after "no I
+        mean I'm going to UW in Tacoma" it was shown the Seattle memory it
+        already had, answered IGNORE, and nothing was written -- so the
+        only fact in the database still said Seattle, and "where is my
+        school again?" was answered from it two turns later.
+
+        Both halves are required, so this can only ever replace the fact
+        it is about: the stored one has to be something they took back,
+        and the new one has to say what they replaced it with.
+        """
+        taken_back = getattr(self, "_said_differently", None) or []
+        if not taken_back:
+            return None
+        said = {w.casefold() for w in re.findall(r"[^\W_]{2,}", str(content))}
+        for item in similar or ():
+            stored = str(getattr(item, "content", "") or "")
+            if not stored or self._without_what_they_took_back([stored]):
+                continue
+            for _before, _gone, _values, instead, _abbreviations in taken_back:
+                if instead & said:
+                    return item
+        return None
+
     def _store_memory_candidate(self, user_input: str) -> None:
         """Perform expensive extraction/consolidation outside response latency."""
         if (
@@ -3405,6 +5184,16 @@ class ChatEngine:
             or self.extractor is None
             or self.consolidator is None
         ):
+            return
+        if memory_gate.is_question(user_input):
+            # Asking is not telling -- here too, not only where the router
+            # calls this. Measured after a restart: the extractor declined
+            # "우리 강아지 이름 뭐였지?" and "내 여동생 어디 산다고 했지?",
+            # the durable pattern matched "강아지 이름", and both questions
+            # were kept as memories of the person. The profile they
+            # polluted then made "제일 좋아하는 색깔이 뭐였지?" look like
+            # something she had been told, so the fixed "you haven't told
+            # me" line never ran and the model guessed 파랑.
             return
         with self._memory_store_lock:
             started = time.perf_counter()
@@ -3444,6 +5233,23 @@ class ChatEngine:
                         "category": memory.get("category") or "personal",
                     }
 
+                # The extractor writes English, and a Korean name does not
+                # survive the trip: measured, "젠레스 존 제로" was kept as
+                # "Genres Zero" and a dog called 콩 as "Kongi" -- so "무슨
+                # 게임 한다고 했지?" could only ever be answered wrongly. What
+                # they said is kept beside what the extractor made of it.
+                said = " ".join(str(user_input).split())
+                content = str(memory.get("content", ""))
+                if (
+                    re.search(r"[가-힣]", said)
+                    and not re.search(r"[가-힣]", content)
+                    and said not in content
+                ):
+                    memory = {
+                        **memory,
+                        "content": f'{content} (in their words: "{said[:160]}")',
+                    }
+
                 similar = self.memory_manager.search_memory_objects(
                     memory["content"]
                 )
@@ -3452,18 +5258,76 @@ class ChatEngine:
                     memory["content"],
                 )
                 action = result["action"]
-
-                if action == "ADD":
+                corrects = self._replaces_what_they_took_back(
+                    similar, memory["content"],
+                )
+                if corrects is not None and action != "UPDATE":
+                    print(
+                        "[Memory] They took that back; putting the "
+                        f"correction in its place: {memory['content'][:60]!r}"
+                    )
+                    self.memory_manager.update_memory(
+                        corrects.id, memory["content"],
+                    )
+                elif action == "ADD":
                     self.memory_manager.store_memory(
                         content=memory["content"],
                         category=memory["category"],
                         importance=5,
                     )
                 elif action == "UPDATE":
-                    self.memory_manager.update_memory(
-                        result["memory_id"],
-                        result["content"],
+                    # An UPDATE *overwrites a row*, so the model proposes and
+                    # this decides. Measured: it overwrote the education
+                    # memory with an unrelated game habit, and the row kept
+                    # the education label while the fact was gone.
+                    target = next(
+                        (
+                            row for row in similar
+                            if getattr(row, "id", None) == result.get("memory_id")
+                        ),
+                        None,
                     )
+                    if target is not None and same_fact(
+                        getattr(target, "content", ""), memory["content"],
+                    ):
+                        self.memory_manager.update_memory(
+                            result["memory_id"],
+                            result["content"],
+                        )
+                    else:
+                        print(
+                            "[Memory] The consolidator wanted to overwrite a "
+                            "different fact; keeping both: "
+                            f"{memory['content'][:60]!r}"
+                        )
+                        self.memory_manager.store_memory(
+                            content=memory["content"],
+                            category=memory["category"],
+                            importance=5,
+                        )
+                elif any(
+                    same_fact(getattr(row, "content", ""), memory["content"])
+                    for row in similar
+                ):
+                    # Genuinely already known. Visible, because it was not:
+                    # a Korean memory among English ones was consolidated
+                    # away in silence and the restart could not say which
+                    # school.
+                    print(
+                        "[Memory] Already known; not kept again: "
+                        f"{memory['content'][:60]!r}"
+                    )
+                else:
+                    print(
+                        "[Memory] The consolidator called it a duplicate of "
+                        f"nothing it had; keeping it: {memory['content'][:60]!r}"
+                    )
+                    self.memory_manager.store_memory(
+                        content=memory["content"],
+                        category=memory["category"],
+                        importance=5,
+                    )
+                self._profile_cache = None
             except Exception as error:
                 print(
                     f"[Memory Background Warning] "
@@ -3573,6 +5437,32 @@ class ChatEngine:
             if subject:
                 return subject
         return ""
+
+    def _state_for_trace(self) -> dict:
+        """The conversation state a turn's record needs, read and not changed.
+
+        Read only while a record is open (core/turn_trace.py). A state
+        that cannot be read is written down as unreadable rather than
+        allowed to reach the turn.
+        """
+        state: dict = {}
+        readers = (
+            ("subject_before_turn", lambda: self._subject_before_turn),
+            ("open_problem", lambda: getattr(
+                self.task_sessions.active_recommendation(), "subject", None,
+            )),
+            ("held_results", lambda: len(self.task_sessions.results())),
+            ("offer_pending", lambda: self.action_ledger.offer_pending),
+            ("awaiting_clarification",
+             lambda: self.clarification.peek() is not None),
+            ("history_messages", lambda: len(self.conversation.get_history())),
+        )
+        for name, read in readers:
+            try:
+                state[name] = read()
+            except Exception as error:
+                state[name] = f"<unreadable: {type(error).__name__}>"
+        return state
 
     def _context_for_turn(self, route, goal) -> TurnContext:
         """What this turn may carry, decided once for every builder.
@@ -3831,23 +5721,29 @@ class ChatEngine:
             if not self.standing_orders.remember_repair(first, second):
                 return ""
             print(f"[Standing Orders] +say {first!r} -> {second!r}")
-            return f"Got it -- from now on {first} means {second}."
+            return guard_lines.say("standing_repair", self._turn_language).format(
+                first=first, second=second,
+            )
         if kind == "fact":
             if not self.standing_orders.remember_fact(first):
                 return ""
             print(f"[Standing Orders] +fact {first!r}")
-            return "Noted -- I'll keep that."
+            return guard_lines.say("standing_fact", self._turn_language)
         if kind == "note":
             if not self.standing_orders.remember_note(first):
                 return ""
             print(f"[Standing Orders] +note {first!r}")
-            return f"Alright -- I'll {first} from now on."
+            return guard_lines.say("standing_note", self._turn_language).format(
+                first=first,
+            )
         if kind == "forget":
             rules, facts = self.standing_orders.forget(first)
             if not rules and not facts:
                 return ""
             print(f"[Standing Orders] -{rules} rule(s), -{facts} fact(s)")
-            return f"Done -- I've dropped what I had about {first}."
+            return guard_lines.say("standing_forget", self._turn_language).format(
+                first=first,
+            )
         return ""
 
     def _note_preference(self, user_input: str) -> str:
@@ -3965,7 +5861,9 @@ class ChatEngine:
             query,
         )
 
-    def _research_for_recommendation(self, query: str, *, resolution=None, resolved=None):
+    def _research_for_recommendation(
+        self, query: str, *, resolution=None, resolved=None, said: str = "",
+    ):
         """Find candidates, check them, and only then call any of them good.
 
         The cascade, in order, stopping as soon as the answer is settled:
@@ -3978,6 +5876,15 @@ class ChatEngine:
         Returns ``None`` whenever this is not a constrained recommendation,
         so every other lookup keeps the ordinary research path untouched.
         """
+        if candidate_fit.asks_for_a_method(said):
+            # "How do I make it tasty" is answered from what the pages say,
+            # not by ranking them as though one were the answer. Ranking is
+            # what put a GIF and a blog headline forward as picks; the
+            # ordinary research path hands the same pages to the model as
+            # evidence, which is what a method question needs.
+            print("[Recommendation] The turn asks how to do something; "
+                  "researching it rather than ranking candidates.")
+            return None
         problem = resolved.task if resolved is not None else self.task_sessions.active_recommendation()
         if problem is None or not problem.constraints or not query:
             return None
@@ -4999,7 +6906,7 @@ class ChatEngine:
 
         nxt = problem.missing_dimension()
         if nxt:
-            question = problem.question_for(nxt)
+            question = problem.question_for(nxt, language=self._turn_language)
             self.clarification.offer(
                 goal=Goal(kind="recommendation", utterance=problem.subject),
                 slot=nxt,
@@ -5007,7 +6914,11 @@ class ChatEngine:
                 task_id=problem.id,
             )
             self.task_sessions.note_dimension_asked(nxt)
-            spoken = f"Got it. {question}"
+            received = (
+                "알겠습니다." if self._turn_language.startswith("ko")
+                else "Got it."
+            )
+            spoken = f"{received} {question}"
         else:
             if problem.lookup_requested:
                 query = problem.search_query()
@@ -5057,7 +6968,7 @@ class ChatEngine:
         dimension = problem.missing_dimension()
         if not dimension:
             return ""
-        question = problem.question_for(dimension)
+        question = problem.question_for(dimension, language=self._turn_language)
         if not question:
             return ""
         # One outstanding question at a time, across every kind. Measured
@@ -5082,19 +6993,26 @@ class ChatEngine:
         )
         return question
 
-    def _reselect_for_options(self, route, goal):
+    def _reselect_for_options(self, route, goal, *, options: bool = True):
         """Ask the same two layers again, with evidence declared necessary.
 
         Nothing is decided here that they do not decide -- the route is
         restated with the one fact the router missed (this turn wants real
         options), and interaction/capability run again unchanged.
+
+        ``options=False`` wants evidence and not options: a question to be
+        looked up, not a choice to be made. Measured in the English slip
+        demo: a corrected "what documents do I need for CPT?" escalated as
+        options, the open recommendation took the search results as
+        candidates, and she answered "That's done. CPT Application Process
+        is the one I'd start with."
         """
         asking = replace(
             route,
             intent="web_search",
             computer_operation="",
             requires_external_evidence=True,
-            recommendation_needed=True,
+            recommendation_needed=options,
         )
         decision = interaction.decide(asking, goal=goal)
         capability = capability_selection.select(
@@ -5206,7 +7124,31 @@ class ChatEngine:
         print(f"  Why: {why}")
         return problem
 
-    def _resolved_search_query(self, route, goal) -> str:
+    def _said_in_the_turns_language(self, query: str, said: str) -> str:
+        """The query, in the language the person was actually speaking.
+
+        Last, so it applies to whatever the layers above chose. The words
+        put back are the person's own, which is the one string guaranteed
+        to be in the right language and to carry the proper nouns in the
+        form they used -- 워싱턴 대학교 rather than the router's
+        "Washington University in Seattle", which is a different school in
+        St. Louis.
+        """
+        rewritten, why = search_language.in_the_turns_language(
+            query, said=said, language=self._turn_language,
+        )
+        if rewritten != query:
+            print("[Query]")
+            print(f"  source: the turn's own words ({why})")
+            print(f"  text: {rewritten}")
+            return rewritten
+        if why:
+            # Declined, and out loud. The turns this cannot help are the
+            # ones worth counting.
+            print(f"[Query] kept the router's wording: {why}.")
+        return query
+
+    def _resolved_search_query(self, route, goal, *, said: str = "") -> str:
         """What to search for, once everything established is folded in.
 
         The open recommendation has the last word, ahead of the router's
@@ -5277,11 +7219,20 @@ class ChatEngine:
                 print("[Query]")
                 print("  source: active_task")
                 print(f"  text: {resolved}")
-                return resolved
-        return self._localised(
-            problem, self._with_focus(
-                router_query or self._search_subject(route, goal), focus,
-            ), focus=focus,
+                if builder.constraints:
+                    # This is the branch that exists to carry words the
+                    # turn does not have. Swapping in the turn's own words
+                    # would drop the three turns of constraints that are
+                    # the entire reason it was built.
+                    return resolved
+                return self._said_in_the_turns_language(resolved, said)
+        return self._said_in_the_turns_language(
+            self._localised(
+                problem, self._with_focus(
+                    router_query or self._search_subject(route, goal), focus,
+                ), focus=focus,
+            ),
+            said,
         )
 
     def _localised(self, problem, query: str, *, focus=None) -> str:
@@ -5751,7 +7702,7 @@ class ChatEngine:
 
     def _report_what_was_found(
         self, reply: str, *, candidates=(), searched: bool = False,
-        about: str = "",
+        about: str = "", said: str = "",
     ) -> str:
         """A search that found things may not be answered with nothing.
 
@@ -5780,11 +7731,28 @@ class ChatEngine:
         text = str(reply or "").strip()
         if not searched:
             return text
+        if candidate_fit.asks_for_a_method(said):
+            # A method has no candidates. Measured live, on "search how to
+            # make it really tasty, not the obvious stuff": the reply was a
+            # method and named nothing -- correctly -- and this appended
+            # "Realize Cooking Doesn't Really Burn Off is the one I'd start
+            # with", a food blog's headline. The search found pages about
+            # the question, not things to pick between.
+            print("[Grounding Guard] The turn asks how to do something; "
+                  "not naming a pick.")
+            return text
+        # A name they cannot read is not a pick they can act on -- see
+        # TextFilter.OTHER_SCRIPT_PATTERN for the one that was said.
         names = [
             short for short in (
                 self._short_name(name) for name in candidates
             )
             if short and self._candidate_is_about(short, about)
+            and not TextFilter.OTHER_SCRIPT_PATTERN.search(short)
+            # The card layer's own test for a page. Measured: it dropped
+            # "Sennheiser — Headphones, Microphones, Wireless Systems" as
+            # several of them, not one, and this still said it as the pick.
+            and surfaces.names_a_specific_thing(short, about)
         ][:3]
         if not names:
             return text
@@ -5812,6 +7780,10 @@ class ChatEngine:
         # Budget, Curved... and Gaming monitor." Reading the result set back
         # to someone who asked for a recommendation is a different sentence
         # from answering them, and it is the wrong one.
+        # In the turn's language. The English sentence was appended to
+        # Korean replies as it was.
+        if self._turn_language.startswith("ko"):
+            return f"{text} {names[0]}부터 보시는 걸 추천합니다.".strip()
         return f"{text} {names[0]} is the one I'd start with.".strip()
 
     def _refuse_redundant_permission(
@@ -5873,6 +7845,16 @@ class ChatEngine:
         if kept == text and speech_act_of(text) != OFFER:
             # Multi-sentence, and the offer is not the closing line -- the
             # strip could not reach it and the rest is real content.
+            return text
+        if conversation_style.word_count(text) > 12:
+            # One long sentence that answers and then offers is still an
+            # answer. Measured in the slip demo: the CPT document list, with
+            # an offer clause on the end, was replaced whole with
+            # "완료했습니다." -- the answer the person had just confirmed they
+            # wanted, deleted for the offer attached to it. English lost it
+            # the same way, as "That's done."
+            print("[Permission] The offer is attached to a real answer; "
+                  "kept.")
             return text
         # The question was the whole reply. Saying nothing is not an option
         # and repeating the question is not true, so report the work.
@@ -7832,6 +9814,22 @@ class ChatEngine:
         # brain/turn_context.py for the turn that cost.
         turn_context = self._context_for_turn(route, goal_intent_result)
         print(turn_context.log_line())
+        if turn_trace.current() is not None:
+            turn_trace.note_context(
+                language=self._turn_language,
+                user_input_resolved=user_input,
+                route=route,
+                decision=decision,
+                capability=capability,
+                goal=goal_intent_result,
+                resolved=resolved,
+                turn_context=turn_context.log_line(),
+                action_performed=action_performed,
+                screen_vision=bool(use_screen_vision),
+                tool_result=locked_response or forced_response,
+                recalled_evidence=recalled_evidence,
+                state=self._state_for_trace(),
+            )
         if not turn_context.inherit_history:
             # Move the line, rather than skipping one turn. Emptying only
             # this prompt left the old subject in the manager, and the next
@@ -7870,6 +9868,9 @@ class ChatEngine:
                 time.perf_counter() - calculation_started
             )
             if calculation_plan is not None:
+                turn_trace.note_evidence(
+                    calculation=calculation_plan.as_trusted_result_text(),
+                )
                 messages = self._build_tool_result_messages(
                     user_input=route.normalized_request,
                     tool_result=calculation_plan.as_trusted_result_text(),
@@ -7889,9 +9890,11 @@ class ChatEngine:
                     ),
                 )
         elif route.intent == "time_question":
+            clock = self.build_time_context(route.normalized_request)
+            turn_trace.note_evidence(clock=clock)
             messages = self._build_factual_messages(
                 route.normalized_request,
-                self.build_time_context(route.normalized_request),
+                clock,
                 reset_history=not turn_context.inherit_history,
             )
 
@@ -7939,21 +9942,37 @@ class ChatEngine:
             try:
                 resolved_query = (
                     resolved.search_query if resolved is not None
-                    else self._resolved_search_query(route, goal_intent_result)
+                    else self._resolved_search_query(
+                        route, goal_intent_result, said=user_input,
+                    )
                 )
                 research_result = self._research_for_recommendation(
                     resolved_query,
                     resolution=getattr(capability, "execution_preference", None),
                     resolved=resolved,
+                    said=user_input,
                 ) or self.research_agent.research(
                     request=route.normalized_request,
                     search_query=resolved_query,
                     max_results=5,
                     verify=route.verification_required,
                     query_is_resolved=resolved is not None,
+                    # The router's own wording, when the query above is the
+                    # person's words in the other language. See
+                    # ResearchAgent.research for the turn that needed it.
+                    alternate_query=(
+                        route.search_query
+                        if str(route.search_query or "").strip()
+                        != str(resolved_query or "").strip()
+                        else ""
+                    ),
                 )
                 self._last_search_query = research_result.queries[0]
                 self._last_research_evidence = research_result.evidence
+                turn_trace.note_evidence(
+                    search_queries=list(research_result.queries),
+                    research=research_result.evidence,
+                )
                 # Against the open recommendation, so a follow-up can rank
                 # what was found instead of searching for it again.
                 self.task_sessions.record_candidates(
@@ -8040,13 +10059,43 @@ class ChatEngine:
                         max_results=3,
                     )
                     self._last_search_query = route.search_query
-                    messages = self._build_factual_messages(
-                        (
+                    turn_trace.note_evidence(
+                        search_queries=[route.search_query],
+                        research=str(search_result),
+                    )
+                    # The correction framing only when there is a correction.
+                    # fact_check is also where "is there a casino on that
+                    # island?" lands -- a question, not a dispute -- and told
+                    # to reconcile a correction that did not exist, the model
+                    # apologised for one: "이전에 말씀드린 내용이 정확하지
+                    # 않았습니다", about a claim she had never made.
+                    if grounded_values.reads_as_dispute(user_input):
+                        instruction = (
                             f"Reconcile the user's correction with the recent "
                             f"grounded context: {route.normalized_request}. "
                             "If Elaina's earlier statement was wrong, say so "
                             "directly and acknowledge that the user was right."
-                        ),
+                        )
+                    else:
+                        # The person's own words go in as well as the
+                        # router's paraphrase. The paraphrase of "was it
+                        # Bainbridge Island?" is a question about which
+                        # island it was, and answering *that* from the
+                        # results produced "The island near Seattle is
+                        # Whidbey Island" -- overruling a guess that was
+                        # right, because the guess was no longer in the
+                        # question.
+                        instruction = (
+                            f"Answer this from the search results: "
+                            f"{route.normalized_request} (the user's own "
+                            f"words: {user_input}). If the user offered a "
+                            "guess, say whether the results support it. The "
+                            "user is asking, not correcting: do not say "
+                            "anything earlier was wrong unless the results "
+                            "show that it was."
+                        )
+                    messages = self._build_factual_messages(
+                        instruction,
                         str(search_result),
                         include_grounded=True,
                         reset_history=False,
@@ -8090,6 +10139,10 @@ class ChatEngine:
                     max_results=3,
                 )
                 self._last_search_query = corrected_query
+                turn_trace.note_evidence(
+                    search_queries=[corrected_query],
+                    research=str(search_result),
+                )
                 messages = self._build_factual_messages(
                     (
                         f"Briefly acknowledge that the corrected entity is "
@@ -8587,8 +10640,32 @@ class ChatEngine:
             max_sentences=max_sentences,
         )
         calculation_response = route.intent == "calculation"
+        # The same completeness question for a value she was asked for but
+        # did not have to calculate. Measured: "What is the freezing point
+        # of water in Fahrenheit?" -> "This is the temperature at which
+        # water turns into ice under standard atmospheric conditions." Only
+        # the checks below change; how she is told to answer does not.
+        value_response = (
+            calculation_response
+            or AnswerCompletionGuard.asks_for_a_value(user_input)
+        )
+        # What the person already gave her, for the completeness checks
+        # below: a calculation answer made only of the question's own
+        # numbers has not answered it. Both spellings count as given --
+        # the router rewrites "what's 2+2" to "2 + 2", and either may be
+        # the one the model echoed back.
+        asked_with_values = f"{user_input} {route.normalized_request or ''}"
         recommendation_response = (
-            route.recommendation_needed or route.speech_act == "advice"
+            (route.recommendation_needed or route.speech_act == "advice")
+            # Except when they are declining one. Measured live on the
+            # contamination matrix: "아니야", after two film turns, was
+            # answered with another film -- the rewrite ran the advice
+            # finalizer, whose prompt is "give the direct recommendation
+            # first", on a turn whose whole content was no. A receipt asks
+            # for nothing, so there is nothing to recommend; whether she
+            # *had* a recommendation in hand is the previous turn's
+            # question, not this one's.
+            and turn_act != conversation_style.RECEIPT
         )
         # A verified plan already has exact, tool-computed numbers baked into
         # messages as a trusted result -- Elaina only has to phrase it
@@ -8618,6 +10695,19 @@ class ChatEngine:
             )
             if calculation_needs_own_math
             else response_instruction
+        )
+        turn_trace.note_context(
+            act=turn_act,
+            limits={
+                "max_words": max_words,
+                "max_sentences": max_sentences,
+                "detailed": detailed_response,
+            },
+            value_response=value_response,
+            recommendation_response=recommendation_response,
+            calculation_verified=calculation_verified,
+            model=active_model,
+            temperature=active_temperature,
         )
         if calculation_needs_own_math:
             messages[-1]["content"] += (
@@ -8703,8 +10793,10 @@ class ChatEngine:
                 # Verification failures are enforced here instead of asking
                 # the vision model to voluntarily avoid a confident guess.
                 raw_reply = effective_forced_response
+                turn_trace.draft(raw_reply, source="locked")
             else:
                 raw_reply = collect_answer()
+                turn_trace.draft(raw_reply, source="model", model=active_model)
                 if ran_out_of_budget:
                     finished = _drop_unfinished_sentence(raw_reply)
                     if finished != raw_reply.rstrip():
@@ -8712,7 +10804,9 @@ class ChatEngine:
                             "\n[Response Guard] Generation hit the length "
                             "budget; dropped the unfinished sentence."
                         )
-                        raw_reply = finished
+                        raw_reply = turn_trace.step(
+                            "budget_cut", raw_reply, finished,
+                        )
 
             # Some Ollama/Qwen3-VL combinations return an empty streamed
             # content field. Retry once with Ollama's documented non-streaming
@@ -8742,22 +10836,29 @@ class ChatEngine:
                     "message",
                     {},
                 )
-                raw_reply = self._value(
-                    direct_message,
-                    "content",
-                    "",
+                raw_reply = turn_trace.step(
+                    "vision_retry", raw_reply,
+                    self._value(
+                        direct_message,
+                        "content",
+                        "",
+                    ),
                 )
 
-            reply = TextFilter.for_voice_response(
-                raw_reply,
-                max_words=max_words,
-                max_sentences=max_sentences,
+            reply = turn_trace.step(
+                "speech_filter", raw_reply,
+                TextFilter.for_voice_response(
+                    raw_reply,
+                    max_words=max_words,
+                    max_sentences=max_sentences,
+                ),
             )
             if (
                 not effective_forced_response
                 and AnswerCompletionGuard.needs_retry(
                     reply,
-                    calculation=calculation_response,
+                    calculation=value_response,
+                    question=asked_with_values,
                 )
             ):
                 print(
@@ -8806,11 +10907,45 @@ class ChatEngine:
                     completion_reply
                     and not AnswerCompletionGuard.needs_retry(
                         completion_reply,
-                        calculation=calculation_response,
+                        calculation=value_response,
+                        question=asked_with_values,
                     )
                 ):
                     raw_reply = completion_raw
-                    reply = completion_reply
+                    reply = turn_trace.step(
+                        "completion_retry", reply, completion_reply,
+                    )
+                else:
+                    # Asked twice, and no number either time. Measured live
+                    # on the contamination matrix: the answer went out as
+                    # "That's the result." A third request would be the
+                    # same request; the value is computed instead.
+                    computed = self._say_the_arithmetic(
+                        route.normalized_request
+                    )
+                    if computed:
+                        print(
+                            "[Response Guard] Still no result after the "
+                            f"retry; computed it: {computed!r}"
+                        )
+                        raw_reply = computed
+                        reply = turn_trace.step(
+                            "computed_result", reply, computed,
+                        )
+            # The answer as it stood while it was still known to state a
+            # result. Everything below may replace it -- a repetition
+            # retry, the advice rewrite, the voice pass, a dozen guards --
+            # and none of them asks the completeness question again.
+            answered_calculation = (
+                reply
+                if value_response and not effective_forced_response
+                and not AnswerCompletionGuard.needs_retry(
+                    reply,
+                    calculation=True,
+                    question=asked_with_values,
+                )
+                else ""
+            )
             if (
                 route.intent in {
                     "conversation",
@@ -8884,7 +11019,9 @@ class ChatEngine:
                             "courtesy nobody had earned; removed it."
                         )
                     raw_reply = retry_raw
-                    reply = trimmed or retry_reply
+                    reply = turn_trace.step(
+                        "repetition_retry", reply, trimmed or retry_reply,
+                    )
 
             # Length limits guide both the first generation and this optional
             # rewrite. The sanitizer never slices the final answer. If the
@@ -8963,7 +11100,8 @@ class ChatEngine:
                 )
                 rewrite_complete = not AnswerCompletionGuard.needs_retry(
                     rewrite_reply,
-                    calculation=calculation_response,
+                    calculation=value_response,
+                    question=asked_with_values,
                 )
                 rewrite_advice_valid = not AdviceResponseGuard.needs_rewrite(
                     rewrite_reply,
@@ -8980,7 +11118,9 @@ class ChatEngine:
                         rewrite_reply, user_input=user_input,
                     )
                 ):
-                    reply = rewrite_reply
+                    reply = turn_trace.step(
+                        "length_rewrite", reply, rewrite_reply,
+                    )
                 else:
                     if recommendation_response and not route.urgent_safety:
                         finalizer_response = self.client.chat(
@@ -9040,24 +11180,33 @@ class ChatEngine:
                             )
                         )
                         if finalizer_valid:
-                            reply = finalizer_reply
+                            reply = turn_trace.step(
+                                "advice_finalizer", reply, finalizer_reply,
+                            )
                     print(
                         "\n[Response Rewrite] The first rewrite was not "
-                        "complete; applied the advice fallback when valid."
+                        "complete; applied the advice fallback when valid: "
+                        f"{str(rewrite_reply)[:120]!r}"
                     )
             if recommendation_response:
-                reply = response_limits.merge_extra_sentences(reply)
+                reply = turn_trace.step(
+                    "merge_extra_sentences", reply,
+                    response_limits.merge_extra_sentences(reply),
+                )
             if effective_forced_response:
                 # A verified tool or planner result never went through the
                 # generation-length path above, so this is its only chance
                 # to become listenable. The condenser refuses any rewrite
                 # that changes a value, so a long result survives intact
                 # rather than being trimmed into something wrong.
-                reply = self.answer_condenser.condense(
-                    reply,
-                    max_words=max_words,
-                    max_sentences=max_sentences,
-                    goal=route.normalized_request or user_input,
+                reply = turn_trace.step(
+                    "condense", reply,
+                    self.answer_condenser.condense(
+                        reply,
+                        max_words=max_words,
+                        max_sentences=max_sentences,
+                        goal=route.normalized_request or user_input,
+                    ),
                 )
             # Say it like a person, then let every truth guard below judge
             # what came back. Deliberately placed *before* them and not
@@ -9065,14 +11214,59 @@ class ChatEngine:
             # pass the same action-commitment, grounded-value and
             # named-candidate checks as a generated one. Nothing here is
             # trusted more than the draft it replaced.
-            reply = self._say_it_in_her_voice(
-                reply,
-                act=turn_act,
-                user_input=user_input,
-                model=active_model,
-                keep_alive=active_keep_alive,
-                max_words=max_words,
+            reply = turn_trace.step(
+                "her_voice", reply,
+                self._say_it_in_her_voice(
+                    reply,
+                    act=turn_act,
+                    user_input=user_input,
+                    model=active_model,
+                    keep_alive=active_keep_alive,
+                    max_words=max_words,
+                ),
             )
+            # Told something, and the answer did not show she understood it
+            # ("내 여동생은 부산에 살아" -> "제가 잘 지내고 있습니다").
+            acknowledgement = self._acknowledgement_if_missed(user_input, reply)
+            if acknowledgement:
+                reply = turn_trace.step("acknowledgement", reply, acknowledgement)
+            # They said which one they meant, and the answer is not about it.
+            # Only an answer from what she knows: a searched answer asked
+            # again without its evidence came back "파리의 실시간 날씨를
+            # 검색해 보겠습니다" -- a promise in place of the weather.
+            # And only her last answer again: an answer about the right one
+            # that does not name it ("…approximately 68,000") is kept --
+            # asked again without the history, it came back 685,000.
+            corrected_to = str(getattr(self, "_corrected_to", "") or "").strip()
+            if (corrected_to and "web_search" not in timings
+                    and not effective_forced_response
+                    and not self._names_what_they_meant(reply, corrected_to)
+                    and told_not_asked.repeats(reply, self._things_she_has_said()[0])):
+                retried = self._answer_the_corrected_question(user_input, corrected_to)
+                if retried:
+                    reply = turn_trace.step("corrected_question", reply, retried)
+            # And a value question answered with the previous answer.
+            if value_response and not effective_forced_response:
+                reply = turn_trace.step(
+                    "not_her_last_answer", reply,
+                    self._not_her_last_answer(user_input, reply),
+                )
+                if "web_search" not in timings:
+                    reply = turn_trace.step(
+                        "encyclopedia", reply,
+                        self._checked_against_the_encyclopedia(user_input, reply),
+                    )
+            # A fact they told her is not asked back to them. The prompt
+            # already says so, and "저 다음 달에 이사가요" still came back
+            # "다음 달에 이사하시나요?" (brain/told_not_asked.py).
+            asked_back = told_not_asked.without_asking_back(reply, user_input)
+            if asked_back != reply:
+                print("[Style] Took out a question that only repeated what "
+                      "they told me.")
+                reply = turn_trace.step(
+                    "told_not_asked", reply,
+                    asked_back or guard_lines.say("noted_fact", self._turn_language),
+                )
             # Checked again after the voice pass, not only in the speech
             # filter before it. The reply that leaked kana live had been
             # regenerated once and rewritten twice already, and ``_resay``
@@ -9080,26 +11274,47 @@ class ChatEngine:
             # anything produced is the one that has to be clean.
             without_kana = TextFilter.without_foreign_script(reply)
             if without_kana != reply:
-                reply = without_kana or guard_lines.say(
-                    "no_response", self._turn_language,
+                reply = turn_trace.step(
+                    "foreign_script", reply,
+                    without_kana or guard_lines.say(
+                        "no_response", self._turn_language,
+                    ),
                 )
-            reply = self._enforce_action_commitment(
-                reply,
-                user_input=user_input,
-                action_performed=action_performed,
+            reply = turn_trace.step(
+                "turn_language", reply,
+                self._answered_in_the_turns_language(
+                    reply,
+                    model=active_model,
+                    keep_alive=active_keep_alive,
+                    max_words=max_words,
+                ),
             )
-            reply = self._enforce_grounded_values(
-                reply,
-                user_input=user_input,
-                action_performed=action_performed,
-                research_evidence=self._last_research_evidence,
-                trusted_result=bool(effective_forced_response),
-                searched="web_search" in timings,
+            reply = turn_trace.step(
+                "action_commitment", reply,
+                self._enforce_action_commitment(
+                    reply,
+                    user_input=user_input,
+                    action_performed=action_performed,
+                ),
             )
-            reply = self._enforce_existence_claims(
-                reply,
-                research_evidence=self._last_research_evidence,
-                searched="web_search" in timings,
+            reply = turn_trace.step(
+                "grounded_values", reply,
+                self._enforce_grounded_values(
+                    reply,
+                    user_input=user_input,
+                    action_performed=action_performed,
+                    research_evidence=self._last_research_evidence,
+                    trusted_result=bool(effective_forced_response),
+                    searched="web_search" in timings,
+                ),
+            )
+            reply = turn_trace.step(
+                "existence_claims", reply,
+                self._enforce_existence_claims(
+                    reply,
+                    research_evidence=self._last_research_evidence,
+                    searched="web_search" in timings,
+                ),
             )
             active_problem = self.task_sessions.active_recommendation()
             if not turn_context.inherit_history and active_problem is not None:
@@ -9122,79 +11337,111 @@ class ChatEngine:
             # listings; a page-click failure is not one, and rewriting it
             # as though it were replaced the answer with search language.
             if not self._browser_result_is_final:
-                reply = self._enforce_named_recommendation(
-                    reply,
-                    candidates=(
-                        active_problem.candidates if active_problem else ()
+                reply = turn_trace.step(
+                    "named_recommendation", reply,
+                    self._enforce_named_recommendation(
+                        reply,
+                        candidates=(
+                            active_problem.candidates if active_problem else ()
+                        ),
+                        searched="web_search" in timings,
+                        evidence=self._last_research_evidence,
+                        request=user_input,
+                        recommendation=recommendation_response,
                     ),
-                    searched="web_search" in timings,
-                    evidence=self._last_research_evidence,
-                    request=user_input,
                 )
             if not self._browser_result_is_final:
                 # After the "did it find anything" guards, and asking the
                 # question they do not: is what she named one of them.
-                reply = self._enforce_named_candidates(
-                    reply,
-                    candidates=(
-                        active_problem.candidates if active_problem else ()
+                reply = turn_trace.step(
+                    "named_candidates", reply,
+                    self._enforce_named_candidates(
+                        reply,
+                        candidates=(
+                            active_problem.candidates if active_problem else ()
+                        ),
+                        searched="web_search" in timings,
+                        request=user_input,
                     ),
-                    searched="web_search" in timings,
-                    request=user_input,
                 )
             if not self._browser_result_is_final:
-                reply = self._enforce_found_claim(
-                    reply,
-                    candidates=(
-                        active_problem.candidates if active_problem else ()
+                reply = turn_trace.step(
+                    "found_claim", reply,
+                    self._enforce_found_claim(
+                        reply,
+                        candidates=(
+                            active_problem.candidates if active_problem else ()
+                        ),
                     ),
                 )
-            reply = self._enforce_grounded_entities(
-                reply,
-                user_input=user_input,
-                action_performed=action_performed,
-                evidence=self._last_research_evidence,
-                trusted_result=bool(effective_forced_response),
+            reply = turn_trace.step(
+                "grounded_entities", reply,
+                self._enforce_grounded_entities(
+                    reply,
+                    user_input=user_input,
+                    action_performed=action_performed,
+                    evidence=self._last_research_evidence,
+                    trusted_result=bool(effective_forced_response),
+                ),
             )
-            reply = self._refuse_invented_capability(reply, user_input)
-            reply = self._refuse_unearned_success(
-                reply, action_performed=action_performed,
+            reply = turn_trace.step(
+                "invented_capability", reply,
+                self._refuse_invented_capability(reply, user_input),
             )
-            reply = self._refuse_unobserved_app_activity(reply)
+            reply = turn_trace.step(
+                "unearned_success", reply,
+                self._refuse_unearned_success(
+                    reply, action_performed=action_performed,
+                ),
+            )
+            reply = turn_trace.step(
+                "unobserved_app_activity", reply,
+                self._refuse_unobserved_app_activity(reply),
+            )
             # Before the strip, deliberately. An offer she made in her own
             # words is not filler -- it is only dishonest when nothing is
             # waiting for the answer. Park something, and it survives the
             # strip below on its own merits.
-            reply = self._ground_offer_language(
-                reply,
-                decision=decision,
-                capability=capability,
-                goal=goal_intent_result,
-                route=route,
-                action_performed=action_performed,
+            reply = turn_trace.step(
+                "ground_offer_language", reply,
+                self._ground_offer_language(
+                    reply,
+                    decision=decision,
+                    capability=capability,
+                    goal=goal_intent_result,
+                    route=route,
+                    action_performed=action_performed,
+                ),
             )
             # And the mirror image: a question about something the user
             # already asked for is the same disagreement with the record.
-            reply = self._refuse_redundant_permission(
-                reply,
-                decision=decision,
-                route=route,
-                action_performed=action_performed,
+            reply = turn_trace.step(
+                "redundant_permission", reply,
+                self._refuse_redundant_permission(
+                    reply,
+                    decision=decision,
+                    route=route,
+                    action_performed=action_performed,
+                ),
             )
             # Last, so it also catches a footer a rewrite reintroduced. Her
             # personality file bans these outright and the model adds them
             # anyway, so the removal is code rather than more prompt wording.
             before_strip = reply
-            reply = ClosingOfferGuard.strip(
-                reply,
-                # A repair guard, the ability answer or the grounding pass
-                # above may have parked an offer whose text is in this
-                # reply. Removing it would leave the gate holding an offer
-                # the user never saw. Read from the ledger, which is the
-                # one authority on whether an offer is genuinely open.
-                keep_offers=(
-                    self.action_ledger.offer_pending
-                    or self._invitation_stands
+            reply = turn_trace.step(
+                "closing_offer", reply,
+                ClosingOfferGuard.strip(
+                    reply,
+                    # A repair guard, the ability answer or the grounding
+                    # pass above may have parked an offer whose text is in
+                    # this reply. Removing it would leave the gate holding
+                    # an offer the user never saw. Read from the ledger,
+                    # which is the one authority on whether an offer is
+                    # genuinely open.
+                    keep_offers=(
+                        self.action_ledger.offer_pending
+                        or self._invitation_stands
+                    ),
                 ),
             )
             if reply != before_strip:
@@ -9207,72 +11454,13 @@ class ChatEngine:
                           f"{removed[:80]!r}")
             # After the strip: it removes trailing filler, and what is
             # left may still hold a second question about the same offer.
-            reply = self._one_offer_per_reply(reply)
+            reply = turn_trace.step(
+                "one_offer", reply, self._one_offer_per_reply(reply),
+            )
             if not self._browser_result_is_final:
-                reply = self._report_what_was_found(
-                    reply,
-                    candidates=(
-                        active_problem.candidates if active_problem else ()
-                    ),
-                    searched="web_search" in timings,
-                    about=(
-                        active_problem.subject if active_problem else ""
-                    ),
-                )
-            # After the guard, deliberately: a real offer names a capability
-            # and a subject, and stripping it as filler would remove the one
-            # useful thing this phase adds.
-            reply = self._append_recommendation(
-                reply, decision=decision, capability=capability,
-                goal=goal_intent_result, act=turn_act,
-            )
-            checked_draft = reply
-            reply = self._final_response_check(
-                reply,
-                user_input=user_input,
-                messages=messages,
-                model=active_model,
-                temperature=active_temperature,
-                num_predict=num_predict,
-                keep_alive=active_keep_alive,
-                max_words=max_words,
-                max_sentences=max_sentences,
-                forced=bool(effective_forced_response),
-                act=turn_act,
-            )
-            if reply != checked_draft:
-                # The repetition retry is the final model pass. Its output
-                # must pass the same factual/action boundaries as the draft;
-                # there are no model rewrites after these checks.
-                reply = self._enforce_action_commitment(
-                    reply, user_input=user_input, action_performed=action_performed,
-                )
-                reply = self._enforce_grounded_values(
-                    reply, user_input=user_input, action_performed=action_performed,
-                    research_evidence=self._last_research_evidence,
-                    trusted_result=False, searched="web_search" in timings,
-                )
-                if not self._browser_result_is_final:
-                    reply = self._enforce_found_claim(
-                        reply,
-                        candidates=(
-                            active_problem.candidates if active_problem else ()
-                        ),
-                    )
-                reply = self._enforce_grounded_entities(
-                    reply, user_input=user_input, action_performed=action_performed,
-                    evidence=self._last_research_evidence, trusted_result=False,
-                )
-                reply = ClosingOfferGuard.strip(
-                    reply,
-                    keep_offers=(
-                        self.action_ledger.offer_pending
-                        or self._invitation_stands
-                    ),
-                )
-                reply = self._one_offer_per_reply(reply)
-                if not self._browser_result_is_final:
-                    reply = self._report_what_was_found(
+                reply = turn_trace.step(
+                    "report_found", reply,
+                    self._report_what_was_found(
                         reply,
                         candidates=(
                             active_problem.candidates if active_problem else ()
@@ -9281,17 +11469,199 @@ class ChatEngine:
                         about=(
                             active_problem.subject if active_problem else ""
                         ),
+                        said=user_input,
+                    ),
+                )
+            # After the guard, deliberately: a real offer names a capability
+            # and a subject, and stripping it as filler would remove the one
+            # useful thing this phase adds.
+            reply = turn_trace.step(
+                "append_recommendation", reply,
+                self._append_recommendation(
+                    reply, decision=decision, capability=capability,
+                    goal=goal_intent_result, act=turn_act,
+                ),
+            )
+            checked_draft = reply
+            reply = turn_trace.step(
+                "final_check", reply,
+                self._final_response_check(
+                    reply,
+                    user_input=user_input,
+                    messages=messages,
+                    model=active_model,
+                    temperature=active_temperature,
+                    num_predict=num_predict,
+                    keep_alive=active_keep_alive,
+                    max_words=max_words,
+                    max_sentences=max_sentences,
+                    forced=bool(effective_forced_response),
+                    act=turn_act,
+                ),
+            )
+            if reply != checked_draft:
+                # The repetition retry is the final model pass. Its output
+                # must pass the same factual/action boundaries as the draft;
+                # there are no model rewrites after these checks.
+                reply = turn_trace.step(
+                    "action_commitment", reply,
+                    self._enforce_action_commitment(
+                        reply, user_input=user_input,
+                        action_performed=action_performed,
+                    ),
+                )
+                reply = turn_trace.step(
+                    "grounded_values", reply,
+                    self._enforce_grounded_values(
+                        reply, user_input=user_input,
+                        action_performed=action_performed,
+                        research_evidence=self._last_research_evidence,
+                        trusted_result=False, searched="web_search" in timings,
+                    ),
+                )
+                if not self._browser_result_is_final:
+                    reply = turn_trace.step(
+                        "found_claim", reply,
+                        self._enforce_found_claim(
+                            reply,
+                            candidates=(
+                                active_problem.candidates
+                                if active_problem else ()
+                            ),
+                        ),
                     )
-            reply = TextFilter.natural_dashes(reply)
+                reply = turn_trace.step(
+                    "grounded_entities", reply,
+                    self._enforce_grounded_entities(
+                        reply, user_input=user_input,
+                        action_performed=action_performed,
+                        evidence=self._last_research_evidence,
+                        trusted_result=False,
+                    ),
+                )
+                reply = turn_trace.step(
+                    "closing_offer", reply,
+                    ClosingOfferGuard.strip(
+                        reply,
+                        keep_offers=(
+                            self.action_ledger.offer_pending
+                            or self._invitation_stands
+                        ),
+                    ),
+                )
+                reply = turn_trace.step(
+                    "one_offer", reply, self._one_offer_per_reply(reply),
+                )
+                if not self._browser_result_is_final:
+                    reply = turn_trace.step(
+                        "report_found", reply,
+                        self._report_what_was_found(
+                            reply,
+                            candidates=(
+                                active_problem.candidates
+                                if active_problem else ()
+                            ),
+                            searched="web_search" in timings,
+                            about=(
+                                active_problem.subject
+                                if active_problem else ""
+                            ),
+                            said=user_input,
+                        ),
+                    )
+            reply = turn_trace.step(
+                "natural_dashes", reply, TextFilter.natural_dashes(reply),
+            )
             # The true end of the line, after every guard and every
             # appender. It has to be here and not earlier: the offer this
             # turn may append is added *after* the speech filter has run,
             # which is how "Happy to dig into a product_recommendation if
             # that helps" reached a user with the underscore still in it.
             # Anything added past the filter needs a filter past it.
-            reply = conversation_style.repair_structure(
-                TextFilter.for_voice_response(reply)
+            reply = turn_trace.step(
+                "final_speech_filter", reply,
+                conversation_style.repair_structure(
+                    TextFilter.for_voice_response(reply)
+                ),
             )
+            # Judged again on what they will actually hear. A guard after
+            # the first check can take out what showed she understood --
+            # measured: "다음 주 금요일에 시애틀로 돌아가시는군요" removed as
+            # "a restatement of the current message", leaving "일정이
+            # 궁금하시다면 알려주시면 도와드리겠습니다" -- and what they took
+            # for granted is checked against the finished answer.
+            corrected_premise = self._premise_corrected(user_input, reply)
+            if corrected_premise:
+                reply = turn_trace.step(
+                    "premise_correction", reply,
+                    TextFilter.for_voice_response(corrected_premise),
+                )
+            else:
+                acknowledgement = self._acknowledgement_if_missed(user_input, reply)
+                if acknowledgement:
+                    reply = turn_trace.step(
+                        "acknowledgement", reply,
+                        TextFilter.for_voice_response(acknowledgement),
+                    )
+            theirs = told_not_asked.as_theirs(reply, user_input)
+            if theirs != reply:
+                print("[Style] Their \"my\" was said back as hers; put right.")
+                reply = turn_trace.step("as_theirs", reply, theirs)
+            reply = turn_trace.step(
+                "their_name", reply,
+                self._their_name_not_hers(user_input, reply),
+            )
+            # The number she worked out, still in the answer. Measured
+            # live on "what's 2+2" after three turns of sympathy: the reply
+            # came back "That's the result of 2 plus 2." and, on another
+            # run, "That's the result." -- the operands survived and the
+            # answer did not. Which stage dropped it varies; that none of
+            # them looks does not, so the last word on a calculation is
+            # here, where there is nothing left to undo it.
+            if answered_calculation and AnswerCompletionGuard.dropped_the_result(
+                reply, draft=answered_calculation, question=asked_with_values,
+            ):
+                said_it = AnswerCompletionGuard.the_result_sentence(
+                    answered_calculation, question=asked_with_values,
+                )
+                # Only within one language. The draft and the finished
+                # reply are the same answer in different words; if a later
+                # stage answered in the other language, its sentence is the
+                # one the person can read.
+                korean = any("가" <= ch <= "힣" for ch in said_it)
+                if said_it and korean == any(
+                    "가" <= ch <= "힣" for ch in reply
+                ):
+                    print(
+                        "\n[Response Guard] The answer lost the value it "
+                        f"worked out; saying it: {said_it[:60]!r}"
+                    )
+                    reply = turn_trace.step("result_restored", reply, said_it)
+            # 몇 도 from a Korean speaker means Celsius. The market is the
+            # United States and English answers stay in Fahrenheit; the
+            # unit follows the language of the question, not the market
+            # (brain/units.py).
+            #
+            # Last, and after the guard just above, because that guard
+            # undid it: it compares the finished reply against the draft,
+            # saw 212 replaced by 100 and restored the Fahrenheit draft.
+            # Measured twice, one line after the other: "[Units] ... said
+            # in Celsius" then "[Response Guard] The answer lost the value
+            # it worked out".
+            if self._turn_language == "ko":
+                in_celsius = units.in_celsius(reply, user_input)
+                if in_celsius != reply:
+                    print("[Units] Fahrenheit in a Korean answer; "
+                          "said in Celsius.")
+                    reply = turn_trace.step("celsius", reply, in_celsius)
+            # What she took a misheard name to be, said with the answer so
+            # the person can still correct it (brain/near_miss.py). After
+            # the filter, so the answer's own sentences are not the ones
+            # trimmed to make room for it.
+            if self._slip_assumed and reply.strip():
+                reply = turn_trace.step(
+                    "near_miss_prefix", reply, f"{self._slip_assumed} {reply}",
+                )
             speech_buffer = reply
             if reply:
                 print(
@@ -9306,10 +11676,13 @@ class ChatEngine:
 
         except Exception as error:
             print(f"\n[Vision/LLM Error] {type(error).__name__}: {error}")
+            turn_trace.note_outcome("error", f"{type(error).__name__}: {error}")
         timings["generation"] = time.perf_counter() - generation_started
 
         if turn_cancel.is_set():
             print("\n[ChatEngine] Response interrupted.")
+            turn_trace.note_outcome("interrupted")
+            turn_trace.note_timings(timings)
             self.events.emit(
                 "assistant_interrupted",
                 text=reply,
@@ -9337,25 +11710,34 @@ class ChatEngine:
         # Never silently return to microphone listening after a failed request.
         if not reply.strip():
             if tool_result_fallback:
-                reply = TextFilter.for_voice_response(
-                    tool_result_fallback,
-                    max_words=max_words,
-                    max_sentences=max_sentences,
-                ) or guard_lines.say("no_response", self._turn_language)
+                reply = turn_trace.step(
+                    "empty_fallback", reply,
+                    TextFilter.for_voice_response(
+                        tool_result_fallback,
+                        max_words=max_words,
+                        max_sentences=max_sentences,
+                    ) or guard_lines.say("no_response", self._turn_language),
+                )
             elif uses_vision_model:
                 # Nothing rephrases this one -- it is the reply. It used to
                 # name Ollama and a model tag, in English, to someone who
                 # had asked what was on their screen.
-                reply = capability_contract.failed(
-                    "screen_analysis",
-                    "capture_failed",
-                    detail=(
-                        f"vision model {self.vision_model!r} returned nothing"
-                    ),
-                    language=self._turn_language,
-                ).spoken(self._turn_language)
+                reply = turn_trace.step(
+                    "empty_fallback", reply,
+                    capability_contract.failed(
+                        "screen_analysis",
+                        "capture_failed",
+                        detail=(
+                            f"vision model {self.vision_model!r} returned nothing"
+                        ),
+                        language=self._turn_language,
+                    ).spoken(self._turn_language),
+                )
             else:
-                reply = guard_lines.say("no_response", self._turn_language)
+                reply = turn_trace.step(
+                    "empty_fallback", reply,
+                    guard_lines.say("no_response", self._turn_language),
+                )
 
             print(
                 reply,
@@ -9371,6 +11753,7 @@ class ChatEngine:
         print()
 
         # The LLM has finished generating its response.
+        turn_trace.display(reply)
         self.events.emit(
             "assistant_finished",
             text=reply,
@@ -9472,15 +11855,28 @@ class ChatEngine:
         # Either gate saying yes is enough. A wrong yes costs a little
         # latency; a wrong no loses something the person told you once.
         if self.memory_enabled and (
-            (route.intent == "conversation" and route.memory_candidate)
+            (
+                route.intent == "conversation" and route.memory_candidate
+                # A question states nothing; the extractor filled one in
+                # anyway ("내가 무슨 전공인지 기억해?" -> "The user studies
+                # Electrical Engineering").
+                and not memory_gate.is_question(user_input)
+            )
             or memory_gate.carries_something_to_remember(user_input)
-        ):
-            threading.Thread(
+        ) and not getattr(self, "_asked_to_repeat", False):
+            store = threading.Thread(
                 target=self._store_memory_candidate,
                 args=(user_input,),
                 name="elaina-memory-store",
                 daemon=True,
-            ).start()
+            )
+            store.start()
+            # Kept so close() can wait for it: something said right before
+            # she is turned off must still be there when she is turned on.
+            self._memory_stores = [
+                thread for thread in getattr(self, "_memory_stores", [])
+                if thread.is_alive()
+            ] + [store]
             timings["memory_queue"] = 0.0
 
         timings["total"] = time.perf_counter() - turn_started
@@ -9493,6 +11889,7 @@ class ChatEngine:
             timeline = timing.begin(label="text")
         timeline.merge(timings)
         timing.finish()
+        turn_trace.note_timings(timeline.as_dict())
         if self._print_timings:
             print(timeline.summary())
 
@@ -9864,6 +12261,78 @@ class ChatEngine:
         standing = self.standing_orders.context_text()
         if standing:
             context_prompt += f"\n\nABOUT THIS PERSON\n{standing}"
+        # What they have told her about themselves, in every turn -- the way
+        # a person knows who they are talking to. Measured before this: ten
+        # facts told, seven stored, and after a restart 0 of 11 recalled;
+        # the store worked, nothing ever put it in front of her.
+        told = self._what_they_told_her()
+        if told:
+            context_prompt += (
+                "\n\nWHAT THIS PERSON HAS TOLD YOU ABOUT THEMSELVES "
+                "(from earlier conversations -- you keep this when you are "
+                "turned off)\n"
+                + "\n".join(f"- {fact}" for fact in told)
+                + "\nThese are facts about THEM -- the person talking to you, "
+                "not about you, Elaina. Say them back as \"you/your\" (in "
+                "Korean 님 or no pronoun), never as \"I/my/our\" (내/제/우리). "
+                "When they ask about themselves -- their name, school, "
+                "family, pets, plans, habits, likes -- answer from this list, "
+                "in your own words and in their language. If what they ask is "
+                "not on it, say they haven't told you yet; never guess a "
+                "personal fact. Otherwise use a fact only when it changes your "
+                "answer (a peanut allergy when suggesting a snack), and never "
+                "recite the list."
+            )
+            # The fact that answers it, beside the question. Measured with
+            # the whole list in the prompt: "What's my name?" came back
+            # "Your name is Elaina." -- her own name, from the system
+            # prompt, beat theirs from a list of twenty.
+            if memory_gate.asks_about_themselves(user_input):
+                answering = memory_gate.facts_on_topic(user_input, told)
+                if answering:
+                    context_prompt += (
+                        "\n\nWHAT THEY TOLD YOU THAT ANSWERS THIS QUESTION "
+                        "(about them, not you):\n"
+                        + "\n".join(f"- {fact}" for fact in answering)
+                    )
+        elif memory_gate.asks_about_themselves(user_input):
+            context_prompt += (
+                "\n\nThey are asking about themselves, and they have not told "
+                "you this. Say so plainly; never guess a personal fact."
+            )
+        if told_not_asked.states_an_assumption(user_input):
+            context_prompt += (
+                "\n\nThey are assuming something in how they ask. Check that "
+                "assumption first; if it is wrong, say so plainly in your "
+                "first sentence (e.g. water freezes at 0°C, not 100°C), then "
+                "answer what they asked."
+            )
+        if getattr(self, "_corrected_from", ""):
+            context_prompt += (
+                "\n\nThey just corrected which one they meant. Answer the "
+                "question as it now reads, and acknowledge the correction in "
+                "a few words -- do not ask again what they want to know."
+            )
+        # Being told something is not being asked about it. Measured: "My
+        # birthday is March 14th." -> "You're celebrating on March 14th.
+        # Take some time for yourself."; "나 수업 끝나고 보통 젠레스 존 제로
+        # 해" -> "하셨나요? 좀 힘들었겠습니다"; "다음 주 금요일에 시애틀로
+        # 돌아가" echoed back as "돌아가시나요?".
+        if (
+            memory_gate.carries_something_to_remember(user_input)
+            and not memory_gate.is_question(user_input)
+        ):
+            context_prompt += (
+                "\n\nThey are telling you something about their own life. Take "
+                "it as a fact about them -- not news that is happening today, "
+                "and not a question. Acknowledge it briefly in your own words "
+                "(you will remember it); do not congratulate them or wish them "
+                "well for it as if it were happening now, and do not repeat it "
+                "back as a question. It is theirs, not yours: never repeat "
+                "their 우리/내/제/my as if it were your own (say 강아지 or "
+                "여동생분, \"your dog\", \"your sister\"). If they also asked "
+                "for something, answer that too."
+            )
         if routing.problem is not None and routing.problem.real_world:
             # Market context belongs to concrete acquisition and discovery,
             # not to every conversation. This preserves local fallbacks for
@@ -9924,6 +12393,12 @@ class ChatEngine:
         # belongs to.
         self._browser_result_is_final = False
         raw_transcript = user_input
+        # Before anything reads the turn -- including the near-miss repair,
+        # which would otherwise "correct" noise into something plausible.
+        unclear = self._asks_to_hear_it_again(user_input)
+        if unclear is not None:
+            timings["route"] = time.perf_counter() - route_started
+            return unclear
         # Her own abilities are a closed vocabulary, so a transcriber that
         # mishears one produces something that is not in it. Repaired here,
         # before anything reads the turn, so every layer downstream sees one
@@ -9944,6 +12419,48 @@ class ChatEngine:
         user_input, applied = self.standing_orders.heard_as(user_input)
         if applied:
             print(f"[Standing Orders] {applied}")
+        # A word that is almost what the conversation is about -- a name
+        # the transcriber misheard, or "CBT" from someone who has been
+        # asking about CPT. Settled before anything reads the turn, so
+        # every layer below sees the version the person meant.
+        self._slip_assumed = ""
+        self._search_the_correction = False
+        settled = self._near_miss_turn(user_input)
+        if isinstance(settled, TurnRouting):
+            timings["route"] = time.perf_counter() - route_started
+            return settled
+        user_input = settled
+        # Words the transcriber was sure of that do not fit together -- the
+        # garbled clip the confidence check above cannot see.
+        nonsense = self._does_not_make_sense(user_input)
+        if nonsense is not None:
+            timings["route"] = time.perf_counter() - route_started
+            return nonsense
+        # "No, I meant Portland, Maine" is the previous question again, with
+        # the right one in it -- not a new, empty request.
+        self._corrected_from = ""
+        self._corrected_to = ""
+        user_input = self._with_correction_applied(user_input)
+        # Recording what the person does, and what they did. Read before
+        # the standing orders, which would take "stop recording" as a rule
+        # to forget and "remember what I do" as a fact.
+        activity = self._activity_turn(raw_transcript)
+        if activity is not None:
+            timings["route"] = time.perf_counter() - route_started
+            return activity
+        # A detail of their own life they never told her is said to be
+        # unknown, in so many words -- never generated.
+        not_told = self._not_told_yet(raw_transcript)
+        if not_told is not None:
+            timings["route"] = time.perf_counter() - route_started
+            return not_told
+        # "Open it." with nothing yet said to point at is a question back,
+        # not a guess. Measured as the first turn of a conversation: she
+        # listed her abilities and said Desktop Control Mode was off.
+        nothing = self._refers_to_nothing(raw_transcript)
+        if nothing is not None:
+            timings["route"] = time.perf_counter() - route_started
+            return nothing
         previous_focus = self.task_sessions.focus()
         # One answer per turn to "is this turn about the thing she just
         # did?". Set by the repair layer, read by the focus layer, which
@@ -10428,6 +12945,46 @@ class ChatEngine:
                 ),
             )
         if (
+            _BARE_REFUSAL.fullmatch(user_input)
+            and active_problem is not None
+            and not any((
+                pending_offer,
+                pending_computer,
+                pending_task,
+                pending_strategy,
+                pending_capability,
+                pending_clarification,
+            ))
+            and not has_explicit_attachment
+            and not continuing_agent_flow
+        ):
+            # They said no to the thing she is working on. Nothing is
+            # parked, so there is no consent to resolve and nothing for the
+            # router to classify -- the only question is whether the
+            # recommendation stays open, and it does not.
+            #
+            # Deterministic for the same reason the cancellation above is:
+            # sent to the model, with the subject still in its history, a
+            # refusal is answered with another recommendation about 4 times
+            # in 8 (measured on tests/contamination_matrix.json,
+            # refusal_is_not_a_request).
+            self.recommendations.note_declined()
+            self.task_sessions.clear_recommendation()
+            self._grounded_context = {}
+            timings["route"] = time.perf_counter() - route_started
+            return TurnRouting(
+                route=IntentDecision(
+                    intent="conversation",
+                    confidence=1.0,
+                    normalized_request=user_input,
+                    reason="The user declined the open recommendation.",
+                    speech_act="social",
+                    is_follow_up=True,
+                ),
+                user_input=user_input,
+                locked_response=self._generic_declined(),
+            )
+        if (
             _BARE_ACKNOWLEDGEMENT.fullmatch(user_input)
             and not any((
                 pending_offer,
@@ -10585,6 +13142,25 @@ class ChatEngine:
             settled = tier0(transcript)
             if settled is not None:
                 return settled
+            # A question about themselves that something they told her
+            # answers is answered from that, not from a tool. Measured
+            # after a restart: "When's my birthday?" went to a date lookup
+            # and came back as today's date; "Do I have any food
+            # allergies?" went to a web search, which could only say it
+            # did not know. The router never saw what she knew.
+            told = self._what_they_told_her()
+            if told and memory_gate.asks_about_themselves(transcript) and (
+                memory_gate.shares_a_topic(transcript, told)
+            ):
+                print("[Memory] A question about themselves that what they "
+                      "told me answers; answering from memory.")
+                return IntentDecision(
+                    intent="conversation",
+                    confidence=1.0,
+                    normalized_request=transcript,
+                    reason="A question about themselves, answered from what "
+                           "they told her.",
+                )
             return self._resolve_named_choice(self._escalate_disputed_claim(
                 self.intent_router.route(
                     transcript,
@@ -10672,6 +13248,31 @@ class ChatEngine:
             resumed_problem_id = pending_clarification.task_id
             pending_clarification = None
 
+        elif (
+            pending_clarification is not None
+            and pending_clarification.goal.kind == "recommendation"
+            and str(pending_clarification.question or "").strip()
+            and str(pending_clarification.question).strip()
+            in self._things_she_has_said()[0]
+        ):
+            # She asked this on the turn before and the reply did not answer
+            # it. The branch below would say it again, word for word -- and
+            # measured in three of three English dogfood runs, it did:
+            #
+            #     You: decent cheap headphone brand?   Elaina: Over-ear or in-ear?
+            #     You: under 100                        Elaina: Over-ear or in-ear?
+            #     You: you sure about that?             Elaina: Are you looking
+            #                                           for over-ear or in-ear...
+            #
+            # "under 100" was an answer, just not to that question. Asked
+            # once and not answered, the question is dropped and the turn is
+            # read on its own: a budget folds into the open recommendation,
+            # and the type was already asked, so "once each" keeps it from
+            # coming back.
+            print("[Clarification] asked last turn and not answered; "
+                  "not asking it again.")
+            self.clarification.clear()
+            pending_clarification = None
         elif (
             pending_clarification is not None
             and pending_clarification.goal.kind == "recommendation"
@@ -11486,6 +14087,18 @@ class ChatEngine:
                 "  Why: the turn asked to see real options and the problem "
                 "has enough to look them up"
             )
+        if self._search_the_correction and capability.capability in {
+            capability_selection.DIRECT_ANSWER,
+            capability_selection.UI_CONTROL,
+        }:
+            # "CBT?" -- "yes, CPT": the question is asked again about the
+            # right thing, and this time evidence is wanted, the same way
+            # "show me some" is escalated above.
+            decision, capability = self._reselect_for_options(
+                route, goal, options=False,
+            )
+            print("[Near Miss] The corrected question is looked up, not "
+                  "answered from memory.")
         if self.intent_router.print_confidence_log:
             print(focus.log_block())
             print(goal.log_block())
@@ -11499,7 +14112,17 @@ class ChatEngine:
         search_may_run = capability_selection.WEB_SEARCH in (
             capability.capability, *capability.fallbacks,
         )
-        query = self._resolved_search_query(route, goal) if search_may_run else route.search_query
+        # A corrected question is searched as corrected. Measured: after
+        # "아니 텍사스에 있는 파리 말하는 거야" the first search was that
+        # sentence, word for word.
+        said_for_search = (
+            user_input if getattr(self, "_corrected_from", "")
+            else raw_transcript or user_input
+        )
+        query = (
+            self._resolved_search_query(route, goal, said=said_for_search)
+            if search_may_run else route.search_query
+        )
         resolved = ResolvedTurn(
             raw_transcript=raw_transcript, normalized_transcript=route.normalized_request,
             intent=route.intent, subject=problem.subject if problem else goal.subject,
@@ -11688,6 +14311,52 @@ class ChatEngine:
         screen_snapshot=None,
         spoken_language="",
         spoken_confidence=0.0,
+        heard_unclearly=False,
+        spoken_word_average=0.0,
+    ):
+        """Take one turn, and keep a record of what happened in it.
+
+        The record (core/turn_trace.py) is opened here and closed in a
+        ``finally``, so a turn that returns early, is interrupted, or
+        raises still leaves one behind. The turn itself is ``_take_turn``,
+        unchanged.
+        """
+        trace = turn_trace.begin(
+            str(user_input or ""),
+            spoken_language=spoken_language,
+            spoken_confidence=spoken_confidence,
+            heard_unclearly=heard_unclearly,
+            spoken_word_average=spoken_word_average,
+            screen_region=bool(screen_region),
+            screen_snapshot=screen_snapshot is not None,
+        )
+        try:
+            return self._take_turn(
+                user_input,
+                screen_region=screen_region,
+                screen_snapshot=screen_snapshot,
+                spoken_language=spoken_language,
+                spoken_confidence=spoken_confidence,
+                heard_unclearly=heard_unclearly,
+                spoken_word_average=spoken_word_average,
+            )
+        except BaseException as error:
+            if trace is not None:
+                trace.record_outcome("raised", f"{type(error).__name__}: {error}")
+            raise
+        finally:
+            if trace is not None:
+                turn_trace.finish(trace)
+
+    def _take_turn(
+        self,
+        user_input,
+        screen_region=None,
+        screen_snapshot=None,
+        spoken_language="",
+        spoken_confidence=0.0,
+        heard_unclearly=False,
+        spoken_word_average=0.0,
     ):
         turn_started = time.perf_counter()
         timings: dict[str, float] = {}
@@ -11711,6 +14380,12 @@ class ChatEngine:
             spoken_language=spoken_language,
             spoken_confidence=spoken_confidence,
         )
+        # Set by the voice loop when the transcriber itself could barely
+        # decode the clip; read once, at the top of routing.
+        self._heard_unclearly = bool(heard_unclearly)
+        # How sure the transcriber was of its words, on average; 0.0 for a
+        # typed turn, which is never read for sense.
+        self._spoken_word_average = float(spoken_word_average or 0.0)
 
         self.events.emit(
             "user_message",
@@ -12883,6 +15558,24 @@ class ChatEngine:
     def close(self) -> None:
         """Stop background services and active speech."""
         self.cancel_active_turn()
+        # What the person told her last is still being written down on a
+        # thread of its own (extraction and consolidation are model calls).
+        # Waited for, bounded: a memory lost at shutdown is a fact she
+        # "forgets" overnight.
+        deadline = time.monotonic() + 45.0
+        for thread in getattr(self, "_memory_stores", []):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                print("[Memory] Shutdown did not wait for every memory to be saved.")
+                break
+            if thread.is_alive():
+                print("[Memory] Finishing what you just told me before closing...")
+                thread.join(timeout=remaining)
+        recorder = getattr(self, "activity_recorder", None)
+        if recorder is not None:
+            recorder.stop()
+        if getattr(self, "activity_log", None) is not None:
+            self.activity_log.close()
         self.screen_monitor.stop()
         browser_service = getattr(self, "browser_service", None)
         if browser_service is not None:
@@ -12960,8 +15653,18 @@ class ChatEngine:
         time, so there was nothing to convert from and nothing to convert
         with. The conversion happens in code now; the model reads out a
         line it did not have to compute.
+
+        Which clock counts as local is ``time.timezone`` in config.yaml,
+        not unconditionally the machine's own. The section has offered an
+        IANA name since it was written and nothing honoured it; the tests
+        for the two clocks needed one, because run on a machine already in
+        the zone being asked about they compared Seattle against Seattle.
         """
-        now = datetime.now().astimezone()
+        now = world_clock.local_now(
+            self.config.get(
+                "time", "timezone", default="local", required=False,
+            ),
+        )
 
         lines = [
             f"Today is {now.strftime('%A, %B %d, %Y')}.",
@@ -12971,7 +15674,9 @@ class ChatEngine:
         ]
 
         place = world_clock.read_place(question)
-        elsewhere = world_clock.describe(place) if place else ""
+        # The same moment the local line above states, so the gap between
+        # the two clocks is measured against the clock that was printed.
+        elsewhere = world_clock.describe(place, here=now) if place else ""
         if elsewhere:
             lines.append("")
             lines.append(elsewhere)

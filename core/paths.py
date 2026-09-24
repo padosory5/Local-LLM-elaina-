@@ -1,10 +1,19 @@
 """Central filesystem locations used by Elaina."""
 
+import os
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_ROOT = PROJECT_ROOT / "runtime"
+# Where generated state lives. ELAINA_RUNTIME_ROOT points a backend
+# somewhere else, so that measuring her does not write into the person's
+# own memory, standing orders and browser profile -- which every
+# verification run did until this existed: a replayed "다음부턴 그렇게
+# 설명해라" became a real standing order, and each searched test turn saved
+# a research memory. Unset, nothing changes.
+RUNTIME_ROOT = Path(
+    os.environ.get("ELAINA_RUNTIME_ROOT") or (PROJECT_ROOT / "runtime")
+)
 DATABASE_DIRECTORY = RUNTIME_ROOT / "database"
 DATA_DIRECTORY = RUNTIME_ROOT / "data"
 DEBUG_DIRECTORY = RUNTIME_ROOT / "debug"

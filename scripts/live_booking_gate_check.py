@@ -14,11 +14,15 @@ booking that already carries dates proceeds.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Measuring her decisions never needs her voice, and the voice is billed
+# per character. Set ELAINA_TTS=on to hear this run.
+os.environ.setdefault("ELAINA_TTS", "off")
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from brain.chat_engine import ChatEngine

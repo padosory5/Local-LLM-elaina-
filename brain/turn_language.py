@@ -15,11 +15,15 @@ typed or spoken. The detected-language field from
 it is free, and it is currently discarded, but the text usually already
 says.
 
-**Sticky, not per-utterance.** A Korean speaker says "그 monitor 어때?" and
-means Korean; an English speaker says "let's eat 삼겹살 tonight" and means
-English. Code-switching is normal and must not flip her. So is "ok" -- the
-most frequent turn in real use and the least informative. The language
-changes only when the evidence is *decisive*, and stays put otherwise.
+**Follows the person, not their borrowings.** In a two-language
+conversation the rule is the person's own, stated outright: answer in the
+language they just used. A turn written wholly in Hangul is Korean and one
+written wholly in Latin letters is English, however short -- "고마워" and
+"thanks" included. What must not flip her is code-switching: a Korean
+speaker says "그 monitor 어때?" and means Korean, an English speaker says
+"let's eat 삼겹살 tonight" and means English. Mixed turns are decided by
+which script carries the sentence, a short mixed fragment decides nothing,
+and "ok" and "lol" are the same word in both languages and never move her.
 
 **An explicit request wins and keeps winning.** Saying "영어로 말해줘" pins
 English until something unpins it, even though the request itself is Korean.
@@ -50,9 +54,9 @@ _HANGUL = re.compile(r"[가-힯]")
 _LATIN_WORD = re.compile(r"[A-Za-z][A-Za-z'-]*")
 _ANY_WORD = re.compile(r"[^\W_]+", re.UNICODE)
 
-# Below this, a turn never changes the language. "ok", "네", "yeah", "응" are
-# the most common things anyone says and the least reliable evidence of
-# anything; letting them switch makes her flip constantly mid-conversation.
+# Below this, a turn that mixes both scripts does not change the language.
+# (It used to apply to every turn, which held "고마워" and "thanks" in the
+# previous language; see _written_in_one_script for why that ended.)
 #
 # Counted in the units each language actually uses. "방금 퇴근했어" is a
 # whole sentence and two words; a three-word floor calibrated on English
@@ -62,6 +66,13 @@ _ANY_WORD = re.compile(r"[^\W_]+", re.UNICODE)
 # "응" (1), "네" (1), "고마워" (3).
 MIN_SWITCH_WORDS = 3
 MIN_SWITCH_SYLLABLES = 4
+
+# Since the person's mixed-conversation rule, the two floors above only
+# ever see turns that mix both scripts; a single-script turn decides the
+# language at any length. A mixed turn has to carry at least this many
+# units (Hangul syllables plus English words) before it is evidence --
+# "ok 네" is two and decides nothing.
+MIN_MIXED_UNITS = 3
 
 # Whisper's own confidence. Below this its language field is not evidence,
 # and the safe reading of unclear audio is "carry on in whatever we were
@@ -209,6 +220,31 @@ _GREETING = re.compile(
 )
 
 
+# Words that are the same word in both languages. Korean speakers type
+# "ok" and "lol" mid-Korean as readily as English speakers do, so these
+# say nothing about which language the person is in and never move her.
+_SAME_IN_EITHER_LANGUAGE = re.compile(
+    r"^\s*(?:ok(?:ay)?|k|lol|lmao|ha(?:ha)+|\d+)\s*[!.?~]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _written_in_one_script(text: str) -> bool:
+    """Whether the whole turn is Hangul, or the whole turn is Latin.
+
+    The person's rule for a two-language conversation, stated outright:
+    answer in Korean when I speak Korean, in English when I speak English.
+    A turn written entirely in one script *is* in that language however
+    short it is -- "고마워" is Korean and "thanks" is English. The length
+    floor below was protecting against a different thing, code-switching
+    and noise, and those only ever arrive mixed.
+    """
+    said = str(text or "")
+    hangul = bool(_HANGUL.search(said))
+    latin = bool(_LATIN_WORD.search(said))
+    return hangul != latin
+
+
 def _long_enough_to_mean_something(text: str) -> bool:
     """Whether this turn carries enough to be evidence of a language.
 
@@ -224,6 +260,14 @@ def _long_enough_to_mean_something(text: str) -> bool:
     said = str(text or "")
     if _GREETING.match(said.strip()):
         return True
+    # A mixed turn is measured across both scripts, in each one's own unit.
+    # Counting only the Hangul -- as this did -- called a four-word English
+    # sentence with one Korean noun ("let's eat 삼겹살 tonight") too short to
+    # mean anything, and held her in Korean for it. Which language the turn
+    # is *in* is then script_language's question, not this one's.
+    if _HANGUL.search(said) and _LATIN_WORD.search(said):
+        units = len(_HANGUL.findall(said)) + len(_LATIN_WORD.findall(said))
+        return units >= MIN_MIXED_UNITS
     syllables = len(_HANGUL.findall(said))
     if syllables:
         return syllables >= MIN_SWITCH_SYLLABLES
@@ -264,9 +308,23 @@ def decide(
             reason="pinned by an earlier request",
         )
 
-    # Too short to mean anything. "ok", "네", "yeah" -- the most frequent
-    # turns there are, and evidence of nothing.
-    if not _long_enough_to_mean_something(said):
+    # The same word in both languages: "ok", "lol". Typed mid-Korean as
+    # readily as mid-English, and evidence of nothing.
+    if _SAME_IN_EITHER_LANGUAGE.match(said):
+        return LanguageDecision(
+            language=current,
+            reason="the same word in either language",
+        )
+
+    # Too short to mean anything -- but only when the turn is mixed. A turn
+    # written wholly in one script is in that language at any length; the
+    # person's rule for a two-language conversation is to be answered in
+    # the language they just used, and "고마워" / "thanks" leave no doubt.
+    # Measured on a mixed session before this: 4 of 14 replies in the
+    # wrong language, every one of them a short turn held by this floor.
+    if not _written_in_one_script(said) and not _long_enough_to_mean_something(
+        said,
+    ):
         return LanguageDecision(
             language=current,
             reason="too short to be evidence",

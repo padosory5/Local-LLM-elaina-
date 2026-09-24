@@ -228,6 +228,9 @@ class InputWatcher:
         self._last_real_kind = ""
         self._last_real: RealEvent | None = None
         self._recent_real: deque[RealEvent] = deque(maxlen=_EVIDENCE_DEPTH)
+        # The person's clicks and keys, for the activity recorder -- None
+        # until something asks for it (activity_feed).
+        self._activity: deque[RealEvent] | None = None
         self._buttons_down = 0
         self._action = ""
         self._action_started = 0.0
@@ -357,6 +360,22 @@ class InputWatcher:
         with self._lock:
             self._action = ""
 
+    def activity_feed(self, *, depth: int = 4096) -> deque:
+        """The person's clicks, wheel turns and key presses, as they happen.
+
+        For the activity recorder (activity_recorder.py), which drains it on
+        its own thread. Opt-in, and the only addition to the hook's path is
+        one append for a button, wheel or key event -- never a mouse move,
+        which is almost all of the traffic. Naming what was clicked is a
+        cross-process UI Automation call and happens on the recorder's
+        thread, never in here. Elaina's own injected input never reaches it,
+        for the same reason it never counts as the person.
+        """
+        with self._lock:
+            if self._activity is None:
+                self._activity = deque(maxlen=max(64, int(depth)))
+            return self._activity
+
     def _record_real(self, *, mouse: bool, what: str = "", x: int = 0, y: int = 0,
                      extra: int = 0, flags: int = 0, lower_il: bool = False,
                      at_tick: int = 0) -> None:
@@ -387,6 +406,8 @@ class InputWatcher:
             self._last_real_kind = kind
             self._last_real = event
             self._recent_real.append(event)
+            if self._activity is not None and event.what != "move":
+                self._activity.append(event)
             if mouse:
                 self._real_mouse_events += 1
                 self._action_counts["real_mouse"] += 1
@@ -442,6 +463,10 @@ class InputWatcher:
                     self._record_real(
                         mouse=False,
                         what=f"vk_0x{int(data.vkCode):02x}",
+                        # The key message: 0x100/0x104 press, 0x101/0x105
+                        # release. The recorder needs a press apart from a
+                        # release to know which modifiers are held.
+                        extra=int(wparam),
                         flags=int(data.flags),
                         lower_il=bool(data.flags & _LLKHF_LOWER_IL_INJECTED),
                         at_tick=int(data.time),

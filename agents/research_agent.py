@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -50,6 +51,7 @@ class ResearchAgent:
         max_results: int = 5,
         verify: bool = False,
         query_is_resolved: bool = False,
+        alternate_query: str = "",
     ) -> ResearchResult:
         """
         Search the router's query and independently verify temporal answers.
@@ -65,7 +67,28 @@ class ResearchAgent:
             raise RuntimeError("The research query was empty.")
 
         queries = [query]
-        if verify:
+        # The same question in the other language, when there is one.
+        #
+        # A Korean turn is searched on the person's own words, which finds
+        # Korean pages and keeps proper nouns as they said them. It also
+        # finds the *Korean web's* reading of the words: "시애틀에서
+        # 인천공항까지 가는데 몇시간 걸려" came back as airport transit from
+        # Seoul, the second search was the same sentence again with
+        # "official source" in front, and she answered "서울에서 인천공항까지
+        # 약 1시간 30분". The router's English query -- "travel time from
+        # Seattle to Incheon Airport" -- was sitting unused.
+        #
+        # So the second search is the other language instead of a repeat.
+        # It costs nothing extra when verifying, which already runs two, and
+        # one search when not.
+        other = " ".join(str(alternate_query or "").split())
+        if other and self._in_another_script(query, other):
+            if not query_is_resolved:
+                other = self._localized(other)
+            queries.append(
+                self._verification_query(request, other) if verify else other
+            )
+        elif verify:
             verification_query = self._verification_query(request, query)
             if verification_query.casefold() != query.casefold():
                 queries.append(verification_query)
@@ -74,16 +97,31 @@ class ResearchAgent:
         successful_queries: list[str] = []
         errors: list[str] = []
 
-        for index, candidate in enumerate(queries, start=1):
+        def searched(candidate: str):
             try:
-                result = str(self._search(candidate, max_results)).strip()
+                return str(self._search(candidate, max_results)).strip()
             except Exception as error:
                 # The search backend fell over. It reaches the caller as a
                 # failure rather than as a sentence that happens to start
                 # with "Web search failed:", which is how this was detected
                 # before and how it would have stopped being detected the
                 # first time someone improved the wording.
-                errors.append(f"{type(error).__name__}: {error}")
+                return error
+
+        # Both searches at once. They are independent -- the person's own
+        # words, and the same question in the other language or the
+        # verification query -- and run one after the other the turn pays
+        # for two round trips. Measured against the DuckDuckGo backend:
+        # 1.4-3.1s each, which is most of what a search turn costs.
+        if len(queries) > 1:
+            with ThreadPoolExecutor(max_workers=len(queries)) as pool:
+                outcomes = list(pool.map(searched, queries))
+        else:
+            outcomes = [searched(queries[0])]
+
+        for index, (candidate, result) in enumerate(zip(queries, outcomes), start=1):
+            if isinstance(result, Exception):
+                errors.append(f"{type(result).__name__}: {result}")
                 continue
             if self._is_failed_result(result):
                 errors.append(result or "No results were returned.")
@@ -129,6 +167,14 @@ class ResearchAgent:
         if not results:
             raise RuntimeError("No useful evidence was returned.")
         return tuple(results)
+
+    @staticmethod
+    def _in_another_script(first: str, second: str) -> bool:
+        """Whether one query is Korean and the other is not."""
+        def korean(text: str) -> bool:
+            return any("가" <= character <= "힣" for character in text)
+
+        return korean(first) != korean(second)
 
     def _verification_query(self, request: str, query: str) -> str:
         as_of = self._now().strftime("%Y-%m-%d")

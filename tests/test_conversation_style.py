@@ -93,6 +93,123 @@ class ReceiptRecognitionTests(unittest.TestCase):
         for said in ("응", "네", "고마워", "알겠어"):
             self.assertTrue(reads_as_receipt(said), said)
 
+    def test_the_korean_counterparts_of_the_english_receipts(self):
+        # "ok i'll do that" was a receipt in three of three English paired
+        # runs and "오케이 그렇게 할게" an answer in three of three Korean ones.
+        for said in ("오케이 그렇게 할게", "흠", "그렇구나", "알겠습니다", "넵",
+                     "고마워요", "해볼게"):
+            self.assertTrue(reads_as_receipt(said), said)
+        for said in ("음 별로네", "오케이 근데 어떤 거", "그렇게 할게 근데 몇 시야",
+                     "그러게 말이야"):
+            self.assertFalse(reads_as_receipt(said), said)
+
+    def test_declining_out_loud_is_a_receipt(self):
+        # Measured on the contamination matrix, refusal_is_not_a_request:
+        # "아니야" after two film turns was classified as an answer -- only
+        # the bare "아니" and the polite "아니요" were listed -- and the
+        # answer was another film recommendation. "no", "nah" and "nope"
+        # were in the English half from the start.
+        for said in ("아니야", "아냐", "아니에요", "아닙니다", "아니오",
+                     "됐어", "됐어요", "싫어"):
+            self.assertTrue(reads_as_receipt(said), said)
+            self.assertEqual(
+                act_for_turn(intent="conversation", user_input=said),
+                RECEIPT,
+                said,
+            )
+
+    def test_a_refusal_that_asks_for_something_else_is_not_a_receipt(self):
+        # The closed class again: declining *and* redirecting is an
+        # instruction, and answering it in one clause would drop the
+        # instruction.
+        for said in ("아니야 다른 거", "아니 그거 말고", "싫어 다른 영화 추천해줘"):
+            self.assertFalse(reads_as_receipt(said), said)
+
+
+class KoreanOffersAreCountedTests(unittest.TestCase):
+    """An offer counter that reads zero in Korean is not a counter.
+
+    Measured live on the contamination matrix: a plain "아니야" was
+    answered "다른 영화 추천을 해드릴 수 있습니다. 지금 보시겠나요?" -- two
+    offers on a receipt, whose contract allows none, and the review had
+    nothing to say about it.
+    """
+
+    def _classes(self, draft, act=RECEIPT):
+        return review(draft, act=act, language="ko").classes
+
+    def test_the_measured_reply_carries_two_offers(self):
+        self.assertEqual(
+            len(style._OFFER_RE.findall(
+                "다른 영화 추천을 해드릴 수 있습니다. 지금 보시겠나요?"
+            )),
+            2,
+        )
+
+    def test_the_shapes_a_korean_offer_takes(self):
+        for said in ("실제로 찾아볼까요?", "어떤 일을 도와드릴까요?",
+                     "직접 찾아보시겠나요?", "확인하시겠나요?",
+                     "레시피를 알려드릴 수 있습니다.",
+                     "서울 행사 일정을 검색해드리겠습니다."):
+            self.assertTrue(style._OFFER_RE.search(said), said)
+
+    def test_an_ordinary_korean_sentence_is_not_an_offer(self):
+        # The narrowness is the point: a bare "~까요" is a question, and
+        # "추천드리겠습니다" is no more an offer than "I'll recommend a
+        # film", which the English half does not match either.
+        for said in ("재미있을까요?", "콜드브루는 18시간 동안 우려야 합니다.",
+                     "관련 영상이나 콘텐츠를 추천드리겠습니다.",
+                     "가벼운 영화는 아니었겠습니다.", "아니요."):
+            self.assertIsNone(style._OFFER_RE.search(said), said)
+
+    def test_an_offer_on_a_receipt_is_a_finding(self):
+        self.assertIn(
+            style.DUPLICATE_OFFER,
+            self._classes("다른 영화 추천을 해드릴 수 있습니다. 지금 보시겠나요?"),
+        )
+
+    def test_a_korean_answer_may_still_make_one_offer(self):
+        # The contract decides how many are allowed, not the language.
+        self.assertNotIn(
+            style.DUPLICATE_OFFER,
+            self._classes(
+                "콜드브루는 12시간 우리면 됩니다. 레시피를 알려드릴 수 있습니다.",
+                act=ANSWER,
+            ),
+        )
+
+
+class AnActThatMayNotOfferTests(unittest.TestCase):
+    """Asked not to offer, offering anyway: the sentence goes.
+
+    Measured live on a plain "아니야": the review caught the offer, the
+    re-say came back offering again, and "kept the original" put it out.
+    Removing a sentence needs no model call and cannot come back worse.
+    """
+
+    def test_the_offer_sentence_is_removed_from_a_receipt(self):
+        self.assertEqual(
+            style.without_offers(
+                "영화 추천을 도와드릴 수 있습니다. 어떤 장르를 좋아하시나요?",
+                RECEIPT,
+            ),
+            "어떤 장르를 좋아하시나요?",
+        )
+        self.assertEqual(
+            style.without_offers("Got it. Want me to look it up?", RECEIPT),
+            "Got it.",
+        )
+
+    def test_an_act_that_allows_an_offer_keeps_it(self):
+        said = "콜드브루는 12시간 우리면 됩니다. 레시피를 알려드릴 수 있습니다."
+        self.assertEqual(style.without_offers(said, ANSWER), said)
+
+    def test_a_reply_that_is_only_an_offer_is_never_emptied(self):
+        # Silence is a worse answer than an offer, and a draft that is
+        # nothing else is a different failure than this one.
+        for said in ("찾아볼까요?", "Want me to look it up?"):
+            self.assertEqual(style.without_offers(said, RECEIPT), said)
+
 
 class ActClassificationTests(unittest.TestCase):
 

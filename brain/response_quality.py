@@ -196,12 +196,44 @@ class ResponseQualityGuard:
             and cls._normalize(sentences[0]) == cls._normalize(said)
         ):
             return sentences[1].strip()
+        if len(sentences) == 2 and cls._says_it_back(sentences[0], said):
+            return sentences[1].strip()
 
         for separator in (cls._ECHO_DASH, cls._ECHO_COMMA):
             stripped = cls._strip_before(text, said, separator)
             if stripped != text:
                 return stripped
         return text
+
+    # The person's sentence handed back with its ending changed. Korean does
+    # this in a way the exact test above can never see, because the ending
+    # is exactly what changes:
+    #
+    #     You:     회사에서 하루 종일 회의만 했어
+    #     Elaina:  회사에서 하루 종일 회의만 했네요. 쉬는 시간에 ...
+    #
+    # measured four times in five Korean runs, as 했네요, 했군요, 했나 보네요
+    # and 했습니다 -- and in the person's own 반말 verb, not the honorific
+    # she uses. English does it as "You're moving to Seattle." Compared as
+    # characters, so it holds in both languages; bounded by length, so an
+    # answer that merely reuses the subject's words is never taken for it.
+    _ECHO_SIMILAR = 0.8
+
+    @classmethod
+    def _says_it_back(cls, first: str, said: str) -> bool:
+        """Whether a first sentence is the person's own, re-ended."""
+        if str(first).rstrip().endswith(("?", "？")):
+            # A question back is a follow-up, not a restatement.
+            return False
+        mine = cls._normalize(first).replace(" ", "")
+        theirs = cls._normalize(said).replace(" ", "")
+        if len(theirs) < 6 or not mine:
+            return False
+        if len(mine) > 1.5 * len(theirs):
+            return False
+        from difflib import SequenceMatcher
+
+        return SequenceMatcher(None, mine, theirs).ratio() >= cls._ECHO_SIMILAR
 
     # Long enough to be a real answer that happens to reuse the words, as
     # opposed to the message handed straight back.

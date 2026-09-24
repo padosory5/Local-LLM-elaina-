@@ -1,0 +1,117 @@
+{
+  "arc": "english_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "english_day",
+      "user": "hi",
+      "act": "greet",
+      "reply": "Afternoon. Where would you like to start?",
+      "statuses": [],
+      "seconds": 0.42
+    },
+    {
+      "turn": 2,
+      "arc": "english_day",
+      "user": "today was kind of rough",
+      "act": "react",
+      "reply": "That sounds tough.",
+      "statuses": [],
+      "seconds": 3.7
+    },
+    {
+      "turn": 3,
+      "arc": "english_day",
+      "user": "i was stuck in meetings all day at work",
+      "act": "react",
+      "reply": "That sounds exhausting. Let me know if you need help untangling anything from the day.",
+      "statuses": [],
+      "seconds": 3.37
+    },
+    {
+      "turn": 4,
+      "arc": "english_day",
+      "user": "tell me about it",
+      "act": "receipt",
+      "reply": "That sounds rough. Let me know if you need help untangling anything from the day.",
+      "statuses": [],
+      "seconds": 3.23
+    },
+    {
+      "turn": 5,
+      "arc": "english_day",
+      "user": "any good dramas to watch these days?",
+      "act": "answer",
+      "reply": "Here are some standout dramas to watch in 2026: The Convenience Store by the Sea on MyDramaList for its heartfelt storytelling, and Tagusari Bros. For its sharp humor and family dynamics. Check streaming platforms like Netflix or Prime Video for availability.",
+      "statuses": [
+        "One moment, I'll check."
+      ],
+      "seconds": 15.77
+    },
+    {
+      "turn": 6,
+      "arc": "english_day",
+      "user": "hmm not really",
+      "act": "react",
+      "reply": "That’s okay, maybe try a different genre or pick something with a unique twist.",
+      "statuses": [],
+      "seconds": 4.62
+    },
+    {
+      "turn": 7,
+      "arc": "english_day",
+      "user": "what about movies then?",
+      "act": "answer",
+      "reply": "I'm in.",
+      "statuses": [],
+      "seconds": 4.29
+    },
+    {
+      "turn": 8,
+      "arc": "english_day",
+      "user": "already seen that one",
+      "act": "react",
+      "reply": "I see. Let’s try something new then.",
+      "statuses": [],
+      "seconds": 3.5
+    },
+    {
+      "turn": 9,
+      "arc": "english_day",
+      "user": "forget the dramas, what should i have for dinner?",
+      "act": "answer",
+      "reply": "How about grilled cod with a side of kimchi and rice? It’s light, flavorful, and pairs well with the spice of the kimchi. I don't want to send you somewhere I haven't checked, want me to look up real ones?",
+      "statuses": [],
+      "seconds": 4.7
+    },
+    {
+      "turn": 10,
+      "arc": "english_day",
+      "user": "something simple",
+      "act": "answer",
+      "reply": "Dinner in South Korea can be affordable, try Emart Traders for pizza or soft serve under $5. Check prices before heading out to save.",
+      "statuses": [
+        "Give me a moment."
+      ],
+      "seconds": 7.57
+    },
+    {
+      "turn": 11,
+      "arc": "english_day",
+      "user": "ok i'll do that",
+      "act": "receipt",
+      "reply": "You're all set. Enjoy your meal.",
+      "statuses": [],
+      "seconds": 3.75
+    },
+    {
+      "turn": 12,
+      "arc": "english_day",
+      "user": "thanks, good night",
+      "act": "close",
+      "reply": "You're welcome. Have a good night.",
+      "statuses": [],
+      "seconds": 3.27
+    }
+  ]
+}

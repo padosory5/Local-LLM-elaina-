@@ -73,8 +73,11 @@ class TheIntentGateCouldNotSeeMostOfThemTests(unittest.TestCase):
             case for case in needing
             if case.get("likely_intent") == "conversation"
         ]
-        # Three of sixteen, before the model's boolean narrowed it further.
-        self.assertLessEqual(len(reachable), len(needing) // 4)
+        # Three of sixteen, before the model's boolean narrowed it further;
+        # five of nineteen once a plan ("I'm going to Seattle next week",
+        # said as conversation) became something to keep. Still a minority,
+        # which is the point.
+        self.assertLess(len(reachable), len(needing) / 3)
 
     def test_the_new_gate_reaches_all_of_them(self):
         for case in self.cases:

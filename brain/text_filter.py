@@ -70,7 +70,39 @@ class TextFilter:
     # real Korean, and "한자로 어떻게 써?" is a question she should be able
     # to answer. Kana has no such reading -- there is no sentence of hers
     # in either language where it belongs.
-    KANA_PATTERN = re.compile("[぀-ヿ]", flags=re.UNICODE)
+    KANA_PATTERN = re.compile("[\u3040-\u30ff]", flags=re.UNICODE)
+
+    # A *name* in a script neither of her languages is written in: Greek,
+    # Cyrillic, Hebrew, Arabic, Devanagari, Thai, and kana. Wider than the
+    # sentence guard above because a name is not a sentence she wrote -- it
+    # is a title lifted off a search result, and a Russian storefront
+    # listing was said out loud as the pick in the paired Korean baseline.
+    # Latin with accents and Hangul are hers; Han is left out for the reason
+    # given above.
+    OTHER_SCRIPT_PATTERN = re.compile(
+        "[\u0370-\u03ff\u0400-\u04ff\u0590-\u05ff\u0600-\u06ff"
+        "\u0900-\u097f\u0e00-\u0e7f\u3040-\u30ff]",
+        flags=re.UNICODE,
+    )
+
+    # Chinese written *into* a Korean word, which is not how Korean uses
+    # 한자. Measured: "원하시면详细介绍해드리겠습니다" in a paired run, and
+    # "청양椒" in the person's own session. Two shapes only -- a character
+    # glued after a Hangul syllable, inside the word ("청양椒"), or glued in
+    # front of the syllable that makes it a verb ("详细介绍해"). Everything
+    # a real answer about 한자 needs is untouched: "한자(漢字)", "愛라고
+    # 씁니다", "漢字로 쓰면".
+    GLUED_HAN_PATTERN = re.compile(
+        "(?<=[가-힣])[一-鿿]"
+        "|[一-鿿](?=[하해했합드되돼된])",
+        flags=re.UNICODE,
+    )
+
+    @classmethod
+    def _carries_another_script(cls, text: str) -> bool:
+        return bool(
+            cls.KANA_PATTERN.search(text) or cls.GLUED_HAN_PATTERN.search(text)
+        )
 
     @classmethod
     def without_foreign_script(cls, text: str) -> str:
@@ -87,7 +119,7 @@ class TextFilter:
         an empty reply or a guard line is the right answer there.
         """
         said = str(text or "")
-        if not cls.KANA_PATTERN.search(said):
+        if not cls._carries_another_script(said):
             return said
         try:
             from brain.conversation_style import sentences
@@ -95,12 +127,12 @@ class TextFilter:
             parts = [part for part in re.split(r"(?<=[.!?])\s+", said.strip()) if part]
         else:
             parts = sentences(said)
-        kept = [part for part in parts if not cls.KANA_PATTERN.search(part)]
+        kept = [part for part in parts if not cls._carries_another_script(part)]
         dropped = len(parts) - len(kept)
         if dropped:
             print(
                 f"[Language] Dropped {dropped} sentence(s) carrying Japanese "
-                f"kana."
+                f"kana or Chinese written into a Korean word."
             )
         return " ".join(kept).strip()
 
@@ -179,8 +211,20 @@ class TextFilter:
         said = str(text or "")
         if not said:
             return said
+        # The comment above says a date keeps its dashes; the range rule did
+        # not know that. Measured in an English session, spoken aloud: "As
+        # of 2026 to 09 to 10". A phone number (206-221-7857, 010-1234-5678)
+        # is the same shape and would be read as two ranges. Both are
+        # masked with a non-breaking hyphen, which neither rule below
+        # touches, and restored straight after.
+        said = re.sub(
+            r"\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{2,4}-\d{3,4}-\d{4}\b",
+            lambda match: match.group(0).replace("-", "\u2011"),
+            said,
+        )
         said = cls._NUMBER_RANGE.sub(" to ", said)
         said = cls._PARENTHETICAL_DASH.sub(", ", said)
+        said = said.replace("\u2011", "-")
         for pattern, replacement in cls._COMMA_TIDY:
             said = pattern.sub(replacement, said)
         return said.strip(" ,\t")

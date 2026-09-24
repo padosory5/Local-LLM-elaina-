@@ -13,7 +13,7 @@ state: the unbenchmarked layer is the one that is broken.
 ```bash
 # 1. a clean backend per arc -- history lives in the running ChatEngine,
 #    and a repetition fault is invisible inside a warmed-up session
-ELAINA_OPEN_DESKTOP=0 .venv/Scripts/python.exe main.py
+ELAINA_TTS=off ELAINA_OPEN_DESKTOP=0 .venv/Scripts/python.exe main.py
 
 # 2. drive one ordinary conversation
 .venv/Scripts/python.exe scripts/live_dogfood_conversation.py \

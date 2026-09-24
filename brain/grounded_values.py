@@ -161,7 +161,12 @@ def _mangled_numbers(reply: str, source: str) -> set[str]:
     mangled = set()
     for number in said - given:
         for original in given:
-            if number == original or len(number) >= len(original):
+            # A dropped digit means one digit, from a number that still has
+            # two. Measured: "물은 100도에서 얼잖아" answered with "0도에서
+            # 업니다" -- the correction -- read as "100" with two digits
+            # dropped, and deleted. A single digit is the end of almost
+            # every number.
+            if number == original or len(original) - len(number) != 1 or len(number) < 2:
                 continue
             # A dropped digit, from either end.
             if original.startswith(number) or original.endswith(number):
@@ -290,8 +295,16 @@ class GroundedValueGuard:
         )
 
     @classmethod
-    def correct_values(cls, reply: str, *, evidence: str, offer: str) -> str:
-        """Drop the sentences carrying values nothing checked."""
+    def correct_values(
+        cls, reply: str, *, evidence: str, offer: str, partial_offer: str = "",
+    ) -> str:
+        """Drop the sentences carrying values nothing checked.
+
+        ``partial_offer`` is what to say when some of the answer survives.
+        The whole-answer line ("I looked and couldn't confirm that") after a
+        surviving claim reads as the claim being withdrawn, which it was
+        not -- only the sentence with the number went.
+        """
         mangled = _mangled_numbers(reply, evidence)
         unsupported = cls.unsupported_values(reply, evidence) or _values(reply)
         if not unsupported and not mangled:
@@ -321,7 +334,7 @@ class GroundedValueGuard:
                 ).strip()
             except Exception:
                 pass
-            return f"{rebuilt} {offer}".strip()
+            return f"{rebuilt} {partial_offer.strip() or offer}".strip()
         return rebuilt or offer or reply
 
     @classmethod
@@ -377,7 +390,12 @@ _NAMES_A_PLACE_TO_GO = re.compile(
     r"check(?:ing|ed)?\s+out|head\s+(?:to|over)|visit|go\s+to|"
     r"recommend|buy\s+(?:it|one|them)?\s*"
     r"(?:at|from)|available\s+at|sold\s+at|try)\b"
-    r"|매장|가게|지점",
+    r"|매장|가게|지점"
+    # The Korean counterparts of "recommend", "visit", "try" and "check
+    # out". Only 매장/가게/지점 were here, so a Korean reply recommending a
+    # drama or a restaurant never reached the name check at all.
+    r"|추천|권해|방문|들러|가\s?보|식당|맛집|카페|전문점|시청|보시면|보십시오"
+    r"|보세요|드셔\s?보",
     re.IGNORECASE,
 )
 
@@ -434,6 +452,29 @@ def _proper_names(text: str) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+# A Korean name has no capital to find it by. What Korean writing uses in
+# its place is quotation marks: '오징어 게임', '서울 콩고리'. Measured over
+# every Korean turn of the paired measurements: 30 of 432 replies quoted a
+# name, and the guard below checked none of them -- '더 블랙 블레이드', a
+# Canadian drama, and '서울 콩고리', a restaurant, were recommended with no
+# search behind them, while the same kind of English reply was retracted.
+_QUOTED = re.compile(r"['‘\"“「『]([^'’\"”」』\n]{1,40})['’\"”」』]")
+# Quoted *speech* is not a name: "'이 뜨거워졌어요'라는 표현".
+_QUOTED_SPEECH = re.compile(r"(?:어요|아요|해요|니다|네요|군요|죠|까요)\s*[.!?]?$")
+
+
+def _quoted_korean_names(text: str) -> list[str]:
+    """Names in the text written the Korean way, in quotation marks."""
+    found: list[str] = []
+    for match in _QUOTED.finditer(str(text or "")):
+        span = " ".join(match.group(1).split())
+        # A Latin name in quotes is the capitalised pass's to find.
+        if not re.search(r"[가-힣]", span) or _QUOTED_SPEECH.search(span):
+            continue
+        found.append(span)
+    return list(dict.fromkeys(found))
+
+
 def names_something_specific(text: str) -> bool:
     """Whether this answer points at a particular thing at all.
 
@@ -442,7 +483,7 @@ def names_something_specific(text: str) -> bool:
     job is to supply a missing name can tell "she named nothing" from "she
     named something".
     """
-    return bool(_proper_names(text))
+    return bool(_proper_names(text) or _quoted_korean_names(text))
 
 
 def _grounded_names(*texts: str) -> set[str]:
@@ -477,11 +518,20 @@ _LANDFORM = frozenset({
 })
 
 
+_KOREAN_LANDFORM = re.compile(
+    r"(?:산|섬|강|호수|공원|해변|해수욕장|폭포|계곡|반도|해협)$"
+)
+
+
 def _is_a_place(name: str) -> bool:
     """Whether this is somewhere on a map rather than a business."""
     words = [word.casefold().strip(".,") for word in name.split()]
     if not words:
         return False
+    # The same exemption in Korean, where the head noun is the name's last
+    # syllables: '한라산', '제주도 협재 해수욕장', '설악산 국립공원'.
+    if re.search(r"[가-힣]", name):
+        return bool(_KOREAN_LANDFORM.search(name))
     # "Mount Rainier National Park", "San Juan Islands", "Mt Baker".
     if words[-1] in _LANDFORM or words[0] in _LANDFORM:
         return True
@@ -528,6 +578,12 @@ _DISPUTES = re.compile(
     r"|\bthat'?s\s+wrong\b"
     r"|\b(?:i\s+don'?t\s+think|not\s+sure)\s+(?:that|it|this|you)\b"
     r"|\bare\s+you\s+sure\b"
+    # The same question with the verb dropped, as it is usually said. Only
+    # as a whole turn: "you sure know a lot" is a compliment. Measured on
+    # the paired arcs -- "확실해?" was a dispute and "you sure about that?",
+    # its translation, was not, so the one turn took different paths in the
+    # two languages.
+    r"|^\s*(?:you|u)\s+sure(?:\s+about\s+(?:that|this|it))?\s*\??\s*$"
     r"|\bisn'?t\s+\w+\s+(?:a|an|the)\b"
     r"|\bthat'?s\s+not\s+(?:right|correct|true|it)\b"
     r"|\bwrong\s+(?:number|answer|one|time|date)\b"
@@ -546,7 +602,29 @@ _DISPUTES = re.compile(
     r"|\bi\s+saw\s+(?:one|it|them|him|her)\s+myself\b"
     r"|\bi\s+was\s+there\b"
     r"|\bi\s*(?:'ve|’ve|\s+have)\s+been\s+to\s+one\b"
-    r"|틀렸|아닌\s?것\s?같|맞아\?|가봤",
+    # Korean. "맞아?" was here bare, and it is two different questions: "그거
+    # 맞아?" challenges what she said, while "베인브리지 섬이었던 것 같은데
+    # 맞아?" asks her to confirm the person's *own* guess. Measured in a
+    # Korean session, the second was read as a dispute and her next answer
+    # opened "이전에 말씀드린 내용이 정확하지 않았습니다" about a claim she had
+    # never made. Only a 맞아 aimed at her words -- a demonstrative or a
+    # "really" in front of it -- is a dispute now.
+    r"|틀렸|아닌\s?것\s?같|가봤"
+    r"|(?:그거|그게|그건|이거|이게|이건|정말|진짜|확실)\s*(?:맞아|맞는|맞나|확실)"
+    r"|확실해\??\s*$"
+    # "확실한 거야?" -- are you sure, said the other common way. Whole turn
+    # only: "확실한 방법 알려줘" asks for a reliable method.
+    r"|^\s*(?:그거\s*)?확실한\s*거(?:야|지|예요|에요|죠)?\s*\??\s*$"
+    # Asking for the evidence behind what she said. "데이터로 알려줘" was read
+    # as a question about data in general, and she offered to explain data.
+    # It is the person saying the last answer needs backing up -- the same
+    # thing, in the same direction, as "are you sure?".
+    r"|근거(?!리)|출처|데이터로|자료로|통계로|수치로|증거"
+    r"|\b(?:what'?s\s+your|any)\s+source\b|\bsource\?|\bprove\s+it\b"
+    r"|\bwith\s+(?:data|numbers|sources|evidence)\b"
+    r"|\bback\s+(?:it|that)\s+up\b"
+    r"|\bhow\s+do\s+you\s+know\b"
+    r"|\bwhere\s+did\s+you\s+(?:get|hear|read|see)\s+(?:that|this)\b",
     re.IGNORECASE,
 )
 
@@ -819,9 +897,16 @@ def unverified_entities(
     grounded = _grounded_names(evidence, request)
     haystack = " ".join((str(evidence or ""), str(request or ""))).casefold()
     unverified = []
-    for name in _proper_names(reply):
+    for name in _proper_names(reply) + _quoted_korean_names(reply):
         lowered = name.casefold()
         if _is_a_place(name):
+            continue
+        # A Korean name is checked as the string it is: there is no
+        # capitalised form to collect, and '오징어 게임' grounded by the
+        # evidence is '오징어 게임' appearing in it.
+        if re.search(r"[가-힣]", name):
+            if lowered not in haystack:
+                unverified.append(name)
             continue
         # A multi-word name has to appear as that name. Checking its words
         # separately let "Guitar Center" pass because the person had said
@@ -833,3 +918,22 @@ def unverified_entities(
             continue
         unverified.append(name)
     return tuple(unverified)
+
+
+# Whether a reply is sending someone to a *place*, as opposed to naming a
+# drama or a film. The guard's offer said "I don't want to send you
+# somewhere I haven't checked" after a drama recommendation -- the words
+# were right for shops and wrong for everything else.
+_A_PLACE_NOUN = re.compile(
+    r"\b(?:place|places|somewhere|store|stores|shop|shops|restaurant|"
+    r"restaurants|cafe|cafes|café|bar|bars|hotel|hotels|branch|branches|"
+    r"outlet|outlets|dealer|dealers|market|markets|marketplace|site|sites|"
+    r"app|apps|platform|platforms)\b"
+    r"|매장|가게|지점|식당|맛집|카페|전문점|호텔|사이트|앱|장터",
+    re.IGNORECASE,
+)
+
+
+def sends_somewhere(text: str) -> bool:
+    """Whether this reply points the person at a place to go."""
+    return bool(_A_PLACE_NOUN.search(str(text or "")))

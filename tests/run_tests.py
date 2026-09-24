@@ -94,6 +94,8 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_browser_action_planner",
             "test_calculation_planner",
             "test_clarification_gate",
+            "test_question_not_repeated",
+            "test_korean_clarification",
             "test_deliberation_goal",
             "test_desktop_action_planner",
             "test_desktop_resume",
@@ -106,6 +108,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_research_recall",
             "test_task_contamination",
             "test_query_contamination",
+            "test_boundary_matrix",
             "test_task_boundaries",
             "test_world_clock",
             "test_pointer_targets",
@@ -130,10 +133,12 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_action_status",
             "test_active_task_continuity",
             "test_answer_condenser",
+            "test_calculation_answer",
             "test_brief_response",
             "test_capabilities",
             "test_capability_contract",
             "test_candidate_fit",
+            "test_candidate_titles",
             "test_candidate_shape",
             "test_capability_rescue",
             "test_context_inheritance",
@@ -143,21 +148,63 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_continuity_matrix",
             "test_conversation_focus",
             "test_conversation_style",
+            "test_offer_on_a_receipt",
+            "test_refusal_closes_recommendation",
             "test_followup_subject",
             "test_attribute_values",
             "test_dogfood_fixes",
             "test_existence_claims",
             "test_foreign_script",
             "test_grounded_values",
+            "test_greeting_openers",
             "test_guard_languages",
             "test_hesitation",
+            "test_korean_disputes",
+            "test_korean_question_register",
+            "test_partial_disclaimer",
+            "test_research_alternate_query",
+            "test_standing_orders_korean",
+            "test_record_questions",
+            "test_reply_language",
+            "test_request_shape",
+            "test_search_language",
             "test_response_cases",
             "test_response_language",
             "test_response_policy",
+            "test_echo_reended",
             "test_response_quality",
             "test_social_lines",
             "test_speak_window_list",
             "test_spoken_label",
+            "test_dash_dates",
+            "test_disclaimer_said_once",
+            "test_register_endings",
+            "test_glued_han",
+            "test_final_check_register",
+            "test_korean_entity_grounding",
+            "test_commitment_replacement_language",
+            "test_progress_report_language",
+            "test_near_miss",
+            "test_slip_question",
+            "test_stt_listening_context",
+            "test_permission_keeps_the_answer",
+            "test_misheard_places",
+            "test_heard_unclearly",
+            "test_unclear_transcript",
+            "test_sense_check",
+            "test_activity_commands",
+            "test_activity_recorder",
+            "test_activity_store",
+            "test_activity_turns",
+            "test_replay",
+            "test_memory_profile",
+            "test_misread_repairs",
+            "test_told_not_asked",
+            "test_premise_check",
+            "test_world_facts",
+            "test_where_we_are",
+            "test_units",
+            "test_cut_to_length",
             "test_text_filter",
             "test_turn_language",
             "test_unfinished_sentence",
@@ -226,6 +273,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_feature_matrix",
             "test_live_router_check",
             "test_paths",
+            "test_runtime_root",
             "test_suite_registry",
             "test_tool_registry",
             "test_tool_selection",
@@ -246,6 +294,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_audio_manager_echo_window",
             "test_audio_manager_language",
             "test_audio_pipeline",
+            "test_silent_tts",
             "test_stt_echo_detection",
             "test_stt_transcription_guard",
             "test_vad_audio",
@@ -299,6 +348,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_execution_preferences",
             "test_media_play_flow",
             "test_turn_behaviour",
+            "test_turn_trace",
         ),
     ),
 }
@@ -329,6 +379,22 @@ LIVE_CHECKS: tuple[LiveCheck, ...] = (
     LiveCheck(
         "contamination", "live_contamination_check.py", "app",
         "turns that must not inherit the turns before them (A3)",
+    ),
+    LiveCheck(
+        "memory-restart", "live_memory_restart_check.py", "app",
+        "ten facts told, shut down, booted again: what she still knows (A7)",
+    ),
+    LiveCheck(
+        "misread", "live_misread_check.py", "app",
+        "facts, false premises, corrections and a bare \"it\" (A7)",
+    ),
+    LiveCheck(
+        "premise-judge", "live_premise_judge_check.py", "model",
+        "the labelled set behind brain/premise_check.py",
+    ),
+    LiveCheck(
+        "basics", "live_basics_check.py", "app",
+        "a plain fact answered with the value, and one thing recommended",
     ),
     LiveCheck(
         "router", "live_router_check.py", "model",
@@ -458,7 +524,33 @@ def run_unittest(modules: list[str], *, verbose: bool, failfast: bool) -> bool:
         buffer=True,
         failfast=failfast,
     )
-    return runner.run(suite).wasSuccessful()
+    passed = runner.run(suite).wasSuccessful()
+    return _turn_records_complete() and passed
+
+
+def _turn_records_complete() -> bool:
+    """Every whole turn the suite ran left a complete record behind.
+
+    core/turn_trace.py checks, stage by stage, that each rewrite of the
+    reply was given the text the previous one returned. A turn whose chain
+    broke had its reply changed by something that records nothing -- most
+    likely a new ``reply = ...`` in ChatEngine._answer_turn without a
+    ``turn_trace.step``. That would make every later record of such a turn
+    a lie about what happened in it, so it fails the run.
+    """
+    from core import turn_trace
+
+    summary = turn_trace.summary()
+    if not summary["turns"]:
+        return True
+    breaks = summary["breaks"]
+    print(
+        f"[Turn trace] {summary['turns']} whole turns recorded, "
+        f"{len(breaks)} with an unrecorded rewrite."
+    )
+    for broken in breaks[:10]:
+        print(f"  {broken['user_input']!r}: {', '.join(broken['gaps'])}")
+    return not breaks
 
 
 def run_command(
@@ -631,6 +723,9 @@ def main() -> int:
     args = parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    # Nothing run from here speaks through a paid voice unless asked to.
+    # Inherited by every live check and backend this process starts.
+    os.environ.setdefault("ELAINA_TTS", "off")
 
     if args.list:
         print_listing()

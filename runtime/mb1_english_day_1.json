@@ -1,0 +1,117 @@
+{
+  "arc": "english_day",
+  "turns": [
+    {
+      "turn": 1,
+      "arc": "english_day",
+      "user": "hi",
+      "act": "greet",
+      "reply": "Good afternoon. How is the day going?",
+      "statuses": [],
+      "seconds": 0.41
+    },
+    {
+      "turn": 2,
+      "arc": "english_day",
+      "user": "today was kind of rough",
+      "act": "react",
+      "reply": "I'm sorry to hear that. Take a moment to breathe, sometimes a rough day just needs a little space to settle.",
+      "statuses": [],
+      "seconds": 3.88
+    },
+    {
+      "turn": 3,
+      "arc": "english_day",
+      "user": "i was stuck in meetings all day at work",
+      "act": "react",
+      "reply": "That sounds exhausting. Meetings can really drain the energy.",
+      "statuses": [],
+      "seconds": 3.66
+    },
+    {
+      "turn": 4,
+      "arc": "english_day",
+      "user": "tell me about it",
+      "act": "receipt",
+      "reply": "That sounds like a day that could use some quiet time. Let me know if you need help untangling anything later.",
+      "statuses": [],
+      "seconds": 3.1
+    },
+    {
+      "turn": 5,
+      "arc": "english_day",
+      "user": "any good dramas to watch these days?",
+      "act": "answer",
+      "reply": "Check your preferred streaming platform for availability. I don't want to send you somewhere I haven't checked, want me to look up real ones?",
+      "statuses": [
+        "I'll see what I can find."
+      ],
+      "seconds": 16.13
+    },
+    {
+      "turn": 6,
+      "arc": "english_day",
+      "user": "hmm not really",
+      "act": "react",
+      "reply": "No problem.",
+      "statuses": [],
+      "seconds": 0.79
+    },
+    {
+      "turn": 7,
+      "arc": "english_day",
+      "user": "what about movies then?",
+      "act": "answer",
+      "reply": "I'm in. What movie are we talking about?",
+      "statuses": [],
+      "seconds": 3.36
+    },
+    {
+      "turn": 8,
+      "arc": "english_day",
+      "user": "already seen that one",
+      "act": "react",
+      "reply": "I see. What’s next then?",
+      "statuses": [],
+      "seconds": 3.48
+    },
+    {
+      "turn": 9,
+      "arc": "english_day",
+      "user": "forget the dramas, what should i have for dinner?",
+      "act": "answer",
+      "reply": "How about a quick Korean meal? I don't want to send you somewhere I haven't checked, want me to look up real ones?",
+      "statuses": [],
+      "seconds": 4.84
+    },
+    {
+      "turn": 10,
+      "arc": "english_day",
+      "user": "something simple",
+      "act": "answer",
+      "reply": "Dinner in South Korea can be affordable, try Emart Traders for pizza or soft serve under $5. Check prices before heading out to save.",
+      "statuses": [
+        "Let me look that up."
+      ],
+      "seconds": 7.58
+    },
+    {
+      "turn": 11,
+      "arc": "english_day",
+      "user": "ok i'll do that",
+      "act": "receipt",
+      "reply": "You're all set. Enjoy your simple meal.",
+      "statuses": [],
+      "seconds": 3.74
+    },
+    {
+      "turn": 12,
+      "arc": "english_day",
+      "user": "thanks, good night",
+      "act": "close",
+      "reply": "You're welcome. Have a good night.",
+      "statuses": [],
+      "seconds": 3.39
+    }
+  ]
+}

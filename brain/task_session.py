@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass, replace
 from typing import Any
 
+from brain import context_policy
 from brain import conversation_focus
 from brain import recommendation_state
 from brain import references
@@ -194,12 +195,24 @@ class TaskSessionStore:
             )
         )
         if problem is not None:
+            # The subjects, and not only the head nouns. This block used to
+            # print "previous_thing: war / current_thing: fee / decision:
+            # CONTINUE" -- three lines that name the disagreement and one
+            # that ignores it, because nothing compared them. It read as a
+            # considered decision for eleven turns of a live session. A log
+            # that shows a comparison the code does not make is worse than
+            # one that shows nothing.
             surface_log.note("[Task Continuity]")
             surface_log.note(f"  previous_task: {problem.id[:8]}")
-            surface_log.note(f"  previous_thing: {problem._thing() or '(none)'}")
             surface_log.note(
-                f"  current_thing: "
-                f"{recommendation_state._head_noun(subject or text) or '(none)'}"
+                f"  previous_subject: {problem.subject or '(none)'}"
+            )
+            surface_log.note(f"  current_subject: {subject or '(none)'}")
+            surface_log.note(
+                "  subjects_differ: "
+                + str(context_policy.names_a_different_subject(
+                    problem.subject, subject,
+                )).lower()
             )
             surface_log.note(f"  follow_up: {bool(follow_up)}")
             surface_log.note(
@@ -209,7 +222,7 @@ class TaskSessionStore:
                 "  reason: "
                 + ("the turn refines or refers to what is open"
                    if same_problem
-                   else "current thing differs from the active thing")
+                   else "the turn is about something else")
             )
         if (
             same_problem

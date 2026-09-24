@@ -23,6 +23,10 @@ runtime/*_everyday.json
 runtime/*_tooling.json
 runtime/*_social.json
 runtime/debug/
+# What happened in each turn, from draft to speech (core/turn_trace.py),
+# and the turns a stage rewrote. The person's own conversations.
+runtime/turn_trace/
+runtime/failure_bank/
 runtime/data/visual_search_usage.json
 # What she has learned about this person -- which track they meant,
 # what they picked last time. Personal, and local by definition.
@@ -40,9 +44,18 @@ runtime/secrets/
 # can't happen again.
 runtime/data/*/
 
-# Keep personal memory data local by default
-runtime/database/*.db
-runtime/database/*.index
+# Everything she knows about you stays on this machine: her memory
+# (SQLite + FAISS), the activity log, your recordings and start-up routine,
+# your standing rules and the facts you asked her to keep.
+runtime/database/
+runtime/data/directives.yaml
+runtime/data/about_me.yaml
+runtime/data/routines/
+runtime/data/*.db
+# Where the machine was last time she started, so she can notice a move.
+runtime/data/where_we_are.json
+# Measurement runs that were never meant to be kept.
+runtime/parity*.json
 
 # Stray runtime dir some tools/ modules briefly wrote to before their
 # path resolution was fixed to use core.paths (see browser_connection.py)

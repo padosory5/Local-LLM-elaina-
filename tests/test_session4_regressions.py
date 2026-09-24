@@ -43,12 +43,23 @@ import unittest
 
 
 class TheClockDoesItsOwnArithmeticTests(unittest.TestCase):
-    """S4-01."""
+    """S4-01.
+
+    The turn was spoken in Korea, and what is asserted below is the
+    distance from there to Seattle. "Here" used to be read off whatever
+    machine ran the suite, which made all three pass in Korea and fail in
+    Seattle -- on the correct answer, that there is no distance at all.
+    It is pinned now, to the zone the turn actually happened in.
+    """
+
+    HERE = "Asia/Seoul"
 
     def _context(self, question="What time is it in Seattle right now?"):
         from tests.turn_harness import build_engine
 
-        return build_engine().build_time_context(question)
+        engine = build_engine()
+        engine.config.data.setdefault("time", {})["timezone"] = self.HERE
+        return engine.build_time_context(question)
 
     def test_the_difference_is_stated_not_left_to_be_worked_out(self):
         self.assertRegex(self._context(), r"\d+ hours? (?:behind|ahead of)")
@@ -57,7 +68,11 @@ class TheClockDoesItsOwnArithmeticTests(unittest.TestCase):
         from datetime import datetime
         from zoneinfo import ZoneInfo
 
-        here = datetime.now().astimezone().utcoffset().total_seconds()
+        # Both sides off the tz database, so this still holds on either
+        # side of a daylight-saving change: 16 hours or 17, never wrong.
+        here = datetime.now(
+            ZoneInfo(self.HERE),
+        ).utcoffset().total_seconds()
         there = datetime.now(
             ZoneInfo("America/Los_Angeles"),
         ).utcoffset().total_seconds()
@@ -82,9 +97,16 @@ class AnExplicitPlaceIsNotOverriddenTests(unittest.TestCase):
     """S4-02. The query already said where."""
 
     def _query_for(self, problem):
+        from brain.user_locale import UserLocale
         from tests.turn_harness import build_engine
 
-        return build_engine()._localised(problem, problem.search_query())
+        # The market is the operator's setting. This asserts that a
+        # placeless query is localised at all, so it pins one rather than
+        # reading config.yaml -- which broke it the day `user.country` was
+        # pinned to "US" for a move.
+        engine = build_engine()
+        engine.user_locale = UserLocale(country="KR")
+        return engine._localised(problem, problem.search_query())
 
     def test_a_query_the_problem_placed_is_not_localised(self):
         from brain import recommendation_state as state

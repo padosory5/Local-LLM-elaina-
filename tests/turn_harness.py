@@ -30,8 +30,10 @@ from dataclasses import dataclass, field, replace
 
 from brain import surface_log
 from brain.chat_engine import ChatEngine
+from core import turn_trace
 from brain.deliberation.profile import UserProfile
 from brain.standing_orders import StandingOrders
+from memory.routines import RoutineBook
 from agents.coordinator import AgentCoordinator
 from agents.task_manager import AgentTaskManager
 from config.loader import Config
@@ -437,6 +439,7 @@ def build_engine(routes: dict[str, dict] | None = None) -> ChatEngine:
     # network. What stays on is everything that decides behaviour.
     for section in (
         "memory", "vision", "visual_search", "project_access", "search",
+        "activity",
     ):
         if section in config.data and isinstance(config.data[section], dict):
             config.data[section]["enabled"] = False
@@ -501,6 +504,12 @@ def build_engine(routes: dict[str, dict] | None = None) -> ChatEngine:
     # nothing". A suite of two thousand turns must not be what it contains.
     surface_log.PATH = test_state / "surface.log"
     surface_log._opened = False
+    # The same for each turn's record (core/turn_trace.py). Kept in memory,
+    # where the suite checks every chain, and never written: the person's
+    # runtime/turn_trace is a record of their conversations, not of ours.
+    turn_trace.PERSIST = False
+    turn_trace.DIRECTORY = test_state / "turn_trace"
+    turn_trace.BANK_DIRECTORY = test_state / "failure_bank"
     engine.user_profile = UserProfile(path=test_state / "profile.json")
     # Her standing rules and the facts about the person live in the user's
     # own runtime/data. A test must neither read those nor write to them.
@@ -509,6 +518,8 @@ def build_engine(routes: dict[str, dict] | None = None) -> ChatEngine:
         about_me_path=test_state / "about_me.yaml",
     )
     engine.desktop_action_planner.profile = engine.user_profile
+    # Her recordings of what the person did are theirs too.
+    engine.routines = RoutineBook(test_state / "routines")
     # Agent assignment normally appends to runtime/audit. Whole-turn tests
     # must be hermetic: running the deterministic suite may not depend on a
     # writable project checkout or add records to the user's real audit log.

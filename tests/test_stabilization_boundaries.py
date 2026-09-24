@@ -10,6 +10,7 @@ from brain import recommendation_state as rs
 from brain.intent_router import IntentDecision, SemanticIntentRouter
 from brain.resolved_turn import command_was_fused
 from brain.task_session import TaskSessionStore
+from brain.user_locale import UserLocale
 from tests.turn_harness import build_engine
 from tools.browser_control.browser_control import BrowserActionResult, BrowserControl
 from tools.computer_control.computer_control import ComputerActionResult, ComputerControl, PreparedComputerAction
@@ -202,12 +203,22 @@ class RecoveryProvenanceTests(unittest.TestCase):
         self.assertEqual(nav.spellings_between("isssx.washington.edu", "is.washington.edu"), ())
 
 
+# Which market a placeless query is localised to is the operator's setting,
+# not this code's behaviour: these tests were written against a machine
+# configured for South Korea and failed the day `user.country` was pinned to
+# "US" for a move. What they are about is *that* a placeless query is
+# localised and an explicit place is not overridden, so the market is pinned
+# here and the assertions keep their meaning wherever the laptop is.
+KOREA = UserLocale(country="KR")
+
+
 class TurnAuthorityBoundaryTests(unittest.TestCase):
     def setUp(self):
         self.text = "Find me an electric guitar under 500,000 won."
         self.engine = build_engine({self.text: dict(intent="web_search", confidence=1.0,
             normalized_request=self.text, search_query=self.text, topic="electric guitar",
             recommendation_needed=True, action_requested=True, requires_external_evidence=True)})
+        self.engine.user_locale = KOREA
         self.addCleanup(self.engine.close)
 
     def test_new_request_retires_all_offers_before_consent_classification(self):
@@ -326,6 +337,7 @@ class TypeAndQueryBoundaryTests(unittest.TestCase):
     def test_standalone_lookup_resolves_locale_before_the_research_boundary(self):
         from brain.deliberation.goal_intent import read
         engine = build_engine()
+        engine.user_locale = KOREA
         self.addCleanup(engine.close)
         for query, local in (("packing peanuts retailers", True),
                              ("Korean restaurants near University of Washington", False)):

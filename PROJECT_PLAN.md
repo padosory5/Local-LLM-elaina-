@@ -24,21 +24,26 @@ Elaina that exists then, not the one we imagine now.
 
 | | |
 |---|---|
-| **Branch** | `main` · last commit `ff9b5c4` *korean model* |
-| **Tests green** | **3206** / 171 modules — regression floor, must never drop |
+| **Branch** | `main` · last commit `5891dbe` *korean session findings1* |
+| **Tests green** | **3742** / 224 modules — regression floor, must never drop |
 | **Model** | `qwen3:8b` decides *and* speaks · a second speech model is configurable and currently unused — no candidate beat it, see the model trials |
 | **Router accuracy** | **97.8%** (131/134) · 0 dangerous false positives · target ≥95% ✅ |
-| **Tool selection** | **95.6%** (43/45) · 0 research→browser · 0 UI false positives · target ≥95% ✅ |
+| **Tool selection** | **97.8%** (44/45) · 0 research→browser · 0 UI false positives · target ≥95% ✅ |
 | **Agency / consent** | 0 unrequested actions · consent cases green ✅ |
-| **Conversation quality** | *unseen arcs, pooled, n=120 each:* **EN 80%** · **KO 74%** · gap 6 points, p=0.28 — no longer distinguishable |
+| **Conversation quality** | *unseen arcs, pooled, n=120 each (2026-09-12):* **EN 88%** (106/120, ±6) · **KO 91%** (109/120, ±5) · gap 2.5 points, p≈0.5 — both over the 85% bar ✅ (was EN 80% · KO 74%) |
 | **Measuring it** | [`scripts/dogfood_session.py`](scripts/dogfood_session.py) — repeats, pools, and refuses a single run |
 | **Capability contracts** | **11/11** declared · **0** sentences naming internals (was 14) · ability answers bilingual ✅ |
-| **Latency** | median **3.8s** · p90 **13.0s** · ⚠️ see the latency budget below |
+| **Latency** | median **4.5s** · p90 **7.9s** (2026-09-23, 30 warm turns) · **p90 is inside the 8s budget** for the first time, p50 is 0.5s over · the searches now run concurrently: web search **9.3s → 2.9s** median · the slowest stage is now the router's own model call, **3.0s** · transcript → first word **3.2s** |
 | **Time to first sound** | **1.31s → 0.74s** on the same model; **0.25s** on `turbo_v2_5` |
 | **Task reporting** | **25/25** scenarios honest (was 17/22) · cancellation **10/10** ✅ |
 | **Attribute grounding** | invented specs **1/6 → 8/8** caught · true sentences **11/11** kept ✅ |
 | **Memory** | recall gate **4/18 → 18/18** reachable · forgetting built from nothing · local-first asserted ✅ |
-| **Phase** | A1 done · A2 `[~]` · A3 done · A4 `[~]` · A5 done · A6 done · **A7 `[~]`** |
+| **Memory across a restart** | told 10 facts, shut down, rebooted: **10/10 stored, 11/11 recalled on both runs**, "you haven't told me" **2/2** (from 7/10 stored and **0/11** recalled) · Korean facts are stored and said in Korean · twenty causes found and fixed, the last four by storing in the person's own language · [docs/MEMORY_AND_RECALL.md](docs/MEMORY_AND_RECALL.md) ✅ |
+| **Catching misunderstandings** | 22 cases, both languages: **~12/22 → 20/22** on two runs · false premises **4/8 → 8/8** · a fact taken as a fact **8/8** · [docs/MISUNDERSTANDINGS.md](docs/MISUNDERSTANDINGS.md) |
+| **Everyday answers** | *2026-09-23, two runs:* **17/17 both** — a plain fact answered with the value **11/11**, one thing recommended (not a list, a genre question or a punt) **6/6** · Portland, Maine's population **694,000 → 68,408** · a Korean temperature question answered in Celsius · [`scripts/live_basics_check.py`](scripts/live_basics_check.py) ✅ |
+| **Knowledge grounding** | a stated number is checked against Wikipedia before it is said — keyless, **0.2–0.5s**, and only for a named thing whose article covers the attribute asked ([`brain/world_facts.py`](brain/world_facts.py)) |
+| **Where she thinks you are** | `user.country: "US"` since the move (2026-09; `auto` still read 한국 from Windows, so she priced things in won) · a temperature follows the **language of the turn**, not the market: an English answer stays Fahrenheit, a Korean question is answered in Celsius ([`brain/units.py`](brain/units.py)) · at start-up she notices a zone change and asks ([`brain/where_we_are.py`](brain/where_we_are.py)) |
+| **Phase** | A1 done · A2 done · A3 done · **A4 `[~]`** · A5 done · A6 done · A7 done |
 
 ```bash
 .venv/Scripts/python.exe tests/run_tests.py     # the full suite, nothing running
@@ -67,17 +72,35 @@ robotic assistant are true at the same time.
 A target written as prose ("should rarely need to think about which tool") is
 not an exit criterion. A target written as a number against a named script is.
 
+**And the script lives in the repository.** The three harnesses behind the
+memory-across-restart and misunderstanding numbers were written in a session
+scratchpad under the system temp directory. Ten days later a temp cleanup
+deleted them, together with the runs they had produced — a measured claim
+whose instrument no longer exists is not reproducible, and re-deriving them
+from a transcript cost more than writing them in `scripts/` would have.
+They are [`scripts/live_memory_restart_check.py`](scripts/live_memory_restart_check.py),
+[`scripts/live_misread_check.py`](scripts/live_misread_check.py),
+[`scripts/live_premise_judge_check.py`](scripts/live_premise_judge_check.py) and
+[`scripts/live_basics_check.py`](scripts/live_basics_check.py); they boot real
+backends, so they write their runtimes to a temp directory and never to
+`runtime/`. All four are in `LIVE_CHECKS`, which is what
+`tests/test_suite_registry.py` enforces — the naming convention is the thing
+that makes a forgotten check fail the suite rather than quietly stop running.
+
 ### 2. Extraction is the entry price
 
-`brain/chat_engine.py` is **537 KB**. `_answer_turn` takes 20 parameters and
-runs ~1,550 lines; its own docstring calls that "the honest size of what this
-phase still needs to know." Every phase below adds a layer to it. A1 added five.
+`brain/chat_engine.py` was **537 KB** when this rule was written and is
+**696 KB** now, which is the rule failing in public. `_answer_turn` takes 20
+parameters and runs ~1,550 lines; its own docstring calls that "the honest size
+of what this phase still needs to know." Every phase adds a layer to it.
 
 So: **no big-bang refactor, but every phase extracts the stage it touches** into
 a named module with a typed hand-off. You are already in that code when you do
-the work; the seam is cheap then and expensive later. Milestone A is not
-finished until `docs/BRAIN_ARCHITECTURE.md` describes stages that actually exist
-as separate things.
+the work; the seam is cheap then and expensive later.
+
+[`docs/BRAIN_ARCHITECTURE.md`](docs/BRAIN_ARCHITECTURE.md) now exists and names
+thirteen stages that really are separate modules — and ends with the four things
+still inside the orchestrator, which is where B starts paying this price down.
 
 ### 3. Latency is in the contract
 
@@ -88,6 +111,20 @@ speak is worse than no avatar at all.
 **Budget: p50 ≤ 4s, p90 ≤ 8s for a conversational turn** by the end of
 Milestone A. A phase that pushes past it either buys the time back or does not
 ship. Tool-using turns get their own, looser budget, to be set in B.
+
+**Where the 13 seconds actually went (2026-09-23).** A search turn was
+measured at **9.27s** for the search phase alone, so the first assumption was
+the backend. Measuring it said otherwise: `ddgs` returns in **1.26–1.45s
+median** (p90 2.0–2.8s, no failures over ten calls), and pinning a faster
+backend bought nothing — `auto`, `lite` and `html` are within noise of each
+other, and the first run claiming html was twice as fast was noise too. The
+cost was structural: `ResearchAgent.research` ran its two queries — the
+person's words, and the other language or the verification query — **one after
+the other**. Running them together took the search phase to **2.93s** and the
+turn's p90 from **13.2s to 7.9s**. The slowest stage is now the router's own
+model call at 3.0s, which is where the next second has to come from. Paid
+search APIs start around 600ms (Brave, ~$5/1k with free monthly credits) if
+that is ever worth a key.
 
 **And the silence after the text is ready is its own number.** Piper ran on this
 machine, so "synthesise the whole reply, then play it" cost nothing. ElevenLabs
@@ -151,12 +188,12 @@ code, that speaks two languages and sounds like one person in both.
 | # | Phase | Status | Exit criterion |
 |---|---|---|---|
 | A1 | Natural conversation | `[x]` | ≥85% clean turns on the dogfood arcs |
-| A2 | Bilingual mind | `[~]` | Korean scores within 10 points of English; no guard silently passes |
-| A3 | Context & state ownership | `[x]` | contamination matrix ≥95% — **12/12**; ⚠️ A7 found the matrix is flaky per case, see below |
+| A2 | Bilingual mind | `[x]` | Korean scores within 10 points of English; no guard silently passes — **KO 91% · EN 88%**, n=120 each |
+| A3 | Context & state ownership | `[x]` | contamination matrix >=95% — **12/12 on three consecutive runs (2026-09-23)**, after the two cases that failed intermittently were fixed at the root: a correction outranked by a fact still being written, and an arithmetic answer whose number a later stage dropped |
 | A4 | Capability contracts | `[~]` | every capability has typed I/O and a declared failure set — **11/11**; search payload deferred to A6 |
 | A5 | Planning gaps | `[x]` | retry, cancel and partial completion covered by scenario tests — **25/25**, cancellation **10/10** |
 | A6 | Attribute grounding | `[x]` | no unsourced attribute stated as fact; unknown stays unknown — **20/20**, invented specs 1/6 → 8/8 caught |
-| A7 | Memory & personal context | `[~]` | useful across sessions, zero cross-task contamination — recall gate **34/34**, contamination **11–12/12** (matrix is flaky) |
+| A7 | Memory & personal context | `[x]` | useful across sessions, zero cross-task contamination — recall gate **34/34** · across a restart **11/11** recalled and **2/2** "you haven't told me" · contamination **12/12 on three consecutive runs** |
 
 ---
 
@@ -182,7 +219,7 @@ thread — **that one is A3's**, not a style fault.
 
 ---
 
-## A2 — Bilingual mind `[~]`
+## A2 — Bilingual mind `[x]`
 
 **Goal:** she replies in the language you spoke, switches cleanly when you
 switch, and is the *same person* in both.
@@ -256,12 +293,17 @@ with Korean-aware detectors.
   documented model limit, not a bug to chase in the style layer.
 
 **Where A2 stands.** Switching is 8/8 across five live runs, register drift
-46% → 9%, mixed-language replies 1/16 → 0/16, English quality up from 91% to
-94%. Korean sits 19 points behind English, so the exit criterion is **not
-met** — but the style metric measures register and shape, not sense, and what
-is actually behind is grounding (A6) and context (A3). Remaining A2 work:
-`action_commitment`, `response_policy` and `response_quality` are still
-English-only, and now declare so.
+46% → 9%, mixed-language replies 1/16 → 0/16. On the four unseen arcs,
+pooled over five runs each (2026-09-12, isolated runtimes): **Korean 91%
+(109/120), English 88% (106/120)** — a 2.5-point gap that is noise (p≈0.5),
+where it was 12 points and real. Runs 1–3 were before the premise judge and
+the late acknowledgement (see [docs/MISUNDERSTANDINGS.md](docs/MISUNDERSTANDINGS.md)),
+runs 4–5 after; each half alone is also over 85% in both languages. Facts
+taught in Korean are recalled when asked in English after a restart
+([docs/MEMORY_AND_RECALL.md](docs/MEMORY_AND_RECALL.md)). Exit criteria met.
+The honest limit is the one it always had: the style metric measures register
+and shape, not sense. `action_commitment`, `response_policy` and
+`response_quality` are still English-only, and declare so.
 Full record: [docs/BILINGUAL_BASELINE.md](docs/BILINGUAL_BASELINE.md).
 
 ---
@@ -505,7 +547,7 @@ there evidence, and does the stated value match it.
 
 ---
 
-## A7 — Memory & personal context `[~]`
+## A7 — Memory & personal context `[x]`
 
 **Goal:** she is useful over weeks, not only within one conversation, without
 becoming unpredictable.
@@ -515,15 +557,27 @@ where contamination is defined and measured. Do not start this before A3 lands.
 
 **What to build**
 
-- [ ] Preference memory that is actually used (the profile layer exists; the
-      *use* is thin)
+- [x] Preference memory that is actually used — what they told her is in
+      front of her every turn (`MemoryManager.profile`); a detail never told
+      gets a fixed "you haven't told me", never a guess
 - [ ] Task history and prior decisions — "you picked the M330 last time"
-- [ ] Continuation across sessions
-- [ ] **Explicit user control** over what is remembered and forgotten. A1
+      (deliberately not built: `TaskSessionStore` is session-scoped)
+- [x] Continuation across sessions — measured across a real shutdown and
+      reboot, see [docs/MEMORY_AND_RECALL.md](docs/MEMORY_AND_RECALL.md)
+- [x] **Explicit user control** over what is remembered and forgotten. A1
       already found that a bare "forget X" could silently eat a turn; forgetting
       needs to be a real, visible operation.
 - [ ] A hard line between temporary task state (A3's) and long-term memory
-- [ ] Local-first storage — **privacy is a design constraint, not a setting**
+      (held results are dropped with their task; the contamination matrix
+      that would prove it is flaky per case)
+- [x] Local-first storage — **privacy is a design constraint, not a setting**
+      (`memory/` makes no network calls, and that is a test; `runtime/` is
+      git-ignored)
+- [x] **Activity memory** — what they do on the PC is recorded all the time
+      (typed text in memory only, never on disk), and "repeat the last 5
+      things I did" / "what I did when I turned on my PC — do that every time"
+      replay it after a yes, stopped by touching the mouse, with delete/send/buy
+      steps always asked about ([docs/ACTIVITY_MEMORY.md](docs/ACTIVITY_MEMORY.md))
 - [ ] **Shared memory across devices** — see Milestone D. If D is real, this is
       not optional, and it changes the storage design. Decide it here.
 
@@ -538,16 +592,36 @@ contamination the previous phase removed.
 - Forgetting works and is visible to the user
 - Nothing leaves the machine without the user asking
 
+**Where A7 stands (2026-09-12).** Told ten facts the way a person says them,
+shut down and rebooted on the same runtime, she recalls **11/11** and says
+"you haven't told me" to both things she never heard — on three runs, from
+**0/11 and 0/2**. What she was told is in front of her every turn
+(`MemoryManager.profile`), a detail never told gets a fixed line instead of a
+guess, and `runtime/` is git-ignored. Forgetting is visible; `memory/` makes
+no network calls, as a test. Activity memory records what they do and
+replays it on a yes. Zero contamination is now met: **12/12 on three consecutive runs**
+(2026-09-23), after the correction-outranked-by-a-stale-fact case was fixed
+at its root rather than left flaky. Two build items are deliberately not
+built: task history ("you picked the M330 last time"), because
+`TaskSessionStore` is session-scoped by design, and shared memory across
+devices, which Milestone D decides. Full record: [docs/MEMORY_AND_RECALL.md](docs/MEMORY_AND_RECALL.md),
+[docs/ACTIVITY_MEMORY.md](docs/ACTIVITY_MEMORY.md).
+
 ---
 
 ## Milestone A exit
 
 - [ ] All seven phases at `[x]`
-- [ ] `docs/BRAIN_ARCHITECTURE.md` exists **and describes stages that exist as
-      separate modules** — not a diagram of a 537 KB file
-- [ ] Latency budget met: p50 ≤ 4s, p90 ≤ 8s conversational
-- [ ] Full suite green; router ≥95%; conversation quality ≥85% in **both**
-      languages
+- [~] [`docs/BRAIN_ARCHITECTURE.md`](docs/BRAIN_ARCHITECTURE.md) exists **and
+      describes stages that exist as separate modules** — written 2026-09-23:
+      thirteen stages, each a named module with its own tests. The half that
+      is not met is stated in the document itself: the orchestrator calling
+      them is 696 KB, and the four extractions that would fix it are listed
+- [~] Latency budget met: p50 ≤ 4s, p90 ≤ 8s conversational — **p90 7.9s met**
+      (13.2s → 7.9s, concurrent searches); p50 **4.5s**, 0.5s over. The
+      remaining cost is the router's model call at 3.0s, not search
+- [x] Full suite green; router ≥95%; conversation quality ≥85% in **both**
+      languages — 3680 green · router 97.8% · KO 91% / EN 88% (2026-09-12)
 - [ ] A week of real daily use without a "why did she do that" moment worth
       filing
 

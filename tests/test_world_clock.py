@@ -119,17 +119,47 @@ class ComputingTheTimeTests(unittest.TestCase):
 
 
 class InThePromptTests(unittest.TestCase):
-    """The context the model is actually handed."""
+    """The context the model is actually handed.
 
-    def _engine(self):
+    Two clocks are only two clocks when they are in different places.
+    These were written on a machine set to Korean time, and read "here"
+    off the host, so on a machine in Seattle they asked whether Seattle
+    differs from Seattle and failed on an answer that was right. Which
+    zone counts as here is stated below instead, through the
+    ``time.timezone`` setting config.yaml has always offered.
+    """
+
+    # Asia/Seoul is a fixed +09:00 that never observes daylight saving,
+    # so it is never within half an hour of America/Los_Angeles: the gap
+    # is always 16 or 17 hours, and always in the same direction.
+    HERE = "Asia/Seoul"
+
+    def _engine(self, zone=HERE):
+        """An engine whose idea of "here" does not come from the host.
+
+        ``build_engine`` deep-copies the config, so a zone pinned here
+        cannot reach another test. Passing ``zone=""`` leaves the
+        machine's own clock in place, which is the shipped default.
+        """
         from tests.turn_harness import build_engine
 
-        return build_engine()
+        engine = build_engine()
+        if zone:
+            engine.config.data.setdefault("time", {})["timezone"] = zone
+        return engine
 
     def test_the_local_clock_now_says_which_zone_it_is(self):
-        context = self._engine().build_time_context()
+        # Unpinned: the machine's own zone, whatever it is. That is what
+        # ships, so it is what this one covers.
+        context = self._engine(zone="").build_time_context()
 
         self.assertRegex(context, r"UTC[+-]\d{4}")
+
+    def test_a_configured_zone_is_the_clock_the_prompt_states(self):
+        # Asia/Seoul is +09:00 the whole year round.
+        context = self._engine().build_time_context()
+
+        self.assertIn("UTC+0900", context)
 
     def test_a_question_about_elsewhere_carries_that_clock(self):
         context = self._engine().build_time_context(
@@ -148,6 +178,24 @@ class InThePromptTests(unittest.TestCase):
 
         self.assertEqual(len(times), 2)
         self.assertNotEqual(times[0], times[1])
+
+    def test_one_clock_asked_about_itself_is_said_to_be_the_same_time(self):
+        # Asked about Seattle from Seattle there is no difference to
+        # state, and "0 hours behind" would be a strange way to say so.
+        # Real behaviour on any machine already in the zone the question
+        # names -- and until now it had no test of its own: it showed up
+        # only as the three tests above failing on a correct answer.
+        context = self._engine(
+            zone="America/Los_Angeles",
+        ).build_time_context("Tell me the time in Seattle right now.")
+        times = re.findall(r"\d{2}:\d{2} (?:AM|PM)", context)
+
+        self.assertIn("That is the same time as", context)
+        self.assertNotRegex(context, r"\d+ hours? (?:behind|ahead of)")
+        # The local label that finishes the sentence is the zone's own
+        # name -- "PDT" here, "your local time" when the OS hands over
+        # something that is not an abbreviation.
+        self.assertEqual(times[0], times[1])
 
     def test_an_ordinary_time_question_is_unchanged_in_shape(self):
         context = self._engine().build_time_context("what time is it")
