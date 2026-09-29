@@ -20,7 +20,7 @@ from collections import deque
 from difflib import SequenceMatcher
 from typing import Any
 
-from brain.text_filter import TextFilter
+from brain import realize
 
 
 class BriefResponseGenerator:
@@ -248,7 +248,7 @@ class BriefResponseGenerator:
                 think=False,
             )
             message = self._value(response, "message", {})
-            candidate = TextFilter.for_voice_response(
+            candidate = realize.display(
                 self._value(message, "content", "")
             )
             candidate = self._safe_punctuation(candidate)

@@ -10,6 +10,8 @@ class ResponseLimits:
 
     max_words: int = 0
     max_sentences: int = 0
+    # What the room is for, from the turn's budget (brain/response_budget.py).
+    goal: str = ""
 
     def instruction(
         self,
@@ -53,6 +55,7 @@ class ResponseLimits:
             length_rule,
             "길이를 맞추려고 문장을 중간에 끊거나 요청하신 결과를 빼지 "
             "않습니다. 자연스럽게 짧게 씁니다.",
+            *( [self.goal] if self.goal else [] ),
             "반드시 습니다체로 씁니다. '~요'로 끝나는 해요체는 쓰지 않습니다.",
             "확실하지 않은 것은 지어내지 않습니다. 영화 제목, 상품명, 가격은 "
             "확인된 것만 말합니다.",
@@ -107,6 +110,7 @@ class ResponseLimits:
             "Do not say that you will calculate, explain, check, or break something down later when you can do it now.",
             "Do not ask whether the user wants the answer after they already requested it.",
             length_rule,
+            *( [self.goal] if self.goal else [] ),
             "Compose a naturally shorter complete answer; never stop mid-sentence or omit the requested result to satisfy a length target.",
         ]
         if calculation:
@@ -215,7 +219,9 @@ class ResponseLimits:
             requested = self.max_words * 3 + 64
         else:
             requested = 480 if detailed else 320
-        return max(256, min(requested, 768))
+        # 900 rather than 768 since Phase 3D: the elaborate budget's ceiling
+        # needs the room to finish its last sentence.
+        return max(256, min(requested, 900))
 
 
 # English only, still. Every deferral phrase below is English ("let me
@@ -419,6 +425,12 @@ class ClosingOfferGuard:
         # on a live stock-price answer.
         r"let\s+me\s+know\s+if\s+you[’']?(?:d|\s+would)?\s*"
         r"(?:need|want|have|like)\s+(?:any|anything|more|further)",
+        # Moved here from the old speech filter in Phase 3A, which cut any
+        # trailing "want to know more...?" unconditionally. Only the form
+        # that names nothing is filler; "Want to know more about the second
+        # hotel?" has a referent and is content, by this class's own rule.
+        r"^(?:do\s+you\s+)?want\s+to\s+know\s+(?:anything(?:\s+else)?|more)"
+        r"(?:\s+about\s+(?:it|that|this|them))?\s*\?\s*$",
     )
     # The model's own trailing capability offers. Stripping these is what
     # makes RecommendationPolicy the single layer deciding whether a

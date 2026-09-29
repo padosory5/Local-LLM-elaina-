@@ -120,7 +120,10 @@ _BY_ROUTER_LABEL = {
     "screen_analysis": INSPECT,
     "project_question": INSPECT,
     "pending_approval": ACT,
-    "clarification": CLARIFY,
+    # The person asking about her previous answer: answered, from the
+    # conversation. Elaina needing to ask is "needs_clarification".
+    "clarification": CHAT,
+    "needs_clarification": CLARIFY,
 }
 
 # Operations that make something rather than operate something.

@@ -79,7 +79,8 @@ class TheLayerCanChooseAmongAllOfThemTests(unittest.TestCase):
                        computer_operation="delete_folder"),
             ).mode,
             # clarify -- a question is outstanding
-            decide(_route("clarification")).mode,
+            # R9: Elaina's own open question.
+            decide(_route("needs_clarification")).mode,
         }
 
         self.assertEqual(

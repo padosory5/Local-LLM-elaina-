@@ -4,6 +4,7 @@ import json
 import re
 import time
 
+from brain import domain_resolver
 from brain import world_clock
 from core import timing
 from dataclasses import dataclass, replace
@@ -527,6 +528,14 @@ TIME_SCOPES = {"timeless", "current", "historical", "future", "unknown"}
 REQUEST_EXPLICITNESS_VALUES = {"direct", "indirect", "statement", "unknown"}
 
 
+# Elaina cannot proceed until the person answers a question of hers. An
+# engine decision, never the router's label: the router's "clarification"
+# is the person asking about her previous answer (docs/PHASE3_PLAN.md R9).
+NEEDS_CLARIFICATION = "needs_clarification"
+
+ANSWER_SHAPES = frozenset({"state", "explain", "example"})
+
+
 @dataclass(frozen=True)
 class IntentDecision:
     intent: str
@@ -548,6 +557,13 @@ class IntentDecision:
     memory_relevant: bool = False
     memory_candidate: bool = False
     detailed_response: bool = False
+    # What kind of answer an information request wants: "state" (a fact, a
+    # value, a formula, what something is), "explain" (why, how, what it is
+    # for, how two things differ) or "example" (an example, a use, a
+    # demonstration). "" when the router did not say. Read by the response
+    # budget (brain/response_budget.py) to decide whether a concrete example
+    # belongs in the answer.
+    answer_shape: str = ""
     screen_target: str = "configured"
     verification_required: bool = False
     information_freshness: str = "unknown"
@@ -749,7 +765,7 @@ class SemanticIntentRouter:
                                 "action_target, topic_shift, consent_decision, "
                                 "offered_intent, offered_request, "
                                 "memory_relevant, memory_candidate, "
-                                "detailed_response, screen_target, "
+                                "detailed_response, answer_shape, screen_target, "
                                 "verification_required, information_freshness, "
                                 "requires_external_evidence, "
                                 "recommendation_needed, urgent_safety, "
@@ -1541,6 +1557,10 @@ class SemanticIntentRouter:
             # and came back with a query carrying three unrelated topics;
             # the offset was knowable the whole time.
             and not world_clock.read_place(decision.normalized_request)
+            # Nor is the clock here. The 27B marks "what time is it" as
+            # needing outside evidence -- it is live -- and this sent it to
+            # the web, where it read a sunrise as the time (Phase 3B).
+            and not domain_resolver.claims_clock(decision.normalized_request)
         ):
             return replace(
                 decision,
@@ -1801,7 +1821,9 @@ class SemanticIntentRouter:
             )
         return replace(
             decision,
-            intent="clarification",
+            # Elaina has to ask. Not "clarification", which is the person
+            # asking her (docs/PHASE3_PLAN.md R9).
+            intent=NEEDS_CLARIFICATION,
             action_requested=False,
             reason=(
                 f"Low routing confidence ({decision.confidence:.2f}): "
@@ -2070,8 +2092,11 @@ class SemanticIntentRouter:
             "evidence still uses web_search but stays conversational in "
             "tone; any health-related recommendation uses advice_domain "
             "health.\n"
-            "- clarification: only a genuinely ambiguous write/action "
-            "request. Never execute writes from here.\n"
+            # R9, and kept shorter than the definition it replaced: this
+            # prompt already fills the 27B's 4,096-token context, and 60
+            # more tokens doubled the routing answers cut off mid-JSON.
+            "- clarification: asks her to re-explain her last answer (a "
+            "follow-up).\n"
             "An attached screen selection strongly implies screen_analysis "
             "unless another action is clearly requested.\n\n"
             "A specialist intent may execute only when action_requested is "
@@ -2082,8 +2107,8 @@ class SemanticIntentRouter:
             "topic, entity, aliases, is_follow_up, speech_act, "
             "action_requested, action_target, topic_shift, consent_decision, "
             "offered_intent, offered_request, memory_relevant, "
-            "memory_candidate, detailed_response, screen_target, "
-            "verification_required, information_freshness, "
+            "memory_candidate, detailed_response, answer_shape, "
+            "screen_target, verification_required, information_freshness, "
             "requires_external_evidence, recommendation_needed, "
             "urgent_safety, advice_domain, time_scope, request_explicitness, "
             "computer_operation, computer_location, computer_url.\n"
@@ -2103,6 +2128,9 @@ class SemanticIntentRouter:
             "saving.\n"
             "detailed_response is true for an explicit request for a "
             "thorough/complete/stepwise answer.\n"
+            "answer_shape: state (a fact, value, formula or what something "
+            "is), explain (why, how, what it is for, or a difference), "
+            "example (an example, a use or a demonstration), or empty.\n"
             "information_freshness: stable (state-independent), "
             "historical_record (needs a specific past value), changing (can "
             "shift between model updates), live (can shift within hours), "
@@ -2255,6 +2283,10 @@ class SemanticIntentRouter:
             memory_relevant=bool(payload.get("memory_relevant", False)),
             memory_candidate=bool(payload.get("memory_candidate", False)),
             detailed_response=bool(payload.get("detailed_response", False)),
+            answer_shape=(
+                shape if (shape := str(payload.get("answer_shape", "")).strip().lower())
+                in ANSWER_SHAPES else ""
+            ),
             screen_target=screen_target,
             verification_required=bool(
                 payload.get("verification_required", False)

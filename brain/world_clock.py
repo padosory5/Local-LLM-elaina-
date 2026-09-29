@@ -168,24 +168,68 @@ def asks_the_time(text: str) -> bool:
     return bool(_ASKS_THE_TIME.search(str(text or "")))
 
 
-def read_place(text: str) -> str:
-    """The place a time question names, as this module knows it."""
+# A second place, once a first has been read: "in Seattle compared with
+# Seoul", "Seattle and Tokyo", "London vs Paris". Only ever after a place
+# has already been found, or in a sentence that asks the time -- the same
+# reason the rule above needs a preposition.
+_PLACE_AFTER_CONNECTOR = re.compile(
+    r"\b(?:and|or|vs\.?|versus|with|to|than|compared\s+(?:with|to))\s+"
+    r"([A-Za-z][\w.'-]*(?:\s+[A-Za-z][\w.'-]*){0,3})",
+    re.IGNORECASE,
+)
+
+
+def _known(phrase: str) -> str:
+    words = phrase.split()
+    # Longest first: "new york" before "new".
+    for size in range(min(_LONGEST, len(words)), 0, -1):
+        candidate = " ".join(words[:size]).casefold().strip(",.;:!?")
+        if candidate in _ZONES:
+            return candidate
+    return ""
+
+
+def read_places(text: str) -> list[str]:
+    """Every place a time question names, in the order it names them.
+
+    "What time is it in Seattle compared with Seoul?" names two. Reading
+    only the first is how Seoul's time was left to the model, which gave
+    "13 hours ahead" in 3 of 3 runs (docs/PHASE3_PLAN.md §1.3).
+    """
     text = " ".join(str(text or "").split())
     if not text:
-        return ""
+        return []
+    found: list[tuple[int, str]] = []
     for match in _PLACE_AFTER.finditer(text):
-        phrase = match.group(1) or match.group(2) or ""
-        words = phrase.split()
-        # Longest first: "new york" before "new".
-        for size in range(min(_LONGEST, len(words)), 0, -1):
-            candidate = " ".join(words[:size]).casefold().strip(",.;:!?")
-            if candidate in _ZONES:
-                return candidate
+        group = 1 if match.group(1) else 2
+        name = _known(match.group(group) or "")
+        if name:
+            found.append((match.start(group), name))
+    if found or asks_the_time(text):
+        for match in _PLACE_AFTER_CONNECTOR.finditer(text):
+            name = _known(match.group(1) or "")
+            if name:
+                found.append((match.start(1), name))
     for name in _ALSO_KNOWN:
         # Korean names carry no preposition and no capitalisation.
-        if not name.isascii() and name in text:
-            return name
-    return ""
+        if not name.isascii():
+            position = text.find(name)
+            if position >= 0:
+                found.append((position, name))
+    ordered: list[str] = []
+    seen_zones: set[str] = set()
+    for _, name in sorted(found):
+        zone = _ZONES.get(name)
+        if name not in ordered and zone not in seen_zones:
+            ordered.append(name)
+            seen_zones.add(zone)
+    return ordered
+
+
+def read_place(text: str) -> str:
+    """The first place a time question names, as this module knows it."""
+    places = read_places(text)
+    return places[0] if places else ""
 
 
 def clock_in(place: str) -> tuple[str, datetime] | None:
@@ -242,14 +286,95 @@ def describe(place: str, here: datetime | None = None) -> str:
         return ""
     zone, moment = found
     line = (
-        f"In {place.title()} ({zone}) it is now "
+        f"In {_title(place)} ({zone}) it is now "
         f"{moment.strftime('%I:%M %p on %A, %B %d, %Y')} "
-        f"({moment.strftime('%Z')})."
+        f"({zone_label(moment)})."
     )
     gap = _hours_from_here(moment, here)
     if gap:
         line += f" That is {gap}."
     return line
+
+
+def _title(place: str) -> str:
+    return place.title() if place.isascii() else place
+
+
+def compare(first: str, second: str) -> str:
+    """The gap between two named places, stated so nobody has to work it out."""
+    a, b = clock_in(first), clock_in(second)
+    if a is None or b is None:
+        return ""
+    hours = (
+        (b[1].utcoffset() or timedelta()) - (a[1].utcoffset() or timedelta())
+    ).total_seconds() / 3600
+    if abs(hours) < 0.5:
+        return f"{_title(second)} and {_title(first)} are on the same time."
+    whole = int(abs(hours)) if abs(hours) == int(abs(hours)) else round(abs(hours), 1)
+    plural = "" if whole == 1 else "s"
+    way = "ahead of" if hours > 0 else "behind"
+    return f"{_title(second)} is {whole} hour{plural} {way} {_title(first)}."
+
+
+# ------------------------------------------------------------- saying it
+
+_KOREAN_DAYS = "월화수목금토일"
+
+
+def spoken_time(moment: datetime, language: str = "en", *, with_date: bool = True) -> str:
+    """The time as a person says it in that language, computed here.
+
+    Korean was left to the model, which translated "12:11 AM" itself and
+    said 오후 for the hour after midnight in 3 of 3 runs. 오전 is before
+    noon, 오후 after, and both count hours from 12.
+    """
+    hour, minute = moment.hour, moment.minute
+    twelve = hour % 12 or 12
+    if str(language or "").lower().startswith("ko"):
+        clock = f"{'오전' if hour < 12 else '오후'} {twelve}시"
+        if minute:
+            clock += f" {minute}분"
+        if not with_date:
+            return clock
+        day = _KOREAN_DAYS[moment.weekday()]
+        return f"{moment.year}년 {moment.month}월 {moment.day}일 {day}요일 {clock}"
+    clock = f"{twelve}:{minute:02d} {'AM' if hour < 12 else 'PM'}"
+    if not with_date:
+        return clock
+    return f"{clock}, {moment.strftime('%A, %B')} {moment.day}, {moment.year}"
+
+
+# Zones to recognise the machine's own clock as, when the OS will not name
+# it: Windows gives %Z in the display language, so on a Korean install the
+# Pacific zone is "태평양 일광 절약 시간". Matched by offset and daylight
+# saving against the tz database, never typed in.
+_LIKELY_HOMES = (
+    "America/Los_Angeles", "America/Denver", "America/Phoenix",
+    "America/Chicago", "America/New_York", "America/Anchorage",
+    "Pacific/Honolulu", "Asia/Seoul", "Asia/Tokyo", "Asia/Shanghai",
+    "Europe/London", "Europe/Paris", "Australia/Sydney", "UTC",
+)
+
+
+def zone_label(moment: datetime) -> str:
+    """A short, ASCII name for the zone this moment is in: "PDT", "KST"."""
+    label = moment.strftime("%Z") or ""
+    if label.isascii() and label.replace("+", "").replace("-", "").isalnum() and len(label) <= 6:
+        return label
+    offset = moment.utcoffset()
+    if offset is None:
+        return ""
+    import time as _time
+
+    in_dst = bool(_time.localtime().tm_isdst)
+    for name in _LIKELY_HOMES:
+        try:
+            there = moment.astimezone(ZoneInfo(name))
+        except Exception:
+            continue
+        if there.utcoffset() == offset and bool(there.dst()) == in_dst:
+            return there.strftime("%Z")
+    return ""
 
 
 def _hours_from_here(moment: datetime, here: datetime | None = None) -> str:
@@ -258,9 +383,8 @@ def _hours_from_here(moment: datetime, here: datetime | None = None) -> str:
         here = local_now()
     # %Z is localised by the OS -- on Korean Windows it comes back as
     # "대한민국 표준시", which reads oddly inside an English sentence and
-    # is not what the abbreviation is for. Use it when it is one.
-    label = here.strftime("%Z") or ""
-    local_zone = label if label.isascii() and label else "your local time"
+    # is not what the abbreviation is for. zone_label names it properly.
+    local_zone = zone_label(here) or "your local time"
     offset = (moment.utcoffset() or timedelta()) - (
         here.utcoffset() or timedelta()
     )

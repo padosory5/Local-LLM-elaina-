@@ -12,7 +12,7 @@ from core import turn_trace
 from voice.manager import VoiceManager
 from core.event_bus import EventBus
 from config.loader import Config
-from brain.text_filter import TextFilter
+from brain import realize
 
 # How long a just-finished TTS line remains usable as an echo reference.
 # Real speaker-loopback echo arrives within about a second of Elaina
@@ -185,11 +185,13 @@ class AudioManager:
             self._response_language = language
 
     def speak(self, text: str) -> None:
+        """Say this. ``text`` is what the screen shows; the voice is given
+        its speech realization (brain/realize.py): the same substance, with
+        notation said in words and visual-only formatting dropped. Every
+        spoken line in the app comes through here, so this is the one place
+        speech is realized."""
         said = text
-        text = TextFilter.for_configured_speech(
-            text,
-            response_language=self._response_language,
-        )
+        text = realize.speech(text, self._response_language)
 
         if not text:
             turn_trace.note_speech(said, "", ())
@@ -206,9 +208,9 @@ class AudioManager:
         # worker synthesises the next chunk while this one plays, so the
         # split costs nothing in continuity.
         chunks = _speakable_chunks(text)
-        # What the voice is actually given, beside what was displayed: the
-        # two are the same string today, and the turn's record is where
-        # the day they stop being the same will show.
+        # What the voice is actually given, beside what was displayed. They
+        # differ by design since Phase 3A; the record is where the
+        # difference is read (evals/integrity.py measures its coverage).
         turn_trace.note_speech(said, text, chunks)
         for chunk in chunks:
             self._queue.put((generation, chunk))

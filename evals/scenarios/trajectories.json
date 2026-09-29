@@ -1,0 +1,162 @@
+{
+  "suite": "trajectories",
+  "kind": "trajectory",
+  "about": "Conversations, scored turn by turn, because the failures that matter most here appear only in context: an explanation that does not change when the person says they did not follow it, a search that opens a recommendation which every later turn inherits, a remark from nowhere at the end of a long exchange. Every scenario runs on a fresh backend and a fresh runtime.",
+  "scenarios": [
+    {
+      "id": "live_session_2026_09_23",
+      "language": "en",
+      "domain": "calculus",
+      "source": "the session that prompted this work, word for word. Live: turn 4 was run as a product recommendation over search snippets with the query 'math Taylor'; turn 5 carried the zone name and UTC offset. Replayed: turn 4 was the model's own vague draft, turn 5 added 'That will make for a long day.'",
+      "turns": [
+        {
+          "say": "Can you actually search up what topics is covered in University of Washington Math 207?"
+        },
+        {
+          "say": "Can you explain to me what Taylor series are?",
+          "score": true,
+          "checks": {
+            "not_searched": true,
+            "no_cards": true
+          },
+          "mode": "definition"
+        },
+        {
+          "say": "Can you explain it more easier? I'm not really familiar with this math",
+          "score": true,
+          "checks": {
+            "not_searched": true,
+            "no_cards": true
+          },
+          "mode": "confused"
+        },
+        {
+          "say": "Can you give me like an example when Taylor series are used?",
+          "score": true,
+          "checks": {
+            "not_searched": true,
+            "no_cards": true
+          },
+          "mode": "example"
+        },
+        {
+          "say": "Can you tell me what time it is right now?",
+          "score": true,
+          "checks": {
+            "clock_times": [
+              "local"
+            ],
+            "utc_offset": {
+              "zone": "local",
+              "required": false
+            }
+          },
+          "mode": "fact"
+        }
+      ]
+    },
+    {
+      "id": "still_confused_derivative",
+      "language": "en",
+      "domain": "calculus",
+      "source": "Part V of the architecture brief: 'I still don't understand' and 'why would I ever use this'. Version 2: the first turn names calculus -- 'What's a derivative?' alone was answered, reasonably, as the financial instrument",
+      "turns": [
+        {
+          "say": "What's a derivative in calculus?"
+        },
+        {
+          "say": "I still don't get it.",
+          "score": true,
+          "checks": {
+            "not_searched": true
+          },
+          "mode": "confused"
+        },
+        {
+          "say": "Why would I ever need that?",
+          "score": true,
+          "checks": {
+            "not_searched": true
+          },
+          "mode": "purpose"
+        }
+      ]
+    },
+    {
+      "id": "ko_taylor_then_time",
+      "language": "ko",
+      "domain": "calculus",
+      "source": "the live session's shape, in Korean",
+      "turns": [
+        {
+          "say": "테일러 급수가 뭐야?"
+        },
+        {
+          "say": "잘 모르겠어. 더 쉽게 설명해 줘.",
+          "score": true,
+          "checks": {
+            "language": "ko",
+            "not_searched": true
+          },
+          "mode": "confused"
+        },
+        {
+          "say": "그걸 실제로 어디에 써?",
+          "score": true,
+          "checks": {
+            "language": "ko",
+            "not_searched": true,
+            "no_cards": true
+          },
+          "mode": "example"
+        },
+        {
+          "say": "지금 몇 시야?",
+          "score": true,
+          "checks": {
+            "language": "ko",
+            "clock_times": [
+              "local"
+            ],
+            "utc_offset": {
+              "zone": "local",
+              "required": false
+            }
+          },
+          "mode": "fact"
+        }
+      ]
+    },
+    {
+      "id": "explanation_thanks_time",
+      "language": "en",
+      "domain": "programming",
+      "source": "a thank-you after an explanation, then an unrelated small question",
+      "turns": [
+        {
+          "say": "How does a hash table work?"
+        },
+        {
+          "say": "Thanks, that makes sense.",
+          "score": true,
+          "checks": {},
+          "mode": "receipt"
+        },
+        {
+          "say": "What time is it?",
+          "score": true,
+          "checks": {
+            "clock_times": [
+              "local"
+            ],
+            "utc_offset": {
+              "zone": "local",
+              "required": false
+            }
+          },
+          "mode": "fact"
+        }
+      ]
+    }
+  ]
+}

@@ -505,9 +505,19 @@ lifecycle.start(
 # Also optional. Without a microphone she is still fully usable by text, and
 # crashing the whole process over an unavailable input device was the harsher
 # of the two failures.
+def _speech_to_text():
+    # ELAINA_STT=off: text only, and the GPU memory the recogniser would hold
+    # stays free. An evaluation drives her by text, and a large model beside
+    # a resident Whisper on a 16 GB card measures the spill into system
+    # memory rather than the model (Phase 2 pilot: 3 tokens/s).
+    if os.environ.get("ELAINA_STT", "").strip().lower() in {"0", "off", "false", "no"}:
+        raise RuntimeError("switched off by ELAINA_STT")
+    return SpeechToText(config=engine.config)
+
+
 speech_to_text = lifecycle.start(
     "speech to text",
-    lambda: SpeechToText(config=engine.config),
+    _speech_to_text,
     required=False,
     cleanup=lambda stt: stt.close(),
 )

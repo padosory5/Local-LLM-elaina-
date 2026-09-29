@@ -1,0 +1,331 @@
+{
+  "suite": "explanation",
+  "kind": "behavioral",
+  "about": "Questions asked in order to understand something. The topic is never the point: each scenario pairs a subject with a communicative goal -- an example, a reason, an intuition, a definition, a formula, a process, a comparison -- and is judged on whether the reply serves that goal. 'mode' is the goal; it decides which rubric properties apply (evals/rubric.json). Elaina is never shown it and nothing in her code reads it. A stable concept is expected to be explained from what she knows: searching one cost the Taylor turn nine seconds and ran it through the product-recommendation pipeline.",
+  "defaults": {
+    "checks": {
+      "not_searched": true,
+      "no_cards": true
+    }
+  },
+  "scenarios": [
+    {
+      "id": "taylor_example_when_used",
+      "language": "en",
+      "mode": "example",
+      "domain": "calculus",
+      "source": "live 2026-09-23: answered with a definition, via the recommendation pipeline over five search snippets; on replay, the model's own draft was just as vague",
+      "turns": [
+        {
+          "say": "Can you give me like an example when Taylor series are used?",
+          "score": true
+        }
+      ],
+      "failure": [
+        "restates the definition",
+        "formula without a motivating example",
+        "vague 'useful for complex functions'",
+        "does not say when or why it is used"
+      ],
+      "desired": [
+        "a concrete use case",
+        "why approximating helps there",
+        "notation only if it earns its place",
+        "conversational"
+      ]
+    },
+    {
+      "id": "taylor_what_is",
+      "language": "en",
+      "mode": "definition",
+      "domain": "calculus",
+      "source": "Part V of the architecture brief",
+      "turns": [
+        {
+          "say": "What is a Taylor series?",
+          "score": true
+        }
+      ],
+      "desired": [
+        "a short explanation of what it is, understandable without a textbook"
+      ]
+    },
+    {
+      "id": "taylor_formula",
+      "language": "en",
+      "mode": "formula",
+      "domain": "calculus",
+      "source": "Part V of the architecture brief",
+      "turns": [
+        {
+          "say": "What's the formula for a Taylor series?",
+          "score": true,
+          "checks": {
+            "must_match_any": [
+              "f\\s*\\(\\s*a\\s*\\)",
+              "f'",
+              "derivative",
+              "Σ",
+              "\\bsum\\b"
+            ]
+          }
+        }
+      ],
+      "desired": [
+        "the formula itself",
+        "what its parts mean"
+      ]
+    },
+    {
+      "id": "taylor_still_dont_understand",
+      "language": "en",
+      "mode": "intuition",
+      "domain": "calculus",
+      "source": "Part V of the architecture brief",
+      "turns": [
+        {
+          "say": "I still don't understand Taylor series.",
+          "score": true
+        }
+      ],
+      "desired": [
+        "a mental model first -- an analogy or a worked number"
+      ]
+    },
+    {
+      "id": "taylor_why_not_original",
+      "language": "en",
+      "mode": "purpose",
+      "domain": "calculus",
+      "source": "Part V of the architecture brief",
+      "turns": [
+        {
+          "say": "Why would I ever use a Taylor series instead of the original function?",
+          "score": true
+        }
+      ],
+      "desired": [
+        "a situation where the original function is hard to compute and a polynomial is easy"
+      ]
+    },
+    {
+      "id": "derivative_simply",
+      "language": "en",
+      "mode": "intuition",
+      "domain": "calculus",
+      "source": "Part VI of the architecture brief",
+      "turns": [
+        {
+          "say": "I don't really get what a derivative is. Can you explain it simply?",
+          "score": true
+        }
+      ],
+      "failure": [
+        "'A derivative represents the instantaneous rate of change of a function...'"
+      ],
+      "desired": [
+        "something like a speedometer before any formal definition"
+      ]
+    },
+    {
+      "id": "hash_table_how",
+      "language": "en",
+      "mode": "how",
+      "domain": "programming",
+      "source": "Part VI of the architecture brief",
+      "turns": [
+        {
+          "say": "How does a hash table actually work?",
+          "score": true
+        }
+      ],
+      "failure": [
+        "'A hash table is a data structure implementing an associative array...'"
+      ],
+      "desired": [
+        "a mental model of jumping straight to the right drawer"
+      ]
+    },
+    {
+      "id": "recursion_example",
+      "language": "en",
+      "mode": "example",
+      "domain": "programming",
+      "source": "generalisation of the Taylor example",
+      "turns": [
+        {
+          "say": "Can you give me an example of when recursion is actually useful?",
+          "score": true
+        }
+      ]
+    },
+    {
+      "id": "inflation_why",
+      "language": "en",
+      "mode": "cause",
+      "domain": "economics",
+      "source": "domain coverage",
+      "turns": [
+        {
+          "say": "Why does printing more money cause inflation?",
+          "score": true
+        }
+      ]
+    },
+    {
+      "id": "opportunity_cost_example",
+      "language": "en",
+      "mode": "example",
+      "domain": "economics",
+      "source": "domain coverage",
+      "turns": [
+        {
+          "say": "What's an everyday example of opportunity cost?",
+          "score": true
+        }
+      ]
+    },
+    {
+      "id": "cpu_cache_why",
+      "language": "en",
+      "mode": "purpose",
+      "domain": "hardware",
+      "source": "domain coverage",
+      "turns": [
+        {
+          "say": "Why does a CPU need a cache if it already has RAM?",
+          "score": true
+        }
+      ]
+    },
+    {
+      "id": "overfitting_nontechnical",
+      "language": "en",
+      "mode": "intuition",
+      "domain": "ai",
+      "source": "domain coverage",
+      "turns": [
+        {
+          "say": "What does overfitting mean in machine learning? I'm not technical.",
+          "score": true
+        }
+      ]
+    },
+    {
+      "id": "bus_brakes_why",
+      "language": "en",
+      "mode": "cause",
+      "domain": "physics",
+      "source": "domain coverage",
+      "turns": [
+        {
+          "say": "Why do you lurch forward when a bus suddenly brakes?",
+          "score": true
+        }
+      ]
+    },
+    {
+      "id": "ice_floats_why",
+      "language": "en",
+      "mode": "cause",
+      "domain": "everyday",
+      "source": "domain coverage",
+      "turns": [
+        {
+          "say": "Why does ice float on water?",
+          "score": true
+        }
+      ]
+    },
+    {
+      "id": "ram_vs_storage",
+      "language": "en",
+      "mode": "comparison",
+      "domain": "hardware",
+      "source": "Part V of the architecture brief (comparison)",
+      "turns": [
+        {
+          "say": "What's the difference between RAM and storage?",
+          "score": true
+        }
+      ]
+    },
+    {
+      "id": "vaccine_how",
+      "language": "en",
+      "mode": "how",
+      "domain": "biology",
+      "source": "domain coverage",
+      "turns": [
+        {
+          "say": "How does a vaccine teach your body to fight a virus?",
+          "score": true
+        }
+      ]
+    },
+    {
+      "id": "ko_taylor_example",
+      "language": "ko",
+      "mode": "example",
+      "domain": "calculus",
+      "source": "the Taylor example, in Korean",
+      "turns": [
+        {
+          "say": "테일러 급수가 실제로 어디에 쓰이는지 예를 들어 줄 수 있어?",
+          "score": true,
+          "checks": {
+            "language": "ko"
+          }
+        }
+      ]
+    },
+    {
+      "id": "ko_derivative_simply",
+      "language": "ko",
+      "mode": "intuition",
+      "domain": "calculus",
+      "source": "the derivative intuition, in Korean",
+      "turns": [
+        {
+          "say": "미분이 뭔지 잘 모르겠어. 쉽게 설명해 줄래?",
+          "score": true,
+          "checks": {
+            "language": "ko"
+          }
+        }
+      ]
+    },
+    {
+      "id": "ko_compound_interest_why",
+      "language": "ko",
+      "mode": "purpose",
+      "domain": "finance",
+      "source": "domain coverage, in Korean",
+      "turns": [
+        {
+          "say": "복리가 왜 그렇게 중요하다고 하는 거야?",
+          "score": true,
+          "checks": {
+            "language": "ko"
+          }
+        }
+      ]
+    },
+    {
+      "id": "ko_hash_table_when",
+      "language": "ko",
+      "mode": "example",
+      "domain": "programming",
+      "source": "domain coverage, in Korean",
+      "turns": [
+        {
+          "say": "해시 테이블은 어떤 상황에서 쓰는 거야?",
+          "score": true,
+          "checks": {
+            "language": "ko"
+          }
+        }
+      ]
+    }
+  ]
+}

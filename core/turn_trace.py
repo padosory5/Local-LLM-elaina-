@@ -62,6 +62,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import fields, is_dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -216,6 +217,11 @@ class TurnTrace:
         self.model_calls: list[dict] = []
         self.display: str | None = None
         self.speech: list[dict] = []
+        # What a checking stage concluded about the reply, whether or not it
+        # changed anything: a value it found supported, conflicting or
+        # unsupported, and the evidence it read. A stage that decides and
+        # deletes in one step leaves only its deletion; this is the rest.
+        self.findings: list[dict] = []
         self.log: list[str] = []
         self.timings: dict = {}
         self.outcome = "answered"
@@ -332,6 +338,12 @@ class TurnTrace:
         }
         with self._mutex:
             self.speech.append(entry)
+
+    def record_finding(self, values: dict) -> None:
+        entry = {key: _plain(value) for key, value in values.items()}
+        entry["t"] = self._now()
+        with self._mutex:
+            self.findings.append(entry)
 
     def record_timings(self, values: dict) -> None:
         plain = {
@@ -500,6 +512,7 @@ class TurnTrace:
                 "chain_ok": self.chain_ok,
                 "display": self.display,
                 "speech": list(self.speech),
+                "findings": list(self.findings),
                 "evidence": dict(self.evidence),
                 "model_calls": list(self.model_calls),
                 "timings": dict(self.timings),
@@ -552,6 +565,10 @@ _local = threading.local()
 _last: TurnTrace | None = None
 _turns_traced = 0
 _breaks: list[dict] = []
+# The last few finished records, numbered, for anything that needs to know
+# which turns happened during some stretch of time -- the per-test stage
+# coverage in scripts/stage_test_coverage.py. Memory only, and short.
+_recent: "deque[tuple[int, TurnTrace]]" = deque(maxlen=64)
 
 
 def begin(user_input: str, **inputs) -> TurnTrace | None:
@@ -636,6 +653,15 @@ def note_speech(said: str, spoken: str, chunks) -> None:
             pass
 
 
+def note_finding(**values) -> None:
+    trace = _mine() or _current
+    if trace is not None:
+        try:
+            trace.record_finding(values)
+        except Exception:
+            pass
+
+
 def note_timings(values: dict) -> None:
     trace = _mine() or _current
     if trace is not None:
@@ -668,6 +694,7 @@ def finish(trace: TurnTrace | None = None) -> TurnTrace | None:
             _local.trace = trace._outer
         trace._close()
         _turns_traced += 1
+        _recent.append((_turns_traced, trace))
         if not trace.chain_ok:
             _breaks.append({
                 "turn_id": trace.turn_id,
@@ -706,6 +733,15 @@ def summary() -> dict:
     return {"turns": _turns_traced, "breaks": list(_breaks)}
 
 
+def finished_since(count: int) -> list[TurnTrace]:
+    """The records finished after ``summary()['turns']`` was ``count``.
+
+    Only the last 64 are kept; a stretch longer than that returns the ones
+    still held.
+    """
+    return [trace for number, trace in list(_recent) if number > count]
+
+
 def reset() -> None:
     """Forget everything recorded in this process (tests only)."""
     global _current, _last, _turns_traced
@@ -715,6 +751,7 @@ def reset() -> None:
     _last = None
     _turns_traced = 0
     _breaks.clear()
+    _recent.clear()
 
 
 # --------------------------------------------------------------- the model

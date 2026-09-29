@@ -94,7 +94,10 @@ class GoalTests(unittest.TestCase):
             ("computer_action", goal_intent.ACT),
             ("project_edit", goal_intent.MODIFY),
             ("screen_analysis", goal_intent.INSPECT),
-            ("clarification", goal_intent.CLARIFY),
+            # R9: the person asking about her last answer is chat; her own
+            # open question is needs_clarification.
+            ("clarification", goal_intent.CHAT),
+            ("needs_clarification", goal_intent.CLARIFY),
         ):
             with self.subTest(label=label):
                 self.assertEqual(goal_intent.read(_route(label)).intent, expected)
@@ -132,7 +135,10 @@ class CapabilityTests(unittest.TestCase):
                 )
 
     def test_nothing_runs_for_a_question_that_is_still_open(self):
-        _goal, _decision, choice = _chain(_route("clarification"))
+        # R9 (docs/PHASE3_PLAN.md): Elaina's open question is
+        # needs_clarification; the router's clarification is the person
+        # asking about her last answer.
+        _goal, _decision, choice = _chain(_route("needs_clarification"))
 
         self.assertEqual(choice.capability, caps.NOTHING)
         self.assertFalse(choice.needs_a_tool)

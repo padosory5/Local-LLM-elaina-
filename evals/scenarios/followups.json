@@ -1,0 +1,82 @@
+{
+  "suite": "followups",
+  "kind": "trajectory",
+  "about": "Phase 3 R9 regression suite, reported apart from the Phase 2 corpus so the rerun compares like with like. Each scenario is an explanation followed by the person saying it did not land -- they don't get it, want it another way, or ask what part of it meant. That turn is about the answer just given: it must keep the conversation and answer, not ask 'what part is unclear?' or say it has no context. Measured in Phase 2: the 27B's router labelled 10-11 such follow-ups per arm 'clarification', the pipeline read that as 'Elaina must ask', dropped the history, and she asked instead of explaining. English and Korean, on subjects no other suite uses.",
+  "defaults": {
+    "checks": {
+      "not_searched": true,
+      "no_cards": true
+    }
+  },
+  "scenarios": [
+    {
+      "id": "index_fund_what_do_you_mean",
+      "language": "en",
+      "domain": "finance",
+      "source": "Phase 3 R9: 'What do you mean?' after an explanation",
+      "turns": [
+        {"say": "What is an index fund?", "score": true, "mode": "definition"},
+        {"say": "What do you mean?", "score": true, "mode": "confused",
+         "checks": {"answers_not_asks": true, "must_contain_any": ["index", "fund", "stocks", "market"]}}
+      ]
+    },
+    {
+      "id": "noise_cancelling_another_way",
+      "language": "en",
+      "domain": "physics",
+      "source": "Phase 3 R9: 'Can you explain that another way?'",
+      "turns": [
+        {"say": "How do noise-cancelling headphones work?", "score": true, "mode": "how"},
+        {"say": "Can you explain that another way?", "score": true, "mode": "confused",
+         "checks": {"answers_not_asks": true, "must_contain_any": ["sound", "noise", "wave", "microphone"]}}
+      ]
+    },
+    {
+      "id": "p_value_last_part",
+      "language": "en",
+      "domain": "statistics",
+      "source": "Phase 3 R9: 'I don't understand the last part.'",
+      "turns": [
+        {"say": "What is a p-value?", "score": true, "mode": "definition"},
+        {"say": "I don't understand the last part.", "score": true, "mode": "confused",
+         "checks": {"answers_not_asks": true, "must_contain_any": ["p-value", "p value", "chance", "probability", "result"]}}
+      ]
+    },
+    {
+      "id": "ko_quantum_computer_still_lost",
+      "language": "ko",
+      "domain": "computing",
+      "source": "Phase 3 R9: '잘 모르겠어.' after an explanation",
+      "turns": [
+        {"say": "양자 컴퓨터가 뭐야?", "score": true, "mode": "definition",
+         "checks": {"language": "ko"}},
+        {"say": "잘 모르겠어. 무슨 말인지.", "score": true, "mode": "confused",
+         "checks": {"language": "ko", "answers_not_asks": true, "must_contain_any": ["양자", "큐비트", "컴퓨터"]}}
+      ]
+    },
+    {
+      "id": "ko_exchange_rate_another_way",
+      "language": "ko",
+      "domain": "economics",
+      "source": "Phase 3 R9: '다른 방식으로 설명해 줄래?'",
+      "turns": [
+        {"say": "환율은 왜 변해?", "score": true, "mode": "cause",
+         "checks": {"language": "ko"}},
+        {"say": "다른 방식으로 설명해 줄래?", "score": true, "mode": "confused",
+         "checks": {"language": "ko", "answers_not_asks": true, "must_contain_any": ["환율", "통화", "돈", "수요"]}}
+      ]
+    },
+    {
+      "id": "ko_climate_weather_last_part",
+      "language": "ko",
+      "domain": "earth science",
+      "source": "Phase 3 R9: '마지막 부분이 무슨 뜻이야?'",
+      "turns": [
+        {"say": "기후랑 날씨는 뭐가 달라?", "score": true, "mode": "comparison",
+         "checks": {"language": "ko"}},
+        {"say": "마지막 부분이 무슨 뜻이야?", "score": true, "mode": "confused",
+         "checks": {"language": "ko", "answers_not_asks": true, "must_contain_any": ["기후", "날씨"]}}
+      ]
+    }
+  ]
+}

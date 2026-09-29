@@ -2,8 +2,8 @@
 
 Tool and planner results (a task-planner shortlist, a research summary, a
 page reading) bypass the ordinary response-length path entirely: they are
-"locked responses", passed through ``TextFilter.for_voice_response``, which
-deliberately never slices text. That is right -- silently truncating a
+"locked responses", passed through the display realization
+(``brain.realize.display``), which deliberately never slices text. That is right -- silently truncating a
 verified result would be worse than a long one -- but it left the longest
 answers Elaina ever gives with no shortening step at all.
 

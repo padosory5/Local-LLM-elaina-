@@ -39,7 +39,21 @@ what she knows about them.
   length limits, the model and temperature, and the conversation state (open
   problem, held results, pending offer, history length).
 - **The evidence**: search queries and results, the clock, a calculation
-  plan, a tool result.
+  plan, a tool result. Since Phase 3 also `ledger`: the turn's
+  `brain/evidence.py` ledger, one entry per piece of evidence with its
+  kind (clock, calculation, conversion, search, recall, grounded,
+  tool_result), its source and whether an earlier turn's evidence was
+  carried in on purpose. It is the same object the grounded-value guard
+  checks replies against, so the record and the guard cannot disagree
+  about what the turn knew.
+- **The findings** (Phase 3): what a checking stage concluded about the
+  reply whether or not it changed it -- for the grounded-value guard, every
+  value with its status (supported, conflicting, unsupported) and the
+  evidence entry that holds it.
+- **The domain claim** (Phase 3, `context.domain_claim`): when the turn was a
+  clock, arithmetic or conversion request recognised by
+  `brain/domain_resolver.py`, what it claimed and whether it acted or only
+  shadowed the router.
 - **The draft**: the model's text before any stage touched it, or the locked
   line when there was no model draft.
 - **The stages**: every rewrite site in `ChatEngine._answer_turn`, in order,
@@ -51,7 +65,10 @@ what she knows about them.
   prompt, the output, latency, time to first token, token counts, tokens per
   second and stop reason, from Ollama's own counters.
 - **The output**: the displayed text, and every piece of speech with the
-  exact text and sentence chunks the voice was given.
+  exact text and sentence chunks the voice was given. Since Phase 3A these
+  are two realizations of one reply (`brain/realize.py`): `said` is the
+  screen text handed to the audio boundary, `spoken` its speech realization
+  -- notation said in words, visual-only formatting dropped.
 - **The console**: every printed line during the turn.
 - **Timings**: the turn's timeline, from VAD to total.
 

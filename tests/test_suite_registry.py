@@ -73,8 +73,14 @@ class LiveCheckRegistryTests(unittest.TestCase):
     def test_every_registered_live_check_exists_on_disk(self):
         for check in LIVE_CHECKS:
             with self.subTest(check=check.name):
+                # A module check ("evals.run") lives where its dotted name says.
+                path = (
+                    PROJECT_ROOT / (check.script.replace(".", "/") + ".py")
+                    if check.script.startswith("evals.")
+                    else PROJECT_ROOT / "scripts" / check.script
+                )
                 self.assertTrue(
-                    (PROJECT_ROOT / "scripts" / check.script).is_file(),
+                    path.is_file(),
                     f"{check.script} is registered but not on disk",
                 )
 

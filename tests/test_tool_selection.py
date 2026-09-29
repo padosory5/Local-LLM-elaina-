@@ -388,7 +388,10 @@ class SurfaceDifferentiationTests(unittest.TestCase):
                 )
 
     def test_an_open_question_runs_nothing_at_all(self):
-        self.assertEqual(_capability("clarification"), caps.NOTHING)
+        # R9 (docs/PHASE3_PLAN.md): Elaina's open question is
+        # needs_clarification; the router's clarification is the person
+        # asking about her last answer.
+        self.assertEqual(_capability("needs_clarification"), caps.NOTHING)
 
 
 class FallbackTests(unittest.TestCase):

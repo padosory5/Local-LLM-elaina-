@@ -2186,7 +2186,10 @@ class SemanticIntentRouterTests(unittest.TestCase):
 
         result = router.route("search Guam hotels")
 
-        self.assertEqual(result.intent, "clarification")
+        # R9 (docs/PHASE3_PLAN.md): Elaina's open question is
+        # needs_clarification; the router's clarification is the person
+        # asking about her last answer.
+        self.assertEqual(result.intent, "needs_clarification")
         self.assertFalse(result.action_requested)
 
     def test_high_confidence_web_search_is_unaffected_by_clarification_policy(

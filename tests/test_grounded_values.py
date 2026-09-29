@@ -150,6 +150,16 @@ class EngineIntegrationTests(unittest.TestCase):
         engine.capability_offer = CapabilityOfferGate()
         engine._desktop_surface_lock = threading.Lock()
         engine._grounded_context = {"subject": "Hong Kong hotels", "statement": statement}
+        # Since Phase 3C the guard reads the turn's evidence ledger, and a
+        # follow-up about the verified subject carries that context into it
+        # (chat_engine adds it where the prompt includes it). The turn these
+        # tests model -- "for real? that seems cheap" about those hotels --
+        # is that follow-up.
+        from brain.evidence import GROUNDED, EvidenceLedger
+
+        engine._turn_evidence = EvidenceLedger()
+        engine._turn_evidence.add(GROUNDED, statement, source="recent verified context",
+                                  carried=True)
         return engine
 
     def test_an_invented_price_becomes_an_answerable_offer(self):

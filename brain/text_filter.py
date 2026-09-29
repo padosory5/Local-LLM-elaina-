@@ -353,7 +353,13 @@ class TextFilter:
         max_words: int = 45,
         max_sentences: int = 2,
     ) -> str:
-        """Create plain prose for Electron and TTS without deleting content.
+        """Speech-shaped prose, as the reply pipeline used to make it.
+
+        Not used by the reply pipeline since Phase 3A: applied to the text
+        on the screen it changed mathematics ("(x - a)" became "(x, a)").
+        The screen now gets ``brain.realize.display`` and the voice
+        ``brain.realize.speech`` (docs/PHASE3_PLAN.md 3A). Kept for callers
+        outside the pipeline that want the old single-string shape.
 
         ``max_words`` and ``max_sentences`` remain accepted for compatibility
         with older callers. Response length is now controlled during model

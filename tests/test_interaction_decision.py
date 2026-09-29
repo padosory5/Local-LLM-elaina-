@@ -194,7 +194,10 @@ class AmbiguityTests(unittest.TestCase):
     """Criteria 8 and 9: confidence carried, unknown requests fail safe."""
 
     def test_an_open_question_clarifies_before_anything_else(self):
-        decision = decide(_route("clarification", action_requested=True,
+        # R9 (docs/PHASE3_PLAN.md): Elaina's open question is
+        # needs_clarification; the router's clarification is the person
+        # asking about her last answer.
+        decision = decide(_route("needs_clarification", action_requested=True,
                                  computer_operation="type_text"))
 
         self.assertEqual(decision.mode, CLARIFY)

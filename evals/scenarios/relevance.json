@@ -1,0 +1,100 @@
+{
+  "suite": "relevance",
+  "kind": "behavioral",
+  "about": "Include information because it helps, not because it is known. Each scenario asks for one thing. Whether the reply adds what was not asked for is judged (only_what_helps); whether the thing it gives is right is checked against ground truth computed at the moment of the turn -- the clock in the named zones, the real UTC offset, today's date, the arithmetic, the distance -- so a reply cannot pass by having the right shape and the wrong value. The clock is the case that prompted it: 'What time is it right now?' was answered 'The current time is 10:38 PM in Pacific Daylight Time, UTC-0700.'",
+  "scenarios": [
+    {
+      "id": "time_now",
+      "language": "en", "mode": "fact", "domain": "clock",
+      "source": "live 2026-09-23: 'The current time is 10:38 PM in Pacific Daylight Time, UTC-0700.'; on replay the zone came from a Korean %Z and the draft added 'That will make for a long day.'",
+      "turns": [{"say": "What time is it right now?", "score": true,
+                 "checks": {"clock_times": ["local"], "utc_offset": {"zone": "local", "required": false}}}],
+      "failure": ["UTC offset nobody asked for", "time-zone terminology", "explaining time zones"],
+      "desired": ["the time", "the place only if it helps"]
+    },
+    {
+      "id": "time_zone",
+      "language": "en", "mode": "fact", "domain": "clock",
+      "source": "Part III of the architecture brief. Baseline: 'one hour behind Coordinated Universal Time' beside UTC-0700",
+      "turns": [{"say": "What time zone am I in?", "score": true,
+                 "checks": {"must_match": ["Pacific"], "utc_offset": {"zone": "local", "required": false}}}],
+      "desired": ["'Pacific Time.'"]
+    },
+    {
+      "id": "utc_offset",
+      "language": "en", "mode": "fact", "domain": "clock",
+      "source": "Part III of the architecture brief: the detail is still there when asked for",
+      "turns": [{"say": "What's my UTC offset right now?", "score": true,
+                 "checks": {"utc_offset": {"zone": "local", "required": true}}}],
+      "desired": ["'UTC−7 right now.'"]
+    },
+    {
+      "id": "time_seattle_vs_seoul",
+      "language": "en", "mode": "fact", "domain": "clock",
+      "source": "Part III of the architecture brief: here the relationship between zones is the point. Baseline: Seoul's time invented, '13 hours', in 3 of 3 runs -- the clock only looked up the first place named",
+      "turns": [{"say": "What time is it in Seattle compared with Seoul?", "score": true,
+                 "checks": {"clock_times": ["America/Los_Angeles", "Asia/Seoul"],
+                            "hour_difference": ["America/Los_Angeles", "Asia/Seoul"]}}],
+      "desired": ["both times, and how far apart they are"]
+    },
+    {
+      "id": "date_today",
+      "language": "en", "mode": "fact", "domain": "calendar",
+      "source": "relevance coverage",
+      "turns": [{"say": "What's today's date?", "score": true,
+                 "checks": {"calendar": {"date": true}}}]
+    },
+    {
+      "id": "year_now",
+      "language": "en", "mode": "fact", "domain": "calendar",
+      "source": "relevance coverage",
+      "turns": [{"say": "What year is it?", "score": true,
+                 "checks": {"calendar": {"year": true}}}]
+    },
+    {
+      "id": "cup_ounces",
+      "language": "en", "mode": "fact", "domain": "units",
+      "source": "relevance coverage",
+      "turns": [{"say": "How many ounces are in a cup?", "score": true,
+                 "checks": {"quantity": [{"unit": "(?:fluid\\s+)?ounces?|fl\\.?\\s*oz|oz", "value": 8, "tolerance": 0.0, "required": true}]}}]
+    },
+    {
+      "id": "fifteen_percent",
+      "language": "en", "mode": "fact", "domain": "arithmetic",
+      "source": "relevance coverage",
+      "turns": [{"say": "What's 15% of 80?", "score": true,
+                 "checks": {"must_match": ["\\b12\\b|\\btwelve\\b"]}}]
+    },
+    {
+      "id": "celsius_to_fahrenheit",
+      "language": "en", "mode": "fact", "domain": "units",
+      "source": "relevance coverage",
+      "turns": [{"say": "What's 20 degrees Celsius in Fahrenheit?", "score": true,
+                 "checks": {"quantity": [{"unit": "(?:°|degrees?)\\s*(?:F\\b|Fahrenheit)", "value": 68, "tolerance": 0.0, "required": true}]}}]
+    },
+    {
+      "id": "moon_distance",
+      "language": "en", "mode": "fact", "domain": "science",
+      "source": "relevance coverage. Baseline: '384,400 kilometers ... roughly 2.5 million miles' passed every check of version 1",
+      "turns": [{"say": "How far away is the moon?", "score": true,
+                 "checks": {"quantity": [
+                   {"unit": "km|kilomet(?:er|re)s?", "value": 384400, "tolerance": 0.03},
+                   {"unit": "miles?", "value": 238900, "tolerance": 0.03}
+                 ], "quantity_required_any": true}}]
+    },
+    {
+      "id": "ko_time_now",
+      "language": "ko", "mode": "fact", "domain": "clock",
+      "source": "the clock, in Korean; this machine's zone name is Korean ('태평양 일광 절약 시간')",
+      "turns": [{"say": "지금 몇 시야?", "score": true,
+                 "checks": {"language": "ko", "clock_times": ["local"], "utc_offset": {"zone": "local", "required": false}}}]
+    },
+    {
+      "id": "ko_date_today",
+      "language": "ko", "mode": "fact", "domain": "calendar",
+      "source": "relevance coverage, in Korean",
+      "turns": [{"say": "오늘 며칠이야?", "score": true,
+                 "checks": {"language": "ko", "calendar": {"date": true}}}]
+    }
+  ]
+}

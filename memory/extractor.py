@@ -1,3 +1,4 @@
+import os
 import json
 import re
 
@@ -153,9 +154,16 @@ class MemoryExtractor:
 
     def __init__(self, config: Config | None = None) -> None:
         self.config = config or Config()
-        self.model = self.config.get("llm", "ollama", "model")
-        self.client = ollama.Client(
-            host=self.config.get("llm", "ollama", "base_url")
+        # ELAINA_MODEL: the same override ChatEngine honours, so an
+        # evaluation arm running one model never loads a second one here.
+        self.model = os.environ.get("ELAINA_MODEL") or self.config.get("llm", "ollama", "model")
+        # The same context window as every other caller of this model,
+        # or Ollama reloads it between them (core/model_context.py).
+        from core import model_context
+
+        self.client = model_context.ContextSizedClient(
+            ollama.Client(host=self.config.get("llm", "ollama", "base_url")),
+            model_context.configured(self.config),
         )
 
     def extract(self, user_message: str) -> dict:

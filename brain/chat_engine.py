@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from typing import Any
 import json
+import os
 import re
 import threading
 import time
@@ -19,6 +20,7 @@ from brain.deliberation import ClarificationGate, Goal
 from brain.deliberation import goal_intent, interaction, supersession
 from brain.deliberation.goal_intent import SemanticGoal
 from brain import capability_selection
+from brain import response_stages
 from brain import result_state
 from brain import response_surface as surfaces
 from brain import entity_discovery
@@ -46,8 +48,14 @@ from voice.audio_manager import AudioManager
 from brain.emotion_engine import EmotionEngine
 from core import timing
 from core import turn_trace
+from core import model_context
 from core.event_bus import EventBus
+from brain import evidence as turn_evidence
+from brain import domain_resolver
+from brain import response_budget
+from brain.intent_router import NEEDS_CLARIFICATION
 from brain.text_filter import TextFilter
+from brain import realize
 from tools.web_search import WebSearchTool
 from tools.visual_search import VisualSearchTool
 from tools.project_mcp_client import ProjectMCPManager
@@ -561,7 +569,10 @@ class ChatEngine:
         # configuration, rather than reconstructing half of it by hand.
         self.config = config if config is not None else Config()
 
-        self.model = self.config.get(
+        # ELAINA_MODEL overrides config.yaml for the same reason as
+        # ELAINA_CONVERSATION_MODEL below: an evaluation arm can run another
+        # model without touching the file the person's Elaina reads.
+        self.model = os.environ.get("ELAINA_MODEL") or self.config.get(
             "llm",
             "ollama",
             "model",
@@ -584,8 +595,12 @@ class ChatEngine:
         # words the person hears move.
         #
         # Empty is the previous behaviour exactly: one model for both.
+        # ELAINA_CONVERSATION_MODEL overrides config.yaml, so an evaluation
+        # can put a different model on the words without editing the file
+        # the person's own Elaina reads.
         self.conversation_model = str(
-            self.config.get(
+            os.environ.get("ELAINA_CONVERSATION_MODEL")
+            or self.config.get(
                 "llm", "ollama", "conversation_model",
                 default="", required=False,
             ) or ""
@@ -666,12 +681,17 @@ class ChatEngine:
                 default=30, required=False,
             ),
         )
-        self.client = turn_trace.TracingClient(ollama.Client(
-            host=self.config.get(
-                "llm",
-                "ollama",
-                "base_url",
-            )
+        # Every call asks for one context window large enough for the
+        # router's prompt and answer (core/model_context.py).
+        self.client = turn_trace.TracingClient(model_context.ContextSizedClient(
+            ollama.Client(
+                host=self.config.get(
+                    "llm",
+                    "ollama",
+                    "base_url",
+                )
+            ),
+            model_context.configured(self.config),
         ))
 
         # Say out loud what is configured, and whether it can work. A
@@ -2511,6 +2531,13 @@ class ChatEngine:
             print(f"[Style] repaired structure: {verdict.report()[:120]}")
         if verdict.clean:
             return repaired
+        if not response_stages.soft_stages_on():
+            # This stage is MIXED (brain/response_stages.py). With the soft
+            # stages off, its soft half -- cutting to the act's length,
+            # taking offers out, saying it again -- is skipped; the register
+            # conversion and structural repair above are the hard half and
+            # have already run.
+            return repaired
         print(f"[Style] {act}: {verdict.report()}")
 
         if not verdict.needs_rewrite:
@@ -2719,9 +2746,8 @@ class ChatEngine:
                   f"{type(error).__name__}: {error}")
             return reply
         message = self._value(response, "message", {})
-        said = TextFilter.for_voice_response(
+        said = realize.display(
             str(self._value(message, "content", "") or ""),
-            max_words=max_words,
         ).strip()
         if wanted == turn_language.KOREAN:
             # The rest of her Korean has been through the register pass by
@@ -2844,10 +2870,8 @@ class ChatEngine:
                   f"{type(error).__name__}: {error}")
             return ""
         message = self._value(response, "message", {})
-        said = TextFilter.for_voice_response(
+        said = realize.display(
             str(self._value(message, "content", "") or ""),
-            max_words=max_words,
-            max_sentences=contract.max_sentences,
         )
         return said.strip()
 
@@ -2962,10 +2986,8 @@ class ChatEngine:
                 keep_alive=keep_alive,
                 think=False,
             )
-            fresh = TextFilter.for_voice_response(
+            fresh = realize.display(
                 self._value(self._value(response, "message", {}), "content", ""),
-                max_words=max_words,
-                max_sentences=max_sentences,
             )
         except Exception as error:
             print(f"[Response Guard] Could not regenerate: {error}")
@@ -3065,18 +3087,34 @@ class ChatEngine:
         # 206543000, doesn't seem like a right number" put that number into
         # the evidence, and the answer repeated it.
         disputed = grounded_values.reads_as_dispute(user_input)
-        looked_something_up = bool(
-            str(self._grounded_context.get("statement", "")).strip()
-            or str(research_evidence or "").strip()
-        )
-        evidence = " ".join((
-            str(self._grounded_context.get("statement", "")),
-            str(research_evidence or ""),
-            "" if disputed else user_input,
+        # What this turn had in hand (brain/evidence.py), and nothing older
+        # unless the turn chose to carry it. Phase 2 measured the cost of
+        # reading ``_last_research_evidence`` here, which any search set and
+        # nothing cleared: a time question after a Taylor-series search had
+        # its correct "3:07 AM" deleted -- "07" read as a damaged copy of
+        # "207", the course number in the old search -- while the clock the
+        # turn actually read was never consulted (docs/PHASE3_PLAN.md §1.4).
+        # ``research_evidence`` is kept for callers that pass evidence the
+        # ledger has not seen.
+        ledger = self._ledger()
+        sources: list[tuple[str, str]] = [
+            (f"{item.kind}:{item.source}" if item.source else item.kind, item.text)
+            for item in ledger.items()
+        ]
+        extra = str(research_evidence or "").strip()
+        if extra and extra not in ledger.text():
+            sources.append(("research", extra))
+        looked_something_up = bool(sources)
+        told = " ".join(self._what_they_told_her())
+        if not disputed and user_input:
+            sources.append(("their words", user_input))
+        if told:
             # A date or a number they told her about themselves ("my
             # birthday is March 14th") is evidence about their own life.
-            " ".join(self._what_they_told_her()),
-        ))
+            sources.append(("what they told her", told))
+        evidence = " ".join(source for _, source in sources)
+        for finding in GroundedValueGuard.findings(text, sources):
+            turn_trace.note_finding(stage="grounded_values", **finding)
         # Two sources disagreeing is a state, not a race -- so it is said,
         # and it is said even when the value she chose is perfectly well
         # supported, which is why this sits before the correction check
@@ -3570,7 +3608,7 @@ class ChatEngine:
         claim = self._last_claim()
         if not claim or not grounded_values.carries_a_checkable_claim(claim):
             return route
-        if route.intent in {"computer_action", "clarification"}:
+        if route.intent in {"computer_action", NEEDS_CLARIFICATION}:
             # An instruction is not a request to go and check.
             return route
         print("[Grounding Guard] Disputed claim: verifying rather than repeating.")
@@ -5489,7 +5527,15 @@ class ChatEngine:
         dropped = supersession.drops_a_named_subject(
             route.normalized_request or ""
         )
-        if dropped:
+        if route.intent == "clarification":
+            # "I still don't get it", "what do you mean?": about the answer
+            # just given, so the conversation is the whole of what it
+            # means. A router that reads it as a new subject, or a subject
+            # comparison that finds none, must not take that away -- that
+            # is how the 27B answered "What part is unclear?" to half its
+            # follow-ups (docs/PHASE3_PLAN.md R9).
+            reason = ""
+        elif dropped:
             reason = f"the turn drops {dropped!r} and asks something else"
         elif route.topic_shift:
             reason = "the router says the topic moved"
@@ -5548,6 +5594,17 @@ class ChatEngine:
             route, goal,
         )
 
+    def _ledger(self) -> turn_evidence.EvidenceLedger:
+        """This turn's evidence (brain/evidence.py).
+
+        Created per turn in ``chat``; created here for an engine built
+        without ``__init__`` or a handler reached outside ``chat``.
+        """
+        ledger = getattr(self, "_turn_evidence", None)
+        if ledger is None:
+            ledger = self._turn_evidence = turn_evidence.EvidenceLedger()
+        return ledger
+
     def _build_factual_messages(
         self,
         question: str,
@@ -5561,6 +5618,10 @@ class ChatEngine:
         grounded_context = self._grounded_context_text()
         context_sections: list[tuple[str, str]] = []
         if include_grounded and grounded_context:
+            self._ledger().add(
+                turn_evidence.GROUNDED, grounded_context,
+                source="recent verified context", carried=True,
+            )
             context_sections.append((
                 "RECENT VERIFIED CONTEXT",
                 grounded_context,
@@ -5592,6 +5653,7 @@ class ChatEngine:
         tool_result: str,
         *,
         inherit_history: bool = True,
+        evidence_kind: str = turn_evidence.TOOL_RESULT,
     ) -> list[dict]:
         """Let personality.txt phrase a trusted action result for the user.
 
@@ -5602,6 +5664,8 @@ class ChatEngine:
         number never came out. The other two builders could already drop
         history; this one could not, so no rule added to them reached it.
         """
+        self._ledger().add(evidence_kind, tool_result,
+                           source="trusted tool result")
         return build_personality_messages(
             system_prompt=self.system_prompt,
             history=self.conversation.get_history() if inherit_history else [],
@@ -9814,6 +9878,20 @@ class ChatEngine:
         # brain/turn_context.py for the turn that cost.
         turn_context = self._context_for_turn(route, goal_intent_result)
         print(turn_context.log_line())
+        # The last search's results, carried into a follow-up about them
+        # ("which of those is cheapest?"): evidence for this turn because
+        # this turn continues that one -- never merely because they are the
+        # most recent search (Phase 3C).
+        if (
+            str(getattr(self, "_last_research_evidence", "") or "").strip()
+            and getattr(route, "is_follow_up", False)
+            and turn_context.inherit_history
+        ):
+            self._ledger().add(
+                turn_evidence.RECALL, self._last_research_evidence,
+                source="the previous search, carried into a follow-up",
+                carried=True,
+            )
         if turn_trace.current() is not None:
             turn_trace.note_context(
                 language=self._turn_language,
@@ -9861,9 +9939,15 @@ class ChatEngine:
             # arithmetic expressions -- a sandboxed evaluator computes the
             # actual numbers, so they can't be a language-model math mistake.
             calculation_started = time.perf_counter()
-            calculation_plan = self.calculation_planner.plan(
-                route.normalized_request
-            )
+            claimed = getattr(self, "_turn_domain_claim", None)
+            if claimed is not None and claimed.result:
+                # Already computed, exactly, by the domain's own grammar:
+                # no planning call to the model.
+                calculation_plan = claimed
+            else:
+                calculation_plan = self.calculation_planner.plan(
+                    route.normalized_request
+                )
             timings["calculation_plan"] = (
                 time.perf_counter() - calculation_started
             )
@@ -9875,6 +9959,11 @@ class ChatEngine:
                     user_input=route.normalized_request,
                     tool_result=calculation_plan.as_trusted_result_text(),
                     inherit_history=turn_context.inherit_history,
+                    evidence_kind=(
+                        turn_evidence.CONVERSION
+                        if getattr(calculation_plan, "domain", "") == domain_resolver.CONVERSION
+                        else turn_evidence.CALCULATION
+                    ),
                 )
             else:
                 # Use the router's self-contained interpretation so a short
@@ -9890,8 +9979,12 @@ class ChatEngine:
                     ),
                 )
         elif route.intent == "time_question":
-            clock = self.build_time_context(route.normalized_request)
+            clock = self.build_time_context(
+                route.normalized_request, said=user_input,
+                language=self._turn_language,
+            )
             turn_trace.note_evidence(clock=clock)
+            self._ledger().add(turn_evidence.CLOCK, clock, source="clock")
             messages = self._build_factual_messages(
                 route.normalized_request,
                 clock,
@@ -9907,6 +10000,10 @@ class ChatEngine:
         # makes the reply actually name the hotels from the previous turn
         # instead of merely declining to search.
         if recalled_evidence and decision.reuses_existing_results:
+            self._ledger().add(
+                turn_evidence.RECALL, recalled_evidence,
+                source="earlier in this conversation", carried=True,
+            )
             messages = self._build_factual_messages(
                 route.normalized_request,
                 (
@@ -9969,6 +10066,10 @@ class ChatEngine:
                 )
                 self._last_search_query = research_result.queries[0]
                 self._last_research_evidence = research_result.evidence
+                self._ledger().add(
+                    turn_evidence.SEARCH, research_result.evidence,
+                    source=research_result.queries[0],
+                )
                 turn_trace.note_evidence(
                     search_queries=list(research_result.queries),
                     research=research_result.evidence,
@@ -10063,6 +10164,10 @@ class ChatEngine:
                         search_queries=[route.search_query],
                         research=str(search_result),
                     )
+                    self._ledger().add(
+                        turn_evidence.SEARCH, str(search_result),
+                        source=route.search_query,
+                    )
                     # The correction framing only when there is a correction.
                     # fact_check is also where "is there a casino on that
                     # island?" lands -- a question, not a dispute -- and told
@@ -10142,6 +10247,10 @@ class ChatEngine:
                 turn_trace.note_evidence(
                     search_queries=[corrected_query],
                     research=str(search_result),
+                )
+                self._ledger().add(
+                    turn_evidence.SEARCH, str(search_result),
+                    source=corrected_query,
                 )
                 messages = self._build_factual_messages(
                     (
@@ -10581,16 +10690,34 @@ class ChatEngine:
             forced_response = ""
 
         detailed_response = route.detailed_response
-        max_words = (
-            self.detailed_response_max_words
-            if detailed_response
-            else self.response_max_words
+        calculation_response = route.intent == "calculation"
+        # The same completeness question for a value she was asked for but
+        # did not have to calculate. Measured: "What is the freezing point
+        # of water in Fahrenheit?" -> "This is the temperature at which
+        # water turns into ice under standard atmospheric conditions." Only
+        # the checks below change; how she is told to answer does not.
+        value_response = (
+            calculation_response
+            or AnswerCompletionGuard.asks_for_a_value(user_input)
         )
-        max_sentences = (
-            self.detailed_response_max_sentences
-            if detailed_response
-            else self.response_max_sentences
+        # How much room this reply gets, from what it is for (Phase 3D,
+        # brain/response_budget.py). The single 45-word, two-sentence
+        # ceiling squeezed every explanation to a median of 32 words; a
+        # value keeps that ceiling, an explanation gets room for what the
+        # thing is for and one concrete case, and a re-explanation or an
+        # explicit request for depth gets room to take another route.
+        budget = response_budget.budget_for(
+            intent=route.intent,
+            detailed=detailed_response,
+            value_response=value_response,
+            recommendation=bool(
+                route.recommendation_needed or route.speech_act == "advice"
+            ),
+            speech_act=route.speech_act,
+            answer_shape=getattr(route, "answer_shape", ""),
+            config=self.config,
         )
+        max_words, max_sentences = budget.max_words, budget.max_sentences
         # What this reply is *doing*, which is not what the user asked for.
         # One name, decided once, and every style decision below reads it:
         # the length ceiling, the prompt's own instructions, and the review
@@ -10616,12 +10743,12 @@ class ChatEngine:
         # The act tightens the configured length and never loosens it. A
         # receipt is one clause whatever config.yaml permits.
         #
-        # Except when the user asked for detail. ``detailed_response`` is
-        # them saying "explain it properly", and a general contract about
-        # how long an answer usually runs has no business overruling a
-        # specific request -- so the ceiling is skipped there rather than
-        # quietly capping the one case where length was the point.
-        if not detailed_response:
+        # Except for an answer whose budget is an explanation. The answer
+        # contract's sentence count is a general figure about how long an
+        # answer usually runs; the budget is this turn's own reading of what
+        # the answer is for, and an explanation or a request for depth is
+        # exactly the case where length is the point.
+        if budget.kind == response_budget.VALUE or turn_act != conversation_style.ANSWER:
             max_sentences = (
                 min(max_sentences, style.max_sentences) if max_sentences > 0
                 else style.max_sentences
@@ -10638,16 +10765,10 @@ class ChatEngine:
         response_limits = ResponseLimits(
             max_words=max_words,
             max_sentences=max_sentences,
-        )
-        calculation_response = route.intent == "calculation"
-        # The same completeness question for a value she was asked for but
-        # did not have to calculate. Measured: "What is the freezing point
-        # of water in Fahrenheit?" -> "This is the temperature at which
-        # water turns into ice under standard atmospheric conditions." Only
-        # the checks below change; how she is told to answer does not.
-        value_response = (
-            calculation_response
-            or AnswerCompletionGuard.asks_for_a_value(user_input)
+            goal=(
+                budget.goal(self._turn_language)
+                if turn_act == conversation_style.ANSWER else ""
+            ),
         )
         # What the person already gave her, for the completeness checks
         # below: a calculation answer made only of the question's own
@@ -10702,6 +10823,8 @@ class ChatEngine:
                 "max_words": max_words,
                 "max_sentences": max_sentences,
                 "detailed": detailed_response,
+                "budget": budget.kind,
+                "shape": budget.shape,
             },
             value_response=value_response,
             recommendation_response=recommendation_response,
@@ -10845,13 +10968,12 @@ class ChatEngine:
                     ),
                 )
 
+            # The reply every stage below works on is display text: the
+            # HARD invariants and damage repair, nothing said-for-the-ear.
+            # Speech is realized separately, at the audio boundary
+            # (brain/realize.py, docs/PHASE3_PLAN.md 3A).
             reply = turn_trace.step(
-                "speech_filter", raw_reply,
-                TextFilter.for_voice_response(
-                    raw_reply,
-                    max_words=max_words,
-                    max_sentences=max_sentences,
-                ),
+                "final_form", raw_reply, realize.display(raw_reply),
             )
             if (
                 not effective_forced_response
@@ -10900,9 +11022,7 @@ class ChatEngine:
                     "content",
                     "",
                 )
-                completion_reply = TextFilter.for_voice_response(
-                    completion_raw,
-                )
+                completion_reply = realize.display(completion_raw)
                 if (
                     completion_reply
                     and not AnswerCompletionGuard.needs_retry(
@@ -10953,6 +11073,7 @@ class ChatEngine:
                     "agent_offer",
                 }
                 and not effective_forced_response
+                and response_stages.active("repetition_retry")
                 and ResponseQualityGuard.should_retry(
                     reply,
                     user_input,
@@ -10996,11 +11117,7 @@ class ChatEngine:
                     "content",
                     "",
                 )
-                retry_reply = TextFilter.for_voice_response(
-                    retry_raw,
-                    max_words=max_words,
-                    max_sentences=max_sentences,
-                )
+                retry_reply = realize.display(retry_raw)
                 if retry_reply:
                     # The retry is checked the way the draft was. Measured
                     # live: "I like strawberries." was answered "You're
@@ -11035,6 +11152,7 @@ class ChatEngine:
             )
             if (
                 not effective_forced_response
+                and response_stages.active("length_rewrite")
                 and (
                     response_limits.exceeds(reply)
                     or advice_needs_rewrite
@@ -11095,7 +11213,7 @@ class ChatEngine:
                     "message",
                     {},
                 )
-                rewrite_reply = TextFilter.for_voice_response(
+                rewrite_reply = realize.display(
                     self._value(rewrite_message, "content", ""),
                 )
                 rewrite_complete = not AnswerCompletionGuard.needs_retry(
@@ -11122,7 +11240,8 @@ class ChatEngine:
                         "length_rewrite", reply, rewrite_reply,
                     )
                 else:
-                    if recommendation_response and not route.urgent_safety:
+                    if (recommendation_response and not route.urgent_safety
+                            and response_stages.active("advice_finalizer")):
                         finalizer_response = self.client.chat(
                             model=active_model,
                             messages=[
@@ -11163,7 +11282,7 @@ class ChatEngine:
                             "message",
                             {},
                         )
-                        finalizer_reply = TextFilter.for_voice_response(
+                        finalizer_reply = realize.display(
                             self._value(finalizer_message, "content", ""),
                         )
                         finalizer_valid = (
@@ -11188,12 +11307,13 @@ class ChatEngine:
                         "complete; applied the advice fallback when valid: "
                         f"{str(rewrite_reply)[:120]!r}"
                     )
-            if recommendation_response:
+            if (recommendation_response
+                    and response_stages.active("merge_extra_sentences")):
                 reply = turn_trace.step(
                     "merge_extra_sentences", reply,
                     response_limits.merge_extra_sentences(reply),
                 )
-            if effective_forced_response:
+            if effective_forced_response and response_stages.active("condense"):
                 # A verified tool or planner result never went through the
                 # generation-length path above, so this is its only chance
                 # to become listenable. The condenser refuses any rewrite
@@ -11227,7 +11347,10 @@ class ChatEngine:
             )
             # Told something, and the answer did not show she understood it
             # ("내 여동생은 부산에 살아" -> "제가 잘 지내고 있습니다").
-            acknowledgement = self._acknowledgement_if_missed(user_input, reply)
+            acknowledgement = (
+                self._acknowledgement_if_missed(user_input, reply)
+                if response_stages.active("acknowledgement") else None
+            )
             if acknowledgement:
                 reply = turn_trace.step("acknowledgement", reply, acknowledgement)
             # They said which one they meant, and the answer is not about it.
@@ -11259,7 +11382,10 @@ class ChatEngine:
             # A fact they told her is not asked back to them. The prompt
             # already says so, and "저 다음 달에 이사가요" still came back
             # "다음 달에 이사하시나요?" (brain/told_not_asked.py).
-            asked_back = told_not_asked.without_asking_back(reply, user_input)
+            asked_back = (
+                told_not_asked.without_asking_back(reply, user_input)
+                if response_stages.active("told_not_asked") else reply
+            )
             if asked_back != reply:
                 print("[Style] Took out a question that only repeated what "
                       "they told me.")
@@ -11303,7 +11429,6 @@ class ChatEngine:
                     reply,
                     user_input=user_input,
                     action_performed=action_performed,
-                    research_evidence=self._last_research_evidence,
                     trusted_result=bool(effective_forced_response),
                     searched="web_search" in timings,
                 ),
@@ -11428,22 +11553,23 @@ class ChatEngine:
             # personality file bans these outright and the model adds them
             # anyway, so the removal is code rather than more prompt wording.
             before_strip = reply
-            reply = turn_trace.step(
-                "closing_offer", reply,
-                ClosingOfferGuard.strip(
-                    reply,
-                    # A repair guard, the ability answer or the grounding
-                    # pass above may have parked an offer whose text is in
-                    # this reply. Removing it would leave the gate holding
-                    # an offer the user never saw. Read from the ledger,
-                    # which is the one authority on whether an offer is
-                    # genuinely open.
-                    keep_offers=(
-                        self.action_ledger.offer_pending
-                        or self._invitation_stands
+            if response_stages.active("closing_offer"):
+                reply = turn_trace.step(
+                    "closing_offer", reply,
+                    ClosingOfferGuard.strip(
+                        reply,
+                        # A repair guard, the ability answer or the grounding
+                        # pass above may have parked an offer whose text is in
+                        # this reply. Removing it would leave the gate holding
+                        # an offer the user never saw. Read from the ledger,
+                        # which is the one authority on whether an offer is
+                        # genuinely open.
+                        keep_offers=(
+                            self.action_ledger.offer_pending
+                            or self._invitation_stands
+                        ),
                     ),
-                ),
-            )
+                )
             if reply != before_strip:
                 removed = before_strip[len(reply):].strip()
                 if ClosingOfferGuard.offers_to_act(removed):
@@ -11454,9 +11580,10 @@ class ChatEngine:
                           f"{removed[:80]!r}")
             # After the strip: it removes trailing filler, and what is
             # left may still hold a second question about the same offer.
-            reply = turn_trace.step(
-                "one_offer", reply, self._one_offer_per_reply(reply),
-            )
+            if response_stages.active("one_offer"):
+                reply = turn_trace.step(
+                    "one_offer", reply, self._one_offer_per_reply(reply),
+                )
             if not self._browser_result_is_final:
                 reply = turn_trace.step(
                     "report_found", reply,
@@ -11475,30 +11602,32 @@ class ChatEngine:
             # After the guard, deliberately: a real offer names a capability
             # and a subject, and stripping it as filler would remove the one
             # useful thing this phase adds.
-            reply = turn_trace.step(
-                "append_recommendation", reply,
-                self._append_recommendation(
-                    reply, decision=decision, capability=capability,
-                    goal=goal_intent_result, act=turn_act,
-                ),
-            )
+            if response_stages.active("append_recommendation"):
+                reply = turn_trace.step(
+                    "append_recommendation", reply,
+                    self._append_recommendation(
+                        reply, decision=decision, capability=capability,
+                        goal=goal_intent_result, act=turn_act,
+                    ),
+                )
             checked_draft = reply
-            reply = turn_trace.step(
-                "final_check", reply,
-                self._final_response_check(
-                    reply,
-                    user_input=user_input,
-                    messages=messages,
-                    model=active_model,
-                    temperature=active_temperature,
-                    num_predict=num_predict,
-                    keep_alive=active_keep_alive,
-                    max_words=max_words,
-                    max_sentences=max_sentences,
-                    forced=bool(effective_forced_response),
-                    act=turn_act,
-                ),
-            )
+            if response_stages.active("final_check"):
+                reply = turn_trace.step(
+                    "final_check", reply,
+                    self._final_response_check(
+                        reply,
+                        user_input=user_input,
+                        messages=messages,
+                        model=active_model,
+                        temperature=active_temperature,
+                        num_predict=num_predict,
+                        keep_alive=active_keep_alive,
+                        max_words=max_words,
+                        max_sentences=max_sentences,
+                        forced=bool(effective_forced_response),
+                        act=turn_act,
+                    ),
+                )
             if reply != checked_draft:
                 # The repetition retry is the final model pass. Its output
                 # must pass the same factual/action boundaries as the draft;
@@ -11515,7 +11644,6 @@ class ChatEngine:
                     self._enforce_grounded_values(
                         reply, user_input=user_input,
                         action_performed=action_performed,
-                        research_evidence=self._last_research_evidence,
                         trusted_result=False, searched="web_search" in timings,
                     ),
                 )
@@ -11539,19 +11667,21 @@ class ChatEngine:
                         trusted_result=False,
                     ),
                 )
-                reply = turn_trace.step(
-                    "closing_offer", reply,
-                    ClosingOfferGuard.strip(
-                        reply,
-                        keep_offers=(
-                            self.action_ledger.offer_pending
-                            or self._invitation_stands
+                if response_stages.active("closing_offer"):
+                    reply = turn_trace.step(
+                        "closing_offer", reply,
+                        ClosingOfferGuard.strip(
+                            reply,
+                            keep_offers=(
+                                self.action_ledger.offer_pending
+                                or self._invitation_stands
+                            ),
                         ),
-                    ),
-                )
-                reply = turn_trace.step(
-                    "one_offer", reply, self._one_offer_per_reply(reply),
-                )
+                    )
+                if response_stages.active("one_offer"):
+                    reply = turn_trace.step(
+                        "one_offer", reply, self._one_offer_per_reply(reply),
+                    )
                 if not self._browser_result_is_final:
                     reply = turn_trace.step(
                         "report_found", reply,
@@ -11569,21 +11699,15 @@ class ChatEngine:
                             said=user_input,
                         ),
                     )
-            reply = turn_trace.step(
-                "natural_dashes", reply, TextFilter.natural_dashes(reply),
-            )
             # The true end of the line, after every guard and every
             # appender. It has to be here and not earlier: the offer this
-            # turn may append is added *after* the speech filter has run,
+            # turn may append is added *after* the first pass has run,
             # which is how "Happy to dig into a product_recommendation if
             # that helps" reached a user with the underscore still in it.
-            # Anything added past the filter needs a filter past it.
-            reply = turn_trace.step(
-                "final_speech_filter", reply,
-                conversation_style.repair_structure(
-                    TextFilter.for_voice_response(reply)
-                ),
-            )
+            # Anything added past the first pass needs a pass past it. The
+            # same display realization as the first -- no speech shaping:
+            # dashes, notation and line breaks are the screen's to keep.
+            reply = turn_trace.step("final_form", reply, realize.display(reply))
             # Judged again on what they will actually hear. A guard after
             # the first check can take out what showed she understood --
             # measured: "다음 주 금요일에 시애틀로 돌아가시는군요" removed as
@@ -11594,23 +11718,30 @@ class ChatEngine:
             if corrected_premise:
                 reply = turn_trace.step(
                     "premise_correction", reply,
-                    TextFilter.for_voice_response(corrected_premise),
+                    realize.display(corrected_premise),
                 )
             else:
-                acknowledgement = self._acknowledgement_if_missed(user_input, reply)
+                acknowledgement = (
+                    self._acknowledgement_if_missed(user_input, reply)
+                    if response_stages.active("acknowledgement") else None
+                )
                 if acknowledgement:
                     reply = turn_trace.step(
                         "acknowledgement", reply,
-                        TextFilter.for_voice_response(acknowledgement),
+                        realize.display(acknowledgement),
                     )
-            theirs = told_not_asked.as_theirs(reply, user_input)
+            theirs = (
+                told_not_asked.as_theirs(reply, user_input)
+                if response_stages.active("as_theirs") else reply
+            )
             if theirs != reply:
                 print("[Style] Their \"my\" was said back as hers; put right.")
                 reply = turn_trace.step("as_theirs", reply, theirs)
-            reply = turn_trace.step(
-                "their_name", reply,
-                self._their_name_not_hers(user_input, reply),
-            )
+            if response_stages.active("their_name"):
+                reply = turn_trace.step(
+                    "their_name", reply,
+                    self._their_name_not_hers(user_input, reply),
+                )
             # The number she worked out, still in the answer. Measured
             # live on "what's 2+2" after three turns of sympathy: the reply
             # came back "That's the result of 2 plus 2." and, on another
@@ -11712,11 +11843,8 @@ class ChatEngine:
             if tool_result_fallback:
                 reply = turn_trace.step(
                     "empty_fallback", reply,
-                    TextFilter.for_voice_response(
-                        tool_result_fallback,
-                        max_words=max_words,
-                        max_sentences=max_sentences,
-                    ) or guard_lines.say("no_response", self._turn_language),
+                    realize.display(tool_result_fallback)
+                    or guard_lines.say("no_response", self._turn_language),
                 )
             elif uses_vision_model:
                 # Nothing rephrases this one -- it is the reply. It used to
@@ -11770,6 +11898,10 @@ class ChatEngine:
             # a slow image index delays nothing anybody is waiting on.
             surface = self.illustrate_surface(surface)
             payload = surface.payload()
+            turn_trace.note_context(surface={
+                "type": payload["type"],
+                "items": [item["name"] for item in payload["items"]],
+            })
             surface_log.note(surface.log_line())
             surface_log.note(
                 f"[Surface] emitting assistant_surface: type={payload['type']} "
@@ -12231,19 +12363,41 @@ class ChatEngine:
             and route.intent in {
             "conversation",
             "clarification",
+            NEEDS_CLARIFICATION,
             "fact_check",
             }
         ):
+            # Carried into this turn because it is about the same subject,
+            # so it is this turn's evidence too (brain/evidence.py).
+            self._ledger().add(
+                turn_evidence.GROUNDED, grounded_context,
+                source="recent verified context", carried=True,
+            )
             context_prompt += (
                 "\n\nRECENT VERIFIED CONTEXT\n"
                 f"{grounded_context}"
             )
         if route.intent == "time_question":
+            clock = self.build_time_context(
+                route.normalized_request, said=user_input,
+                language=getattr(self, "_turn_language", "en"),
+            )
+            self._ledger().add(turn_evidence.CLOCK, clock, source="clock")
             context_prompt += (
                 "\n\nCURRENT LOCAL TIME CONTEXT\n"
-                f"{self.build_time_context(route.normalized_request)}"
+                f"{clock}"
             )
-        if route.intent == "clarification" and route.reason:
+        if route.intent == "clarification":
+            # The person asking about her previous answer (R9). Said as what
+            # the turn is, so the answer is about that, from the
+            # conversation above -- which this turn keeps.
+            context_prompt += (
+                "\n\nWHAT THIS TURN IS\n"
+                "They are asking about your previous answer: it did not land "
+                "for them. Answer about the same thing, from the conversation "
+                "above, and put it differently from last time."
+            )
+        if route.intent == NEEDS_CLARIFICATION and route.reason:
             context_prompt += (
                 "\n\nCLARIFICATION NEEDED\n"
                 f"{route.reason}\n"
@@ -12393,6 +12547,9 @@ class ChatEngine:
         # belongs to.
         self._browser_result_is_final = False
         raw_transcript = user_input
+        # Set by tier0 when this turn is a clock, arithmetic or conversion
+        # request it routed without the model (brain/domain_resolver.py).
+        self._turn_domain_claim = None
         # Before anything reads the turn -- including the near-miss repair,
         # which would otherwise "correct" noise into something plausible.
         unclear = self._asks_to_hear_it_again(user_input)
@@ -13074,6 +13231,24 @@ class ChatEngine:
                 ))
             ):
                 return None
+            # A request whose answer is computed -- the clock, arithmetic,
+            # a unit conversion -- is decided by its own grammar, not by a
+            # model's reading of how fresh it is (Phase 3B). In shadow mode
+            # the claim is recorded beside the router's decision and changes
+            # nothing.
+            claimed = domain_resolver.claim(transcript)
+            if claimed is not None:
+                domains = domain_resolver.mode(self.config)
+                turn_trace.note_context(
+                    domain_claim={**claimed.as_dict(), "mode": domains},
+                )
+                if domains == "act":
+                    self._turn_domain_claim = claimed
+                    print(f"[Domains] {claimed.domain}: routed without the "
+                          f"model. {claimed.reason}")
+                    return claimed.decision()
+                print(f"[Domains] shadow: {claimed.domain} would be routed "
+                      "without the model; asking the router.")
             # "Open the second tab" counts against the browser's tabs, not
             # against her shortlist, and the page layers own that. The
             # counting vocabulary is identical for both, so the noun beside
@@ -13287,7 +13462,7 @@ class ChatEngine:
             timings["route"] = time.perf_counter() - route_started
             return TurnRouting(
                 route=IntentDecision(
-                    intent="clarification",
+                    intent=NEEDS_CLARIFICATION,
                     confidence=1.0,
                     normalized_request=user_input,
                     reason="The reply did not contain a value for the pending dimension.",
@@ -13355,7 +13530,7 @@ class ChatEngine:
             )
             locked_response = understood.question
             route = IntentDecision(
-                intent="clarification",
+                intent=NEEDS_CLARIFICATION,
                 confidence=1.0,
                 normalized_request=understood.target,
                 reason="The request cannot proceed until this is answered.",
@@ -14330,6 +14505,9 @@ class ChatEngine:
             screen_region=bool(screen_region),
             screen_snapshot=screen_snapshot is not None,
         )
+        # What this turn has in hand starts empty every turn. Evidence from
+        # an earlier turn gets in only when this turn chooses to reuse it.
+        self._turn_evidence = turn_evidence.EvidenceLedger()
         try:
             return self._take_turn(
                 user_input,
@@ -15644,7 +15822,8 @@ class ChatEngine:
 
         return result
     
-    def build_time_context(self, question: str = "") -> str:
+    def build_time_context(self, question: str = "", *, said: str = "",
+                           language: str = "") -> str:
         """The clock, and -- when the question names somewhere else -- theirs.
 
         Measured live: "Tell me the time in Seattle right now" was answered
@@ -15659,30 +15838,60 @@ class ChatEngine:
         IANA name since it was written and nothing honoured it; the tests
         for the two clocks needed one, because run on a machine already in
         the zone being asked about they compared Seattle against Seattle.
+
+        Phase 3B (docs/PHASE3_PLAN.md §1.3): every place named is read, from
+        what the person ``said`` as well as the router's paraphrase, and two
+        named places are compared with each other. The zone is named from
+        the tz database, never from Windows' localised %Z, and set apart as
+        something to mention only if asked. A Korean reply gets the time as
+        it is said in Korean, 오전/오후 included, computed here.
         """
         now = world_clock.local_now(
             self.config.get(
                 "time", "timezone", default="local", required=False,
             ),
         )
+        language = str(language or getattr(self, "_turn_language", "") or "en")
+        label = world_clock.zone_label(now)
+        zone = f"{label} " if label else ""
 
         lines = [
             f"Today is {now.strftime('%A, %B %d, %Y')}.",
-            f"The current local time is {now.strftime('%I:%M %p')} "
-            f"({now.strftime('%Z')}, UTC{now.strftime('%z')}).",
+            f"The current local time is {now.strftime('%I:%M %p')}.",
+            f"The local time zone is {zone}(UTC{now.strftime('%z')}). Mention "
+            "the zone or the offset only if the question asks about them.",
             f"The current year is {now.year}.",
         ]
+        if language.startswith("ko"):
+            lines.append(
+                "In Korean the local time is said: "
+                f"{world_clock.spoken_time(now, 'ko')}."
+            )
 
-        place = world_clock.read_place(question)
+        places = world_clock.read_places(f"{said} {question}".strip())[:3]
         # The same moment the local line above states, so the gap between
         # the two clocks is measured against the clock that was printed.
-        elsewhere = world_clock.describe(place, here=now) if place else ""
-        if elsewhere:
+        described = []
+        for place in places:
+            elsewhere = world_clock.describe(place, here=now)
+            if not elsewhere:
+                continue
+            described.append(place)
             lines.append("")
             lines.append(elsewhere)
+            if language.startswith("ko"):
+                found = world_clock.clock_in(place)
+                if found is not None:
+                    lines.append(
+                        f"In Korean, {place} is said: "
+                        f"{world_clock.spoken_time(found[1], 'ko')}."
+                    )
+        if len(described) >= 2:
+            lines.append(world_clock.compare(described[0], described[1]))
+        if described:
             lines.append(
-                "That line is already correct for the place the question "
-                "names. State it as it stands -- do not convert it again, "
-                "and do not substitute the local time above."
+                "Those lines are already correct for the places the question "
+                "names. State them as they stand -- do not convert them "
+                "again, and do not substitute the local time above."
             )
         return "\n".join(lines)

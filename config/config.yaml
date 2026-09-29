@@ -52,6 +52,13 @@ llm:
     # (router, task intent gate, task planner per step, each tier-2
     # planner's own rounds), so that tax was most of the wait the user saw.
     base_url: "http://127.0.0.1:11434"
+    # The context window every call asks for, the same for every caller so
+    # a model is never reloaded between them (core/model_context.py).
+    # Ollama's own default is 4,096, smaller than the router's prompt and
+    # answer together: the 27B cut its routing answer off on a third of
+    # turns, and the 8B silently dropped the start of the prompt. 0 leaves
+    # Ollama's default. Overridden by ELAINA_NUM_CTX.
+    num_ctx: 6144
     # The model that makes decisions: routing, consent, planning, tool
     # selection, extraction. Everything whose output is read as JSON or
     # acted on. Measured on the 134-case router matrix, this one scores
@@ -212,10 +219,16 @@ responses:
   # These limits are passed to Ollama as generation/rewrite requirements.
   # TextFilter never slices a generated answer. If a short rewrite would lose
   # the requested result, Elaina keeps the complete answer instead.
+  # Phase 3D: one ceiling per kind of reply (brain/response_budget.py).
+  # A value -- the time, a sum, a figure -- keeps the short one; an
+  # explanation gets room for what it is for and one concrete case; a
+  # re-explanation or an explicit request for depth gets the detailed one.
   max_words: 45
   max_sentences: 2
-  detailed_max_words: 220
-  detailed_max_sentences: 8
+  explain_max_words: 130
+  explain_max_sentences: 6
+  detailed_max_words: 240
+  detailed_max_sentences: 10
 
   # Short Ollama-generated acknowledgement before a slower agent starts.
   status_max_words: 6
@@ -230,6 +243,14 @@ routing:
   # shadow: log what would be blocked without changing the route
   # off: legacy routing behavior (temporary rollback only)
   project_edit_safety: "enforce"
+
+  # Clock, arithmetic and unit-conversion requests have exact answers that
+  # code computes (brain/domain_resolver.py). act: route them without the
+  # model router; shadow: record the claim beside the router's decision and
+  # change nothing; off: neither. Overridden by ELAINA_DOMAINS.
+  # Acting since 2026-09-26: in shadow over the corpus (runtime/evals/p3/
+  # 3b-shadow-8b) all 16 claims matched the router, with no misclaims.
+  deterministic_domains: "act"
 
   # Optional agent offers expire so a later unrelated "yes" cannot start an
   # old task. The router also clears an offer when the user changes topics.

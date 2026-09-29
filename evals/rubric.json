@@ -1,0 +1,166 @@
+{
+  "_about": "The properties a judge model and a person are asked about. Each is observable in the reply, defined once, and applies only to the communicative goals ('modes') listed in 'applies_to' -- a property that does not apply to a turn is not scored, rather than forced to yes or no. 'n/a' is allowed only where applicability depends on the reply itself ('allows_na'). Correctness of anything with a known answer -- clock times, offsets, dates, arithmetic, units -- is not here: it is checked deterministically (evals/checks.py). Every example inside a definition is invented for it; tests/test_eval_corpus.py fails if a quoted example appears in any scenario. Version 2 replaced version 1 after calibration found 68% agreement, kappa 0.38; version 3 fixes the ambiguities calibration v2 found (86%, kappa 0.74) and replaces examples that mirrored corpus replies (docs/EVAL_RUBRIC.md).",
+  "version": 3,
+  "modes": {
+    "fact": "asks for a value, a time, a date, a pick or a short piece of information",
+    "definition": "asks what something is or means",
+    "formula": "asks for a formula or a notation",
+    "example": "asks for an example of, or a situation for, something",
+    "cause": "asks why something happens",
+    "purpose": "asks why something is used, needed or matters",
+    "how": "asks how something works or is done",
+    "intuition": "asks for an explanation because they do not understand, often simply",
+    "confused": "says the previous explanation did not work",
+    "comparison": "asks how two things differ",
+    "receipt": "asks for nothing: an acknowledgement, thanks, or a refusal",
+    "remark": "asks for nothing: a remark about their life, or a piece of information"
+  },
+  "properties": {
+    "answers_the_ask": {
+      "definition": "The reply attempts the specific kind of answer the message asked for, about the subject the person meant: a cause for 'why does it happen', an example for a request for an example, a mechanism or steps for 'how does it work', the formula for a formula, the value for a value question, a pick for 'which one', a difference for a comparison. A reply about a different subject from the one the conversation makes clear -- another thing with the same name -- has not attempted the task. Judge whether it attempted the right task on the right subject; not whether its claims are true, which is 'accurate', and not how well it explains. A reply that talks about the topic without doing the requested thing is 'no'. Example: asked for an example of where magnets are used, 'Magnets attract iron and have a north and a south pole' is no; 'A speaker uses a magnet to push the cone that makes the sound' is yes.",
+      "applies_to": [
+        "fact",
+        "definition",
+        "formula",
+        "example",
+        "cause",
+        "purpose",
+        "how",
+        "intuition",
+        "confused",
+        "comparison"
+      ]
+    },
+    "takes_the_turn_as_meant": {
+      "definition": "The message asks for nothing new -- an acknowledgement, thanks, a refusal, a remark about the person's life, or a piece of information. The reply treats it as that: it receives an acknowledgement or thanks without starting or offering anything new, accepts a refusal without offering the refused thing again, responds to a remark without turning it into a task, and takes information as information rather than as the answer to an earlier question it does not answer. Example: after directions to a museum, 'Got it, thanks.' answered 'Enjoy the museum.' is yes; answered 'Want me to find you a cafe nearby too?' is no.",
+      "applies_to": [
+        "receipt",
+        "remark"
+      ]
+    },
+    "leads_with_the_answer": {
+      "definition": "The first sentence already does what was asked -- gives the example, the cause, the value, the pick, or begins the explanation -- instead of first introducing, defining or restating the topic. For a question that asks what something is, a definition first is leading with the answer. For a request for an example, naming the fields or areas where the idea is used is not yet the example. Example: asked when compasses are used, 'A compass is a device that points to magnetic north. Hikers use one when...' is no, and so is 'Compasses are used in hiking, sailing and aviation'; 'Hikers use one when there is no trail to follow...' is yes.",
+      "applies_to": [
+        "fact",
+        "definition",
+        "formula",
+        "example",
+        "cause",
+        "purpose",
+        "how",
+        "intuition",
+        "confused",
+        "comparison"
+      ]
+    },
+    "concrete_first": {
+      "definition": "Before any general statement or definition, the reply shows the idea at work in a particular scene -- someone doing something with particular things, or particular numbers -- or in a worked example: something a listener could picture happening. A comparison counts only when it describes such a scene ('Imagine two friends cutting one pizza into eight slices...'); a bare 'X is like Y', however familiar Y is, does not. Naming a field or a category ('it is used in physics and engineering', 'in banks and shops') does not count either. Example: 'Push a heavy box across a carpet and let go: it stops almost at once...' is yes; 'It is like a brake for moving things' is no; 'Friction is a force that opposes motion between two surfaces' is no.",
+      "applies_to": [
+        "example",
+        "cause",
+        "purpose",
+        "how",
+        "intuition",
+        "confused",
+        "comparison"
+      ]
+    },
+    "says_what_it_solves": {
+      "definition": "In the situation the reply describes, it says what would be hard, slow or impossible without the idea, and how the idea makes that easier. Naming a task or a field where the idea is 'used' or 'useful', or saying it 'makes things easier' or 'more precise', is not enough. Example: 'Satellite clocks run slightly fast compared with ours; without correcting for that, a GPS position would drift by kilometres a day' is yes; 'Relativity is useful in GPS and satellite navigation' is no.",
+      "applies_to": [
+        "example",
+        "purpose"
+      ]
+    },
+    "terms_explained": {
+      "definition": "Every technical term the reply depends on has its practical meaning made clear in the same sentence or the next one, in everyday words, or is not needed to follow the reply. A term is technical unless the person used it themselves in the conversation or it is ordinary everyday vocabulary; when they said they are new to the subject or not technical, ordinary words with a specialist meaning count as technical too. A reply that uses the term the person asked about without ever saying what it means does not meet this property, even if it uses no other terms. Example: 'Friction -- the grip between two surfaces -- slows the box down' explains its term: yes. 'The model generalises poorly because of high variance' depends on two terms it never explains: no.",
+      "applies_to": [
+        "definition",
+        "example",
+        "cause",
+        "purpose",
+        "how",
+        "intuition",
+        "confused",
+        "comparison"
+      ]
+    },
+    "adapts_to_confusion": {
+      "definition": "The person just said they did not understand the previous explanation. The reply brings something the previous explanation did not have: a new example, a new analogy or picture, or a different starting point. Saying the same idea more simply -- shorter, with less jargon, or with a phrase from the previous reply moved to the front -- is a restatement, not a new approach, and is 'no'.",
+      "applies_to": [
+        "confused"
+      ]
+    },
+    "only_what_helps": {
+      "definition": "Everything in the reply serves the question: no technical metadata or internal detail the person did not ask for (the name of a standard, zone or code behind a value, how or where the value was obtained, a tool or system name), no extra facts beside the answer, and no sentence after the answer that adds nothing to it. One short remark that changes how the answer is used (such as which kind of cup is meant) is fine. Example: asked the capital of Australia, 'Canberra.' is yes; 'Canberra. It has about 460,000 people and was founded in 1913.' is no.",
+      "applies_to": [
+        "fact",
+        "definition",
+        "formula"
+      ]
+    },
+    "no_service_phrasing": {
+      "definition": "The reply contains none of an assistant's stock phrases: no offer to do what was already asked for ('Would you like an example?' after being asked for one), no closing offer, check-in or nudge that asks for nothing the conversation needs ('Let me know if...', 'Anything else?', 'Shall we give it a try?', '더 궁금하신 점이 있으면 말씀해 주세요', '한번 해 보시겠어요?'), no announcement of its own process ('I've checked', 'Here is the answer', '찾아본 결과입니다'), and no filler acknowledgement before the answer ('Great question!'). A specific follow-up question that asks for something needed to continue is fine.",
+      "applies_to": [
+        "fact",
+        "definition",
+        "formula",
+        "example",
+        "cause",
+        "purpose",
+        "how",
+        "intuition",
+        "confused",
+        "comparison",
+        "receipt",
+        "remark"
+      ]
+    },
+    "notation_earned": {
+      "definition": "Every formula or symbol in the reply is connected to the plain-language idea around it: the reply says what it computes or what its parts stand for. A formula dropped in without that connection is no.",
+      "applies_to": [
+        "definition",
+        "formula",
+        "example",
+        "cause",
+        "purpose",
+        "how",
+        "intuition",
+        "confused",
+        "comparison"
+      ],
+      "allows_na": "the reply contains no formula or mathematical symbol"
+    },
+    "no_unrelated_remark": {
+      "definition": "The reply contains nothing the conversation did not prompt -- for example a comment about the person's day, sleep or feelings when nothing they said was about that.",
+      "applies_to": [
+        "fact",
+        "definition",
+        "formula",
+        "example",
+        "cause",
+        "purpose",
+        "how",
+        "intuition",
+        "confused",
+        "comparison",
+        "receipt",
+        "remark"
+      ]
+    },
+    "accurate": {
+      "definition": "Nothing the reply states is false for the subject it is about. Judge only clear errors: a false claim, a wrong formula or number, or two statements in the reply that contradict each other (such as two different amounts for the same step). A simplification that is true enough for a newcomer is fine. Whether the reply is about the right subject is not this property; that is 'answers_the_ask'.",
+      "applies_to": [
+        "definition",
+        "formula",
+        "example",
+        "cause",
+        "purpose",
+        "how",
+        "intuition",
+        "confused",
+        "comparison"
+      ]
+    }
+  }
+}

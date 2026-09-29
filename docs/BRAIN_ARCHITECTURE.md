@@ -157,6 +157,32 @@ latency and tokens per second, the evidence, and the text displayed and
 spoken. `scripts/turn_trace_report.py` reads it back. Full record:
 [TURN_TRACE.md](TURN_TRACE.md).
 
+### 15. Phase 3 seams (docs/PHASE3_PLAN.md)
+
+- **One reply, two realizations** (`brain/realize.py`). The reply every stage
+  works on is display text: `realize.display` applies the HARD invariants
+  (no internals, no foreign script) and damage repair only, and it is what
+  the screen, the history and memory get. `realize.speech` runs at the one
+  audio boundary (`AudioManager.speak`): notation said in words by a closed
+  bilingual operator grammar (`brain/spoken_notation.py`), visual-only
+  formatting dropped, substance kept -- measured as content coverage.
+- **Computed answers before the model router** (`brain/domain_resolver.py`).
+  A whole-utterance clock, arithmetic or unit-conversion request is claimed
+  at `tier0` by its own grammar and routed without the model; the clock is
+  never sent to a web search whatever a router says about freshness. The
+  clock layer (`brain/world_clock.py`) reads every place named, compares two,
+  labels the zone from the tz database and says the time in Korean with
+  오전/오후 computed.
+- **`clarification` is the person asking** about her last answer (R9): it
+  keeps the conversation and is answered. Elaina needing to ask is
+  `needs_clarification`.
+- **One evidence ledger per turn** (`brain/evidence.py`). The grounded-value
+  guard reads it -- the clock it read, this turn's search, a previous search
+  only when a follow-up carries it -- and records a finding for every value.
+- **A budget per kind of reply** (`brain/response_budget.py`): a value keeps
+  the short ceiling, an explanation gets room for what it is for and one
+  concrete case, a re-explanation or a request for depth gets more.
+
 ---
 
 ## The rules this shape encodes

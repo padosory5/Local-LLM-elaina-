@@ -172,7 +172,14 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_response_language",
             "test_response_policy",
             "test_echo_reended",
+            "test_eval_corpus",
+            "test_evidence_ledger",
+            "test_realize",
+            "test_deterministic_domains",
+            "test_grounded_findings",
+            "test_response_budget",
             "test_response_quality",
+            "test_response_stages",
             "test_social_lines",
             "test_speak_window_list",
             "test_spoken_label",
@@ -376,6 +383,11 @@ LIVE_TIERS: dict[str, str] = {
 }
 
 LIVE_CHECKS: tuple[LiveCheck, ...] = (
+    LiveCheck(
+        "evals", "evals.run", "model",
+        "explanation, relevance, display/speech and whole-session evaluation, "
+        "each scenario on its own fresh backend (docs/EVALS.md)",
+    ),
     LiveCheck(
         "contamination", "live_contamination_check.py", "app",
         "turns that must not inherit the turns before them (A3)",
@@ -595,6 +607,10 @@ def check_javascript() -> bool:
 
 
 def live_command(check: LiveCheck, args: argparse.Namespace) -> tuple[str, ...]:
+    if check.script.startswith("evals."):
+        # A package, not a script, and it keeps each run in its own folder.
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        return (sys.executable, "-m", check.script, "--out", f"runtime/evals/{stamp}")
     command = [sys.executable, f"scripts/{check.script}"]
     if check.name == "router":
         if args.exhaustive:

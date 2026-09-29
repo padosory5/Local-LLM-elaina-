@@ -72,7 +72,10 @@ class LauncherTests(unittest.TestCase):
 
     def test_every_backend_a_script_starts_is_silent_by_default(self):
         loud = []
-        for path in sorted((PROJECT_ROOT / "scripts").glob("*.py")):
+        places = ("scripts", "evals")
+        for path in sorted(
+            path for place in places for path in (PROJECT_ROOT / place).glob("*.py")
+        ):
             source = path.read_text(encoding="utf-8")
             if self._STARTS_A_BACKEND.search(source) and "ELAINA_TTS" not in source:
                 loud.append(path.name)

@@ -106,6 +106,7 @@ _LEVEL_BY_INTENT = {
     "memory_context": INFORMATIONAL,
     "agent_offer": INFORMATIONAL,
     "clarification": INFORMATIONAL,
+    "needs_clarification": INFORMATIONAL,
     # 2 -- the user watches it happen
     "screen_analysis": VISIBLE,
     "browser_action": VISIBLE,
@@ -369,7 +370,9 @@ def _need_for(
     intent = str(_value(route, "intent", ""))
     wants = str(getattr(goal, "intent", "")) if goal is not None else ""
 
-    if wants == goal_intent.CLARIFY or intent == "clarification":
+    # Neither a question she must ask nor a re-explanation of her own
+    # last answer needs anything fetched.
+    if wants == goal_intent.CLARIFY or intent in {"clarification", "needs_clarification"}:
         return NEED_NONE
 
     # Two sufficient causes, not alternatives. Wanting something *done* needs
@@ -396,9 +399,15 @@ def _need_for(
     # belongs at every point that can send a resolvable clock question
     # somewhere it cannot be answered.
     if intent == "time_question":
-        from brain import world_clock
+        from brain import domain_resolver, world_clock
 
-        if world_clock.read_place(_value(route, "normalized_request", "")):
+        asked = _value(route, "normalized_request", "")
+        if world_clock.read_place(asked):
+            return NEED_NONE
+        # The local clock too. Only a place the clock does not know, or a
+        # time that is really about an event ("when does the game start"),
+        # is left to be fresh information (Phase 3B).
+        if domain_resolver.claims_clock(asked):
             return NEED_NONE
 
     # Asking for real things to buy or visit is a lookup, whatever the
@@ -571,7 +580,7 @@ def decide(
     # A question that has already been asked outranks everything: acting on a
     # request she has admitted she cannot read yet is how a wrong action
     # happens.
-    if intent == "clarification" or (
+    if intent == "needs_clarification" or (
         goal is not None and getattr(goal, "intent", "") == goal_intent.CLARIFY
     ):
         return built(CLARIFY, "the request cannot proceed until this is answered")

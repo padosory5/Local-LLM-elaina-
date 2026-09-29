@@ -27,6 +27,8 @@ runtime/debug/
 # and the turns a stage rewrote. The person's own conversations.
 runtime/turn_trace/
 runtime/failure_bank/
+# Evaluation runs (evals/run.py): replies, turn records, backend logs.
+runtime/evals/
 runtime/data/visual_search_usage.json
 # What she has learned about this person -- which track they meant,
 # what they picked last time. Personal, and local by definition.

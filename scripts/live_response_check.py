@@ -18,7 +18,7 @@ from brain.personality_loader import PersonalityLoader
 from brain.calculation_planner import CalculationPlanner
 from brain.response_messages import build_personality_messages
 from brain.response_policy import AnswerCompletionGuard, ResponseLimits
-from brain.text_filter import TextFilter
+from brain import realize
 from scripts.console_style import status_label
 
 
@@ -153,7 +153,7 @@ def main() -> int:
             print("Start Ollama and verify the model in config/config.yaml.")
             return 2
         message = value(response, "message", {})
-        reply = TextFilter.for_voice_response(
+        reply = realize.display(
             value(message, "content", "")
         )
         if AnswerCompletionGuard.needs_retry(reply, calculation=True):
@@ -179,7 +179,7 @@ def main() -> int:
                 keep_alive=keep_alive,
                 think=False,
             )
-            reply = TextFilter.for_voice_response(
+            reply = realize.display(
                 value(value(retry, "message", {}), "content", "")
             )
 
@@ -207,7 +207,7 @@ def main() -> int:
                 keep_alive=keep_alive,
                 think=False,
             )
-            candidate = TextFilter.for_voice_response(
+            candidate = realize.display(
                 value(value(rewrite, "message", {}), "content", "")
             )
             if (

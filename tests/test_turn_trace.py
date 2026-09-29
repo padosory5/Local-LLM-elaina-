@@ -307,9 +307,12 @@ class SpeechTests(_RecordingModule):
         self.assertEqual(speech["said"], said)
         self.assertTrue(speech["spoken"])
         self.assertGreaterEqual(len(speech["chunks"]), 1)
-        # The same symbols reach the voice today; that is what the record
-        # is for.
-        self.assertIn("x²/2!", speech["spoken"])
+        # Phase 0 recorded the voice being handed the symbols as written.
+        # Since Phase 3A it is handed their speech realization; the screen
+        # keeps the symbols. The record shows both halves.
+        self.assertIn("x²/2!", speech["said"])
+        self.assertNotIn("x²/2!", speech["spoken"])
+        self.assertIn("x squared over 2 factorial", speech["spoken"])
 
 
 # ------------------------------------------------------------------ the files
@@ -432,12 +435,13 @@ class WholeTurnTests(_RecordingModule):
             "Paris is the capital of France. Anything else I can help with?",
         )
         self.assertEqual(trace.draft["source"], "model")
-        # The generic closer is the speech filter's to remove, and the
-        # record says so, with the text on both sides.
-        filtered = next(s for s in trace.steps if s["name"] == "speech_filter")
-        self.assertTrue(filtered["changed"])
-        self.assertNotIn("Anything else", filtered["after"])
-        self.assertIn("final_speech_filter", trace.runs)
+        # The generic closer is closing_offer's to remove (it was the old
+        # speech filter's until Phase 3A), and the record says so, with the
+        # text on both sides. The display pass runs first and last.
+        closed = next(s for s in trace.steps if s["name"] == "closing_offer")
+        self.assertTrue(closed["changed"])
+        self.assertNotIn("Anything else", closed["after"])
+        self.assertEqual(trace.runs.get("final_form"), 2)
         # The router, the answer and anything after them were all seen.
         callers = [call["caller"] for call in trace.model_calls]
         self.assertTrue(any(c.endswith(":collect_answer") for c in callers), callers)

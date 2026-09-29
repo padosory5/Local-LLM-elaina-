@@ -976,6 +976,86 @@ class RoboticTells:
 # Deterministic repair -- structural only
 # --------------------------------------------------------------------------
 
+_FUNCTION_OPENING = re.compile(
+    r"^(?:sin|cos|tan|log|ln|exp|sqrt|lim|max|min|arcsin|arccos|arctan)\("
+)
+# A single letter written as a symbol: followed at once by notation ("x²",
+# "f(x)", "n!", "e^x", "d/dx", "x₁", "f'(a)"), or by an operator ("x ≤ 5",
+# "a ≠ b"). "a lot", "i'm" are words.
+_SYMBOL_OPENING = re.compile(
+    r"^[a-z](?:['′]+)?"
+    r"(?=[(^²³⁴⁵⁶⁷⁸⁹ⁿ₀₁₂₃₄₅₆₇₈₉!/_]|\s*[=≈≠≤≥<>+\-−×÷±*/^])"
+)
+
+
+def opens_with_notation(text: str) -> bool:
+    """Whether a reply starts with mathematics rather than a word.
+
+    The capital-letter repair below turned "f(x) = ..." into "F(x) = ..."
+    and "n! = ..." into "N! = ..." -- a different function, a different
+    variable (docs/PHASE3_PLAN.md §1.2).
+    """
+    said = str(text or "").lstrip()
+    return bool(_FUNCTION_OPENING.match(said) or _SYMBOL_OPENING.match(said))
+
+
+def repair_display(text: str) -> str:
+    """Damage repair for the text on the screen, and nothing else.
+
+    What a proof-reader would fix without knowing the subject: a leaked log
+    marker or role label, emphasis markers the chat window cannot render,
+    an unpaired quote, a run of terminal marks, a lowercase first word.
+    Visual structure stays -- line breaks, list items (drawn as bullets),
+    numbering -- and so does every character of notation. Turning a list
+    into sentences is what a voice needs, not a reader; that is
+    ``repair_structure``, used by speech realization (brain/realize.py).
+    """
+    said = str(text or "")
+    if not said.strip():
+        return said
+
+    said = re.sub(r"\[[A-Z][A-Za-z ]{2,24}\]\s*", "", said)
+    said = re.sub(r"(?im)^\s*(?:assistant|user|system)\s*:\s*", "", said)
+    said = re.sub(r"(?im)^\s*step\s+(\d+)\s*[:.]\s*", "", said)
+
+    # Emphasis markers. Glued between two words they were a separator.
+    said = re.sub(r"(?<=\w)\*\*(?=\w)", " ", said)
+    said = said.replace("**", "")
+    said = re.sub(r"(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)", r"\1", said)
+    said = re.sub(r"(?<![\w*])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?![\w*])", r"\1", said)
+    # Headings lose their marks; list items keep their line as a bullet.
+    said = re.sub(r"(?m)^[ \t]{0,3}#{1,6}[ \t]+", "", said)
+    said = re.sub(r"(?m)^([ \t]*)[-*+][ \t]+", r"\1• ", said)
+
+    if len(_UNBALANCED_QUOTE.findall(said)) % 2 == 1:
+        tail = _STRAY_QUOTE_TAIL.search(said)
+        if tail:
+            said = said[:tail.start()] + tail.group(0).replace('"', "")
+        else:
+            said = said.replace('"', "", 1)
+
+    said = re.sub(
+        r"[.!?]{2,}",
+        lambda run: run.group(0) if run.group(0) == "..." else run.group(0)[0],
+        said,
+    )
+    said = re.sub(r"[ \t]+([,;])[ \t]*([.!?])", r"\2", said)
+    said = re.sub(r"[ \t]{2,}", " ", said)
+    said = "\n".join(line.rstrip() for line in said.split("\n"))
+    said = re.sub(r"\n{3,}", "\n\n", said).strip()
+
+    if (
+        said[:1].islower()
+        and not re.match(r"^\w+[A-Z]", said)
+        and not opens_with_notation(said)
+    ):
+        said = said[0].upper() + said[1:]
+
+    if said and said[-1] not in ".!?…" and not said.endswith(("•", ":")):
+        said = said + "."
+    return said
+
+
 def repair_structure(text: str) -> str:
     """Fix what is damage rather than style, and touch nothing else.
 
@@ -1033,8 +1113,13 @@ def repair_structure(text: str) -> str:
     # don't want to.") -- texting register from the model, inconsistent with
     # every other reply in the same conversation, and one voice is the
     # point. Only the first letter, and only when the word is not already
-    # deliberately cased (an identifier, an acronym, "iPhone").
-    if said[:1].islower() and not re.match(r"^\w+[A-Z]", said):
+    # deliberately cased (an identifier, an acronym, "iPhone"), and never a
+    # symbol ("f(x)" is not "F(x)").
+    if (
+        said[:1].islower()
+        and not re.match(r"^\w+[A-Z]", said)
+        and not opens_with_notation(said)
+    ):
         said = said[0].upper() + said[1:]
 
     if said and said[-1] not in ".!?…":
@@ -1168,8 +1253,12 @@ def review(
 
     Returns both halves so the caller decides what to do with the rewrite
     signal -- some acts are locked and must be reported rather than redone.
+
+    ``repaired`` is display text (Phase 3A): it becomes what is shown, so it
+    gets the display repair, which never turns a list into sentences or
+    touches notation. Speech gets its own realization at the audio boundary.
     """
-    repaired = repair_structure(text)
+    repaired = repair_display(text)
     findings = RoboticTells.inspect(
         repaired,
         act=act,

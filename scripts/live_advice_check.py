@@ -18,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from brain.personality_loader import PersonalityLoader  # noqa: E402
 from brain.response_messages import build_personality_messages  # noqa: E402
 from brain.response_policy import ResponseLimits  # noqa: E402
-from brain.text_filter import TextFilter  # noqa: E402
+from brain import realize  # noqa: E402
 from config.loader import Config  # noqa: E402
 from scripts.console_style import status_label  # noqa: E402
 
@@ -155,7 +155,7 @@ def main() -> int:
             )
             return 2
 
-        reply = TextFilter.for_voice_response(
+        reply = realize.display(
             value(value(response, "message", {}), "content", "")
         )
         invalid_health_dose = (
@@ -197,7 +197,7 @@ def main() -> int:
                 keep_alive=keep_alive,
                 think=False,
             )
-            candidate = TextFilter.for_voice_response(
+            candidate = realize.display(
                 value(value(rewrite, "message", {}), "content", "")
             )
             candidate_valid = (
@@ -237,7 +237,7 @@ def main() -> int:
                     keep_alive=keep_alive,
                     think=False,
                 )
-                final_candidate = TextFilter.for_voice_response(
+                final_candidate = realize.display(
                     value(value(finalizer, "message", {}), "content", "")
                 )
                 if (

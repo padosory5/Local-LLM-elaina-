@@ -1,0 +1,120 @@
+{
+  "suite": "modality",
+  "kind": "behavioral",
+  "about": "Questions whose honest answer contains notation. Two checks apply to all of them: 'display_math_intact' -- every piece of notation in the model's draft reaches the screen unchanged, and every minus sign stays a minus; and 'speakable' -- nothing the voice cannot pronounce (exponents, superscripts, roots, integrals, approximate-equals, factorial marks, digit/digit fractions) is in the text handed to it. Today one string serves both, so the first is damaged by the speech filter and the second is left to the TTS provider.",
+  "defaults": {
+    "checks": {
+      "display_math_intact": true,
+      "speakable": true,
+      "no_cards": true
+    }
+  },
+  "scenarios": [
+    {
+      "id": "exp_taylor_series",
+      "language": "en",
+      "mode": "formula",
+      "domain": "calculus",
+      "source": "Part IV of the architecture brief: e^x ≈ 1 + x + x²/2! + x³/3!",
+      "turns": [
+        {
+          "say": "What's the Taylor series of e to the x?",
+          "score": true
+        }
+      ]
+    },
+    {
+      "id": "derivative_polynomial",
+      "language": "en",
+      "mode": "fact",
+      "domain": "calculus",
+      "source": "modality coverage",
+      "turns": [
+        {
+          "say": "What's the derivative of x squared plus 3x?",
+          "score": true,
+          "checks": {
+            "must_match_any": [
+              "2\\s*x\\s*\\+\\s*3",
+              "two x plus three"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "quadratic_formula",
+      "language": "en",
+      "mode": "formula",
+      "domain": "algebra",
+      "source": "modality coverage",
+      "turns": [
+        {
+          "say": "What's the quadratic formula?",
+          "score": true,
+          "checks": {
+            "must_match_any": [
+              "4\\s*a\\s*c",
+              "four a c"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "cos_series_terms",
+      "language": "en",
+      "mode": "formula",
+      "domain": "calculus",
+      "source": "the minus signs the speech filter turns into commas: '1 - x²/2' is shown as '1, x²/2'",
+      "turns": [
+        {
+          "say": "Write out the first few terms of the Taylor series for cos x.",
+          "score": true
+        }
+      ]
+    },
+    {
+      "id": "definite_integral",
+      "language": "en",
+      "mode": "fact",
+      "domain": "calculus",
+      "source": "modality coverage",
+      "turns": [
+        {
+          "say": "What's the integral of x squared from 0 to 1?",
+          "score": true,
+          "checks": {
+            "must_match_any": [
+              "1\\s*/\\s*3",
+              "one[- ]third",
+              "⅓",
+              "0\\.33"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "ko_derivative",
+      "language": "ko",
+      "mode": "fact",
+      "domain": "calculus",
+      "source": "modality coverage, in Korean",
+      "turns": [
+        {
+          "say": "x 제곱을 미분하면 뭐야?",
+          "score": true,
+          "checks": {
+            "language": "ko",
+            "must_match_any": [
+              "2\\s*x",
+              "2엑스",
+              "이\\s*엑스"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

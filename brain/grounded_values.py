@@ -218,6 +218,42 @@ class GroundedValueGuard:
     """Tell a looked-up figure from an invented one."""
 
     @classmethod
+    def findings(cls, reply: str, sources) -> list[dict]:
+        """Every checkable value in the reply, and what stands behind it.
+
+        ``sources`` is ``(label, text)`` pairs -- the turn's evidence, one
+        entry per ledger item (brain/evidence.py), and the person's own
+        words. Nothing is changed here: this is the validator half, so that
+        what the stage concluded is recorded whether or not it acts on it
+        (docs/PHASE3_PLAN.md 3C).
+
+        ``status`` is ``supported`` (a source holds it), ``conflicting`` (a
+        damaged copy of a number a source holds: 150 for 1500) or
+        ``unsupported``.
+        """
+        sources = [(str(label), str(text or "")) for label, text in sources]
+        evidence = "\n".join(text for _, text in sources)
+        found: list[dict] = []
+        for value in sorted(_values(reply)):
+            where = next(
+                (label for label, text in sources
+                 if value in _values(text, spoken=False)),
+                "",
+            )
+            found.append({
+                "value": value,
+                "status": "supported" if where else "unsupported",
+                "source": where,
+            })
+        for value in sorted(_mangled_numbers(reply, evidence)):
+            where = next(
+                (label for label, text in sources if _mangled_numbers(value, text)),
+                "",
+            )
+            found.append({"value": value, "status": "conflicting", "source": where})
+        return found
+
+    @classmethod
     def unsupported_amounts(cls, reply: str, evidence: str) -> set[str]:
         """Money in the reply that the evidence does not contain."""
         return _digits(reply) - _digits(evidence)
