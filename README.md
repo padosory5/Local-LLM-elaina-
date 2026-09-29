@@ -1,5 +1,5 @@
 # Elaina
-
+# hello aiden i hope this work this time
 ## About the Project
 
 Elaina is a local, voice-first AI desktop companion with a Live2D Electron
