@@ -1,5 +1,5 @@
 # Elaina
-# hello aiden
+# hello aiden first name moe last name lester
 ## About the Project
 
 Elaina is a local, voice-first AI desktop companion with a Live2D Electron
