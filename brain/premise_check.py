@@ -52,6 +52,27 @@ PROMPT = (
 )
 
 
+def applies(*, is_follow_up: bool, budget: str, previous_budget: str) -> bool:
+    """Whether this turn's premise is the judge's to check at all.
+
+    Not on a follow-up inside an explanation. The judge sees one utterance
+    and nothing before it -- shown more, it was worse (above) -- and there
+    what they take for granted is usually what was just said, or their own
+    guess at it, which the model writing the reply can see and the judge
+    cannot. Measured on the simulated learners (both pilots, read by hand):
+    all 7 replacements were such turns; 3 put a wrong answer in place of a
+    right one ("오존층이 파괴되면 … 온도가 상승할 수 있습니다", "정밀도가
+    낮아도 정확도가 떨어지지 않을 수 있습니다", "비닐하우스는 열을 트
+    trapped하여 … 땀은"), 2 helped and 2 changed nothing.
+    """
+    from brain.response_budget import ELABORATE, EXPLAIN
+
+    explaining = (EXPLAIN, ELABORATE)
+    return not (
+        is_follow_up and budget in explaining and previous_budget in explaining
+    )
+
+
 def message(said: str) -> str:
     """The user message for the judge: what they said, and nothing else."""
     return f"They said: {' '.join(str(said or '').split())}"

@@ -207,17 +207,94 @@ class ForgettingIsAnOperationTests(unittest.TestCase):
         self.assertIn("{what}", said)
 
 
+class ForgettingEverythingIsHeardInBothLanguagesTests(unittest.TestCase):
+    """``ChatEngine._FORGET_EVERYTHING`` had its ``\\b`` boundaries written
+    as backspace bytes (0x08), so "everything", "all" and "anything" only
+    matched text wrapped in backspaces -- never anything said. Only the
+    Korean forms worked. "forget everything" went down the one-subject
+    path and searched for a memory resembling the whole sentence.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from brain.chat_engine import ChatEngine
+
+        cls.engine_class = ChatEngine
+
+    def forget(self, said, language="en"):
+        """What ``_forget_memories`` asked the store for, and its reply."""
+        asked = []
+
+        class Store:
+            def forget(self, subject="", *, everything=False):
+                asked.append(everything)
+                return ["The user attends the University of Washington."]
+
+        engine = self.engine_class.__new__(self.engine_class)
+        engine.memory_manager = Store()
+        engine._turn_language = language
+        reply = engine._forget_memories(said)
+        return asked, reply
+
+    def test_the_english_forms_clear_everything(self):
+        for said in ("forget everything", "forget all of it"):
+            with self.subTest(said=said):
+                self.assertTrue(
+                    self.engine_class._FORGET_EVERYTHING.search(said), said,
+                )
+                asked, reply = self.forget(said)
+                self.assertEqual(asked, [True])
+                self.assertEqual(
+                    reply, guard_lines.say("memory_forgotten_all", "en"),
+                )
+
+    def test_the_korean_forms_still_clear_everything(self):
+        for said in (
+            "저에 대해 기억하는 거 모두 잊어주세요",
+            "기억하는 거 전부 잊어줘",
+            "기억하는 거 다 잊어줘",
+        ):
+            with self.subTest(said=said):
+                self.assertTrue(
+                    self.engine_class._FORGET_EVERYTHING.search(said), said,
+                )
+                asked, reply = self.forget(said, language="ko")
+                self.assertEqual(asked, [True])
+                self.assertEqual(
+                    reply, guard_lines.say("memory_forgotten_all", "ko"),
+                )
+
+    def test_naming_one_subject_does_not_clear_everything(self):
+        """The boundaries are the point: "all" inside "allergies" or
+        "small" is not a request to be forgotten entirely."""
+        for said in (
+            "forget what I told you about my school",
+            "forget what I told you about my allergies",
+            "forget that I have a small dog",
+            "저에 대해 기억하는 거 잊어주세요",
+        ):
+            with self.subTest(said=said):
+                self.assertIsNone(
+                    self.engine_class._FORGET_EVERYTHING.search(said), said,
+                )
+                asked, _ = self.forget(said)
+                self.assertEqual(asked, [False])
+
+
 class ThePatternsAreWhatTheyLookLikeTests(unittest.TestCase):
 
     def test_the_source_carries_no_control_characters(self):
-        source = (
-            Path(__file__).resolve().parents[1] / "brain" / "memory_gate.py"
-        ).read_text(encoding="utf-8")
-        stray = [
-            (index, repr(char)) for index, char in enumerate(source)
-            if ord(char) < 32 and char not in "\n\t"
-        ]
-        self.assertEqual(stray, [])
+        # chat_engine.py: _FORGET_EVERYTHING once held 0x08 for \b.
+        for name in ("memory_gate.py", "chat_engine.py"):
+            source = (
+                Path(__file__).resolve().parents[1] / "brain" / name
+            ).read_text(encoding="utf-8")
+            stray = [
+                (index, repr(char)) for index, char in enumerate(source)
+                if ord(char) < 32 and char not in "\n\t"
+            ]
+            with self.subTest(source=name):
+                self.assertEqual(stray, [])
 
     def test_the_module_declares_its_languages(self):
         self.assertEqual(memory_gate.LANGUAGES, ("en", "ko"))

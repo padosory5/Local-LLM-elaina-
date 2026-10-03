@@ -302,6 +302,56 @@ then (Claude's labels, the user's sign-off; weaker evidence):
 Phase 2 claims about `adapts_to_confusion`, and about `accurate` on Korean
 replies, carry these caveats.
 
+## The rarely-yes properties, against a person (2026-09-29)
+
+Two blind sets, labelled by the user, on the properties Phase 2 and
+Phase 3 moved and the judge had few yes examples of:
+- `calibration-p2.json`: Phase 2 replies, 20 labels. The user corrected
+  labels given in the middle of the set and relabelled; these are the
+  final labels.
+- `calibration-p3.json`: Phase 3 replies, including the follow-up suite,
+  28 labels.
+
+The judge is `qwen3.6:35b-a3b`.
+
+| set | agreement | kappa |
+|---|---|---|
+| Phase 2 replies | 85% | 0.69 |
+| Phase 3 replies | 79% | 0.56 |
+
+| property | pooled agreement | per set | meets the bar below? |
+|---|---|---|---|
+| `says_what_it_solves` | 18/20, 90% | κ 1.00 (P2), 0.60 (P3) | yes |
+| `concrete_first` | 15/20, 75% | κ 0.40 (P2), 0.60 (P3) | not quite |
+| `adapts_to_confusion` | 6/8, 75% | κ 0.38 | no |
+
+On `concrete_first`, every one of the five disagreements is the judge
+accepting an analogy or a mental image ("building blocks", "zooming in on
+a curve") that the person does not count as a concrete scene. So the
+judge's rate is slightly high, never low.
+
+What the headline needs is narrower: whether the gap between the models
+holds by the person's labels. On the same labelled items, the person's yes
+rate against the judge's:
+
+| property | 8B, person / judge | 27B, person / judge |
+|---|---|---|
+| `concrete_first` | 2/7 / 2/7 | 7/13 / 8/13 |
+| `says_what_it_solves` | 1/9 / 1/9 | 6/11 / 8/11 |
+| `adapts_to_confusion` | 0/2 / 1/2 | 5/6 / 6/6 |
+
+- All three gaps hold by the person's labels.
+- The judge over-credits the 27B slightly on each: one item on
+  `concrete_first` and `adapts_to_confusion`, two on
+  `says_what_it_solves`. Read the judge's 27B rates on these as upper
+  bounds.
+- There are only two labelled 8B items on `adapts_to_confusion`.
+
+A bug is fixed with this: `evals/calibration.py score` reused the name of
+its judge-model parameter as a loop variable. After the first run it read
+every run under a judge called "yes" or "no", which finds no verdicts. The
+first scoring of these two files came out at 11%.
+
 ## When a property is reliable enough
 
 Calibration version 2 samples per property (7 labels for each property a

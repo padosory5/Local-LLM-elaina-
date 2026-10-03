@@ -120,5 +120,44 @@ class AlreadySaidTests(unittest.TestCase):
         ))
 
 
+class WhenItIsJudgedTests(unittest.TestCase):
+    """Simulated learners, both pilots: every replacement was a follow-up
+    inside an explanation, and 3 of the 7 put a wrong answer in place of a
+    right one."""
+
+    def test_not_on_a_follow_up_inside_an_explanation(self):
+        for previous in ("explain", "elaborate"):
+            for budget in ("explain", "elaborate"):
+                with self.subTest(previous=previous, budget=budget):
+                    self.assertFalse(premise_check.applies(
+                        is_follow_up=True, budget=budget, previous_budget=previous,
+                    ))
+
+    def test_still_on_a_first_question_or_a_new_one(self):
+        # "한국은 엔화 쓰잖아, 환전할 때 엔으로 바꾸면 되지?" asked first.
+        self.assertTrue(premise_check.applies(
+            is_follow_up=False, budget="explain", previous_budget="",
+        ))
+        # The same, asked after an explanation about something else.
+        self.assertTrue(premise_check.applies(
+            is_follow_up=False, budget="explain", previous_budget="explain",
+        ))
+        # A follow-up asking for a value, or after one.
+        self.assertTrue(premise_check.applies(
+            is_follow_up=True, budget="value", previous_budget="explain",
+        ))
+        self.assertTrue(premise_check.applies(
+            is_follow_up=True, budget="explain", previous_budget="value",
+        ))
+
+    def test_the_engine_asks_before_judging(self):
+        from pathlib import Path
+        source = Path(__file__).resolve().parents[1].joinpath(
+            "brain", "chat_engine.py").read_text(encoding="utf-8")
+        call = source.index("self._premise_corrected(user_input, reply)")
+        self.assertIn("premise_check.applies(", source[call - 900:call])
+        self.assertIn("if premise_applies else None", source[call:call + 120])
+
+
 if __name__ == "__main__":
     unittest.main()

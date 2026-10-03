@@ -87,7 +87,16 @@ _EN_TIME = re.compile(r"\b(\d{1,2}):(\d{2})(?:\s*([AaPp])\.?\s*[Mm]\.?\b)?")
 _KO_TIME = re.compile(
     r"(오전|오후|새벽|아침|낮|저녁|밤)?\s*(\d{1,2})\s*시(?!간)\s*(?:(\d{1,2})\s*분|(반))?"
 )
-_OFFSET = re.compile(r"(?:UTC|GMT)\s*([+\-−–])\s*(\d{1,2})(?::?(\d{2}))?", re.IGNORECASE)
+# "UTC-0700", "UTC−7", and the same said in words: "UTC minus seven hours",
+# "your UTC offset is minus seven hours". The Phase 3 final rerun failed two
+# right answers of the second kind as stating no offset at all.
+_OFFSET = re.compile(
+    r"(?:UTC|GMT)(?:\s+offset(?:\s+(?:is|of))?)?\s*"
+    r"([+\-−–]|minus\b|plus\b|마이너스|플러스)\s*"
+    r"(\d{1,2}|(?:" + "|".join(sorted(_NUMBER_WORDS, key=len, reverse=True)) + r")\b)"
+    r"(?::?(\d{2}))?",
+    re.IGNORECASE,
+)
 _OFFSET_WORDS = re.compile(
     r"\b(\d{1,2}|" + "|".join(_NUMBER_WORDS) + r")\s+hours?\s+(behind|ahead of)\s+"
     r"(?:UTC|GMT|Coordinated Universal Time|Greenwich)",
@@ -149,8 +158,9 @@ def stated_offsets(text: str) -> list[float]:
     """Every UTC offset the text states, in hours."""
     found = []
     for match in _OFFSET.finditer(text or ""):
-        sign = -1 if match.group(1) in "-−–" else 1
-        found.append(sign * (int(match.group(2)) + int(match.group(3) or 0) / 60))
+        written = match.group(1).casefold()
+        sign = -1 if written in ("-", "−", "–", "minus", "마이너스") else 1
+        found.append(sign * (_number(match.group(2)) + int(match.group(3) or 0) / 60))
     for match in _OFFSET_WORDS.finditer(text or ""):
         hours = _number(match.group(1))
         found.append(-hours if match.group(2).lower() == "behind" else hours)
@@ -237,6 +247,32 @@ def stated_quantities(text: str, unit: str) -> list[float]:
     return found
 
 
+def stated_ranges(text: str, unit: str) -> list[tuple[float, float]]:
+    """Every "from X to Y <unit>" the text states, as (low, high).
+
+    A range is one claim, not two: "ranging from 356,000 to 406,000
+    kilometers" states where the moon is, and its far end is not a wrong
+    distance. The Phase 3 final rerun failed that answer for its 406,000.
+    """
+    number = r"(\d[\d,]*(?:\.\d+)?)\s*(thousand|million|billion)?"
+    pattern = re.compile(
+        r"(?<![\w.])" + number + r"\s*(?:(?:" + unit + r")\s*)?"
+        r"(?:to|and|through|–|—|-|~)\s*" + number + r"\s*(?:" + unit + r")",
+        re.IGNORECASE,
+    )
+    found = []
+    for match in pattern.finditer(text or ""):
+        ends = []
+        for raw, scale in ((match.group(1), match.group(2)), (match.group(3), match.group(4))):
+            try:
+                ends.append(float(raw.replace(",", "")) * _SCALE.get((scale or "").lower(), 1.0))
+            except ValueError:
+                break
+        if len(ends) == 2:
+            found.append((min(ends), max(ends)))
+    return found
+
+
 def _correctness(name: str, value, turn: TurnResult) -> CheckResult:
     display = turn.display or ""
     if turn.when is None:
@@ -293,7 +329,13 @@ def _correctness(name: str, value, turn: TurnResult) -> CheckResult:
         for spec in value:
             found = stated_quantities(display, spec["unit"])
             tolerance = float(spec.get("tolerance", 0.0))
-            wrong = [q for q in found if abs(q - spec["value"]) > tolerance * spec["value"] + 1e-9]
+            slack = tolerance * spec["value"] + 1e-9
+            around = {
+                end for low, high in stated_ranges(display, spec["unit"])
+                if low - slack <= spec["value"] <= high + slack
+                for end in (low, high)
+            }
+            wrong = [q for q in found if abs(q - spec["value"]) > slack and q not in around]
             if wrong:
                 problems.append(f"{wrong} where {spec['value']:g} is right")
             if spec.get("required") and not found:
@@ -384,25 +426,70 @@ def _search(pattern: str, text: str):
     return re.search(pattern, text or "", re.IGNORECASE)
 
 
+def contains(phrase: str, text: str) -> bool:
+    """Whether the text contains the phrase as itself.
+
+    A phrase that starts or ends with a digit is not found inside a longer
+    number: "8 hours" is not in "12 to 18 hours", nor "8시간" in "18시간".
+    The Phase 3 final rerun failed a right steeping time for it. Otherwise
+    plain containment, so a Korean word keeps its particles ("런던" is in
+    "런던은").
+    """
+    phrase = str(phrase or "").casefold()
+    if not phrase:
+        return False
+    before = r"(?<![\d.,])" if phrase[0].isdigit() else ""
+    after = r"(?!\d)" if phrase[-1].isdigit() else ""
+    return re.search(before + re.escape(phrase) + after, str(text or "").casefold()) is not None
+
+
+# The same mathematics written another way. A pattern is written in symbols
+# ("2x + 3", "1/3"); a right answer may say it in words or in LaTeX, and the
+# Phase 3 final rerun failed both kinds: "The derivative is 2x plus 3" and
+# "$ \frac{1}{3} $". A pattern matching either reading counts. This reads the
+# reply; nothing that is scored is rewritten.
+_LATEX_FRACTION = re.compile(r"\\[dt]?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}")
+_SPOKEN_OPERATORS = (
+    (re.compile(r"\s+plus\s+", re.IGNORECASE), " + "),
+    (re.compile(r"\s+minus\s+", re.IGNORECASE), " - "),
+    (re.compile(r"\s+times\s+", re.IGNORECASE), " * "),
+    (re.compile(r"\s+divided\s+by\s+", re.IGNORECASE), " / "),
+)
+
+
+def math_reading(text: str) -> str:
+    """The text with LaTeX fractions and spoken operators as symbols."""
+    reading = _LATEX_FRACTION.sub(r"\1/\2", str(text or "")).replace("$", " ")
+    for spoken, symbol in _SPOKEN_OPERATORS:
+        reading = spoken.sub(symbol, reading)
+    return reading
+
+
+def _readings(display: str) -> tuple[str, ...]:
+    reading = math_reading(display)
+    return (display,) if reading == display else (display, reading)
+
+
 def run(checks: dict, turn: TurnResult) -> list[CheckResult]:
     results: list[CheckResult] = []
     display = turn.display or ""
-    folded = display.casefold()
+    readings = _readings(display)
     for name, value in checks.items():
         if name == "must_match":
-            missing = [p for p in value if not _search(p, display)]
+            missing = [p for p in value if not any(_search(p, r) for r in readings)]
             results.append(CheckResult(name, not missing, f"missing {missing}" if missing else ""))
         elif name == "must_match_any":
-            hit = any(_search(p, display) for p in value)
+            hit = any(_search(p, r) for p in value for r in readings)
             results.append(CheckResult(name, hit, "" if hit else f"none of {value}"))
         elif name == "must_not_match":
-            found = [m.group(0) for p in value if (m := _search(p, display))]
+            found = [m.group(0) for p in value
+                     if (m := next(filter(None, (_search(p, r) for r in readings)), None))]
             results.append(CheckResult(name, not found, f"found {found}" if found else ""))
         elif name == "must_contain_any":
-            hit = any(str(p).casefold() in folded for p in value)
+            hit = any(contains(p, display) for p in value)
             results.append(CheckResult(name, hit, "" if hit else f"none of {value}"))
         elif name == "must_not_contain":
-            found = [p for p in value if str(p).casefold() in folded]
+            found = [p for p in value if contains(p, display)]
             results.append(CheckResult(name, not found, f"found {found}" if found else ""))
         elif name == "max_words":
             count = len(words(display))

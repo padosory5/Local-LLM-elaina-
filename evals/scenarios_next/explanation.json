@@ -1,0 +1,24 @@
+{
+  "suite": "explanation",
+  "about": "Staged for the next corpus version, not loaded by evals/corpus.py. The FAST/DEEP baseline (frozen analysis cbd8c3b57913990a) was measured on the corpus as it stands; adding a scenario changes the corpus and so the frozen fingerprint, so additions wait here until a new protocol version is frozen. Same schema as evals/scenarios/explanation.json: move the scenario there to include it.",
+  "scenarios": [
+    {
+      "id": "derivative_simply_in_calculus",
+      "language": "en",
+      "mode": "intuition",
+      "domain": "calculus",
+      "source": "FAST/DEEP baseline: derivative_simply is ambiguous (both models answered finance); the same request with its subject established",
+      "turns": [
+        {"say": "I'm taking calculus this semester.", "score": false},
+        {"say": "I don't really get what a derivative is. Can you explain it simply?", "score": true,
+         "checks": {"must_contain_any": ["change", "slope", "rate", "steep", "speed"]}}
+      ],
+      "failure": [
+        "'A derivative is a financial instrument whose value is based on an underlying asset.'"
+      ],
+      "desired": [
+        "the mathematical meaning -- something like a speedometer before any formal definition -- or, failing that, a question about which meaning they want; never finance"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,293 @@
+{
+  "suite": "followups_v2",
+  "kind": "trajectory",
+  "about": "Corpus v2, held out: follow-up turns that were not used to design the shadow FAST/DEEP router (brain/fastdeep_router.py). Staged in evals/scenarios_next/ until the user approves it; the freeze (python -m evals.fastdeep_v2 --freeze) moves it to evals/scenarios/ and records its fingerprint (docs/FAST_DEEP_V2_PROTOCOL.md). Subjects appear nowhere in the v1 corpus or the Stage B runs. Five groups, each scenario's 'group': A, confusion and re-explanation follow-ups, explicit and implicit; B, deepening follow-ups that are not confusion; C, follow-ups that should stay FAST (a value again, thanks, a remark, a correction, a topic shift); D, first-time explanations; E, a confusion follow-up and then a turn that should return to FAST. Modes are the rubric's existing ones, so the rubric fingerprint does not change.",
+  "defaults": {
+    "checks": {
+      "not_searched": true,
+      "no_cards": true
+    }
+  },
+  "scenarios": [
+    {
+      "id": "v2a_blockchain_still_lost", "group": "A",
+      "language": "en", "domain": "computing", "source": "corpus v2, group A (explicit)",
+      "turns": [
+        {"say": "What is a blockchain?", "score": true, "mode": "definition"},
+        {"say": "Sorry, I'm still lost.", "score": true, "mode": "confused",
+         "checks": {"answers_not_asks": true, "must_contain_any": ["block", "record", "chain", "ledger"]}}
+      ]
+    },
+    {
+      "id": "v2a_photosynthesis_plain_words", "group": "A",
+      "language": "en", "domain": "biology", "source": "corpus v2, group A (explicit)",
+      "turns": [
+        {"say": "How does photosynthesis work?", "score": true, "mode": "how"},
+        {"say": "Can you put that in plain words?", "score": true, "mode": "confused",
+         "checks": {"answers_not_asks": true, "must_contain_any": ["light", "sugar", "plant", "leaf", "leaves"]}}
+      ]
+    },
+    {
+      "id": "v2a_lift_halfway", "group": "A",
+      "language": "en", "domain": "physics", "source": "corpus v2, group A (explicit)",
+      "turns": [
+        {"say": "Why do airplanes stay in the air?", "score": true, "mode": "cause"},
+        {"say": "You lost me halfway through.", "score": true, "mode": "confused",
+         "checks": {"answers_not_asks": true, "must_contain_any": ["wing", "air", "lift", "pressure"]}}
+      ]
+    },
+    {
+      "id": "v2a_tcp_handshake_hm", "group": "A",
+      "language": "en", "domain": "networking", "source": "corpus v2, group A (implicit; ambiguous: 'Hm?' can also mean 'I didn't hear you')",
+      "turns": [
+        {"say": "How does a TCP handshake work?", "score": true, "mode": "how"},
+        {"say": "Hm?", "score": true, "mode": "confused",
+         "checks": {"answers_not_asks": true, "must_contain_any": ["SYN", "ACK", "connection", "handshake"]}}
+      ]
+    },
+    {
+      "id": "v2a_gradient_descent_simpler", "group": "A",
+      "language": "en", "domain": "machine learning", "source": "corpus v2, group A (explicit)",
+      "turns": [
+        {"say": "What is gradient descent?", "score": true, "mode": "definition"},
+        {"say": "Simpler, please.", "score": true, "mode": "confused",
+         "checks": {"answers_not_asks": true, "must_contain_any": ["downhill", "slope", "step", "error", "hill"]}}
+      ]
+    },
+    {
+      "id": "v2a_gps_watching_me", "group": "A",
+      "language": "en", "domain": "technology", "source": "corpus v2, group A (implicit: a wrong restatement)",
+      "turns": [
+        {"say": "How does GPS know where I am?", "score": true, "mode": "how"},
+        {"say": "So the satellites are watching me?", "score": true, "mode": "confused",
+         "checks": {"answers_not_asks": true, "must_contain_any": ["signal", "receiver", "phone", "time", "distance"]}}
+      ]
+    },
+    {
+      "id": "v2a_ko_virtual_memory_again", "group": "A",
+      "language": "ko", "domain": "computing", "source": "corpus v2, group A (explicit)",
+      "turns": [
+        {"say": "가상 메모리가 뭐야?", "score": true, "mode": "definition",
+         "checks": {"language": "ko"}},
+        {"say": "잘 이해가 안 돼. 다시 설명해 줄래?", "score": true, "mode": "confused",
+         "checks": {"language": "ko", "answers_not_asks": true, "must_contain_any": ["메모리", "디스크", "램", "RAM"]}}
+      ]
+    },
+    {
+      "id": "v2a_ko_regen_braking_example", "group": "A",
+      "language": "ko", "domain": "engineering", "source": "corpus v2, group A (explicit)",
+      "turns": [
+        {"say": "전기차 회생제동은 어떻게 작동해?", "score": true, "mode": "how",
+         "checks": {"language": "ko"}},
+        {"say": "예를 들어서 다시 설명해 줄 수 있어?", "score": true, "mode": "confused",
+         "checks": {"language": "ko", "answers_not_asks": true, "must_contain_any": ["모터", "배터리", "전기", "에너지"]}}
+      ]
+    },
+    {
+      "id": "v2a_ko_compiler_vs_interpreter_lost", "group": "A",
+      "language": "ko", "domain": "programming", "source": "corpus v2, group A (explicit)",
+      "turns": [
+        {"say": "컴파일러랑 인터프리터 차이가 뭐야?", "score": true, "mode": "comparison",
+         "checks": {"language": "ko"}},
+        {"say": "음… 무슨 말인지 모르겠어.", "score": true, "mode": "confused",
+         "checks": {"language": "ko", "answers_not_asks": true, "must_contain_any": ["컴파일러", "인터프리터", "번역", "실행"]}}
+      ]
+    },
+    {
+      "id": "v2a_ko_wifi_too_hard", "group": "A",
+      "language": "ko", "domain": "networking", "source": "corpus v2, group A (implicit: says it is hard, asks for nothing)",
+      "turns": [
+        {"say": "와이파이는 어떻게 작동해?", "score": true, "mode": "how",
+         "checks": {"language": "ko"}},
+        {"say": "어… 너무 어렵다.", "score": true, "mode": "confused",
+         "checks": {"language": "ko", "answers_not_asks": true, "must_contain_any": ["전파", "공유기", "라우터", "신호", "무선"]}}
+      ]
+    },
+    {
+      "id": "v2b_rainbow_red_outside", "group": "B",
+      "language": "en", "domain": "physics", "source": "corpus v2, group B",
+      "turns": [
+        {"say": "Why do rainbows form?", "score": true, "mode": "cause"},
+        {"say": "Why is red always on the outside?", "score": true, "mode": "cause"}
+      ]
+    },
+    {
+      "id": "v2b_etf_vs_mutual_fund", "group": "B",
+      "language": "en", "domain": "finance", "source": "corpus v2, group B",
+      "turns": [
+        {"say": "What is an ETF?", "score": true, "mode": "definition"},
+        {"say": "How is that different from a mutual fund?", "score": true, "mode": "comparison"}
+      ]
+    },
+    {
+      "id": "v2b_cdn_closer_faster", "group": "B",
+      "language": "en", "domain": "networking", "source": "corpus v2, group B",
+      "turns": [
+        {"say": "What does a CDN do?", "score": true, "mode": "purpose"},
+        {"say": "Why does being closer make it faster?", "score": true, "mode": "cause"}
+      ]
+    },
+    {
+      "id": "v2b_garbage_collection_how_it_knows", "group": "B",
+      "language": "en", "domain": "programming", "source": "corpus v2, group B",
+      "turns": [
+        {"say": "What is garbage collection in programming?", "score": true, "mode": "definition"},
+        {"say": "How does it know what's garbage?", "score": true, "mode": "how"}
+      ]
+    },
+    {
+      "id": "v2b_ko_jet_lag_east", "group": "B",
+      "language": "ko", "domain": "biology", "source": "corpus v2, group B",
+      "turns": [
+        {"say": "시차 적응은 왜 힘들어?", "score": true, "mode": "cause",
+         "checks": {"language": "ko"}},
+        {"say": "그럼 동쪽으로 갈 때가 더 힘든 이유는 뭐야?", "score": true, "mode": "cause",
+         "checks": {"language": "ko"}}
+      ]
+    },
+    {
+      "id": "v2b_ko_battery_full_discharge", "group": "B",
+      "language": "ko", "domain": "engineering", "source": "corpus v2, group B",
+      "turns": [
+        {"say": "리튬 배터리는 왜 시간이 지나면 성능이 떨어져?", "score": true, "mode": "cause",
+         "checks": {"language": "ko"}},
+        {"say": "완전히 방전시키면 어떻게 돼?", "score": true, "mode": "cause",
+         "checks": {"language": "ko"}}
+      ]
+    },
+    {
+      "id": "v2c_everest_again", "group": "C",
+      "language": "en", "domain": "geography", "source": "corpus v2, group C (should stay FAST: a value again)",
+      "turns": [
+        {"say": "How tall is Mount Everest?", "score": true, "mode": "fact",
+         "checks": {"quantity": [{"unit": "m|meters?|metres?", "value": 8849, "tolerance": 0.01, "required": true}]}},
+        {"say": "Sorry, how tall was that again?", "score": true, "mode": "fact",
+         "checks": {"quantity": [{"unit": "m|meters?|metres?", "value": 8849, "tolerance": 0.01, "required": true}]}}
+      ]
+    },
+    {
+      "id": "v2c_heat_pump_thanks", "group": "C",
+      "language": "en", "domain": "engineering", "source": "corpus v2, group C (should stay FAST: thanks)",
+      "turns": [
+        {"say": "How does a heat pump work?", "score": true, "mode": "how"},
+        {"say": "Got it, thanks.", "score": true, "mode": "receipt"}
+      ]
+    },
+    {
+      "id": "v2c_sky_blue_remark", "group": "C",
+      "language": "en", "domain": "physics", "source": "corpus v2, group C (should stay FAST: a remark)",
+      "turns": [
+        {"say": "Why is the sky blue?", "score": true, "mode": "cause"},
+        {"say": "Huh, I always wondered about that.", "score": true, "mode": "remark"}
+      ]
+    },
+    {
+      "id": "v2c_australia_correction", "group": "C",
+      "language": "en", "domain": "geography", "source": "corpus v2, group C (should stay FAST: a correction)",
+      "turns": [
+        {"say": "What's the capital of Australia?", "score": true, "mode": "fact",
+         "checks": {"must_contain_any": ["Canberra"]}},
+        {"say": "No, I meant the largest city.", "score": true, "mode": "fact",
+         "checks": {"must_contain_any": ["Sydney"]}}
+      ]
+    },
+    {
+      "id": "v2c_ko_black_hole_then_time", "group": "C",
+      "language": "ko", "domain": "physics", "source": "corpus v2, group C (should stay FAST: a topic shift to the time)",
+      "turns": [
+        {"say": "블랙홀은 어떻게 생겨?", "score": true, "mode": "how",
+         "checks": {"language": "ko"}},
+        {"say": "아 그건 됐고, 지금 몇 시야?", "score": true, "mode": "fact",
+         "checks": {"language": "ko", "clock_times": ["local"], "utc_offset": {"zone": "local", "required": false}}}
+      ]
+    },
+    {
+      "id": "v2c_ko_eiffel_how_many_meters", "group": "C",
+      "language": "ko", "domain": "geography", "source": "corpus v2, group C (should stay FAST: a value again)",
+      "turns": [
+        {"say": "에펠탑 높이가 얼마야?", "score": true, "mode": "fact",
+         "checks": {"language": "ko", "quantity": [{"unit": "m|미터|meters?|metres?", "value": 330, "tolerance": 0.02, "required": true}]}},
+        {"say": "몇 미터라고 했지?", "score": true, "mode": "fact",
+         "checks": {"language": "ko", "quantity": [{"unit": "m|미터|meters?|metres?", "value": 330, "tolerance": 0.02, "required": true}]}}
+      ]
+    },
+    {
+      "id": "v2d_entropy", "group": "D",
+      "language": "en", "domain": "physics", "source": "corpus v2, group D (first explanation)",
+      "turns": [
+        {"say": "What does entropy actually mean?", "score": true, "mode": "intuition"}
+      ]
+    },
+    {
+      "id": "v2d_dns", "group": "D",
+      "language": "en", "domain": "networking", "source": "corpus v2, group D (first explanation)",
+      "turns": [
+        {"say": "How does DNS turn a website name into an address?", "score": true, "mode": "how"}
+      ]
+    },
+    {
+      "id": "v2d_ko_supply_chain", "group": "D",
+      "language": "ko", "domain": "economics", "source": "corpus v2, group D (first explanation)",
+      "turns": [
+        {"say": "공급망이 왜 그렇게 중요해?", "score": true, "mode": "purpose",
+         "checks": {"language": "ko"}}
+      ]
+    },
+    {
+      "id": "v2d_ko_placebo", "group": "D",
+      "language": "ko", "domain": "medicine", "source": "corpus v2, group D (first explanation)",
+      "turns": [
+        {"say": "플라시보 효과는 왜 생겨?", "score": true, "mode": "cause",
+         "checks": {"language": "ko"}}
+      ]
+    },
+    {
+      "id": "v2e_fridge_then_thanks", "group": "E",
+      "language": "en", "domain": "engineering", "source": "corpus v2, group E (confusion, then back to FAST: thanks)",
+      "turns": [
+        {"say": "How does a refrigerator keep food cold?", "score": true, "mode": "how"},
+        {"say": "I don't follow.", "score": true, "mode": "confused",
+         "checks": {"answers_not_asks": true, "must_contain_any": ["heat", "cold", "refrigerant", "coil", "gas"]}},
+        {"say": "Okay, that makes sense now. Thanks!", "score": true, "mode": "receipt"}
+      ]
+    },
+    {
+      "id": "v2e_thunder_then_speed_of_sound", "group": "E",
+      "language": "en", "domain": "physics", "source": "corpus v2, group E (confusion, then back to FAST: a value)",
+      "turns": [
+        {"say": "Why do we hear thunder after we see lightning?", "score": true, "mode": "cause"},
+        {"say": "I'm not sure I get it.", "score": true, "mode": "confused",
+         "checks": {"answers_not_asks": true, "must_contain_any": ["light", "sound", "faster", "speed"]}},
+        {"say": "How fast does sound travel, then?", "score": true, "mode": "fact",
+         "checks": {"quantity_required_any": true, "quantity": [
+           {"unit": "m/s|meters? per second|metres? per second", "value": 343, "tolerance": 0.03},
+           {"unit": "km/h|kilometers? per hour|kilometres? per hour", "value": 1235, "tolerance": 0.03},
+           {"unit": "mph|miles per hour", "value": 767, "tolerance": 0.03}]}}
+      ]
+    },
+    {
+      "id": "v2e_ko_earthquake_then_thanks", "group": "E",
+      "language": "ko", "domain": "geology", "source": "corpus v2, group E (confusion, then back to FAST: thanks)",
+      "turns": [
+        {"say": "지진은 왜 일어나?", "score": true, "mode": "cause",
+         "checks": {"language": "ko"}},
+        {"say": "여전히 헷갈려.", "score": true, "mode": "confused",
+         "checks": {"language": "ko", "answers_not_asks": true, "must_contain_any": ["판", "땅", "지각", "에너지"]}},
+        {"say": "아 이제 알겠다, 고마워.", "score": true, "mode": "receipt",
+         "checks": {"language": "ko"}}
+      ]
+    },
+    {
+      "id": "v2e_ko_magnet_then_date", "group": "E",
+      "language": "ko", "domain": "physics", "source": "corpus v2, group E (confusion, then back to FAST: the date)",
+      "turns": [
+        {"say": "자석은 왜 쇠를 끌어당겨?", "score": true, "mode": "cause",
+         "checks": {"language": "ko"}},
+        {"say": "음, 좀 더 쉽게 말해 줄 수 있어?", "score": true, "mode": "confused",
+         "checks": {"language": "ko", "answers_not_asks": true, "must_contain_any": ["자석", "쇠", "철", "전자", "자기"]}},
+        {"say": "아 그리고 오늘 며칠이야?", "score": true, "mode": "fact",
+         "checks": {"language": "ko", "calendar": {"date": true}}}
+      ]
+    }
+  ]
+}

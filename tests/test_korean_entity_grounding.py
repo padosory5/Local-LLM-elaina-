@@ -90,6 +90,17 @@ class WhatStillPassesTests(unittest.TestCase):
             (),
         )
 
+    def test_a_quoted_question_is_speech_in_any_register(self):
+        # Simulated learners: retracted as a title, "실제로 찾아볼까요?" said.
+        self.assertEqual(
+            unverified_entities(
+                '예를 들어, "오늘 날씨 어때?"라고 묻는다면, 훈련 데이터를 기반으로 '
+                "답합니다. 실제로 찾아볼까요?",
+                request="매번 그거 다 찾아보는 거야?",
+            ),
+            (),
+        )
+
     def test_discussing_a_title_is_not_recommending_it(self):
         # The English rule: naming a dish, or talking about a film, is not
         # sending anyone anywhere.
@@ -100,6 +111,33 @@ class WhatStillPassesTests(unittest.TestCase):
     def test_naming_something_counts_as_naming(self):
         self.assertTrue(
             grounded_values.names_something_specific("'오징어 게임'을 추천합니다."),
+        )
+
+    def test_the_spelled_out_term_they_asked_about(self):
+        # Simulated learners, both pilots: "a weather app" made this a reply
+        # that sends somewhere, the expansion read as a business, and the
+        # definition was replaced with "I don't want to send you somewhere
+        # I haven't checked".
+        reply = (
+            "An API, or Application Programming Interface, is a set of rules "
+            "that lets different software applications talk to each other. "
+            "For example, when you use a weather app, it uses an API to get "
+            "the current weather data from a weather service."
+        )
+        self.assertEqual(
+            unverified_entities(
+                reply, request="What's an API? My coworkers keep saying it.",
+            ),
+            (),
+        )
+        # Initials nobody said ground nothing.
+        self.assertEqual(
+            unverified_entities(
+                "Check out local music stores in Seoul like Melody House or "
+                "Guitar Center Korea.",
+                request="where can I buy a guitar in Seoul",
+            ),
+            ("Melody House", "Guitar Center Korea"),
         )
 
 
@@ -172,6 +210,52 @@ class AMemoryInTheOtherLanguageIsStillEvidenceTests(unittest.TestCase):
 
         self.assertNotIn("Melody House", guarded)
         self.assertNotIn("Guitar Center Korea", guarded)
+
+
+class WhatTheySaidEarlierIsTheirsTests(unittest.TestCase):
+    """Simulated learners, 2026-10-02: "What's an API?", then "so it's not
+    an app?" -- and "API" in the answer was retracted as a place nothing
+    had checked, because only this turn's words counted as theirs."""
+
+    def setUp(self):
+        import contextlib
+        import io
+
+        from tests.turn_harness import build_engine
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.engine = build_engine({})
+        self.engine._turn_language = "en"
+
+    def tearDown(self):
+        self.engine.close()
+
+    def _guard(self, reply, said):
+        import contextlib
+        import io
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            return self.engine._enforce_grounded_entities(
+                reply, user_input=said, action_performed=False, evidence="",
+            )
+
+    def test_a_term_from_an_earlier_turn(self):
+        said = "Okay, so it's not something I install, right? It's just... how the apps talk to each other?"
+        reply = ("An API is like a set of instructions that let apps talk to each other, not something "
+                 "you install. For example, when you check the weather in an app, it uses an API to get "
+                 "the data from a weather service.")
+        self.engine._said_this_session = [said]
+        self.assertNotEqual(self._guard(reply, said), reply, "the measured retraction")
+
+        self.engine._said_this_session = ["What's an API? My coworkers keep saying it.", said]
+        self.assertEqual(self._guard(reply, said), reply)
+
+    def test_but_not_a_shop_nobody_named(self):
+        said = "Where can I buy one?"
+        self.engine._said_this_session = ["I want to learn guitar.", said]
+        guarded = self._guard("Check out the stores like Melody House or Guitar Center Korea.", said)
+
+        self.assertNotIn("Melody House", guarded)
 
 
 class TheGuardInTheEngineTests(unittest.TestCase):

@@ -1,0 +1,357 @@
+{
+  "version": "learners_v1",
+  "about": "Simulated learners (docs/SIMULATED_LEARNER_EVAL.md). Each is a person with hidden knowledge, a misconception and the ideas they need to grasp. A separate model plays them against the real Elaina; what they know is never shown to her. 'understand' items are what this person must come to understand; 'knows' and 'does_not_know' decide which words they can follow. Two profiles share a concept on purpose, so a reply pitched at one person can be wrong for the other. v1 (after the pilot): each learner names the words they do not know, so a reply that leans on one unexplained is not understood.",
+  "max_turns": 8,
+  "patience": 3,
+  "learners": [
+    {
+      "id": "sl_quantization_novice",
+      "language": "en",
+      "concept": "model quantization",
+      "opening": "How does model quantization work?",
+      "persona": "You are a college student who uses ChatGPT for essays. You have never studied programming or machine learning. You speak casually and briefly.",
+      "knows": [
+        "apps and files take up storage space",
+        "computers store everything as numbers somehow",
+        "AI chatbots like ChatGPT exist"
+      ],
+      "does_not_know": [
+        "what a model's parameters or weights are",
+        "what bits or precision mean",
+        "what a neural network is"
+      ],
+      "misconception": "You think quantization means zipping the model file, the way photos get compressed.",
+      "understand": [
+        {
+          "id": "q1",
+          "idea": "An AI model is basically a huge set of numbers it learned (its parameters or weights)."
+        },
+        {
+          "id": "q2",
+          "idea": "Quantization stores each of those numbers less precisely, with fewer bits, so the model needs less memory and runs faster."
+        },
+        {
+          "id": "q3",
+          "idea": "The trade-off is that the model can become slightly less accurate."
+        }
+      ],
+      "unknown_words": [
+        "parameter",
+        "weight",
+        "bit",
+        "precision",
+        "floating point",
+        "float",
+        "integer",
+        "neural network",
+        "inference",
+        "edge device"
+      ]
+    },
+    {
+      "id": "sl_quantization_cs",
+      "language": "en",
+      "concept": "model quantization",
+      "opening": "How does model quantization work?",
+      "persona": "You are a second-year computer science student who trained a small neural network in a class project. You are comfortable with technical words and get impatient with baby explanations.",
+      "knows": [
+        "what parameters and weights are",
+        "32-bit floats and integers",
+        "models need GPU memory",
+        "what inference is"
+      ],
+      "does_not_know": [
+        "how floats are mapped to 8-bit or 4-bit integers in practice",
+        "why accuracy drops only a little"
+      ],
+      "misconception": "",
+      "understand": [
+        {
+          "id": "c1",
+          "idea": "Weights are mapped from 16- or 32-bit floats to low-bit integers using a scale factor (and often a zero point)."
+        },
+        {
+          "id": "c2",
+          "idea": "That cuts memory and memory bandwidth, which is what makes inference faster."
+        },
+        {
+          "id": "c3",
+          "idea": "Rounding error costs a little accuracy; calibration or keeping sensitive layers at higher precision limits the loss."
+        }
+      ],
+      "unknown_words": []
+    },
+    {
+      "id": "sl_moon_phases",
+      "language": "en",
+      "concept": "phases of the moon",
+      "opening": "Why does the moon change shape?",
+      "persona": "You are an office worker who hasn't studied science since high school. Curious, a little embarrassed not to know.",
+      "knows": [
+        "the moon goes around the Earth",
+        "the sun lights things up"
+      ],
+      "does_not_know": [
+        "that the moon makes no light of its own",
+        "what an orbit's angle has to do with it"
+      ],
+      "misconception": "You think the Earth's shadow covers part of the moon.",
+      "understand": [
+        {
+          "id": "m1",
+          "idea": "The sun always lights half of the moon."
+        },
+        {
+          "id": "m2",
+          "idea": "As the moon goes around the Earth, we see different amounts of that lit half."
+        },
+        {
+          "id": "m3",
+          "idea": "It is not the Earth's shadow; that only happens in an eclipse."
+        }
+      ],
+      "unknown_words": [
+        "illuminated",
+        "waxing",
+        "waning",
+        "lunar cycle",
+        "phase angle"
+      ]
+    },
+    {
+      "id": "sl_api_nontech",
+      "language": "en",
+      "concept": "APIs",
+      "opening": "What's an API? My coworkers keep saying it.",
+      "persona": "You are a marketing coordinator who uses apps all day but has never written code.",
+      "knows": [
+        "apps and websites",
+        "logging in",
+        "copying data between apps by hand"
+      ],
+      "does_not_know": [
+        "what a server is",
+        "requests and responses",
+        "what code does"
+      ],
+      "misconception": "You think an API is a kind of app you download.",
+      "understand": [
+        {
+          "id": "a1",
+          "idea": "An API is a set of rules that lets one program ask another program for data or to do something."
+        },
+        {
+          "id": "a2",
+          "idea": "For example, a weather app asks a weather service's API for today's forecast."
+        },
+        {
+          "id": "a3",
+          "idea": "It is not an app you install; it is how programs talk to each other."
+        }
+      ],
+      "unknown_words": [
+        "server",
+        "endpoint",
+        "request",
+        "response",
+        "protocol",
+        "interface",
+        "data format",
+        "integration"
+      ]
+    },
+    {
+      "id": "sl_statistical_significance",
+      "language": "en",
+      "concept": "statistical significance",
+      "opening": "What does statistically significant mean?",
+      "persona": "You are a nursing student reading a study for class. You did basic math in high school.",
+      "knows": [
+        "averages",
+        "percentages",
+        "that studies compare groups"
+      ],
+      "does_not_know": [
+        "p-values",
+        "the null hypothesis",
+        "random variation between samples"
+      ],
+      "misconception": "You think 'significant' means the effect is big or important.",
+      "understand": [
+        {
+          "id": "s1",
+          "idea": "It means the difference is unlikely to be just random chance."
+        },
+        {
+          "id": "s2",
+          "idea": "It does not mean the effect is large or important."
+        }
+      ],
+      "unknown_words": [
+        "p-value",
+        "null hypothesis",
+        "confidence interval",
+        "sample size",
+        "variance",
+        "standard error"
+      ]
+    },
+    {
+      "id": "sl_ko_quantization_novice",
+      "language": "ko",
+      "concept": "모델 양자화",
+      "opening": "모델 양자화가 뭐야?",
+      "persona": "당신은 AI 챗봇을 가끔 쓰는 대학생입니다. 프로그래밍이나 머신러닝은 배운 적이 없습니다. 짧고 편하게 반말로 말합니다.",
+      "knows": [
+        "앱과 파일이 저장 공간을 차지한다는 것",
+        "컴퓨터는 모든 걸 숫자로 저장한다는 것 정도",
+        "ChatGPT 같은 AI가 있다는 것"
+      ],
+      "does_not_know": [
+        "모델의 파라미터나 가중치가 뭔지",
+        "비트나 정밀도가 뭔지",
+        "신경망이 뭔지"
+      ],
+      "misconception": "양자화가 모델 파일을 압축(zip)하는 것이라고 생각합니다.",
+      "understand": [
+        {
+          "id": "kq1",
+          "idea": "AI 모델은 학습으로 얻은 아주 많은 숫자(파라미터, 가중치)의 묶음이다."
+        },
+        {
+          "id": "kq2",
+          "idea": "양자화는 그 숫자들을 더 적은 비트로, 덜 정밀하게 저장해서 메모리를 덜 쓰고 더 빨리 돌게 하는 것이다."
+        },
+        {
+          "id": "kq3",
+          "idea": "대신 정확도가 조금 떨어질 수 있다."
+        }
+      ],
+      "unknown_words": [
+        "파라미터",
+        "가중치",
+        "비트",
+        "정밀도",
+        "부동소수점",
+        "정수",
+        "신경망",
+        "추론"
+      ]
+    },
+    {
+      "id": "sl_ko_dividend",
+      "language": "ko",
+      "concept": "배당금",
+      "opening": "주식 배당금이 뭐야?",
+      "persona": "당신은 사회초년생이고 주식 앱을 막 깔았습니다. 투자는 처음입니다. 반말로 짧게 말합니다.",
+      "knows": [
+        "주식을 사면 회사의 일부를 가진다는 것 정도",
+        "은행 이자"
+      ],
+      "does_not_know": [
+        "회사 이익을 나누는 방식",
+        "배당률",
+        "배당 기준일"
+      ],
+      "misconception": "배당금이 주가가 오르면 생기는 돈이라고 생각합니다.",
+      "understand": [
+        {
+          "id": "d1",
+          "idea": "회사가 번 이익의 일부를 주주에게 나눠 주는 돈이다."
+        },
+        {
+          "id": "d2",
+          "idea": "주가가 오르는 것과는 다른 것이다."
+        },
+        {
+          "id": "d3",
+          "idea": "가진 주식 수만큼 받는다."
+        }
+      ],
+      "unknown_words": [
+        "배당률",
+        "배당 기준일",
+        "배당성향",
+        "시가배당률"
+      ]
+    },
+    {
+      "id": "sl_ko_llm",
+      "language": "ko",
+      "concept": "AI가 대답을 만드는 방식",
+      "opening": "ChatGPT 같은 AI는 어떻게 대답을 만들어?",
+      "persona": "당신은 고등학생입니다. AI는 자주 써 봤지만 원리는 모릅니다. 반말로 짧게 말합니다.",
+      "knows": [
+        "스마트폰 키보드의 자동완성",
+        "인터넷 검색"
+      ],
+      "does_not_know": [
+        "학습(training)이 뭔지",
+        "토큰",
+        "확률로 단어를 고른다는 것"
+      ],
+      "misconception": "AI가 매번 인터넷에서 답을 찾아온다고 생각합니다.",
+      "understand": [
+        {
+          "id": "l1",
+          "idea": "엄청나게 많은 글에서 배운 패턴으로 다음에 올 말을 하나씩 예측해서 문장을 만든다."
+        },
+        {
+          "id": "l2",
+          "idea": "기본적으로 매번 인터넷을 검색하는 것이 아니다."
+        },
+        {
+          "id": "l3",
+          "idea": "그래서 그럴듯하지만 틀린 말을 할 수도 있다."
+        }
+      ],
+      "unknown_words": [
+        "토큰",
+        "확률",
+        "학습 데이터",
+        "파라미터",
+        "신경망",
+        "언어 모델"
+      ]
+    },
+    {
+      "id": "sl_ko_greenhouse",
+      "language": "ko",
+      "concept": "온실효과",
+      "opening": "온실효과가 정확히 뭐야?",
+      "persona": "당신은 직장인이고 뉴스에서 기후 위기 이야기를 자주 듣습니다. 과학은 고등학교 이후로 안 했습니다. 반말로 짧게 말합니다.",
+      "knows": [
+        "비닐하우스 안이 따뜻하다는 것",
+        "이산화탄소가 공기 중에 있다는 것"
+      ],
+      "does_not_know": [
+        "적외선",
+        "복사",
+        "지구가 열을 내보낸다는 것"
+      ],
+      "misconception": "오존층 구멍 때문에 지구가 더워진다고 생각합니다.",
+      "understand": [
+        {
+          "id": "g1",
+          "idea": "햇빛을 받은 지구가 내보내는 열을 이산화탄소 같은 기체가 붙잡아 지구를 따뜻하게 한다."
+        },
+        {
+          "id": "g2",
+          "idea": "그런 기체가 늘어나면 열이 더 많이 갇혀 더 더워진다."
+        },
+        {
+          "id": "g3",
+          "idea": "오존층 구멍과는 다른 문제다."
+        }
+      ],
+      "unknown_words": [
+        "적외선",
+        "복사",
+        "복사열",
+        "흡수",
+        "파장",
+        "온실가스"
+      ]
+    }
+  ]
+}

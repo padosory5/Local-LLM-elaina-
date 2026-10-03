@@ -633,10 +633,12 @@ class ChatEngine:
         # The explanation thread the turn-move shadow reads (brain/turn_move.py),
         # made on first use: it embeds with memory's model, loaded further down.
         self._turn_moves = None
-        # Whether a "differently" move is acted on (config responses.turn_move).
-        self._turn_move_mode = turn_move.mode(self.config)
+        # Whether a "differently" move is acted on (config responses.turn_move),
+        # and under "deep" the model that writes that turn.
+        self._turn_move_mode, self._turn_move_model = turn_move.settings(self.config)
         if self._turn_move_mode != turn_move.OFF:
-            print(f"[Turn Move] acting on: {', '.join(turn_move.ACTED_ON)}")
+            print(f"[Turn Move] acting on: {', '.join(turn_move.ACTED_ON)}"
+                  + (f" (written by {self._turn_move_model})" if self._turn_move_model else ""))
 
         self.temperature = self.config.get(
             "llm",
@@ -11067,7 +11069,8 @@ class ChatEngine:
         # the fourth asking of the same question got the same "explain"
         # goal as the first, and the same answer word for word. Last, so it
         # outranks the goal, the budget and any contract set above.
-        if (getattr(self, "_turn_move_mode", turn_move.OFF) == turn_move.ON
+        move_mode = getattr(self, "_turn_move_mode", turn_move.OFF)
+        if (move_mode in (turn_move.ON, turn_move.DEEP)
                 and shadow_move.move in turn_move.ACTED_ON
                 and not calculation_needs_own_math):
             was = {"act": turn_act, "budget": budget.kind, "goal": budget.shape or budget.kind,
@@ -11086,11 +11089,38 @@ class ChatEngine:
             )
             generation_instruction = response_instruction
             style_text = conversation_style.style_instruction(turn_act, self._turn_language)
+            # "deep": the larger model writes this one turn, with the
+            # conversation as it stands, and its soft stages are off -- the
+            # setting the 27B has run under in every arm. Replayed offline,
+            # the 8B's draft under this line was her earlier answer again in
+            # 18 of 28 and the 27B's in 0 of 28: what changes the answer is
+            # who writes it. The 8B still reads the turn, and the next one.
+            written_by = ""
+            if (move_mode == turn_move.DEEP and not uses_vision_model
+                    and getattr(self, "_turn_move_model", "")):
+                written_by = active_model = self._turn_move_model
+                response_stages.soft_stages_off_this_turn(True)
+                turn_trace.note_context(model=active_model)
+            # And the writer answers what they said. A factual or search
+            # prompt carries the router's reading as its current message;
+            # here it is their own words that were asked before, and the
+            # reading sent the 27B off to answer something else (A/B 2).
+            shown_theirs = False
+            if messages and isinstance(messages[-1], dict):
+                rewritten, shown_theirs = turn_move.with_their_words(
+                    str(messages[-1].get("content") or ""),
+                    shown=route.normalized_request or "", said=user_input,
+                )
+                if shown_theirs:
+                    messages[-1] = {**messages[-1], "content": rewritten}
             print(f"[Turn Move] {shadow_move.move}: asked {shadow_move.attempts + 1} times; "
-                  "the move owns this turn.")
+                  "the move owns this turn"
+                  + (f", written by {written_by}." if written_by else "."))
             turn_trace.note_context(turn_move_applied={
                 "move": shadow_move.move, "attempts": shadow_move.attempts, "was": was,
-                "room": [max_words, max_sentences],
+                "room": [max_words, max_sentences], "mode": move_mode,
+                "written_by": written_by,
+                "question_shown": "their words" if shown_theirs else "as built",
             })
         messages[-1]["content"] += (
             "\n\nVOICE RESPONSE REQUIREMENTS\n"

@@ -545,10 +545,25 @@ def classify(name: str) -> str:
 
 _OFF = frozenset({"0", "off", "false", "no"})
 
+# One turn under DEEP's setting while the turns around it keep theirs: an
+# evaluation arm that hands a single turn to the 27B (brain/fastdeep_apply.py)
+# runs that turn with the soft stages off, as the DEEP and SPLIT arms ran.
+# The engine clears it at the start and the end of every turn; nothing sets
+# it unless ELAINA_FASTDEEP_ROUTE is set.
+_off_this_turn = False
+
 
 def soft_stages_on() -> bool:
     """Whether SOFT stages run. Read on every call, so a test can switch it."""
+    if _off_this_turn:
+        return False
     return os.environ.get("ELAINA_SOFT_STAGES", "").strip().lower() not in _OFF
+
+
+def soft_stages_off_this_turn(off: bool) -> None:
+    """Turn the soft stages off for the rest of this turn (True), or clear it."""
+    global _off_this_turn
+    _off_this_turn = bool(off)
 
 
 def active(name: str) -> bool:

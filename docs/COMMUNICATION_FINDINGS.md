@@ -411,16 +411,900 @@ scenarios passing / scored turns passing / correct values:
   `runtime/evals/calibration-p3.json` (20 replies, 28 labels) is waiting
   for a person before they are believed.
 
+## Phase 3, final: after the four fixes (2026-09-29)
+
+The same matrix, corpus, Ollama 0.34.4, rubric v3 and judge, in
+runtime/evals/p3f; the tables are `docs/PHASE3_FINAL_RESULTS.md`. This
+section is what reading the runs by hand added to them. No code was changed
+after the rerun except the report generator.
+
+**The four fixes, read from the replies.**
+- **Explanation room for turns that ask nothing.** Every thanks, "Yeah.",
+  "Studio." and remark now gets the value budget; in Phase 3 all of them got
+  the explanation budget. The long replies left ("Thanks, that makes sense"
+  → 40 words) are the 8B's router filing the thanks as `action_request`.
+- **Examples on a formula or fact.** Unasked examples fell where the router
+  says `state`: quadratic formula 7/9 → 0/9, cos series 9/9 → 1/9, "x 제곱을
+  미분하면" 4/9 → 0/9. The 8B labels "the Taylor series of eˣ" and "the
+  formula for a Taylor series" `explain` and keeps the example (9 of 10);
+  the 27B does not (0 of 8).
+  - Side effect of this fix: splitting the goals dropped "what problem it
+    solves … or worked example" from the explain wording. The property
+    rates do not show a broad loss (`says_what_it_solves` rose for both
+    models), but `hash_table_how` and `overfitting_nontechnical` lost
+    `concrete_first` and `terms_explained` in every final 27B run. It is the
+    likeliest cause of the 27B soft-off scenario drop (51% → 45%), with
+    scenario churn in both directions.
+- **Notation is not a claim.** All Phase 3 deletions (the Taylor-series LaTeX
+  "1") are gone. Of three values the integrity counter still flags, two are
+  correct removals of invented mouse specs, flagged because "12" occurs
+  inside "$120" in the search text. The third is a real false positive:
+  "12시간에서 24시간" deleted as a damaged "125". The near-miss rule compares
+  bare numbers across all evidence, whatever they measure; its docstring
+  scopes it to numbers the person said.
+- **The 27B's router overflow.** Truncated first answers fell from 15–25 to
+  0–1 per run and repairs from 30–34% to 1–2%. Router time per turn went
+  from 8.25 to 8.03 s (mean, soft on) and 8.65 to 7.79 s (soft off), with
+  p95 at 13.4 → 12.6 and 15.0 → 11.2 s. That is on a day the drift arms put
+  about 8% slower. The first call's p50 rose, 6.2 → 7.3 s, because answers
+  now finish instead of stopping at the window. The one remaining truncation
+  is the 512-token output cap: the model rambles in `reason`.
+
+**Correct values, read by hand.** The scored rates (8B 96%, 27B 93–96%)
+invert the truth.
+- Every 27B miss is a check that cannot read a right answer:
+  - "2x plus 3" (3 times);
+  - "UTC minus seven hours" (2);
+  - a correct average with its range.
+- So by hand the 27B is correct on every final turn.
+- The 8B misses "x 제곱을 미분하면" in 4 of 4 runs.
+- The same two checks, plus `must_not_contain "8 hours"` matching inside
+  "18 hours", also cost the 27B scenarios in Phase 2 and Phase 3. The
+  corpus was left as it was for this comparison.
+
+**Defects found reading the runs.** All were present before the four fixes.
+All are fixed in the next section, except the 8B's reading of 미분.
+- **`final_check` removes a minus sign with the echo it strips.**
+  - "The temperature in Chicago right now is -5 degrees." becomes "5
+    degrees."
+  - The q8 run's "Your UTC offset is -0700" became "0700.".
+  - `_ECHO_DASH` reads " -" before a digit as a dash. That is a
+    hard-invariant breach.
+- **The calculation planner invents arithmetic when there is none.**
+  - A request with no arithmetic ("x 제곱을 미분하면", "how long should cold
+    brew steep") routed as `calculation` is told twice to call the tool.
+  - The model then makes a calculation up ("2 + 2 = 4"; "coffee for 500 g
+    of water at 1:4: 125"), and it enters the ledger as a *verified
+    calculation*.
+  - The invented 125 is what the near-miss rule above read "12 hours"
+    against.
+- **`not_her_last_answer` destroyed a correct answer every time it acted.**
+  - It fired on the cold-brew follow-up in 9 of 9 cases across both phases.
+  - The regeneration "without history" read "얼마나 우려야 돼?" as worry (8B)
+    or laundry (27B).
+  - It fires more in the final runs because that turn is now more often
+    routed as a value question.
+- **The 8B reads 미분 as 파생상품 (financial derivatives)** in every run of
+  both phases, every quantization. That is the model's knowledge, not the
+  pipeline.
+
+**The 27B with the speech recogniser loaded is not reproducible.**
+- In Phase 3 it ran at 41 tok/s (turn p50 11.9 s). Today it ran at
+  10.6–13.7 tok/s (turn p50 62–98 s).
+- Rerun back to back at context 6144 and at Ollama's default, the default
+  was no faster. So the context window is not the cause: the router fell
+  back on 4 of 5 turns at the default window.
+- Ollama saw the same free memory before loading on both days, and the
+  recogniser's configuration is unchanged.
+- The combination sits within a few hundred MB of the 16.3 GB card. Whatever
+  else is open (today: Wallpaper Engine, browsers, and more) decides whether
+  it runs at full speed or four times slower, and the driver pages
+  silently rather than failing.
+- The 8B has about 6.5 GB of headroom.
+
+**For the 8B FAST + 27B DEEP evaluation.** These are not a decision.
+- The 27B's advantage is concentrated in:
+  - explanation (`says_what_it_solves` +50 pts, `only_what_helps` +32,
+    `concrete_first` +24). `says_what_it_solves` and `concrete_first` are
+    rare-yes properties: their gaps hold by the person's blind labels too,
+    with the judge's 27B rates as upper bounds;
+  - `adapts_to_confusion` (100% vs 50%, but a property the judge is below
+    the bar on);
+  - the router's `answer_shape` and intent labels.
+- On short, value and social turns the two models score alike.
+- The 27B's router first call (about 7 s) is the largest single cost in its
+  turn. Routing with the 8B (about 2.4 s) and answering with the 27B only
+  where depth pays is where the time is.
+- Both models do not fit at once:
+  - 8B 5.7 GB + 27B 12.7 GB at context 6144, before the recogniser;
+  - so every switch between them is a load, about 7–8 s for the 27B;
+  - that is the first thing such an evaluation has to measure.
+
+## After the final rerun: the defects and the checks, fixed (2026-09-29)
+
+Each fix has a regression test that fails without it. The suite is green
+(3,918 tests).
+
+| defect | fix | regression tests |
+|---|---|---|
+| `final_check` removed a minus sign with an echo | `_ECHO_DASH`: a dash with a digit straight after it is a sign or a range, never a break | `test_response_quality` (minus sign, range, spaced dash still breaks) |
+| The planner invented arithmetic for a request with no numbers | `CalculationPlanner.plan` declines without asking the model when the request has no digit; the turn is answered the ordinary way | `test_calculation_planner`; whole turn in `test_final_rerun_defects` |
+| `not_her_last_answer` re-asked a follow-up bare | It re-asks the router's self-contained `normalized_request`, not the words said | `test_misread_repairs`; whole turn in `test_final_rerun_defects` |
+| The near-miss rule read machine evidence | Damaged copies are only of the person's numbers (`grounded_values.PERSON_SOURCES`), in `findings`, `needs_correction` and `correct_values` | `test_grounded_findings`; engine guard in `test_final_rerun_defects` |
+| The explain goal lost "what problem it solves … worked example" | Phase 3's wording restored, keeping "why it happens" | `test_response_budget` |
+
+The planner's gate rests on a measurement: every calculation-routed request
+in every eval run carried its numbers as digits, and the only ones without
+were not arithmetic ("How many ounces are in a cup?" is claimed earlier by
+the conversion domain). A request with spelled-out numbers and no digit
+would now be answered without the calculator, not wrongly.
+
+**The eval checks** (`evals/checks.py`, `test_eval_corpus`). The checker was
+fixed, not the corpus: the same scenarios and patterns, read better.
+- A phrase that starts or ends with a digit is not found inside a longer
+  number ("8 hours" / "18 hours", "8시간" / "18시간").
+- Offsets said in words are read ("UTC minus seven hours", "your UTC offset
+  is -7").
+- Pattern checks also read the reply's mathematics with LaTeX fractions and
+  spoken operators as symbols ("2x plus 3", "\frac{1}{3}").
+- A stated range that brackets the true value is one right claim.
+
+Rescored from the stored replies (no regeneration, no new verdicts), the
+final run's 27B correctness is 100% in both arms (was 93% / 96%). Scenarios
+pass at 54% soft on and 49% soft off (was 50% / 45%). Phase 3's 27B also
+reads 100%, and Phase 2's 73–77%. The 8B is unchanged (96%); its miss is
+real. `docs/PHASE3_FINAL_RESULTS.md` is regenerated with the corrected
+checks.
+
+**Live check** (runtime/evals/p3f-fix: the nine scenarios the fixes touch,
+one run per model, soft stages on, same judge):
+- "x 제곱을 미분하면 뭐야?" on the 8B: routed as a calculation as before.
+  The planner now declines without a model call (it made four), and the
+  answer is "X 제곱의 도함수는 2x입니다." It failed 4 of 4 final runs.
+- The cold-brew follow-up: both models gave the steeping time, and neither
+  reply was rewritten; the 27B passes where a final run answered about
+  clothes. This time the routers did not file the turn as a value
+  question, so the planner and `not_her_last_answer` paths were not
+  exercised live. The whole-turn tests cover them.
+- `hash_table_how` on the 27B passes again (it failed both final runs).
+  `overfitting_nontechnical` still opens with the definition and fails
+  `concrete_first`, so the restored wording does not explain that one.
+- The 27B's "UTC minus seven hours" now scores as the right offset.
+
+## FAST/DEEP post-fix baseline (2026-09-29)
+
+The protocol is `docs/FAST_DEEP_PROTOCOL.md` (with its amendments). The
+tables come from the frozen analysis, fingerprint `cbd8c3b57913990a`, in
+`docs/FAST_DEEP_BASELINE.md`. The runs are in `runtime/evals/pf/`:
+
+- 3× FAST (8B, soft stages on) and 3× DEEP (27B, soft stages off), all six
+  suites, alternating;
+- the drift arms and the recogniser arms;
+- judge `qwen3.6:35b-a3b`, rubric v3.
+
+Every scored turn got a complete set of verdicts, with no judge errors. No
+product code changed for the run. This section is the hand reading; the
+numbers are the report's.
+
+**End to end.**
+
+| | FAST | DEEP |
+|---|---|---|
+| scenarios | 26% | 52% |
+| turns | 29% | 58% |
+| correct values | 100% | 100% |
+| turn latency p50 | 3.7–4.0 s | 9.4–10.3 s |
+| router's first call | 2.3–2.5 s | 7.9–8.7 s |
+| router fallbacks and truncations | none | none |
+
+- The 8B's "x 제곱을 미분하면" is now right. The calculator declines it
+  instead of inventing "2 + 2".
+- On the five historical suites, against the final rerun under today's
+  evaluator:
+  - FAST: 29% / 32% scenarios / turns, from 32% / 34%;
+  - DEEP: 57% / 62%, from 49% / 52%.
+
+**Resources.**
+
+- No call was under pressure in any arm.
+- VRAM: FAST 6.9–7.7 GB, DEEP 13.7–14.5 GB.
+- With the speech recogniser loaded:
+  - FAST 9.1 GB, p50 3.7 s;
+  - DEEP 15.4 GB, p50 9.9 s, at a normal 48.2 tok/s.
+- That is the same footprint that ran at 11 tok/s (87 s p50) in the final
+  rerun. The configuration fits when nothing else presses on the card, and
+  has no headroom when something does.
+- Cold loads: 8B 3.3–3.6 s, 27B 6.8–7.0 s.
+
+**Stable labels** (FAST run *i* against DEEP run *i*; 2 of 3 needed):
+
+| label | turns |
+|---|---|
+| stable DEEP+ | 23 |
+| pending blind labels | 1 |
+| stable DEEP-worse | 4 |
+| no routing ground truth | 45 (42 of them consistently no different) |
+
+- By category:
+  - "I still don't understand" follow-ups: 7 of 9 DEEP+, 1 pending, 1
+    DEEP-worse (`p_value_last_part`);
+  - first-time explanations: 10 of 19 DEEP+, 2 DEEP-worse (the bus and the
+    ice, on `terms_explained`);
+  - factual, calculation, time and date: 0 of 26.
+- The routers agreed on intent on 126 of 135 first-turn pairs and 46 of 84
+  later-turn pairs. The later-turn labels are end to end.
+- **Replicate noise is higher than in the final rerun.** Pass/fail differs
+  across runs on 13 of 73 turns (FAST) and 26 of 73 (DEEP). Three runs were
+  needed.
+
+**Routing, against the stable labels.**
+
+| policy | DEEP+ recall | DEEP precision | DEEP use | DEEP-worse turns sent |
+|---|---|---|---|---|
+| budget explain or elaborate (P1) | 96% | 50% | 60% of turns | all 4 |
+| shape explain, example or elaborate (P3) | 91% | 50% | 58% of turns | all 4 |
+| budget elaborate only (P2) | 9% | 64% | 4% of turns | none |
+| perfect knowledge | 100% | 100% | 32% of turns | none |
+
+- The existing signals find the opportunity. They cannot separate it from
+  the rest of the explanation turns, and they cannot avoid the DEEP-worse
+  ones, which are explanation turns too.
+- **The perfect-knowledge composite passes 45% of turns; all DEEP passes
+  58%.** The gap is turns without routing ground truth, mostly FAST's form
+  defects. By the protocol, those are FAST realisation targets, not reasons
+  to route.
+- With swap costs charged (27B load 6.8 s, 8B reload 3.3 s), P1's p50 is
+  11.7 s against all FAST's 3.8 s.
+
+**Step 4, classified.** No guard or patch was made; proposals are for review.
+
+| finding | class | evidence | proposal |
+|---|---|---|---|
+| `overfitting_nontechnical` still fails `concrete_first` (and `terms_explained`) in both arms | response realisation, plus model capability | The restored wording reached all six prompts. Both models open "Overfitting happens when…"; the 27B's student analogy is third. The judge's reasons match the rubric. | Systemic, not implemented. The explain goal never asks to lead with the case, its first clause ("say why it happens") invites a definition, and unlike the state goal it does not ask for technical terms to be explained. `terms_explained` is low for both models (28% / 48%). A wording change would have to be measured as its own change. |
+| `hash_table_how` now stable DEEP+ | evaluator variance | FAST's reply is identical in all three runs. DEEP's three replies are near-identical to each other and to the final rerun's ("buckets", "chaining or probing" unexplained), yet `terms_explained` passed 3/3 and `concrete_first` 2/3, where near-identical text failed both in the final rerun. | Add the turn to the blind labels as a spot check. The generation did not change. |
+| Unwanted examples on formula and value questions | none from the explain wording | No `state` or `value` prompt carried an explain goal (0 of 146). The remaining `only_what_helps` failures are appended extras (a discriminant, "that's exact", a zone name): FAST 18/63 value turns, DEEP 5/60. | Decision needed: the value goal itself allows "at most one short sentence of context", which the judge then penalises. Either the goal or the property's strictness is wrong for value turns. |
+| Regressions from the four fixes | none found | See the rows below. | — |
+| The fixes' own actions | as intended | `final_check`: 1 change, not numeric. `grounded_values`: 3, all correct (invented mouse specs, a wrong film runtime). No conflicting near-miss findings. The calculator declined every digitless request without a model call. | — |
+| FAST's lower `concrete_first` (24% → 11%) on explanation turns | mostly evaluator variance | Bus brakes: both versions open on the scene ("When a bus suddenly brakes…"), judged yes before and no now. Compound interest: definition then worked example in both. | Blind spot check before believing it. |
+| `not_her_last_answer` still fires on the cold-brew follow-up (all three DEEP runs) | routing, plus realisation | When the 27B router's question was self-contained, the re-ask answered correctly (2 runs). When the router left it as "얼마나 우려야 돼?", the re-ask came back about laundry (1 run). The router had called the turn a `clarification` each time. | Systemic, not implemented: don't apply the stage to a turn the router calls a clarification, a re-explanation that keeps history (R9), where repeating the value is expected. |
+| The calculator still "verifies" symbolic maths when the request has a digit | tool behaviour, plus routing | "Calculate the derivative of the function x squared plus 3x" (27B router) → planner → "power rule applied: 5". The 27B ignored it and answered "2x plus 3"; the 8B has followed such evidence before. | Systemic, not implemented: symbolic maths should not reach a numbers-only calculator. This is a routing definition, not a digit rule. |
+| One FAST answer sentence deleted because it held one Chinese character ("냉萃") | response realisation | `final_form` removed the whole answer sentence; the reply was left without its value. The 8B router had also misread the turn as a question about quantity. Observed once. | Consider removing the foreign token, not the sentence. |
+| "I don't really get what a derivative is" answered as finance by both models | corpus ambiguity (evaluator side) | The English turn has no calculus context. The judge accepted the finance reading. | Report only; the corpus stays as it is. The Korean 미분 turn is unambiguous: the 8B answers 파생상품, the 27B answers calculus (DEEP+). |
+| FAST cannot recall the school ("where is my school again?") | model capability | Wrong in the final rerun ("you haven't told me") and now ("check your calendar"). | None from the pipeline. |
+
+## After the baseline: blind labels, the hard fixes, shadow routing (2026-09-29)
+
+The user accepted the baseline and asked for three hard fixes, a test of the
+value-answer sentence, and an offline routing analysis. There is still no
+production router, and no rule is turned on.
+
+**Blind labels** (the user's, 12 replies and 20 labels):
+- The judge agreed with them 90% of the time (kappa 0.80): `adapts_to_confusion`
+  8 of 8, `concrete_first` 10 of 12. The two disagreements are the known
+  pattern: the judge accepts an analogy as concrete where the person does
+  not.
+- The pending turn (`ko_climate_weather_last_part` t1) is confirmed. The
+  frozen report, regenerated, now has 24 stable DEEP+, none pending and 4
+  DEEP-worse, and the confusion follow-ups stand at 8 of 9.
+
+**The three hard fixes.** Each has regression tests that fail without it;
+the suite is green (3,953).
+
+| issue | fix | tests |
+|---|---|---|
+| A clarification's context lost by `not_her_last_answer` | The stage no longer asks again, without history, on a turn the router calls a clarification, or on a follow-up whose reading is still the words said (`_reply_rests_on_the_conversation`). A question that stands on its own is still asked again. | `test_final_rerun_defects`: whole turns for both cases, plus the stage's original purpose. |
+| A digit-bearing symbolic request reaching the calculator | `asks_for_arithmetic`: a digit **and** no variable. The variable is read with the notation module's own tokens and closed operator, power and function vocabulary (`spoken_notation.names_a_variable`); letters used as words ("Plan A", "a third", "I") are not variables. The router's `calculation` definition now says arithmetic on their numbers, with algebra and calculus on a variable as `knowledge_question`. | `test_calculation_planner`, including spelled-out numbers staying protected; `test_final_rerun_defects`: reader cases and a whole turn. |
+| A sentence deleted for one foreign character | `without_foreign_script` removes the kana run, or the Han run written into a Korean word, and keeps the sentence. Real 한자 is untouched. | `test_foreign_script`, `test_glued_han`, including the measured "냉萃 … 1~2컵" case. |
+
+**Targeted live check** (`runtime/evals/pf-fix2`): the 24 scenarios the fixes
+touch, FAST and DEEP, 3 runs each, same judge, against the frozen baseline.
+- FAST turns passing 35/99 before and after; DEEP 68 → 63/99. Correctness
+  48/48 in all four.
+- There were no laundry or worry replies, and the calculator made no calls:
+  the 12 calculation evidences are all tier-0 domain claims.
+- The one `not_her_last_answer` action re-asked the router's self-contained
+  reading and corrected a wrong draft (cold brew "in milk").
+- The one foreign-script repair kept "…12~24시간…" and removed "萃".
+- No regression is attributable to the fixes. The turns that got worse
+  were read one by one:
+
+  | turn | what happened | cause |
+  |---|---|---|
+  | `ko_date_today` (FAST) | The reply appends the time before and after; the judge passed the same pattern in a baseline run. | evaluator variance |
+  | `ko_quantum_computer_still_lost` t0 (DEEP) | An added "limitations" sentence. | generation variance |
+  | `definite_integral` (FAST) | The value 1/3 is right. Without the calculator the 8B wrote the worked integral, and `length_rewrite` shortened it, failing `display_math_intact`. | realisation |
+  | `p_value_last_part` t1 (FAST, 1 of 3 runs) | `existence_claims` read "if the effect … isn't real" as a claim that something does not exist, and replaced the first sentence with "I don't actually remember that one…". | a guard misfiring; not caused by the fixes |
+
+**The value-answer sentence** was treated as communication quality, not a
+routing blocker.
+- The value goal "add at most one short sentence of context" was replaced
+  by "add a sentence only when the value would be misread without it".
+- On value turns, `only_what_helps` went from 19 to 22 of 36 (FAST) and from
+  34 to 36 of 36 (DEEP). Correctness is unchanged, and `answers_the_ask` is
+  98/99 (FAST).
+- The gain is small, mostly `cup_ounces`. The Korean date's appended time
+  persists.
+- It is kept provisionally; the change is one line to revert.
+
+**The ambiguous derivative turn.** `derivative_simply` carries a note (the
+loader ignores notes, so the frozen fingerprint is unchanged): it is
+ambiguous and not routing evidence. The unambiguous version,
+`derivative_simply_in_calculus`, has a calculus context turn and checks the
+mathematical meaning. It is staged in `evals/scenarios_next/` for the next
+frozen corpus version.
+
+**Shadow routing, offline** (`evals/fastdeep_routing.py`,
+`docs/FAST_DEEP_ROUTING.md`).
+- It reads only the 8B router's recorded output and the engine's recorded
+  state, and scores deterministic rules with the frozen analysis unchanged.
+- All numbers are **in-sample**: 73 turns, 24 stable DEEP+.
+
+Within the 44 explanation-budget turns:
+
+| signal | DEEP+ | no difference | DEEP-worse |
+|---|---|---|---|
+| router says follow-up | 12 | 0 | 1 |
+| previous turn was an explanation | 11 | 0 | 1 |
+| conversation under way | 13 | 1 | 1 |
+| first-time, Korean | 5 | 3 | 0 |
+| first-time, English | 6 | 14 | 3 |
+
+- No existing signal separates the English first-time explanations; the
+  "second discriminating signal" does not exist in today's fields.
+- The best-profiled rule is **R2: explanation budget and the router says
+  follow-up**:
+
+  | | value |
+  |---|---|
+  | DEEP+ recall | 50% |
+  | precision | 92% |
+  | utilization | 18% |
+  | DEEP-worse routed | 1 of 4 (`p_value_last_part` t1) |
+  | turns passing | 37% (all FAST 29%, perfect knowledge 46%, all DEEP 58%) |
+  | p50 / p95 with swaps | 3.9 / 12.4 s |
+
+- Adding Korean first-time explanations (R5) gives 71% recall, 81% precision
+  and 29% utilization.
+
+**The interpretation confound decides the next step.**
+- Of R2's 12 DEEP+ turns, 9 are turns the two routers read differently. On 8
+  of the 9 confusion follow-ups, the 27B router called the turn a
+  `clarification` with the elaborate budget in every run; the 8B called it
+  `conversation` with the explain budget.
+- So in the DEEP arm those turns were also written under the re-explanation
+  instruction. Only `index_fund_what_do_you_mean` t1, where both routers
+  agreed, credits the 27B's generation cleanly.
+- Two consequences follow. Under an 8B router, the 27B would answer these
+  turns with the 8B's reading, so the measured gain may shrink. And part of
+  the gain may be reachable in FAST, if the 8B's reading of confusion
+  follow-ups were right.
+- The labels also move between sessions. In the targeted runs,
+  `ko_climate_weather_last_part` t1 came out DEEP-worse and
+  `still_confused_derivative` t1 unstable. One session's labels are not
+  final ground truth.
+
+## Stage B: DEEP under the FAST router (2026-09-30)
+
+The diagnostic of `docs/FAST_DEEP_PROTOCOL.md` §12:
+
+- three arms in one session, on the current code, 3 runs each, alternating;
+- 14 scenarios with follow-up turns;
+- the frozen comparison and 2-of-3 rule.
+
+| arm | reads the turn | answers | soft stages |
+|---|---|---|---|
+| FAST | 8B | 8B | on |
+| SPLIT | 8B | 27B | off |
+| DEEP | 27B | 27B | off |
+
+The report is `docs/FAST_DEEP_STAGEB.md`.
+
+**The answer: on confusion follow-ups the gain is mainly the 27B's
+generation, not its reading.**
+- The baseline had 8 confusion follow-ups (D1) that were stable DEEP+.
+  - With the 27B answering under the 8B's reading (FAST → SPLIT), 6 are
+    better: 3 stable, and 3 resting only on `concrete_first` or
+    `adapts_to_confusion`.
+  - DEEP with its own reading is better on 6 in this session: 4 stable, 2
+    judge-only.
+- Across all 14 baseline follow-up DEEP+ turns, SPLIT keeps 6 stably (9
+  counting judge-only), and DEEP keeps 9 stably (11 counting judge-only).
+
+**Where the 27B's reading matters.** SPLIT → DEEP is better on 7 later turns,
+mostly not confusion follow-ups:
+
+- the cold-brew how-to after a time question;
+- a thanks;
+- two explanation follow-ups;
+- `explanation_thanks_time` t1;
+- two confusion follow-ups (`ko_exchange_rate_another_way`,
+  `noise_cancelling_another_way`).
+
+It is worse on `ko_taylor_then_time` t1.
+
+**Labels move between sessions.** Of the baseline's 14 follow-up DEEP+ turns,
+FAST → DEEP in this session keeps 9 stably. `live_session_2026_09_23` t2 and
+`still_confused_derivative` t1–t2 no longer are.
+`p_value_last_part` t1 is worse again, in both SPLIT and DEEP.
+
+**Swap costs, measured in the pipeline.** SPLIT swaps on every turn, 101
+times each way:
+
+- reloading the 8B takes a median 4.0 s;
+- loading the 27B takes a median 7.5 s;
+- turn p50 / p95: FAST 3.9 / 8.2 s, SPLIT 17.2 / 19.4 s, DEEP 10.6 / 14.8 s.
+
+A routed system pays the 27B load on each DEEP turn, and the 8B reload on
+the turn after it.
+
+**Found along the way.** `_answered_on_its_own`, the re-ask of
+`not_her_last_answer`, passes the decision model, not the words model. In a
+split system that path is written by the 8B. It fired once in SPLIT.
+
+**Pending.** The three judge-only FAST → SPLIT comparisons need the person's
+blind labels (`runtime/evals/pb/split_blind.json`, 16 replies and 18
+labels; the report counts them once they are filled in). The history limit
+still stands: SPLIT's history is the 27B's own. A system that routes only
+the follow-up would have FAST's history, which needs a model switch inside a
+conversation.
+
+## The shadow FAST/DEEP router (2026-09-30)
+
+**Stage B, settled.** The person's blind labels on the SPLIT comparisons
+(16 replies, 18 labels) confirmed `ko_exchange_rate_another_way` t1.
+- FAST → SPLIT now has 7 stably better later turns. On the confusion
+  follow-ups, SPLIT and full DEEP match: 4 stable each, and the same 2
+  judge-only.
+- The judge's `adapts_to_confusion` agreement on these labels was 69%
+  (kappa 0.38), still below the bar.
+- The interpretation is frozen. On confusion follow-ups, most of DEEP's
+  measured advantage is the 27B writing the answer, not the 27B reading the
+  turn. SPLIT is not a production architecture: its earlier answers were the
+  27B's too.
+- Measured switching cost: the 27B loads in 7.5 s, the 8B reloads in
+  4.0 s. Turn p50: FAST 3.9 s, SPLIT 17.2 s, DEEP 10.6 s.
+
+**The router, in shadow** (`brain/fastdeep_router.py`).
+- Once per answered turn, after routing and the response budget, the
+  engine records `context.shadow_route` in the turn's trace: decision
+  FAST or DEEP, the reason, the confidence, the continuation signals that
+  held, and every input.
+- The turn is still answered by the FAST path. A test pins that, and a live
+  two-scenario run confirmed it: "What do you mean?" was recorded DEEP with
+  high confidence and answered by `qwen3:8b`.
+- There is no model call, no phrase list and nothing from the corpus.
+- **Signals**, all already in the turn:
+  - the 8B router's intent, speech act, answer shape, follow-up flag, topic
+    shift and detail flag;
+  - the response budget and shape;
+  - whether a deterministic domain claimed the turn;
+  - the previous turn's budget (moved at each turn's start, so it is never
+    stale);
+  - the language and the router's confidence.
+- **The rule.** DEEP when the turn has explanation room, the topic has not
+  shifted, no domain claimed it, and at least one continuation signal holds:
+  the router says follow-up, the previous turn was an explanation, or the
+  router reads a clarification. Two or more make it high-confidence.
+- First-time explanations stay FAST, with that reason recorded. No existing
+  signal separated the ones the 27B improved.
+
+**Offline, against the frozen evidence** (`evals/fastdeep_shadow.py`,
+`docs/FAST_DEEP_SHADOW.md`). This is development data.
+
+Against the baseline's FAST/DEEP labels:
+
+| | value |
+|---|---|
+| DEEP+ recall | 50% |
+| DEEP precision | 92% |
+| DEEP use | 18% |
+| DEEP-worse turns sent | 1 of 4 (`p_value_last_part` t1) |
+| needless escalations | 0 |
+| turns passing (all FAST 29%, perfect knowledge 46%, all DEEP 58%) | 37% |
+
+The 12 misses are first-time explanations, two late turns and a thanks: the
+turns the rule leaves FAST by design.
+
+Against Stage B's FAST → SPLIT labels (DEEP under the 8B's reading):
+
+| | value |
+|---|---|
+| DEEP+ recall | 83% |
+| DEEP precision | 53% |
+| DEEP use (follow-up-heavy scenarios) | 47% |
+| DEEP-worse turns sent | 1 |
+| needless escalations | 1 (`live_session_2026_09_23` t2) |
+| unstable or judge-only | 4 |
+| turns passing (all FAST 28%, all SPLIT 33%, perfect knowledge 36%) | 35% |
+
+Latency, switching included:
+
+| | p50 / p95 |
+|---|---|
+| all FAST | 3.9 / 7.6 s |
+| shadow router | 4.8 / 17.2 s |
+| perfect knowledge | 4.1 / 13.9 s |
+| the 27B resident for everything | 10.6 / 14.8 s |
+
+One DEEP turn costs about 9.5 s more than FAST (the 27B load plus slower
+generation), and the turn after it 4.0 s (the 8B reload).
+
+**`not_her_last_answer`, corrected.** The re-ask and the corrected-question
+re-ask are now written by the turn's words model (`active_model`), never the
+decision model. With one model configured, nothing changes. Tests:
+`TheReAskIsWrittenByTheWordsModelTests`.
+
+**Corpus v2** (`docs/CORPUS_V2_PLAN.md`, staged in
+`evals/scenarios_next/followups_v2.json`): 24 held-out scenarios, 44 scored
+turns.
+- A: confusion follow-ups, several implicit. B: deepening follow-ups.
+- C: follow-ups that must stay FAST. D: first-time explanations.
+- Nothing is registered or frozen. It waits for the user's review, then
+  gets its own freeze (`runtime/evals/pf2/FROZEN.json`, router hash
+  included). It runs FAST, SPLIT and DEEP, 3 runs each.
+
+## Corpus v2: review and protocol, frozen (2026-09-30)
+
+`docs/FAST_DEEP_V2_PROTOCOL.md` is the protocol and `evals/fastdeep_v2.py`
+the code that runs it. The user approved it, kept "Hm?" and the DEEP arm, and it
+was frozen at 22:43 (`runtime/evals/pf2/FROZEN.json`; `--verify` passes). Nothing
+in v2 has run.
+
+**Review of the staged corpus.**
+
+- **Held out.** No subject, scenario ID or utterance appears in v1, the
+  contamination matrix or the Stage B runs.
+- **Two group B follow-ups replaced.** "What's the catch?" and "When would
+  you not want it?" carried the `purpose` mode, so the judge would grade
+  `says_what_it_solves` (benefits) on a question about drawbacks.
+- **Implicit confusion was thinner than stated.** "Simpler, please." and
+  "무슨 말인지 모르겠어" are explicit. Two implicit cases were added: a wrong
+  restatement, and a "too hard" with no request.
+- **Group E added.** A confusion follow-up, then a turn that should return
+  to FAST, so that switching back is measured inside one conversation.
+- **Measurement fixes:**
+  - value checks were made required;
+  - a redundant Korean metres turn was replaced and given a check;
+  - Korean turns check their language;
+  - "the second step" was reworded, so that it does not presuppose steps.
+- **Hard cases.** None was removed. "Hm?" stays, flagged as ambiguous
+  (confusion or not heard).
+- **Group C.** It escapes the rule only through its FAST gates. An
+  explanation-shaped follow-up that did not need DEEP is measured by
+  precision, not by C.
+
+**Why SPLIT is not the ground truth for a follow-up.** SPLIT's history is
+the 27B's own. Two new arms use the real switch inside one conversation
+(`brain/fastdeep_apply.py`), and it is evaluation only: unset, every turn is
+FAST.
+
+- **ROUTED** is the routed system itself.
+- **LATE**, the 27B writing every turn after FAST's first, gives each
+  follow-up's ground truth with FAST's history.
+
+**The smoke run on v1 scenarios** (no v2 turn run):
+
+- the switch, the 27B's history and the return all work;
+- the swaps cost 7.9–8.2 s (27B) and 4.2 s (8B) on Ollama 0.35.0. It had
+  updated itself from 0.34.4 since Stage B, so the freeze pins the version;
+- **two consecutive DEEP turns pay both swaps, 18.2 s**, because the 8B
+  reads every turn. v2 has none; this is a production design item.
+
+**v1 is untouched.** The v2 suite is made visible to the frozen v1 analysis
+only inside v2's processes, so v1's fingerprint (`cbd8c3b57913990a`) and
+reports still hold in the working tree. A test checks this.
+
+## Corpus v2: the frozen evaluation, NOT ACCEPTED (2026-10-01)
+
+`docs/FAST_DEEP_V2.md`, generated by the frozen code.
+
+- **Run:** 5 arms × 3 runs, 01:20–06:55. All 15 runs are complete and every
+  turn was judged, with no timeouts. The freeze still verifies.
+- **The aborted start.** A first start at 23:10 died before its first turn;
+  it is kept in `runtime/evals/pf2-aborted-20260930/`.
+
+| criterion | measured | threshold | met |
+|---|---|---|---|
+| DEEP precision | 21% (13/61) | ≥ 70% | no |
+| DEEP+ recall | 87% (13/15) | ≥ 50% | yes |
+| DEEP-worse turns sent | 1 (rainbow) | ≤ 1 | yes |
+| should-stay-FAST turn-runs sent | 6 | 0 | no |
+| DEEP turns p95 | 22.4 s | ≤ 18.0 s | no |
+| 8B reload p95 | 4.2 s | ≤ 5.0 s | yes |
+| other FAST turns p95 | 4.5 s vs 4.3 s | ≤ +1.0 s | yes |
+
+**The blind labels cannot change the verdict.** If all 7 judge-only
+follow-ups were confirmed, precision would be 34/61 = 56%. The other two
+failures do not involve labels. Their export (`runtime/evals/pf2/blind.json`,
+30 replies) is optional.
+
+**Why each criterion failed.** Diagnosis only; the rule is not tuned on this.
+
+- **Precision.** The gain is in confusion, not in deepening.
+  - Group B: sent 18/18 times. 1 stably better (CDN), 1 stably worse (the
+    rainbow, where the 27B was inaccurate), 4 with no difference.
+  - Group A and E confusion: 3 stably better. 7 are better on the judge's
+    `adapts_to_confusion` alone (below its agreement bar), and 2 have no
+    difference.
+- **Should-stay-FAST sent.** The rule trusts the response budget, and the
+  budget called two plain value follow-ups explanations:
+  - "No, I meant the largest city." was routed `web_search`, shape `state`,
+    budget **explain**;
+  - "How fast does sound travel, then?" was routed `knowledge_question`,
+    shape `state`, budget **explain**.
+  The same weak input missed the implicit "어… 너무 어렵다." in 2 of 3 runs:
+  it was read as a correction with a value budget, and FAST answered as if
+  she were having a hard day. "Hm?" was read as social ("I'm listening.")
+  in all arms.
+- **Latency.** The budget was derived from Stage B's confusion turns, where
+  the 27B wrote short re-explanations. On v2's deepening turns it writes for
+  10–12 s, plus the 8.0 s load. The rainbow turns also reloaded the 8B
+  mid-turn for the HARD premise check (`_premise_corrected`), 4.2 s.
+  Consecutive DEEP turns (thunder t1 then t2) loaded twice. Measured: DEEP
+  p50 14.1 s, p95 22.4 s.
+
+**What else it shows.**
+
+- **SPLIT overstated the gain**, as the user suspected. Of the second turns,
+  Stage B's method (FAST against SPLIT) calls 7 stably better; the ground
+  truth (FAST against LATE) calls 5. Four are better only with the 27B's own
+  history.
+- **The routed system is better than FAST, but not stably.**
+  - Acceptable turns: 37% against 28%; turns passing: 20% against 14%.
+  - Most of the difference rests on judge-only properties.
+  - The 27B writing every turn after FAST's history reaches 39%, and the
+    DEEP arm 48%.
+- **The largest bucket is "neither model good enough" (21 turns), mostly
+  first explanations.** The defects that dominate it are the same for both
+  models: `concrete_first` (FAST 117, the 27B 100) and `terms_explained`
+  (102 and 84). That is the open explain-goal proposal, and no router
+  fixes it.
+
+**By the protocol, this rule is not adopted and not tuned.** A different
+rule is a new protocol version, with a new held-out corpus.
+
+## Stage C: explanation-quality diagnosis (2026-10-01)
+
+`docs/STAGE_C_DIAGNOSIS.md`; the numbers come from `evals/stagec_diagnosis.py`.
+Diagnosis only: nothing changed, and routing stopped at the v2 result.
+
+**The 21 "neither model good enough" turns:**
+
+| failure | FAST | the 27B writing | DEEP |
+|---|---|---|---|
+| concrete_first | 21 | 21 | 17 |
+| terms_explained | 20 | 20 | 18 |
+| answers_the_ask | 0 | 0 | 0 |
+| unnecessary detail | 0 | 0 | 0 |
+
+The content is right; the shape is wrong.
+
+**One template in all 189 replies:** a general answer, then the mechanism,
+then "For example…", then why it matters.
+- The illustration is never first: last in 80 replies, absent in 54.
+- The example is usually an instance of use, not a scene that carries the
+  explanation.
+- The 27B adds more jargon (it knows the technical names).
+- About a quarter of FAST's terms_explained "no" verdicts look like judge
+  errors.
+
+**Generation or pipeline.**
+- *After generation: not the cause.* The 27B's replies were never changed
+  and fail identically. All 16 of FAST's changed replies already opened
+  general in the draft.
+- *Before generation: a large part of the cause.* Four layers each set order
+  and length:
+  - persona: "Lead with the answer. State the fact first", "a sentence or
+    two", "no over-explaining";
+  - voice requirements: "result before background", 6 sentences;
+  - style contract: "Lead with the answer", 4 sentences;
+  - the explain goal: one sentence asking for an example, with no position
+    and no word on terms.
+
+  About 30 of the prompt's 1,940 words concern explaining. The models
+  resolve the conflict faithfully.
+
+**The proposal (not built).** One offline experiment, 8B only, on a new
+held-out set:
+- A: base;
+- B: one explanation contract replacing the four layers, no new call;
+- C: B plus a per-question plan from one 8B call (+1.0–1.6 s on explanation
+  turns only, no VRAM change);
+- D: B plus a 27B-written plan, as a ceiling.
+
+The rejection criteria are fixed in advance: the plan must beat the
+contract on at least 20% of held-out turns, with no substance regression
+and person-confirmed concrete_first.
+
+**A side defect.** `append_recommendation` offered "I can pull up a
+refrigerator" on an explanation of how fridges work.
+
+## Stage C: the experiment, prepared, not frozen (2026-10-01)
+
+`docs/STAGE_C_PROTOCOL.md` (C1.0), `evals/stagec.py`,
+`brain/explain_contract.py`. Nothing has run.
+
+**The held-out corpus.** `explain_heldout` is staged in
+`evals/scenarios_next/`:
+- 24 scenarios, 30 scored turns, 12 English and 12 Korean, 6 with a
+  deepening follow-up;
+- no ID, utterance or subject from v1, the contamination matrix, Stage B or
+  v2 (tested).
+
+**The arms.** All use the 8B and production's post-processing.
+- **A:** production.
+- **B:** one contract in place of the five conflicting order and length
+  rules. The prompt is +2 words; the length is the 4 sentences her_voice
+  already enforces.
+- **C:** B plus a five-field 8B plan.
+- **D:** B plus the same plan written by the 27B beforehand.
+
+The switch is inert unless `ELAINA_EXPLAIN_ARM` is set.
+
+**Format check.** Three v1 questions through the 8B planner: all usable,
+1.0–1.4 s.
+
+**Criteria.** The user's, unchanged, plus a blind concrete_first sample
+(20 judge-credited replies and 8 distractors, 70% bar). If B suffices, C is
+not added.
+
+**Corpus v2's freeze no longer verifies** (the product tree changed). Its
+report stands, and the frozen tree is archived at
+`runtime/evals/pf2/frozen_tree.tar.gz`.
+
+## Stage C: the result (2026-10-01; final with the user's blind labels)
+
+`docs/STAGE_C_RESULTS.md`, generated by the frozen code.
+- **The run:** 12 runs, complete, all turns judged, the freeze verified.
+- **The 28 blind labels were made by Claude** at the user's request, not by
+  a person.
+
+**The mechanical outcome is B:** one contract produces the improvement, and
+the plan does not add value under the frozen rules.
+
+| comparison (30 held-out turns) | better | worse | net | frozen outcome |
+|---|---|---|---|---|
+| A → B | 12 | 2 | +33% | passes: 1 substance and 1 leads-with-answer regression, both within the limits |
+| B → C | 15 | 4 | +37% | rejected: 12 leads-with-answer regressions (limit 2) |
+| B → D | 16 | 2 | +47% | rejected: 11 leads-with-answer regressions |
+| C → D | 9 | 9 | 0 | the 8B planner is not the limit |
+
+- **Blind confirmation:** 70% (14 of 20), exactly the bar.
+  - Claude's four borderline calls move it between 60% and 80%.
+  - Five of the six unconfirmed credits are B's: the judge credits "general
+    claim, then 'For example'" as concrete-first.
+  - If the check fails, the frozen rule gives "neither", although B's gain
+    without judge-only evidence is still +30%.
+- **Cost and reliability:** C adds +1.03 s; 0 unusable plans in C and D.
+- **Failure categories, held-out** (A / B / C / D):
+
+| failure | A | B | C | D |
+|---|---|---|---|---|
+| concrete-first | 28 | 22 | 12 | 9 |
+| terms-explained | 24 | 19 | 11 | 13 |
+| leads-with-answer | 1 | 1 | 12 | 11 |
+
+  B's gain also includes accuracy: 17 accuracy defects in A against 7 in B.
+
+**What it shows.**
+- **A plan makes the reply scene-first, at the cost of answer-first.** The
+  plan's separate "situation" and "answer" lines turn into a scene sentence
+  followed by an answer sentence.
+- **The contract alone keeps the answer first.** It moves concrete-first
+  only modestly; the judge over-credits it.
+- **The rubric pulls two ways.** For a "why" question, both properties can be
+  met only when the first sentence carries the scene *and* the cause.
+
+**The user's own labels (21:01) replace Claude's.**
+- Confirmation is **90%** (18/20), and the outcome stays **B**.
+- It holds without the six items Claude's message had named (14 of 14).
+- The user's reading is more lenient than the written definition. All eight
+  disagreements with Claude are user yes; seven of those replies open with a
+  general statement or definition and give the example second, which is
+  the very pattern the diagnosis counted as the failure.
+- **Open question for the user:** which reading of concrete_first is the
+  target?
+
+Nothing has been implemented in production.
+
+## The revised explanation contract: check passed (2026-10-01)
+
+`docs/EXPLANATION_CHECK.md` holds the criteria, fixed before running;
+`docs/EXPLANATION_CHECK_RESULTS.md` the result.
+
+**The revision.** After the user's correction (the goal is natural,
+understandable explanations; an example is a tool, not a required opening),
+the contract was revised to `d398489d1bd7`: a direct answer first, and an
+example only when it helps. Stage C's text is kept as a comparison arm.
+
+**The arms.** A (current), B (Stage C's contract) and R (the revision), 3
+runs each.
+- On 18 new questions, each marked in advance "direct" or "example".
+- R also ran on Stage C's held-out set.
+
+**Outcome: R passes every criterion.**
+
+| | R against A |
+|---|---|
+| answer-first regressions | 0 and 0 |
+| answer-first rate | 96% against 94%; 98% against 98% |
+| quality net (stably better − worse) | +3 and +3 |
+| substance regressions | 0 and 1 |
+| forced example openings | 0% |
+
+- **R stops current production's habit of appending an example to every
+  reply.** On direct questions, current production adds "For example…" to
+  78% of replies; R to 44%.
+- **B's quality gain over A is larger** (+9 on the held-out set) because it
+  explains terms more often. B pays for it with forced scene openings (22%
+  on the example questions) and 3 answer-first regressions.
+- **R keeps naturalness but recovers only part of the terms gain.**
+  Terms-explained failures on the held-out set: A 71, B 55, R 63 of 90.
+
+**Status.** The production flag stays off. Enabling `split` is the user's
+decision. The understanding-loop direction now leads, and this contract is
+the default first-explanation behaviour inside it.
+
+## Simulated learners, pilot 2: odd endings and check questions (2026-10-02)
+
+Details are in `docs/SIMULATED_LEARNER_EVAL.md`. Rating pilot 2, the user reported odd sentences
+at the end of replies, and "is this correct?" questions not answered with yes or no. Compared
+with the model's own drafts in the traces, 14 of 80 replies ended on something the model did not
+say.
+
+**Fixed, each with a regression test:**
+- **`premise_correction`** (7 of the 14). It is no longer judged on a follow-up inside an
+  explanation. The judge sees one utterance, and there the person's "…잖아" points at what was
+  just said. 3 of its 7 replacements were wrong. The skip is noted in the trace, and first
+  questions are still checked.
+- **`grounded_entities`** (2). A name whose initials spell a term the person said is that term's
+  expansion ("Application Programming Interface" for "API"), not an unchecked business.
+- **`preferences.read`**. "I get that it's not the shadow …" and "I always get confused by this
+  part" were saved as favourites, and the question went unanswered. A favourite must now be a
+  name.
+
+**Added: a verdict first on check questions.** One rule, `response_budget.CHECKING_UNDERSTANDING`,
+appears in every explanation goal and in the revised contract (rule 5, `cc22900f17a9`).
+
+**Measured, not changed yet** (pilot 3 first):
+- `repetition_retry`'s garbled retry;
+- a `her_voice` re-say that invented "지금까지 그런 생각이셨다면 …";
+- the `grounded_values` line on a conceptual follow-up routed to web search;
+- the model's own service closers.
+
+**Pilot 3** (the same day, simulator v2) found three more stages saying things the model didn't
+write. All are fixed, with tests:
+- **`length_rewrite`** was shown the router's reading instead of the person's words. "What's a
+  p-value?" was normalized to "Sap", and the reply was about tree sap.
+- **`grounded_entities`** only counted the current message as the person's. "API", said in their
+  first message, was retracted on a follow-up.
+- **A quoted Korean question** ("오늘 날씨 어때?") was read as a title.
+
+Verdict-first held on about 4 of 10 check questions. The rule reached the prompt every time, and
+the 8B drops it when a check and a new question come together. That is a case for the per-turn
+move (step 3), not for more prompt text.
+
 ## Still open
 
-- **The blind labels**:
-  - `runtime/evals/calibration-p2.json` (Phase 2's rises);
-  - `runtime/evals/calibration-p3.json` (Phase 3's).
-- **The model decision**: the user's, from `docs/PHASE3_RESULTS.md` and
-  §Phase 3 above.
-- **The fixes the rerun exposed** (§6 above), if they are to be in before
-  the decision:
-  - the explain budget for non-questions;
-  - numbers inside notation;
-  - the formula/example tension;
-  - the 27B's routing context.
+- **Production FAST/DEEP routing**: not enabled. The order agreed:
+  1. corpus v2, reviewed and frozen (done, 2026-09-30);
+  2. the evaluation in `docs/FAST_DEEP_V2_PROTOCOL.md`: run 2026-10-01,
+     **NOT ACCEPTED** (precision 21%, two should-stay-FAST turns sent, DEEP
+     p95 22.4 s);
+  3. real routing: not on this rule. Whether to try another one, under a new
+     protocol version, is the user's decision.
+- **New realisation findings** (not fixed):
+  - `existence_claims` fires on "isn't real" in an explanation;
+  - `length_rewrite` drops a worked derivation's notation.
+- **The value-goal candidate**: kept provisionally; the user decides.
+- **Blind labels**: done and scored (above). Still recommended as spot
+  checks: `hash_table_how`, and FAST's explanation turns on
+  `concrete_first`.
+- **Stage B**: DEEP under the FAST router is done, and the switch costs were
+  measured inside it. The supplementary suite for reasoning, planning,
+  coding and synthesis remains.
+- **Proposal still open**: the explain goal's ordering and terms. The user
+  asked not to tune it now; it is recorded as a model and prompt-quality
+  limitation. The other four proposals were taken up above.
+- **`docs/RESPONSE_PIPELINE.md`**: to regenerate now that the baseline is
+  frozen.

@@ -163,6 +163,24 @@ class CorrectnessTests(unittest.TestCase):
         self.assertTrue(self.verdicts(spec, "It's Pacific Time, UTC−7 right now.")["utc_offset"])
         self.assertTrue(self.verdicts(spec, "It's Pacific Time.")["utc_offset"])
 
+    def test_an_offset_said_in_words_is_read(self):
+        # Phase 3 final rerun: two right answers failed as stating nothing.
+        spec = {"utc_offset": {"zone": "America/Los_Angeles", "required": True}}
+        for right in ("Your UTC offset is minus seven hours, which is Pacific Daylight Time.",
+                      "UTC minus seven hours. That is Pacific Daylight Time.",
+                      "Your UTC offset is -7."):
+            self.assertTrue(self.verdicts(spec, right)["utc_offset"], right)
+        self.assertFalse(self.verdicts(spec, "UTC plus seven hours.")["utc_offset"])
+
+    def test_a_range_around_the_truth_is_one_right_claim(self):
+        # Phase 3 final rerun: the far end of a right range failed as a wrong
+        # distance.
+        spec = {"quantity": [{"unit": "km|kilomet(?:er|re)s?", "value": 384400, "tolerance": 0.03}]}
+        self.assertTrue(self.verdicts(spec, (
+            "About 384,400 kilometers on average. It varies slightly because the moon "
+            "orbits in an ellipse, ranging from 356,000 to 406,000 kilometers."))["quantity"])
+        self.assertFalse(self.verdicts(spec, "Between 400,000 and 420,000 kilometers.")["quantity"])
+
     def test_a_korean_clock_reading(self):
         spec = {"clock_times": ["America/Los_Angeles"]}
         self.assertTrue(self.verdicts(spec, "지금은 오전 12시 14분입니다.")["clock_times"])
@@ -217,6 +235,31 @@ class CheckTests(unittest.TestCase):
         good = self.turn("It's 10:38 PM.")
         self.assertEqual(self.verdicts(spec, bad), {"must_match": True, "must_not_match": False})
         self.assertEqual(self.verdicts(spec, good), {"must_match": True, "must_not_match": True})
+
+    def test_a_number_inside_a_longer_number_is_not_that_number(self):
+        # Phase 3 final rerun: "12 to 18 hours" failed must_not_contain
+        # "8 hours".
+        forbid = {"must_not_contain": ["8 hours", "8시간"]}
+        self.assertTrue(self.verdicts(forbid, self.turn("12 to 18 hours is the sweet spot."))["must_not_contain"])
+        self.assertTrue(self.verdicts(forbid, self.turn("12시간에서 18시간 정도가 적당합니다."))["must_not_contain"])
+        self.assertFalse(self.verdicts(forbid, self.turn("That's 8 hours behind London."))["must_not_contain"])
+        want = {"must_contain_any": ["4", "four"]}
+        self.assertTrue(self.verdicts(want, self.turn("2 + 2 = 4."))["must_contain_any"])
+        self.assertFalse(self.verdicts(want, self.turn("It's 14."))["must_contain_any"])
+        # A word keeps its particles.
+        self.assertFalse(self.verdicts({"must_not_contain": ["런던"]},
+                                       self.turn("런던은 8시간 느립니다."))["must_not_contain"])
+
+    def test_mathematics_in_words_or_latex_is_read(self):
+        # Phase 3 final rerun: "2x plus 3" and "\frac{1}{3}" failed checks
+        # written in symbols.
+        derivative = {"must_match_any": [r"2\s*x\s*\+\s*3", "two x plus three"]}
+        self.assertTrue(self.verdicts(derivative, self.turn("The derivative is 2x plus 3."))["must_match_any"])
+        self.assertFalse(self.verdicts(derivative, self.turn("The derivative is 2x plus 5."))["must_match_any"])
+        integral = {"must_match_any": [r"1\s*/\s*3", "one[- ]third", "⅓", r"0\.33"]}
+        self.assertTrue(self.verdicts(integral, self.turn(
+            r"The integral of $ x^2 $ from 0 to 1 is $ \frac{1}{3} $."))["must_match_any"])
+        self.assertFalse(self.verdicts(integral, self.turn(r"It is $ \frac{1}{2} $."))["must_match_any"])
 
     def test_speech_with_notation_is_not_speakable(self):
         spoken = self.turn("x", speech="e^x ≈ 1 + x + x²/2! + x³/3!")
@@ -293,6 +336,49 @@ class JudgeCacheTests(unittest.TestCase):
                        {"said": "what is an integral?"}, {"reply": "The slope."},
                        {"names": {"accurate": {}}}):
             self.assertNotEqual(self.key(), self.key(**change), change)
+
+
+class CalibrationScoreTests(unittest.TestCase):
+    """Labels from several runs are each compared with that run's verdicts.
+
+    The scorer once reused its judge-model argument as a loop variable, so
+    every run after the first was read under a judge named "yes" or "no"
+    and found no verdicts: 11% agreement where the truth was 68-79%.
+    """
+
+    def test_every_run_is_read_under_the_named_judge(self):
+        import contextlib
+        import io
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from evals import calibration
+
+        root = Path(tempfile.mkdtemp(prefix="elaina-calibration-"))
+        items = []
+        for number, verdict in ((1, "yes"), (2, "no"), (3, "yes")):
+            run = root / f"run-{number}"
+            run.mkdir()
+            (run / "results.jsonl").write_text(json.dumps({
+                "scenario": f"s{number}", "suite": "explanation", "turns": [],
+            }) + "\n", encoding="utf-8")
+            (run / "judged.jsonl").write_text(json.dumps({
+                "scenario": f"s{number}", "index": 0,
+                "rubric_fingerprint": corpus.rubric_fingerprint(),
+                "judge_model": "the-judge",
+                "verdicts": {"accurate": {"verdict": verdict, "why": "w"}},
+            }) + "\n", encoding="utf-8")
+            items.append({"item": number, "run": str(run), "scenario": f"s{number}",
+                          "index": 0, "labels": {"accurate": verdict}})
+        file = root / "labels.json"
+        file.write_text(json.dumps({
+            "rubric_fingerprint": corpus.rubric_fingerprint(), "items": items,
+        }), encoding="utf-8")
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            calibration.score(file, "the-judge")
+        self.assertIn("100% agreement on 3 labels", printed.getvalue())
 
 
 if __name__ == "__main__":

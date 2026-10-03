@@ -1,0 +1,193 @@
+{
+  "suite": "explain_heldout",
+  "kind": "trajectory",
+  "about": "Stage C, held out: first explanations and deepening follow-ups for the explanation-plan experiment (docs/STAGE_C_PROTOCOL.md). Written before any arm ran and frozen with the protocol (python -m evals.stagec --freeze), which moves it to evals/scenarios/. No subject, scenario id or utterance comes from v1, the contamination matrix, Stage B, corpus v2 or the 21 Stage C diagnosis turns. Every scored turn's mode is one the rubric judges concrete_first on (cause, how, purpose, intuition). 24 scenarios, 12 English and 12 Korean; 18 single first explanations and 6 explanations followed by a deepening question; 30 scored turns.",
+  "defaults": {
+    "checks": {
+      "not_searched": true,
+      "no_cards": true
+    }
+  },
+  "scenarios": [
+    {
+      "id": "hx_bread_stale", "language": "en", "domain": "food science", "source": "Stage C held-out",
+      "turns": [
+        {"say": "Why does bread go stale?", "score": true, "mode": "cause",
+         "checks": {"must_contain_any": ["starch", "water", "moisture", "dry", "crystal"]}}
+      ]
+    },
+    {
+      "id": "hx_microwave_heats", "language": "en", "domain": "physics", "source": "Stage C held-out",
+      "turns": [
+        {"say": "How does a microwave heat food?", "score": true, "mode": "how",
+         "checks": {"must_contain_any": ["water", "molecule", "wave", "vibrat"]}}
+      ]
+    },
+    {
+      "id": "hx_touchscreen_finger", "language": "en", "domain": "technology", "source": "Stage C held-out",
+      "turns": [
+        {"say": "How does a touchscreen know where my finger is?", "score": true, "mode": "how",
+         "checks": {"must_contain_any": ["charge", "electric", "current", "grid", "sensor"]}}
+      ]
+    },
+    {
+      "id": "hx_onions_tears", "language": "en", "domain": "chemistry", "source": "Stage C held-out",
+      "turns": [
+        {"say": "Why do onions make you cry?", "score": true, "mode": "cause",
+         "checks": {"must_contain_any": ["gas", "sulfur", "chemical", "compound", "enzyme"]}}
+      ]
+    },
+    {
+      "id": "hx_soda_goes_flat", "language": "en", "domain": "chemistry", "source": "Stage C held-out",
+      "turns": [
+        {"say": "Why does soda go flat once you open it?", "score": true, "mode": "cause",
+         "checks": {"must_contain_any": ["carbon dioxide", "CO2", "gas", "bubble", "pressure"]}}
+      ]
+    },
+    {
+      "id": "hx_two_factor_point", "language": "en", "domain": "security", "source": "Stage C held-out",
+      "turns": [
+        {"say": "What's the point of two-factor authentication?", "score": true, "mode": "purpose",
+         "checks": {"must_contain_any": ["password", "code", "phone", "second"]}}
+      ]
+    },
+    {
+      "id": "hx_half_life_really", "language": "en", "domain": "physics", "source": "Stage C held-out",
+      "turns": [
+        {"say": "What is a half-life, really?", "score": true, "mode": "intuition",
+         "checks": {"must_contain_any": ["half", "decay", "atom"]}}
+      ]
+    },
+    {
+      "id": "hx_leap_years", "language": "en", "domain": "astronomy", "source": "Stage C held-out",
+      "turns": [
+        {"say": "Why do we have leap years?", "score": true, "mode": "cause",
+         "checks": {"must_contain_any": ["365", "quarter", "orbit", "February", "sun"]}}
+      ]
+    },
+    {
+      "id": "hx_electric_guitar_sound", "language": "en", "domain": "music technology", "source": "Stage C held-out",
+      "turns": [
+        {"say": "How does an electric guitar make sound?", "score": true, "mode": "how",
+         "checks": {"must_contain_any": ["pickup", "magnet", "amplifier", "amp"]}}
+      ]
+    },
+    {
+      "id": "hx_dishwasher_detergent", "language": "en", "domain": "household", "source": "Stage C held-out (with a deepening follow-up)",
+      "turns": [
+        {"say": "How does a dishwasher get dishes clean?", "score": true, "mode": "how",
+         "checks": {"must_contain_any": ["water", "spray", "detergent", "jet"]}},
+        {"say": "Why does it need special detergent?", "score": true, "mode": "cause",
+         "checks": {"must_contain_any": ["enzyme", "foam", "suds", "grease", "bubbles"]}}
+      ]
+    },
+    {
+      "id": "hx_fever_set_point", "language": "en", "domain": "medicine", "source": "Stage C held-out (with a deepening follow-up)",
+      "turns": [
+        {"say": "Why do we get a fever when we're sick?", "score": true, "mode": "cause",
+         "checks": {"must_contain_any": ["immune", "infection", "germs", "virus", "bacteria"]}},
+        {"say": "Then why doesn't the fever just keep rising?", "score": true, "mode": "cause",
+         "checks": {"must_contain_any": ["brain", "hypothalamus", "set", "thermostat", "sweat"]}}
+      ]
+    },
+    {
+      "id": "hx_credit_card_cashback", "language": "en", "domain": "finance", "source": "Stage C held-out (with a deepening follow-up)",
+      "turns": [
+        {"say": "How does a credit card company make money?", "score": true, "mode": "how",
+         "checks": {"must_contain_any": ["fee", "interest", "merchant", "store"]}},
+        {"say": "So why do they give out cashback?", "score": true, "mode": "cause",
+         "checks": {"must_contain_any": ["fee", "merchant", "spend", "use the card", "customers"]}}
+      ]
+    },
+    {
+      "id": "hx_ko_clouds_float", "language": "ko", "domain": "weather", "source": "Stage C held-out",
+      "turns": [
+        {"say": "구름은 왜 하늘에 떠 있어?", "score": true, "mode": "cause",
+         "checks": {"language": "ko", "must_contain_any": ["물방울", "얼음", "공기", "수증기", "상승"]}}
+      ]
+    },
+    {
+      "id": "hx_ko_induction_pot", "language": "ko", "domain": "physics", "source": "Stage C held-out",
+      "turns": [
+        {"say": "인덕션은 어떻게 냄비만 뜨겁게 해?", "score": true, "mode": "how",
+         "checks": {"language": "ko", "must_contain_any": ["자기", "전류", "철", "자석"]}}
+      ]
+    },
+    {
+      "id": "hx_ko_muscle_growth", "language": "ko", "domain": "biology", "source": "Stage C held-out",
+      "turns": [
+        {"say": "근육은 운동하면 왜 커져?", "score": true, "mode": "cause",
+         "checks": {"language": "ko", "must_contain_any": ["섬유", "단백질", "회복", "손상", "상처"]}}
+      ]
+    },
+    {
+      "id": "hx_ko_qr_code", "language": "ko", "domain": "technology", "source": "Stage C held-out",
+      "turns": [
+        {"say": "QR 코드는 어떻게 정보를 담아?", "score": true, "mode": "how",
+         "checks": {"language": "ko", "must_contain_any": ["점", "칸", "패턴", "검은", "흰"]}}
+      ]
+    },
+    {
+      "id": "hx_ko_short_selling", "language": "ko", "domain": "finance", "source": "Stage C held-out",
+      "turns": [
+        {"say": "공매도는 왜 필요한 거야?", "score": true, "mode": "purpose",
+         "checks": {"language": "ko", "must_contain_any": ["가격", "빌려", "하락", "거품"]}}
+      ]
+    },
+    {
+      "id": "hx_ko_expected_value", "language": "ko", "domain": "mathematics", "source": "Stage C held-out",
+      "turns": [
+        {"say": "확률에서 기댓값은 진짜 무슨 뜻이야?", "score": true, "mode": "intuition",
+         "checks": {"language": "ko", "must_contain_any": ["평균", "반복", "여러 번"]}}
+      ]
+    },
+    {
+      "id": "hx_ko_insurance_point", "language": "ko", "domain": "finance", "source": "Stage C held-out",
+      "turns": [
+        {"say": "보험은 왜 필요한 거야?", "score": true, "mode": "purpose",
+         "checks": {"language": "ko", "must_contain_any": ["위험", "보험료", "사고", "나누", "부담"]}}
+      ]
+    },
+    {
+      "id": "hx_ko_static_winter", "language": "ko", "domain": "physics", "source": "Stage C held-out",
+      "turns": [
+        {"say": "겨울에는 왜 정전기가 더 많이 생겨?", "score": true, "mode": "cause",
+         "checks": {"language": "ko", "must_contain_any": ["건조", "습도", "수분", "마찰"]}}
+      ]
+    },
+    {
+      "id": "hx_ko_power_grid", "language": "ko", "domain": "engineering", "source": "Stage C held-out",
+      "turns": [
+        {"say": "전기는 어떻게 집까지 와?", "score": true, "mode": "how",
+         "checks": {"language": "ko", "must_contain_any": ["발전소", "전선", "변전소", "전압", "송전"]}}
+      ]
+    },
+    {
+      "id": "hx_ko_elevator_order", "language": "ko", "domain": "engineering", "source": "Stage C held-out (with a deepening follow-up)",
+      "turns": [
+        {"say": "엘리베이터는 어떻게 멈출 층을 알아?", "score": true, "mode": "how",
+         "checks": {"language": "ko", "must_contain_any": ["버튼", "센서", "제어", "컴퓨터"]}},
+        {"say": "여러 사람이 버튼을 누르면 순서는 어떻게 정해?", "score": true, "mode": "how",
+         "checks": {"language": "ko", "must_contain_any": ["방향", "순서", "가까운", "위", "아래"]}}
+      ]
+    },
+    {
+      "id": "hx_ko_tunnel_ears", "language": "ko", "domain": "biology", "source": "Stage C held-out (with a deepening follow-up)",
+      "turns": [
+        {"say": "기차가 터널에 들어가면 왜 귀가 먹먹해져?", "score": true, "mode": "cause",
+         "checks": {"language": "ko", "must_contain_any": ["압력", "기압", "고막"]}},
+        {"say": "그럼 침을 삼키면 왜 괜찮아져?", "score": true, "mode": "cause",
+         "checks": {"language": "ko", "must_contain_any": ["관", "압력", "공기", "유스타키오"]}}
+      ]
+    },
+    {
+      "id": "hx_ko_bicycle_balance", "language": "ko", "domain": "physics", "source": "Stage C held-out (with a deepening follow-up)",
+      "turns": [
+        {"say": "자전거는 왜 달릴 때 안 넘어져?", "score": true, "mode": "cause",
+         "checks": {"language": "ko", "must_contain_any": ["바퀴", "회전", "균형", "핸들", "조향"]}},
+        {"say": "그럼 멈추면 왜 바로 넘어져?", "score": true, "mode": "cause",
+         "checks": {"language": "ko", "must_contain_any": ["속도", "균형", "바퀴", "회전", "핸들"]}}
+      ]
+    }
+  ]
+}

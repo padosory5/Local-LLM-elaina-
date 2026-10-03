@@ -113,5 +113,40 @@ class TheEngineRefusesARepeatingRewriteTests(unittest.TestCase):
         )
 
 
+class TheRewriteAnswersWhatTheySaidTests(unittest.TestCase):
+    """Simulated learners, 2026-10-02: "What's a p-value?" was read by the
+    router as a spelled name and normalized to "Sap". The draft defined a
+    p-value; the length rewrite, shown "Sap" as the question, said "Sap is a
+    term used ... to describe a type of tree"."""
+
+    def test_the_rewrite_is_shown_their_words(self):
+        import contextlib
+        import io
+
+        from core import turn_trace
+        from tests.turn_harness import build_engine
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            engine = build_engine({"p-value": {
+                "intent": "agent_offer", "confidence": 1.0, "normalized_request": "Sap",
+                "entity": "Sap", "is_follow_up": True, "offered_intent": "entity_correction",
+                "offered_request": "Sap",
+            }})
+            engine.client.reply = (
+                "A p-value is the probability that a result happened by chance, not because "
+                "of a real effect. If it's very low, like under 0.05, the result is likely "
+                "meaningful. It does not say how big the effect is."
+            )
+            engine.chat("What's a p-value?")
+        self.assertEqual(turn_trace.last().as_record()["context"]["route"]["normalized_request"], "Sap")
+        rewrites = [
+            str(messages[-1].get("content", "")) for messages in engine.client.prompts
+            if messages and str(messages[-1].get("content", "")).startswith("DRAFT ANSWER")
+        ]
+        self.assertEqual(len(rewrites), 1, "the draft is over this turn's length")
+        self.assertIn("What's a p-value?", rewrites[0])
+        self.assertNotIn("Sap", rewrites[0])
+
+
 if __name__ == "__main__":
     unittest.main()

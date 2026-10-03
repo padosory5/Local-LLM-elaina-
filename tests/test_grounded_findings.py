@@ -35,6 +35,46 @@ class FindingsTests(unittest.TestCase):
         )
         self.assertIn({"value": "150", "status": "conflicting", "source": "their words"}, found)
 
+    def test_a_damaged_copy_is_only_ever_of_their_numbers(self):
+        # Phase 3 final rerun: a correct "12시간" deleted as a damaged copy
+        # of a calculation's "125", and "12" read as a copy of a "$120" in a
+        # search snippet. Against a machine's evidence a near miss is a
+        # coincidence of digits.
+        for reply, sources in (
+            ("12시간에서 24시간 정도 우려내면 됩니다.",
+             [("calculation:trusted tool result",
+               "Coffee needed for 500g water at 1:4 ratio: 125"),
+              ("their words", "얼마나 우려야 돼?")]),
+            ("It lasts about 12 months on one battery.",
+             [("search:mice", "specs that used to be locked behind a $120 price tag"),
+              ("their words", "find me a good wireless mouse under 50 dollars")]),
+        ):
+            with self.subTest(reply=reply):
+                found = GroundedValueGuard.findings(reply, sources)
+                self.assertFalse([f for f in found if f["status"] == "conflicting"], found)
+
+
+class TheGuardReadsTheirWordsTests(unittest.TestCase):
+    """The same scope where the guard acts, not only where it records."""
+
+    def test_a_calculation_does_not_make_a_duration_a_damaged_copy(self):
+        reply = "12시간에서 24시간 정도 우려내면 됩니다."
+        evidence = "Coffee needed for 500g water at 1:4 ratio: 125 얼마나 우려야 돼?"
+        self.assertFalse(GroundedValueGuard.needs_correction(
+            reply, evidence=evidence, action_performed=False,
+            grounded_subject=True, their_words="얼마나 우려야 돼?",
+        ))
+        self.assertEqual(GroundedValueGuard.correct_values(
+            reply, evidence=evidence, offer="", their_words="얼마나 우려야 돼?",
+        ), reply)
+
+    def test_their_own_number_damaged_is_still_caught(self):
+        said = "My budget is 1500. Repeat that back to me."
+        self.assertTrue(GroundedValueGuard.needs_correction(
+            "Your budget is 150.", evidence=said, action_performed=False,
+            grounded_subject=False, their_words=said,
+        ))
+
 
 def _time_route():
     return {"intent": "time_question", "confidence": 1.0,

@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from brain import spoken_notation
 from tools.calculator import CalculationError, CalculationStep, evaluate_expression
 
 
@@ -170,6 +171,36 @@ _MAX_TOOL_ROUNDS = 20
 _MAX_NUDGES = 2
 _MAX_TOOL_ERRORS = 3
 
+# A quantity the person gave. The planner sees the request and nothing else
+# -- no history -- so when the request carries no number, whatever the tool
+# "verifies" was made up, and the nudges below are what push the model into
+# making it up. Measured in the Phase 3 final rerun, both labelled "Verified
+# calculation" in the turn's evidence:
+#
+#   "differentiate x squared"         -> "Calculate 2 plus 2: 4"
+#   "how long should cold brew steep" -> "Coffee needed for 500g water at
+#                                         1:4 ratio: 125"
+#
+# The router writes the request's numbers as digits (every calculation turn
+# in the eval runs did), so a request without a digit has nothing to
+# calculate. It is then answered the ordinary way, as a failed plan is.
+_QUANTITY = re.compile(r"\d")
+
+
+def asks_for_arithmetic(request: str) -> bool:
+    """Whether the calculator can answer this request at all.
+
+    It needs the person's numbers (a digit), and a question whose answer
+    is a number. A question about a variable asks for an expression -- the
+    derivative of "x squared plus 3x" is "2x + 3" -- and a numbers-only
+    tool has nothing to verify there, however many digits the request
+    carries. Measured in the FAST/DEEP baseline, from the 27B's reading of
+    that question: "Derivative of x^2 + 3x: power rule applied: 5", filed
+    as a verified calculation.
+    """
+    request = str(request or "")
+    return bool(_QUANTITY.search(request)) and not spoken_notation.names_a_variable(request)
+
 
 class CalculationPlanner:
     """
@@ -188,6 +219,8 @@ class CalculationPlanner:
         self.keep_alive = keep_alive
 
     def plan(self, request: str) -> CalculationPlan | None:
+        if not asks_for_arithmetic(request):
+            return None
         messages: list[Any] = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": request},

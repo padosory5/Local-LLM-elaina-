@@ -83,6 +83,27 @@ class DurableVersusOneOffTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIsNone(preferences.read(text))
 
+    def test_understanding_and_states_are_not_favourites(self):
+        # "get" is also the verb of understanding. The first was said by a
+        # simulated learner and answered "Got it -- that it's not the
+        # shadow for shadow." instead of the question in it.
+        for text in (
+            "Okay, I get that it's not the shadow. But does the sun always "
+            "light up the same half of the moon, or does that change too?",
+            "I always get confused by this part. Can you say it again?",
+            "I usually get lost here, what does bit mean?",
+            "I always get that wrong.",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(preferences.read(text))
+
+    def test_a_named_place_is_still_a_favourite(self):
+        statement = preferences.read("I always get my coffee from Starbucks.")
+
+        self.assertEqual(statement.kind, FAVOURITE_FOR)
+        self.assertEqual(statement.value, "Starbucks")
+        self.assertEqual(statement.action, "remember")
+
 
 class WhatGetsSavedTests(unittest.TestCase):
 

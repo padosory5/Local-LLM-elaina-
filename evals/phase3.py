@@ -82,10 +82,14 @@ def main() -> int:
     parser.add_argument("--arms", nargs="*", default=None)
     parser.add_argument("--judge-only", action="store_true")
     parser.add_argument("--generate-only", action="store_true")
+    parser.add_argument("--root", default=str(ROOT),
+                        help="where the runs go (the final rerun: runtime/evals/p3f)")
     args = parser.parse_args()
-    # Phase 2's machinery, pointed at this phase's directory and log.
-    phase2.ROOT = ROOT
-    phase2.LOG = ROOT / "progress.log"
+    # Phase 2's machinery, pointed at this run's directory and log.
+    root = Path(args.root)
+    globals()["ROOT"] = root
+    phase2.ROOT = root
+    phase2.LOG = root / "progress.log"
     arms = [arm for arm in ARMS if not args.arms or arm.name in args.arms]
     outs = run_dirs(arms)
     if not args.judge_only:

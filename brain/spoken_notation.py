@@ -577,3 +577,123 @@ def verbalize(text: str, language: str = "en") -> str:
         result = re.sub(r"\s+의(?=\s)", "의", result)
     result = re.sub(r" +([,.;:!?])", r"\1", result)
     return result.strip()
+
+
+# ---------------------------------------------------------- notation spans
+#
+# Where the text is mathematics rather than prose. The value validator
+# (brain/grounded_values.py) reads claims -- a price, a phone number, a
+# measured attribute -- and a number inside an expression is none of those:
+# it is an operand. Measured in the Phase 3 rerun, "$ 1 + x + \frac{x^2}{2}
+# ... $" was read as a one-dollar price, found in no evidence, and the
+# sentence explaining a Taylor series was deleted.
+
+_DELIMITED = re.compile(r"\$\$(.+?)\$\$|\$([^$\n]+)\$", re.DOTALL)
+# Inside a $...$ pair: a LaTeX command, a power, a subscript, an equation, or
+# a single-letter variable. "$100-$200" has none of them: that is money.
+_MATH_INSIDE = re.compile(r"\\[A-Za-z]|[\^_=]|(?<![A-Za-z])[A-Za-z](?![A-Za-z])")
+_OPERAND = r"(?:(?<![A-Za-z])[A-Za-z](?![A-Za-z])|\d+(?:\.\d+)?|[(√π∞])[\w²³⁴⁵⁶⁷⁸⁹ⁿ₀₁₂₃₄₅₆₇₈₉!'′().√π∞^]*"
+_EXPRESSION = re.compile(
+    _OPERAND + r"(?:[ \t]*[+\-−×÷*/=^≈≤≥<>±][ \t]*" + _OPERAND + r")+"
+)
+_VARIABLE = re.compile(r"(?<![A-Za-z])[A-Za-z](?![A-Za-z])")
+
+
+def notation_spans(text: str) -> list[tuple[int, int]]:
+    """The (start, end) spans of this text that are mathematical notation.
+
+    Two shapes, by the grammar of notation rather than by what any reply
+    said: a delimited $...$ span with mathematics inside it, and an
+    expression whose operators join operands and which has a variable or is
+    an equation. "5 + 3 dollars" and "$100-$200" are prose.
+    """
+    text = str(text or "")
+    spans: list[tuple[int, int]] = []
+    for match in _DELIMITED.finditer(text):
+        body = match.group(1) or match.group(2) or ""
+        if _MATH_INSIDE.search(body):
+            spans.append(match.span())
+    for match in _EXPRESSION.finditer(text):
+        piece = match.group(0)
+        if _VARIABLE.search(piece) or "=" in piece or "^" in piece:
+            spans.append(match.span())
+    spans.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+# The same closed vocabulary the reading above speaks with, read the other
+# way: the words that make a letter next to them a variable. Arithmetic
+# operators, powers and functions only -- the comparison readings ("is less
+# than", "is approximately") are ordinary words in a sentence.
+_SPOKEN_MATH = {
+    word
+    for language in LANGUAGES
+    for symbol in ("+", "−", "×", "÷", "/")
+    for word in _OPERATORS[language][symbol].split()
+    if word != "by"
+} | {"squared", "cubed", "제곱", "세제곱"} | set(_FUNCTIONS["en"])
+_SYMBOL_MATH = set("+-−×÷*/^=()²³")
+# Single letters that are words: next to a word they are the article and
+# the pronoun ("up by a third", "a few times"), never a variable.
+_LETTER_WORDS = {"a", "A", "I"}
+
+
+def names_a_variable(text: str) -> bool:
+    """Whether the text uses a letter as a mathematical variable.
+
+    Read with this module's own tokens and vocabulary: a single letter
+    written against a number ("3x"), next to an operator or a power
+    ("x^2", "x²", "f(x)", "x + 1"), or next to a word this module says
+    operators and powers with ("x squared plus 3x", "sin x", "x 제곱").
+    "Plan A costs $50", "I need 3 cups" and "a 15% tip" use letters as
+    words, not variables.
+
+    A question about a variable asks for an expression -- a derivative, a
+    formula -- not for a number, which is what brain/calculation_planner.py
+    needs to know before it calls a numbers-only calculator.
+    """
+    tokens = _tokens(str(text or ""))
+    for index, token in enumerate(tokens):
+        if not _is_variable(token):
+            continue
+        glued_before = index > 0 and tokens[index - 1].kind == "num"
+        before, after, *_ = _neighbours(tokens, index)
+        for neighbour in (before, after):
+            if neighbour is None:
+                continue
+            if neighbour.kind == "sup" or neighbour.text in _SYMBOL_MATH:
+                return True
+            if (neighbour.kind == "word" and token.text not in _LETTER_WORDS
+                    and neighbour.text.casefold() in _SPOKEN_MATH):
+                return True
+        if glued_before:
+            return True
+        # Korean follows the letter with a Hangul word, which the tokens
+        # read one syllable at a time.
+        rest = "".join(t.text for t in tokens[index + 1:index + 8]).lstrip()
+        if token.text not in _LETTER_WORDS and any(
+            rest.startswith(word) for word in _SPOKEN_MATH if not word.isascii()
+        ):
+            return True
+    return False
+
+
+def prose(text: str) -> str:
+    """The text with its notation blanked out, same length, prose kept."""
+    text = str(text or "")
+    spans = notation_spans(text)
+    if not spans:
+        return text
+    chars = list(text)
+    for start, end in spans:
+        for index in range(start, end):
+            if chars[index] not in "\n":
+                chars[index] = " "
+    return "".join(chars)
+

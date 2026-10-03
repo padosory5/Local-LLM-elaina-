@@ -104,37 +104,56 @@ class TextFilter:
             cls.KANA_PATTERN.search(text) or cls.GLUED_HAN_PATTERN.search(text)
         )
 
+    # A run of kana, and a run of Han characters -- the whole run, so that
+    # "详细介绍" goes together, and a run counts as glued when either end
+    # touches the Korean word it was written into (GLUED_HAN_PATTERN's two
+    # shapes).
+    _KANA_RUN = re.compile("[぀-ヿ]+", flags=re.UNICODE)
+    _HAN_RUN = re.compile("[一-鿿]+", flags=re.UNICODE)
+
+    @classmethod
+    def _foreign_runs_removed(cls, text: str) -> str:
+        def glued(match: re.Match) -> str:
+            start, end = match.span()
+            before = text[start - 1] if start > 0 else ""
+            after = text[end] if end < len(text) else ""
+            if re.match("[가-힣]", before) or after in "하해했합드되돼된":
+                return ""
+            return match.group(0)
+
+        repaired = cls._KANA_RUN.sub("", cls._HAN_RUN.sub(glued, text))
+        repaired = re.sub(r"[ \t]{2,}", " ", repaired)
+        return re.sub(r"[ \t]+([.,!?])", r"\1", repaired)
+
     @classmethod
     def without_foreign_script(cls, text: str) -> str:
-        """Drop any sentence carrying a script that does not belong.
+        """Take out a script that does not belong -- the characters, never
+        the sentence around them.
 
-        The sentence, not the characters. Deleting the run leaves
-        "도움이 되었 다행입니다" -- a broken verb and a sentence she cannot
-        stand behind, which is worse out loud than not saying it, and
-        guessing the connective the model meant is generation rather than
-        repair. Whole sentences are what a reply is made of, so removing
-        one leaves something grammatical.
+        This used to drop the whole sentence, on the grounds that deleting
+        the run leaves "도움이 되었 다행입니다", a broken verb. Measured in
+        the FAST/DEEP baseline, that cost an answer: the one sentence of
+        "냉萃(콜드브루)에는 일반적으로 1~2컵의 커피 원두를 사용합니다" that
+        held the value went because of one stray character, and the reply
+        was left without it. A stray character inside otherwise valid text
+        must never delete that text; a slightly broken verb is a smaller
+        loss than a missing answer. So only the kana run, or the Han run
+        written into a Korean word, is removed.
 
-        Returns "" when nothing is left, so the caller can decide whether
-        an empty reply or a guard line is the right answer there.
+        Returns "" only when nothing is left once the foreign runs are out,
+        so the caller can decide whether an empty reply or a guard line is
+        the right answer there.
         """
         said = str(text or "")
         if not cls._carries_another_script(said):
             return said
-        try:
-            from brain.conversation_style import sentences
-        except Exception:
-            parts = [part for part in re.split(r"(?<=[.!?])\s+", said.strip()) if part]
-        else:
-            parts = sentences(said)
-        kept = [part for part in parts if not cls._carries_another_script(part)]
-        dropped = len(parts) - len(kept)
-        if dropped:
-            print(
-                f"[Language] Dropped {dropped} sentence(s) carrying Japanese "
-                f"kana or Chinese written into a Korean word."
-            )
-        return " ".join(kept).strip()
+        repaired = cls._foreign_runs_removed(said).strip()
+        print("[Language] Took out Japanese kana or Chinese written into a "
+              "Korean word; the sentence around it stays.")
+        # Nothing of either language left: the text was only the leak.
+        if not re.search(r"[A-Za-z0-9가-힣]", repaired):
+            return ""
+        return repaired
 
     _FAILED_ACTION_PATTERN = re.compile(
         r"(?i)\b(?:could\s+not|couldn['’]?t|did\s+not|"

@@ -136,6 +136,47 @@ class CurrentTurnEchoTests(unittest.TestCase):
                     reply,
                 )
 
+    def test_a_minus_sign_is_not_a_break(self):
+        # Phase 3 final rerun: "Your UTC offset is -0700" went out as
+        # "0700." -- the sign read as a dash, the clause before it as an
+        # echo of the question, and both were cut.
+        for said, reply in (
+            ("What's my UTC offset right now?",
+             "Your UTC offset is -0700. That's Pacific Daylight Time."),
+            ("What's the temperature in Chicago right now?",
+             "The temperature in Chicago right now is -5 degrees."),
+            ("what is my balance change this month",
+             "My balance change this month is -120 dollars."),
+            ("서울과 런던의 시차는?", "서울과 런던의 시차는 -8시간입니다."),
+        ):
+            with self.subTest(reply=reply):
+                self.assertEqual(
+                    ResponseQualityGuard.strip_current_turn_echo(reply, said),
+                    reply,
+                )
+
+    def test_a_range_is_not_a_break(self):
+        # The same reading would split "12–18" into an echoed "12" and an
+        # answer of "18 hours".
+        for reply in ("Steep it 12–18 hours, not longer.",
+                      "Steep it 12--18 hours, not longer."):
+            with self.subTest(reply=reply):
+                self.assertEqual(
+                    ResponseQualityGuard.strip_current_turn_echo(
+                        reply, "should I steep it 12 hours or longer?",
+                    ),
+                    reply,
+                )
+
+    def test_a_real_dash_before_a_number_still_breaks(self):
+        # A spaced dash is still a break when a number follows it.
+        self.assertEqual(
+            ResponseQualityGuard.strip_current_turn_echo(
+                "Not yet — 5 minutes is plenty.", "not yet",
+            ),
+            "5 minutes is plenty.",
+        )
+
     def test_an_echo_hiding_behind_an_acknowledgement_is_removed(self):
         # Measured live, answering "not yet". The restatement is there, one
         # acknowledgement away from the start, so a prefix test anchored at

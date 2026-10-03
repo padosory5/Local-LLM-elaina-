@@ -120,12 +120,34 @@ class AValidOfferTests(unittest.TestCase):
             "Let me know if you'd like help finding something specific! "
             "Want me to pull up a few current ones?"
         )
+        # What the later steps really say, each by its own prompt's rules,
+        # so the outcome does not depend on what a fake returns by accident
+        # (it used to get the routing JSON, which the voice step discarded).
+        engine.client.replies = {
+            # The length rewrite: at most 2 sentences, nothing requested
+            # dropped -- both calls to action are still in it.
+            "DRAFT ANSWER": (
+                "Yeah, a monitor upgrade could be worth it. Let me know if "
+                "you'd like help finding something specific, or want me to "
+                "pull up a few current ones?"
+            ),
+            # Her re-say for a react: one line, and no offer of its own.
+            "Rewrite the draft below as one line of natural speech": (
+                "Yeah, a monitor upgrade could be worth it."
+            ),
+        }
 
         reply = engine.chat(MUSING)
 
-        self.assertEqual(reply.count("?"), 1, reply)
+        # At most one: a musing is a react, and a react may carry none
+        # ("Yeah, a monitor upgrade could be worth it."). Exactly one was
+        # only ever met because the fake's JSON got the re-say discarded.
+        self.assertLessEqual(reply.count("?"), 1, reply)
         self.assertNotIn("let me know", reply.casefold())
-        self.assertIn("pull up a few current ones", reply)
+        # And nothing waits on an offer that was not said.
+        pending = engine.capability_offer.peek()
+        if pending is not None:
+            self.assertIn(" ".join(pending.offer_text.split()), " ".join(reply.split()))
 
 
 class AnAcceptedOfferTests(unittest.TestCase):

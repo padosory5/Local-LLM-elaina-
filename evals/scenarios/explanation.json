@@ -114,6 +114,7 @@
       "mode": "intuition",
       "domain": "calculus",
       "source": "Part VI of the architecture brief",
+      "note": "Ambiguous as written: nothing in the turn says calculus, and 'derivative' is also a financial contract. In the FAST/DEEP baseline both models answered finance in every run and the judge accepted it. Not routing evidence. The unambiguous version, derivative_simply_in_calculus, is staged in evals/scenarios_next/ for the next corpus version.",
       "turns": [
         {
           "say": "I don't really get what a derivative is. Can you explain it simply?",

@@ -13,9 +13,11 @@ not touch it. Small multilingual models bleed between the CJK languages,
 and this project's standing rule is that a confirmed behaviour gets a
 deterministic guard.
 
-The repair is by sentence rather than by character, because deleting the
-run leaves "도움이 되었 다행입니다" -- a broken verb, and a sentence she
-cannot stand behind. The other two sentences are fine and are still said.
+The repair was once by sentence, because deleting only the run leaves
+"도움이 되었 다행입니다" -- a broken verb. It is by character now: in the
+FAST/DEEP baseline a sentence carrying one stray character was also the one
+carrying the answer ("냉萃(콜드브루)에는 ... 1~2컵 ..."), and it went. A stray
+character inside otherwise valid text must never delete that text.
 """
 
 from __future__ import annotations
@@ -33,29 +35,43 @@ LEAKED = (
 
 class KanaNeverReachesSpeechTests(unittest.TestCase):
 
-    def test_the_measured_sentence_loses_only_the_broken_clause(self):
+    def test_the_leak_goes_and_every_sentence_stays(self):
         repaired = TextFilter.without_foreign_script(LEAKED)
 
         self.assertNotIn("ようで", repaired)
-        self.assertIn("안녕하세요.", repaired)
-        self.assertIn("언제든지 말씀해 주십시오.", repaired)
-        # Not the character-level repair: that would leave "되었 다행입니다".
-        self.assertNotIn("되었 다행", repaired)
+        self.assertEqual(
+            repaired,
+            "안녕하세요. 도움이 되었 다행입니다. "
+            "궁금한 점이 또 있으시면 언제든지 말씀해 주십시오.",
+        )
+
+    def test_a_stray_character_never_costs_the_answer(self):
+        # The FAST/DEEP baseline: the sentence with the value went because
+        # of one Han character glued to "냉".
+        said = ("냉萃(콜드브루)에는 일반적으로 1~2컵의 커피 원두를 사용합니다. "
+                "원두의 양에 따라 추출 시간과 맛이 달라집니다.")
+        repaired = TextFilter.without_foreign_script(said)
+
+        self.assertNotIn("萃", repaired)
+        self.assertIn("1~2컵의 커피 원두를 사용합니다.", repaired)
+        self.assertIn("원두의 양에 따라", repaired)
 
     def test_a_reply_that_is_only_the_leak_comes_back_empty(self):
-        # So the caller can put a guard line there instead of speaking a
-        # broken sentence or going silent.
-        self.assertEqual(
-            TextFilter.without_foreign_script("도움이 되었ようで 다행입니다."),
-            "",
-        )
+        # So the caller can put a guard line there instead of going silent.
+        self.assertEqual(TextFilter.without_foreign_script("ようで。"), "")
 
     def test_katakana_counts_too(self):
         self.assertEqual(
             TextFilter.without_foreign_script(
                 "네, 알겠습니다. ソウル 날씨는 맑습니다.",
             ),
-            "네, 알겠습니다.",
+            "네, 알겠습니다. 날씨는 맑습니다.",
+        )
+
+    def test_english_keeps_its_sentence_too(self):
+        self.assertEqual(
+            TextFilter.without_foreign_script("It steeps for 12 hours ようで."),
+            "It steeps for 12 hours.",
         )
 
     def test_ordinary_replies_are_untouched(self):

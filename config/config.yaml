@@ -230,6 +230,39 @@ responses:
   detailed_max_words: 240
   detailed_max_sentences: 10
 
+  # The explanation contract (Stage C's unified contract, revised:
+  # docs/EXPLANATION_EXPERIMENT.md), run as a controlled experiment. On an
+  # explanation turn it replaces the conflicting order and length rules with
+  # one contract: answer directly and naturally first, add an example only
+  # when it makes the answer easier to understand, explain needed terms in
+  # place, at most 4 sentences. Off until the revised contract passes its
+  # regression check.
+  #   "off"   -- every turn as before;
+  #   "on"    -- the contract on every explanation turn;
+  #   "split" -- the contract on a random half of explanation turns, the
+  #              other half as before, so the two can be compared.
+  # Every explanation turn's arm is logged in its turn trace
+  # (context.explanation_experiment); evals/explanation_experiment.py reads
+  # them. No planner and no extra model call in any mode.
+  # ELAINA_EXPLANATION_CONTRACT overrides this.
+  explanation_contract: "off"
+
+  # The turn-move owner (brain/turn_move.py, docs/TURN_MOVE_SHADOW.md).
+  # Every answered turn records how it would be answered from what the
+  # conversation has been through. "off" only records. "on" lets one move
+  # own its turn: "differently", a question they have asked before -- its
+  # line replaces the goal ("the earlier explanation did not land; do not
+  # reuse it; start from what they know"), with an explanation's room.
+  # "check" is never acted on. ELAINA_TURN_MOVE overrides this.
+  #
+  # "on" was tried and did not help: the 8B's draft was her earlier answer
+  # again (docs/TURN_MOVE_AB.md). "deep" is the same with that one turn
+  # written by turn_move_model -- the 8B reads it, the larger model writes
+  # it, and the next turn is back on the 8B. The two do not fit on the card
+  # together, so such a turn pays a model swap.
+  turn_move: "off"
+  turn_move_model: "hf.co/jrell/Qwen3.8-27B-i1-IQ4_XS-GGUF-Smaller:latest"
+
   # Short Ollama-generated acknowledgement before a slower agent starts.
   status_max_words: 6
 

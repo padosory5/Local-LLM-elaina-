@@ -38,6 +38,7 @@ from __future__ import annotations
 import re
 
 from brain import attribute_values
+from brain.spoken_notation import prose
 
 # Money only. A plain integer ("three hotels", "2026") is not a claim about
 # a live value and must not be second-guessed.
@@ -123,7 +124,15 @@ def _values(text: str, *, spoken: bool = True) -> set[str]:
     speech ("let it steep for fourteen hours") is not a claim. Evidence is
     read permissively: a measurement in a retrieved document is a fact
     whatever prose surrounds it.
+
+    What she said is read for claims in its prose only. A number inside an
+    expression is an operand, not a claim about the world: "$ 1 + x +
+    \\frac{x^2}{2} $" was read as a one-dollar price and the sentence
+    explaining a Taylor series was deleted (Phase 3 rerun).
+    brain/spoken_notation.notation_spans says where the notation is.
     """
+    if spoken:
+        text = prose(text)
     return (
         _digits(text)
         | _contacts(text)
@@ -155,7 +164,9 @@ def _mangled_numbers(reply: str, source: str) -> set[str]:
             for match in _BARE_NUMBER.finditer(str(text or ""))
         }
 
-    said, given = bare(reply), bare(source)
+    # Only her prose: an operand in an expression is not a copy of a
+    # number anyone gave her.
+    said, given = bare(prose(reply)), bare(source)
     if not said or not given:
         return set()
     mangled = set()
@@ -208,10 +219,28 @@ def _prices_a_named_place(reply: str) -> bool:
     Deliberately requires both halves. A quoted name alone is often a film
     or a dish, and a price alone is ordinary conversation.
     """
-    text = str(reply or "")
+    text = prose(str(reply or ""))
     if not _MONEY.search(text):
         return False
     return bool(_QUOTED_NAME.search(text))
+
+
+# Whose numbers a damaged copy is read against. The near-miss rule
+# (``_mangled_numbers``) is for a number the person gave coming back with a
+# digit gone -- 1500 said, 150 answered. Against a machine's evidence it
+# only ever measured false alarms: "07" in a correct time read as a copy of
+# the course number "207" in an old search (Phase 2), "12시간" of a correct
+# steeping time as a copy of an invented "125" grams, and an invented
+# "12 ms" as a copy of a "$120" in a search snippet (Phase 3 final). A
+# value the machine's evidence does not hold is ``unsupported`` already.
+PERSON_SOURCES = ("their words", "what they told her")
+
+
+def their_words(sources) -> str:
+    """The person's own words among ``(label, text)`` sources."""
+    return " ".join(
+        str(text or "") for label, text in sources if str(label) in PERSON_SOURCES
+    )
 
 
 class GroundedValueGuard:
@@ -228,7 +257,7 @@ class GroundedValueGuard:
         (docs/PHASE3_PLAN.md 3C).
 
         ``status`` is ``supported`` (a source holds it), ``conflicting`` (a
-        damaged copy of a number a source holds: 150 for 1500) or
+        damaged copy of a number the person gave: 150 for 1500) or
         ``unsupported``.
         """
         sources = [(str(label), str(text or "")) for label, text in sources]
@@ -245,9 +274,10 @@ class GroundedValueGuard:
                 "status": "supported" if where else "unsupported",
                 "source": where,
             })
-        for value in sorted(_mangled_numbers(reply, evidence)):
+        for value in sorted(_mangled_numbers(reply, their_words(sources))):
             where = next(
-                (label for label, text in sources if _mangled_numbers(value, text)),
+                (label for label, text in sources
+                 if label in PERSON_SOURCES and _mangled_numbers(value, text)),
                 "",
             )
             found.append({"value": value, "status": "conflicting", "source": where})
@@ -256,7 +286,7 @@ class GroundedValueGuard:
     @classmethod
     def unsupported_amounts(cls, reply: str, evidence: str) -> set[str]:
         """Money in the reply that the evidence does not contain."""
-        return _digits(reply) - _digits(evidence)
+        return _digits(prose(reply)) - _digits(evidence)
 
     @classmethod
     def unsupported_values(cls, reply: str, evidence: str) -> set[str]:
@@ -273,6 +303,7 @@ class GroundedValueGuard:
         trusted_result: bool = False,
         disputed: bool = False,
         grounded_subject: bool | None = None,
+        their_words: str | None = None,
     ) -> bool:
         """Whether the reply states a value nothing behind it supports.
 
@@ -292,9 +323,13 @@ class GroundedValueGuard:
           number off a real page must not be stripped;
         * no evidence at all after an action, which is an ordinary desktop
           action ("Playing Bang Bang by IVE") with no text behind it.
+
+        ``their_words`` is what a damaged copy is read against (see
+        ``PERSON_SOURCES``); left out, it is the whole evidence.
         """
         if trusted_result:
             return False
+        theirs = evidence if their_words is None else their_words
         if grounded_subject is None:
             # Back-compatible reading for callers that pass only evidence.
             grounded_subject = bool(str(evidence or "").strip())
@@ -311,7 +346,7 @@ class GroundedValueGuard:
         contradicts_the_user = bool(
             (_values(evidence, spoken=False)
              and cls.unsupported_values(reply, evidence))
-            or _mangled_numbers(reply, evidence)
+            or _mangled_numbers(reply, theirs)
         )
         if not grounded_subject and not contradicts_the_user and not (
             disputed and _values(reply)
@@ -327,12 +362,13 @@ class GroundedValueGuard:
             return False
         return bool(
             cls.unsupported_values(reply, evidence)
-            or _mangled_numbers(reply, evidence)
+            or _mangled_numbers(reply, theirs)
         )
 
     @classmethod
     def correct_values(
         cls, reply: str, *, evidence: str, offer: str, partial_offer: str = "",
+        their_words: str | None = None,
     ) -> str:
         """Drop the sentences carrying values nothing checked.
 
@@ -341,7 +377,8 @@ class GroundedValueGuard:
         surviving claim reads as the claim being withdrawn, which it was
         not -- only the sentence with the number went.
         """
-        mangled = _mangled_numbers(reply, evidence)
+        theirs = evidence if their_words is None else their_words
+        mangled = _mangled_numbers(reply, theirs)
         unsupported = cls.unsupported_values(reply, evidence) or _values(reply)
         if not unsupported and not mangled:
             return reply
@@ -350,7 +387,7 @@ class GroundedValueGuard:
             for sentence in _SENTENCE_SPLIT.split(str(reply).strip())
             if sentence.strip()
             and not (_values(sentence) & unsupported)
-            and not _mangled_numbers(sentence, evidence)
+            and not _mangled_numbers(sentence, theirs)
         ]
         offer = str(offer or "").strip()
         rebuilt = " ".join(kept).strip()
@@ -495,8 +532,11 @@ def _proper_names(text: str) -> list[str]:
 # Canadian drama, and '서울 콩고리', a restaurant, were recommended with no
 # search behind them, while the same kind of English reply was retracted.
 _QUOTED = re.compile(r"['‘\"“「『]([^'’\"”」』\n]{1,40})['’\"”」』]")
-# Quoted *speech* is not a name: "'이 뜨거워졌어요'라는 표현".
-_QUOTED_SPEECH = re.compile(r"(?:어요|아요|해요|니다|네요|군요|죠|까요)\s*[.!?]?$")
+# Quoted *speech* is not a name: "'이 뜨거워졌어요'라는 표현". Nor is a
+# quoted question, in any register: '"오늘 날씨 어때?"라고 묻는다면' was
+# retracted as an unchecked title and "실제로 찾아볼까요?" said instead
+# (simulated learners, 2026-10-02).
+_QUOTED_SPEECH = re.compile(r"(?:어요|아요|해요|니다|네요|군요|죠|까요)\s*[.!?]?$|[?？]\s*$")
 
 
 def _quoted_korean_names(text: str) -> list[str]:
@@ -520,6 +560,29 @@ def names_something_specific(text: str) -> bool:
     named something".
     """
     return bool(_proper_names(text) or _quoted_korean_names(text))
+
+
+def _spells_a_term(name: str, *texts: str) -> bool:
+    """Whether this name is the spelled-out form of a term already said.
+
+    "What's an API?" -> "An API, or Application Programming Interface, is
+    a set of rules that lets software applications talk ... when you use a
+    weather app" read as an unchecked business ("app" is a place to go),
+    the definition was deleted and "I don't want to send you somewhere I
+    haven't checked" said instead (simulated learners, both pilots). Its
+    initials are the word they asked about, which is what makes it the
+    term's expansion and not a shop.
+    """
+    words = name.split()
+    if len(words) < 2:
+        return False
+    initials = "".join(word[0] for word in words if word[:1].isalpha())
+    if len(initials) != len(words):
+        return False
+    return any(
+        re.search(rf"\b{re.escape(initials)}s?\b", str(text or ""))
+        for text in texts
+    )
 
 
 def _grounded_names(*texts: str) -> set[str]:
@@ -948,7 +1011,7 @@ def unverified_entities(
         # separately let "Guitar Center" pass because the person had said
         # "guitar" -- and Guitar Center has no branch in Seoul.
         if " " in lowered:
-            if lowered in haystack:
+            if lowered in haystack or _spells_a_term(name, evidence, request):
                 continue
         elif lowered in grounded:
             continue

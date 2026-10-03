@@ -1,4 +1,4 @@
-"""Chinese written into a Korean word is dropped like kana; 한자 is not.
+"""Chinese written into a Korean word is taken out like kana; 한자 is not.
 
 Measured in a paired Korean run:
 
@@ -10,6 +10,8 @@ deserves an answer that contains it. What separates the two is where the
 character sits: glued inside a Hangul word, or in front of the syllable that
 makes it a verb, is the model's Chinese bleeding through. Written next to a
 word -- in brackets, before a particle, on its own -- is 한자.
+
+Only the characters go, never the sentence (tests/test_foreign_script.py).
 """
 
 from __future__ import annotations
@@ -28,16 +30,16 @@ def _clean(text: str) -> str:
 
 class GluedHanIsDroppedTests(unittest.TestCase):
 
-    def test_the_measured_sentence_goes_and_the_rest_stays(self):
+    def test_the_measured_run_goes_and_the_sentence_stays(self):
         self.assertEqual(
             _clean("음, 그렇군요. 다른 작품도 있습니다. 원하시면详细介绍해드리겠습니다."),
-            "음, 그렇군요. 다른 작품도 있습니다.",
+            "음, 그렇군요. 다른 작품도 있습니다. 원하시면해드리겠습니다.",
         )
 
     def test_inside_a_korean_word(self):
         self.assertEqual(
             _clean("청양椒를 넣으면 맵습니다. 양은 취향대로 조절하십시오."),
-            "양은 취향대로 조절하십시오.",
+            "청양를 넣으면 맵습니다. 양은 취향대로 조절하십시오.",
         )
 
 
@@ -53,9 +55,9 @@ class HanjaStaysTests(unittest.TestCase):
             with self.subTest(said=said):
                 self.assertEqual(_clean(said), said)
 
-    def test_kana_is_still_dropped(self):
+    def test_kana_is_still_taken_out(self):
         self.assertEqual(
-            _clean("좋습니다. 도움이 되었ようで 다행입니다."), "좋습니다.",
+            _clean("좋습니다. 도움이 되었ようで 다행입니다."), "좋습니다. 도움이 되었 다행입니다.",
         )
 
 

@@ -328,6 +328,18 @@ def read(text: str) -> Statement | None:
             where or _SOFT.search(text) or _DURABLE.search(text)
         ):
             return None
+        # And what they go back to has a name, held to the same test as
+        # "use X". "get" is also the verb of understanding and of states,
+        # and a learner says those constantly:
+        #
+        #   "Okay, I get that it's not the shadow. But does the sun always
+        #    light up the same half ...?"  -> "Got it -- that it's not the
+        #    shadow for shadow."  (simulated learners, 2026-10-02)
+        #   "I always get confused by this part."
+        #
+        # Each was saved as a favourite and the question went unanswered.
+        if not _names_a_source(value):
+            return None
         return Statement(
             action="remember" if _DURABLE.search(text) or _SOFT.search(text)
             else "override",

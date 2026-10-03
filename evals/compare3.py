@@ -52,6 +52,7 @@ def _load(root: Path, arms, judge: str) -> dict[str, list[dict]]:
                 run["speech"] = speech_measures(path)
                 run["words"] = reply_words(run)
                 run["stages"] = soft_stage_changes(path)
+                run["router"] = router_measures(path)
                 found.setdefault(arm.name, []).append(run)
     return found
 
@@ -91,6 +92,40 @@ def reply_words(run: dict) -> dict:
     for result, stored, wanted, found, verdicts in report.scored_turns(run):
         by_suite[result["suite"]].append(len((stored["display"] or "").split()))
     return {suite: median(values) for suite, values in by_suite.items() if values}
+
+
+def router_measures(path: Path) -> dict:
+    """The routing call on its own: first answers, overflows, fallbacks.
+
+    A routed turn's first ``:route`` call is its answer; any further ones
+    are the repair fallback, which runs when the first answer could not be
+    parsed -- most often because it was cut off at the context window.
+    """
+    routed = truncated = fallback = 0
+    first, repair, prompts = [], [], []
+    for record in _records(path):
+        calls = [c for c in record.get("model_calls") or ()
+                 if str(c.get("caller", "")).endswith(":route")]
+        if not calls:
+            continue
+        routed += 1
+        first.append(float(calls[0].get("latency") or 0.0))
+        prompts.append(int(calls[0].get("prompt_eval_count") or 0))
+        truncated += calls[0].get("done_reason") == "length"
+        if len(calls) > 1:
+            fallback += 1
+            repair.extend(float(c.get("latency") or 0.0) for c in calls[1:])
+    q95 = lambda values: sorted(values)[int(0.95 * (len(values) - 1))] if values else 0.0  # noqa: E731
+    return {
+        "routed": routed,
+        "truncated": truncated,
+        "fallback": fallback,
+        "first_p50": median(first) if first else 0.0,
+        "first_p95": q95(first),
+        "fallback_p50": median(repair) if repair else 0.0,
+        "prompt_p50": median(prompts) if prompts else 0,
+        "prompt_max": max(prompts) if prompts else 0,
+    }
 
 
 def soft_stage_changes(path: Path) -> Counter:

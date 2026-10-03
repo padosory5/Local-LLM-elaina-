@@ -436,6 +436,46 @@ class TheLastAnswerIsNotThisAnswerTests(EngineTestCase):
         self.assertEqual(said, reply)
         self.assertEqual(self.engine.client.calls, 0)
 
+    def test_a_follow_up_is_asked_again_as_the_whole_question(self):
+        # Phase 3 final rerun, nine times out of nine: "얼마나 우려야 돼?"
+        # after a cold-brew answer rightly repeated its 12 hours, was asked
+        # again bare -- and a bare "얼마나 우려야 돼?" came back as how
+        # worried to be, or how long to tumble-dry clothes.
+        self.engine._turn_language = "ko"
+        before = "차가운 물과 원두를 섞어 실온에서 12시간 이상 우려내면 됩니다."
+        self.engine._things_she_has_said = lambda: (before, [])
+
+        class Asked:
+            def __init__(self):
+                self.questions = []
+
+            def chat(self, **kwargs):
+                prompt = str(kwargs.get("messages"))
+                self.questions.append(prompt)
+                if "cold brew" in prompt:
+                    return {"message": {"content": "콜드브루는 12시간에서 24시간 정도 우리면 됩니다."}}
+                return {"message": {"content": "어떤 옷인지에 따라 달라집니다."}}
+
+        self.engine.client = Asked()
+        with contextlib.redirect_stdout(io.StringIO()):
+            said = self.engine._not_her_last_answer(
+                "얼마나 우려야 돼?", "실온에서 12시간 이상 우려내면 됩니다.",
+                question="How long should cold brew coffee be steeped?",
+            )
+
+        self.assertIn("cold brew", self.engine.client.questions[0])
+        self.assertNotIn("옷", said)
+
+    def test_without_a_router_reading_the_words_said_are_asked(self):
+        self.engine._turn_language = "ko"
+        before = "물의 동결점은 32도 화씨입니다."
+        self.engine._things_she_has_said = lambda: (before, [])
+        self.engine.client = RetryClient("물의 끓는점은 100도입니다.")
+        with contextlib.redirect_stdout(io.StringIO()):
+            said = self.engine._not_her_last_answer("물은 몇 도에서 끓어?", before, question="  ")
+
+        self.assertEqual(said, "물의 끓는점은 100도입니다.")
+
     def test_a_second_attempt_that_repeats_too_is_not_used(self):
         self.engine._turn_language = "ko"
         before = "물의 동결점은 32도 화씨입니다."

@@ -238,6 +238,9 @@ class TurnAuthorityBoundaryTests(unittest.TestCase):
         expected_query = turn.resolved.search_query
         self.engine.task_sessions.clear()
         self.engine.task_sessions.note_recommendation_turn("Find a studio in Seattle under $1500")
+        # The harness leaves search switched off, and off now means she does
+        # not search. This is a search turn; both searches are mocked below.
+        self.engine._web_search_enabled = True
         self.engine._research_for_recommendation = Mock(return_value=None)
         self.engine.research_agent.research = Mock(return_value=ResearchResult("No verified products yet.", (expected_query,)))
         with patch.object(self.engine, "_route_turn", return_value=turn):

@@ -139,7 +139,14 @@ class ResponseQualityGuard:
     # were recognised. A lone hyphen only counts as a break when it has
     # whitespace on at least one side, so "well-known" and "9/13-15" are
     # still ordinary words rather than echo boundaries.
-    _ECHO_DASH = re.compile(r"\s*(?:—|–|--+)\s*|\s+-\s*|\s*-\s+")
+    #
+    # A dash with a digit straight after it is not a break either: it is the
+    # sign of a number ("is -5 degrees", "UTC -0700") or the middle of a
+    # range ("12–18 hours"). Measured in the Phase 3 final rerun: "Your UTC
+    # offset is -0700" went out as "0700.", because " -" read as a break,
+    # the setup clause before it was taken for an echo, and the sign left
+    # with it.
+    _ECHO_DASH = re.compile(r"\s*(?:—|–|--+)(?!\d)\s*|\s+-(?!\d)\s*|\s*-\s+")
     _ECHO_SENTENCE = re.compile(r"(?<=[.!?])\s+")
     # The same restatement with a comma instead of a dash: "I see, have a
     # wonderful day." Only ever applied under the whole-message rule below,

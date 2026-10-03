@@ -64,17 +64,40 @@ ELABORATE_ANSWER = "elaborate"
 OPEN = "open"
 
 
-def asks_for_information(intent: str, speech_act: str) -> bool:
+# When they ask whether they have it right. The user, rating the simulated
+# learners (2026-10-02): "if the person asks 'something something, is this
+# correct?' Elaina should reply to that question saying yes your
+# understanding it correctly or no thats not quiet it and give on easier
+# explanation." Measured there: those turns were answered with the
+# explanation again, the verdict left for the person to work out. Every
+# shape that explains carries it, because the router files these turns
+# under all of them; the explanation contract carries the same words.
+CHECKING_UNDERSTANDING = (
+    "If they ask whether they have understood it right, start by saying "
+    "whether they have: yes, partly, or not quite. Then, if any of it is "
+    "off, put right just that part, in simpler words than before.",
+    "이해한 게 맞는지 물으시면 먼저 맞는지부터 말합니다: 맞습니다, 거의 "
+    "맞습니다, 또는 조금 다릅니다. 그다음 틀린 부분이 있으면 그 부분만 "
+    "전보다 더 쉬운 말로 바로잡습니다.",
+)
+
+
+def asks_for_information(intent: str, speech_act: str, answer_shape: str = "") -> bool:
     """Whether this turn asks for something to be told or explained.
 
-    The router's own signal decides: ``speech_act`` distinguishes an
-    information request from a thanks, a remark or an approval. Phase 3
-    gave the explanation budget to every ``conversation`` turn, so "Thanks,
-    that makes sense" got the room -- and the instruction -- of an
-    explanation, and the 8B explained hash tables again.
+    The router's own signals decide. ``speech_act`` distinguishes an
+    information request from a thanks, a remark or an approval: Phase 3 gave
+    the explanation budget to every ``conversation`` turn, so "Thanks, that
+    makes sense" got the room -- and the instruction -- of an explanation,
+    and the 8B explained hash tables again. ``answer_shape`` settles the
+    turns ``speech_act`` files elsewhere: the 8B calls "I still don't get
+    it" a correction, and in the same breath says an explanation is wanted.
+    A statement of fact ("my PC case is huge", shape "state") asks nothing.
     """
     act = str(speech_act or "").strip().lower()
     if act == "information_request":
+        return True
+    if str(answer_shape or "").strip().lower() in {"explain", "example"}:
         return True
     return intent in _QUESTION_INTENTS and act not in _NOT_A_REQUEST
 
@@ -91,9 +114,16 @@ class ResponseBudget:
         """What the room is for, said to the model in the reply's language."""
         korean = str(language or "").lower().startswith("ko")
         goals = {
+            # "Add at most one short sentence of context" read as an
+            # invitation: in the FAST/DEEP baseline the 8B's value answers
+            # carried "that's exact", a zone name after an offset, or unit
+            # trivia after a conversion, and failed only_what_helps on 18 of
+            # 63 value turns. Candidate under test (docs/COMMUNICATION_FINDINGS.md).
             VALUE_ANSWER: (
-                "Give the value first; add at most one short sentence of context.",
-                "요청하신 값을 먼저 말하고, 덧붙이는 설명은 한 문장 이내로 합니다.",
+                "Give the value. Add a sentence only when the value would be "
+                "misread without it.",
+                "요청하신 값을 말합니다. 그 값이 오해될 수 있을 때만 한 문장을 "
+                "덧붙입니다.",
             ),
             STATE: (
                 "Answer directly: the fact, the formula or what it is, and "
@@ -103,11 +133,18 @@ class ResponseBudget:
                 "쓰면 풀어서 설명합니다. 요청하지 않은 예시나 활용 사례는 "
                 "덧붙이지 않습니다.",
             ),
+            # "What problem it solves" and "worked example" are Phase 3's
+            # wording, dropped when the goals were split by shape and put
+            # back after the final rerun: without them the 27B opened
+            # "how does a hash table work" and "what is overfitting" with a
+            # definition and lost the concrete case in every run.
             EXPLAIN_ANSWER: (
-                "Explain it so it lands: say why it happens or what it is for, "
-                "and show one concrete case.",
-                "설명이 전달되도록 합니다: 왜 그런지 또는 무엇을 위한 것인지 "
-                "말하고, 구체적인 사례 하나를 보여 줍니다.",
+                "Explain it so it lands: say why it happens, what it is for or "
+                "what problem it solves, and show one concrete case or worked "
+                "example. Shorter is fine when the answer is simple.",
+                "설명이 전달되도록 합니다: 왜 그런지, 무엇을 위한 것인지 또는 "
+                "어떤 문제를 푸는지 말하고, 구체적인 사례나 예시 하나를 보여 "
+                "줍니다. 답이 간단하면 더 짧아도 됩니다.",
             ),
             EXAMPLE: (
                 "They asked for an example: show one concrete situation where "
@@ -132,6 +169,9 @@ class ResponseBudget:
             ),
         }
         english, korean_goal = goals.get(self.shape, ("", ""))
+        if english and self.shape != VALUE_ANSWER:
+            english = f"{english} {CHECKING_UNDERSTANDING[0]}"
+            korean_goal = f"{korean_goal} {CHECKING_UNDERSTANDING[1]}"
         return korean_goal if korean else english
 
 
@@ -160,7 +200,8 @@ def ceilings(config) -> dict[str, tuple[int, int]]:
 
 
 def kind_for(*, intent: str, detailed: bool, value_response: bool,
-             recommendation: bool = False, speech_act: str = "") -> str:
+             recommendation: bool = False, speech_act: str = "",
+             answer_shape: str = "") -> str:
     """How much room this turn gets."""
     # A recommendation keeps the short budget: its own rules (the pick
     # first, one reason) and its finalizer were measured at that length,
@@ -169,7 +210,7 @@ def kind_for(*, intent: str, detailed: bool, value_response: bool,
         return VALUE
     if intent == "clarification":
         return ELABORATE
-    if not asks_for_information(intent, speech_act):
+    if not asks_for_information(intent, speech_act, answer_shape):
         return VALUE
     if detailed:
         return ELABORATE
@@ -199,7 +240,8 @@ def budget_for(*, intent: str, detailed: bool, value_response: bool,
                recommendation: bool = False, speech_act: str = "",
                answer_shape: str = "", config=None) -> ResponseBudget:
     kind = kind_for(intent=intent, detailed=detailed, value_response=value_response,
-                    recommendation=recommendation, speech_act=speech_act)
+                    recommendation=recommendation, speech_act=speech_act,
+                    answer_shape=answer_shape)
     shape = shape_for(kind=kind, intent=intent, value_response=value_response,
                       recommendation=recommendation, speech_act=speech_act,
                       answer_shape=answer_shape)

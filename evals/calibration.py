@@ -282,10 +282,13 @@ def score(path: Path, judge: str | None = None) -> int:
             if not label:
                 missing += 1
                 continue
-            judge = verdicts.get(name, {}).get("verdict", "")
-            by_property[name].append((label, judge))
-            if judge != label:
-                disagreements.append((item["item"], item["scenario"], name, label, judge,
+            # Not "judge": that is the model whose verdicts are read, and
+            # reusing the name made every run after the first load under a
+            # judge called "yes" or "no" -- with no verdicts at all.
+            given = verdicts.get(name, {}).get("verdict", "")
+            by_property[name].append((label, given))
+            if given != label:
+                disagreements.append((item["item"], item["scenario"], name, label, given,
                                       verdicts.get(name, {}).get("why", "")))
     if missing:
         print(f"{missing} label(s) not filled in yet; scoring the rest.")

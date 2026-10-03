@@ -72,12 +72,15 @@ class ScriptedClient:
     # rather than the reply again.
     replies: dict[str, str] = field(default_factory=dict)
     calls: list[str] = field(default_factory=list)
-    # Every prompt in full, for a test about what a call was shown.
+    # Every prompt in full, for a test about what a call was shown, and
+    # the model each call named, for a test about who was asked.
     prompts: list[list] = field(default_factory=list)
+    models: list[str] = field(default_factory=list)
 
     def chat(self, **kwargs):
         messages = kwargs.get("messages") or []
         self.prompts.append(list(messages))
+        self.models.append(str(kwargs.get("model") or ""))
         # Only the newest user message decides which scripted answer applies.
         # Matching the whole prompt matched the *previous* turn's wording out
         # of the conversation history, and answered this turn with it.
