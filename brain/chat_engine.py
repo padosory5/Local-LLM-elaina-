@@ -20,8 +20,12 @@ from brain.deliberation import ClarificationGate, Goal
 from brain.deliberation import goal_intent, interaction, supersession
 from brain.deliberation.goal_intent import SemanticGoal
 from brain import capability_selection
+from brain import explain_contract
+from brain import fastdeep_apply
+from brain import fastdeep_router
 from brain import response_stages
 from brain import result_state
+from brain import turn_move
 from brain import response_surface as surfaces
 from brain import entity_discovery
 from brain import surface_images
@@ -605,6 +609,34 @@ class ChatEngine:
                 default="", required=False,
             ) or ""
         ).strip() or self.model
+        # Record-only unless an evaluation arm sets ELAINA_FASTDEEP_ROUTE
+        # (brain/fastdeep_apply.py): then the turns it names are written by
+        # the DEEP model. Her own use never sets it; she answers FAST.
+        self._fastdeep_policy, self._fastdeep_model = fastdeep_apply.configured()
+        if self._fastdeep_policy:
+            print(f"[FAST/DEEP] evaluation arm: {self._fastdeep_policy} -> "
+                  f"{self._fastdeep_model}")
+        self._turns_begun = 0
+        # The same for the Stage C explanation arms (brain/explain_contract.py):
+        # unset, as she always runs, every prompt is built as before.
+        self._explain_arm, self._explain_plans = explain_contract.configured()
+        if self._explain_arm:
+            print(f"[Explain] evaluation arm: {self._explain_arm}")
+        # In her own use: the explanation contract as a controlled
+        # experiment, config.yaml responses.explanation_contract (off, on,
+        # split). Arm B only -- no plan, no extra model call.
+        self._explanation_experiment = explain_contract.experiment_mode(self.config)
+        if self._explanation_experiment != explain_contract.EXPERIMENT_OFF and not self._explain_arm:
+            print(f"[Explain] explanation contract experiment: {self._explanation_experiment} "
+                  f"(contract {explain_contract.CONTRACT_VERSION})")
+        self._said_this_session: list[str] = []
+        # The explanation thread the turn-move shadow reads (brain/turn_move.py),
+        # made on first use: it embeds with memory's model, loaded further down.
+        self._turn_moves = None
+        # Whether a "differently" move is acted on (config responses.turn_move).
+        self._turn_move_mode = turn_move.mode(self.config)
+        if self._turn_move_mode != turn_move.OFF:
+            print(f"[Turn Move] acting on: {', '.join(turn_move.ACTED_ON)}")
 
         self.temperature = self.config.get(
             "llm",
@@ -1151,7 +1183,7 @@ class ChatEngine:
         )
         self.research_agent = ResearchAgent(
             self.search_web,
-            search_structured=self.web_search_tool.search_web_structured,
+            search_structured=self.search_web_structured,
             locale=self.user_locale,
         )
         self.web_search_action_planner = WebSearchActionPlanner(
@@ -3113,6 +3145,9 @@ class ChatEngine:
             # birthday is March 14th") is evidence about their own life.
             sources.append(("what they told her", told))
         evidence = " ".join(source for _, source in sources)
+        # A damaged copy is of a number the person gave, not of one in a
+        # search or a calculation (grounded_values.PERSON_SOURCES).
+        theirs = grounded_values.their_words(sources)
         for finding in GroundedValueGuard.findings(text, sources):
             turn_trace.note_finding(stage="grounded_values", **finding)
         # Two sources disagreeing is a state, not a race -- so it is said,
@@ -3151,6 +3186,7 @@ class ChatEngine:
             # a follow-up about something she looked up. Reading them as one
             # meant every casual number in conversation was second-guessed.
             grounded_subject=looked_something_up,
+            their_words=theirs,
         ):
             return text
 
@@ -3207,7 +3243,7 @@ class ChatEngine:
         # said only "a value".
         removed = sorted(
             GroundedValueGuard.unsupported_values(text, evidence)
-            | grounded_values._mangled_numbers(text, evidence)
+            | grounded_values._mangled_numbers(text, theirs)
         )
         print(
             "[Grounding Guard] Removed "
@@ -3228,6 +3264,7 @@ class ChatEngine:
         if said_last_time and partial:
             quiet = GroundedValueGuard.correct_values(
                 text, evidence=evidence, offer="", partial_offer="",
+                their_words=theirs,
             )
             if quiet and quiet != text:
                 print("[Grounding Guard] Said that last turn; dropping the "
@@ -3235,6 +3272,7 @@ class ChatEngine:
                 return quiet
         return GroundedValueGuard.correct_values(
             text, evidence=evidence, offer=offer, partial_offer=partial,
+            their_words=theirs,
         )
 
     def _last_claim(self) -> str:
@@ -3833,6 +3871,12 @@ class ChatEngine:
             # guard replaced it with "I don't want to recommend something I
             # haven't checked".
             " ".join(self._what_they_told_her()),
+            # And what they said earlier in this conversation, as much as
+            # this turn. Measured (simulated learners): "What's an API?",
+            # then "so it's not an app?" -- and "API" in that answer was
+            # retracted as a place nothing had checked. This turn's own words
+            # are above, where a dispute does not count as grounding.
+            " ".join(list(getattr(self, "_said_this_session", ()) or ())[:-1]),
         ))
         # A place named in one language is grounded by the other. Measured
         # once memories began being written in the person's own language:
@@ -4541,7 +4585,7 @@ class ChatEngine:
         }
 
     _FORGET_EVERYTHING = re.compile(
-        r"everything|all|any\s?thing|모두|전부|다\s*잊",
+        r"\beverything\b|\ball\b|\bany\s?thing\b|모두|전부|다\s*잊",
         re.IGNORECASE,
     )
 
@@ -4941,17 +4985,59 @@ class ChatEngine:
         print(f"[Premise] They took something false for granted; said instead: {correction!r}")
         return correction
 
-    def _answered_on_its_own(self, question: str) -> str:
+    def _move_record(self) -> turn_move.Record:
+        """This session's explanation thread, for the turn-move shadow."""
+        record = getattr(self, "_turn_moves", None)
+        if record is None:
+            # Memory's bge-m3, already loaded; no second copy on the card.
+            # Without memory, "asked again" is recorded as unavailable.
+            embedder = getattr(getattr(self, "memory_manager", None), "embedder", None)
+            record = self._turn_moves = turn_move.Record(
+                embed=embedder.encode if embedder is not None else None,
+            )
+        return record
+
+    def _explanation_plan(self, said: list[str]):
+        """Arm C only (brain/explain_contract.py): the plan for this
+        explanation, from one 8B call. (plan or None, what happened)."""
+        started = time.perf_counter()
+        text, failure = "", ""
+        try:
+            response = self.client.chat(
+                model=self.model,
+                messages=explain_contract.planner_messages(said, self._turn_language),
+                stream=False,
+                format="json",
+                options={"temperature": 0, "num_predict": 256},
+                keep_alive=self.keep_alive,
+                think=False,
+            )
+            text = str(self._value(self._value(response, "message", {}), "content", "") or "")
+        except Exception as error:
+            failure = f"call failed: {type(error).__name__}"
+        plan, unusable = explain_contract.parse_plan(text)
+        return plan, {"source": "8B", "seconds": round(time.perf_counter() - started, 2),
+                      "unusable": failure or unusable}
+
+    def _answered_on_its_own(self, question: str, *, model: str = "",
+                             keep_alive=None) -> str:
         """The question answered with no conversation behind it -- what she
-        copied from is the history, so the second attempt does not have it."""
+        copied from is the history, so the second attempt does not have it.
+
+        Written by the model that writes this turn's words (``model``, the
+        turn's ``active_model``; the configured words model when not given),
+        never the model that made the turn's decisions. Measured in the
+        Stage B diagnostic, with the 8B deciding and the 27B writing: this
+        re-ask went to the 8B, so one answer of a 27B turn was the 8B's.
+        """
         try:
             messages = self._build_factual_messages(question, "", reset_history=True)
             response = self.client.chat(
-                model=self.model,
+                model=str(model or "").strip() or self.conversation_model,
                 messages=messages,
                 stream=False,
                 options={"temperature": 0, "num_predict": 220},
-                keep_alive=self.keep_alive,
+                keep_alive=self.keep_alive if keep_alive is None else keep_alive,
                 think=False,
             )
             text = str(
@@ -4965,7 +5051,8 @@ class ChatEngine:
             text = korean_register.to_formal(text)
         return text
 
-    def _answer_the_corrected_question(self, question: str, term: str) -> str:
+    def _answer_the_corrected_question(self, question: str, term: str, *,
+                                       model: str = "", keep_alive=None) -> str:
         """The corrected question answered on its own, without the history.
 
         Measured: "CPT 신청 서류 뭐가 필요해?" -> "아니 CPT 말고 OPT" was
@@ -4974,14 +5061,36 @@ class ChatEngine:
         strongest thing in the prompt was her own last reply. Kept only when
         it names what they meant.
         """
-        text = self._answered_on_its_own(question)
+        text = self._answered_on_its_own(question, model=model, keep_alive=keep_alive)
         if text and self._names_what_they_meant(text, term):
             print(f"[Correction] The answer was about the old one; answered "
                   f"{question!r} on its own.")
             return text
         return ""
 
-    def _not_her_last_answer(self, said: str, reply: str) -> str:
+    @staticmethod
+    def _reply_rests_on_the_conversation(route, said: str) -> bool:
+        """Whether this turn can only be answered with its history.
+
+        A clarification is the person asking her to re-explain what she
+        just said (R9): the answer is meant to restate it, value included.
+        And a follow-up the router could not turn into a question of its
+        own -- its reading is the words said, unchanged -- means nothing
+        without the history. Either way, asking again without the history
+        answers a different question. Measured in the FAST/DEEP baseline:
+        "얼마나 우려야 돼?" after a cold-brew answer, a clarification whose
+        reading stayed "얼마나 우려야 돼?", came back about tumble-drying
+        clothes.
+        """
+        if str(getattr(route, "intent", "") or "") == "clarification":
+            return True
+        reading = " ".join(str(getattr(route, "normalized_request", "") or "").split())
+        return bool(getattr(route, "is_follow_up", False)) and (
+            not reading or reading.casefold() == " ".join(str(said or "").split()).casefold()
+        )
+
+    def _not_her_last_answer(self, said: str, reply: str, question: str = "", *,
+                             model: str = "", keep_alive=None) -> str:
         """A new question answered with the answer to the last one.
 
         Measured on the basics check: asked "물은 몇 도에서 끓어?" one turn
@@ -4989,6 +5098,14 @@ class ChatEngine:
         화씨입니다" -- the previous answer, with the new question's own word
         (끓) nowhere in it. Asked again without the history; the second
         attempt is kept only when it says something else.
+
+        What is asked again is ``question``, the router's self-contained
+        reading of the turn, not the words said: without the history, a
+        follow-up means nothing. Measured in the Phase 3 final rerun, nine
+        times out of nine: "얼마나 우려야 돼?" after a cold-brew answer
+        rightly repeated its "12시간", was asked again bare, and came back as
+        how worried to be (8B) or how long to tumble-dry clothes (27B). The
+        router had it as "How long should cold brew coffee be steeped?".
         """
         previous, _ = self._things_she_has_said()
         if not str(previous or "").strip():
@@ -4999,7 +5116,8 @@ class ChatEngine:
         )
         if not said_again:
             return reply
-        fresh = self._answered_on_its_own(said)
+        fresh = self._answered_on_its_own(str(question or "").strip() or said,
+                                          model=model, keep_alive=keep_alive)
         if (fresh and not told_not_asked.repeats(fresh, previous)
                 and not told_not_asked.answers_the_one_before(fresh, said, previous)):
             print(f"[Answer] That was the answer to the question before it; "
@@ -10034,6 +10152,9 @@ class ChatEngine:
             and not locked_response
             and decision.acts
             and capability.capability == capability_selection.WEB_SEARCH
+            # Switched off: _dispatch_turn has already put what she says
+            # about that in forced_response, and nothing is searched.
+            and not self._search_switched_off()
         ):
             search_started = time.perf_counter()
             try:
@@ -10152,7 +10273,12 @@ class ChatEngine:
                 )
 
         if route.intent == "fact_check":
-            if route.search_query:
+            if route.search_query and self._search_switched_off():
+                # A dispute is settled by looking, and she cannot look. Said
+                # rather than settled from memory, which is the failure the
+                # search is here to prevent.
+                forced_response = self._search_switched_off()
+            elif route.search_query:
                 search_started = time.perf_counter()
                 try:
                     search_result = self.search_web(
@@ -10234,7 +10360,14 @@ class ChatEngine:
                     reset_history=False,
                 )
 
-        if route.intent == "entity_correction":
+        if route.intent == "entity_correction" and self._search_switched_off():
+            # The name is still taken; only the lookup is not made. The same
+            # shape as the failed lookup below.
+            forced_response = (
+                f"Got it, the name is {route.entity or route.normalized_request}. "
+                + self._search_switched_off()
+            )
+        elif route.intent == "entity_correction":
             corrected_entity = route.entity or route.normalized_request
             corrected_query = self._corrected_search_query(corrected_entity)
             search_started = time.perf_counter()
@@ -10832,11 +10965,133 @@ class ChatEngine:
             model=active_model,
             temperature=active_temperature,
         )
+        # FAST/DEEP in shadow: what the router would choose, recorded and
+        # never acted on. The turn is answered by active_model as always.
+        self._turn_budget = budget.kind
+        shadow_route = fastdeep_router.decide(
+            fastdeep_router.signals_for(
+                route, budget,
+                previous_budget=getattr(self, "_previous_turn_budget", ""),
+                domain_claimed=getattr(self, "_turn_domain_claim", None) is not None,
+                language=self._turn_language,
+                detailed=detailed_response,
+            )
+        )
+        turn_trace.note_context(shadow_route=shadow_route.as_record())
+        # The turn-move owner in shadow (brain/turn_move.py): how this turn
+        # would be answered from what the conversation has been through --
+        # asked again, a claim of hers questioned -- recorded beside the
+        # goal production used, and never acted on.
+        shadow_move = self._move_record().decide(
+            user_input,
+            is_follow_up=bool(getattr(route, "is_follow_up", False)),
+            topic_shift=bool(getattr(route, "topic_shift", False)),
+            speech_act=str(getattr(route, "speech_act", "") or ""),
+            budget=budget.kind,
+        )
+        turn_trace.note_context(turn_move=shadow_move.trace(
+            language=self._turn_language,
+            production_goal=budget.shape or budget.kind,
+            history_inherited=turn_context.inherit_history,
+        ))
+        # Only in an evaluation arm (brain/fastdeep_apply.py), never in her
+        # own use: the 27B writes this turn under DEEP's setting, with the
+        # conversation as it stands -- FAST's earlier answers included.
+        deep_model = fastdeep_apply.words_model(
+            shadow_route.decision,
+            turn_number=getattr(self, "_turns_begun", 1),
+            policy=getattr(self, "_fastdeep_policy", ""),
+            model=getattr(self, "_fastdeep_model", ""),
+        )
+        if deep_model and not uses_vision_model:
+            active_model = deep_model
+            response_stages.soft_stages_off_this_turn(True)
+            turn_trace.note_context(
+                model=active_model,
+                fastdeep_applied={"policy": self._fastdeep_policy, "model": deep_model,
+                                  "decision": shadow_route.decision},
+            )
         if calculation_needs_own_math:
             messages[-1]["content"] += (
                 "\n\nRESOLVED CALCULATION REQUEST\n"
                 f"{route.normalized_request}"
             )
+        style_text = conversation_style.style_instruction(turn_act, self._turn_language)
+        # The explanation contract (brain/explain_contract.py, Stage C arm B):
+        # on an explanation turn the order and length rules of the persona,
+        # the voice requirements and the style block give way to one
+        # contract. In her own use it is the controlled experiment
+        # config.yaml names -- every explanation turn ("on"), a random half
+        # ("split") or none ("off") -- and each explanation turn's arm is
+        # logged in its trace, so real turns can be compared. An evaluation
+        # arm (ELAINA_EXPLAIN_ARM) takes precedence; only an evaluation arm
+        # ever adds a plan.
+        explain_arm = getattr(self, "_explain_arm", "")
+        explanation_turn = not calculation_needs_own_math and explain_contract.applies(
+            kind=budget.kind, shape=budget.shape, act=turn_act)
+        if explanation_turn and not explain_arm:
+            mode = getattr(self, "_explanation_experiment", explain_contract.EXPERIMENT_OFF)
+            this_turn = turn_trace.current()
+            variant, assigned = explain_contract.production_variant(
+                mode, this_turn.turn_id if this_turn is not None
+                else str(getattr(self, "_turns_begun", 0)))
+            turn_trace.note_context(explanation_experiment={
+                "mode": mode, "variant": variant, "assigned": assigned,
+                "contract_version": explain_contract.CONTRACT_VERSION})
+            if variant == explain_contract.CONTRACT:
+                explain_arm = explain_contract.CONTRACT
+        if explain_arm and explanation_turn:
+            plan, plan_note = None, {}
+            said = list(getattr(self, "_said_this_session", []) or [user_input])
+            if explain_arm == explain_contract.PLAN:
+                plan, plan_note = self._explanation_plan(said)
+            elif explain_arm == explain_contract.PLAN_FILE:
+                found = self._explain_plans.get(explain_contract.plan_key(said))
+                plan, unusable = (explain_contract.parse_plan(found) if found is not None
+                                  else (None, "no plan for this question"))
+                plan_note = {"source": "file", "unusable": unusable}
+            generation_instruction = explain_contract.requirements(
+                self._turn_language, max_words=max_words, plan=plan,
+                text=explain_contract.text_for(explain_arm))
+            style_text = explain_contract.style_without_conflicts(style_text)
+            if messages and messages[0].get("role") == "system":
+                messages[0] = {**messages[0], "content": explain_contract.persona_without_conflicts(
+                    str(messages[0].get("content") or ""),
+                    self.personality_loader.sections(self._turn_language))}
+            turn_trace.note_context(explanation_contract={
+                "arm": explain_arm, "plan": plan.as_record() if plan else None, **plan_note})
+        # The turn-move owner, acting (config responses.turn_move, off by
+        # default). On a question they have asked before, the move owns the
+        # turn whatever the router filed it under: its line is the goal, it
+        # gets an explanation's room, and it is said as an answer. Pilot 4:
+        # the fourth asking of the same question got the same "explain"
+        # goal as the first, and the same answer word for word. Last, so it
+        # outranks the goal, the budget and any contract set above.
+        if (getattr(self, "_turn_move_mode", turn_move.OFF) == turn_move.ON
+                and shadow_move.move in turn_move.ACTED_ON
+                and not calculation_needs_own_math):
+            was = {"act": turn_act, "budget": budget.kind, "goal": budget.shape or budget.kind,
+                   "value_response": value_response}
+            if budget.kind not in turn_move.EXPLAINING_BUDGETS:
+                max_words, max_sentences = response_budget.ceilings(self.config)[
+                    response_budget.ELABORATE]
+            turn_act = conversation_style.ANSWER
+            value_response = False
+            response_limits = ResponseLimits(
+                max_words=max_words, max_sentences=max_sentences,
+                goal=shadow_move.instruction(self._turn_language),
+            )
+            response_instruction = response_limits.instruction(
+                recommendation=recommendation_response, language=self._turn_language,
+            )
+            generation_instruction = response_instruction
+            style_text = conversation_style.style_instruction(turn_act, self._turn_language)
+            print(f"[Turn Move] {shadow_move.move}: asked {shadow_move.attempts + 1} times; "
+                  "the move owns this turn.")
+            turn_trace.note_context(turn_move_applied={
+                "move": shadow_move.move, "attempts": shadow_move.attempts, "was": was,
+                "room": [max_words, max_sentences],
+            })
         messages[-1]["content"] += (
             "\n\nVOICE RESPONSE REQUIREMENTS\n"
             f"{generation_instruction}"
@@ -10845,7 +11100,7 @@ class ChatEngine:
             # act would say it. personality.txt says who she is once, at the
             # top of a long prompt; this says what this particular reply is
             # for, which is the part the model was losing.
-            f"\n\n{conversation_style.style_instruction(turn_act, self._turn_language)}"
+            f"\n\n{style_text}"
         )
 
         # Notify the UI before waiting for Ollama's first token.
@@ -11182,9 +11437,13 @@ class ChatEngine:
                 rewrite_messages = build_personality_messages(
                     system_prompt=self.system_prompt,
                     history=[],
-                    user_input=(
-                        route.normalized_request or user_input
-                    ),
+                    # What they said, not the router's reading of it: this
+                    # shortens a draft, and the draft answered them. Measured
+                    # (simulated learners, 2026-10-02): "What's a p-value?"
+                    # was read as a spelled name, normalized to "Sap"; the
+                    # draft defined a p-value, and the rewrite said "Sap is a
+                    # term used ... to describe a type of tree" instead.
+                    user_input=user_input,
                     context_sections=(
                         ("DRAFT ANSWER", reply),
                         (
@@ -11365,15 +11624,26 @@ class ChatEngine:
                     and not effective_forced_response
                     and not self._names_what_they_meant(reply, corrected_to)
                     and told_not_asked.repeats(reply, self._things_she_has_said()[0])):
-                retried = self._answer_the_corrected_question(user_input, corrected_to)
+                retried = self._answer_the_corrected_question(
+                    user_input, corrected_to,
+                    model=active_model, keep_alive=active_keep_alive,
+                )
                 if retried:
                     reply = turn_trace.step("corrected_question", reply, retried)
-            # And a value question answered with the previous answer.
+            # And a value question answered with the previous answer -- but
+            # never by asking again without the history when the turn only
+            # means something with it (a clarification, or a follow-up the
+            # router left as the words said).
             if value_response and not effective_forced_response:
-                reply = turn_trace.step(
-                    "not_her_last_answer", reply,
-                    self._not_her_last_answer(user_input, reply),
-                )
+                if not self._reply_rests_on_the_conversation(route, user_input):
+                    reply = turn_trace.step(
+                        "not_her_last_answer", reply,
+                        self._not_her_last_answer(
+                            user_input, reply,
+                            question=getattr(route, "normalized_request", ""),
+                            model=active_model, keep_alive=active_keep_alive,
+                        ),
+                    )
                 if "web_search" not in timings:
                     reply = turn_trace.step(
                         "encyclopedia", reply,
@@ -11714,7 +11984,19 @@ class ChatEngine:
             # "a restatement of the current message", leaving "일정이
             # 궁금하시다면 알려주시면 도와드리겠습니다" -- and what they took
             # for granted is checked against the finished answer.
-            corrected_premise = self._premise_corrected(user_input, reply)
+            premise_applies = premise_check.applies(
+                is_follow_up=bool(getattr(route, "is_follow_up", False)),
+                budget=budget.kind,
+                previous_budget=getattr(self, "_previous_turn_budget", ""),
+            )
+            if not premise_applies and told_not_asked.worth_checking(user_input):
+                turn_trace.note_context(
+                    premise_check="not judged: a follow-up inside an explanation",
+                )
+            corrected_premise = (
+                self._premise_corrected(user_input, reply)
+                if premise_applies else None
+            )
             if corrected_premise:
                 reply = turn_trace.step(
                     "premise_correction", reply,
@@ -11951,6 +12233,7 @@ class ChatEngine:
             "assistant",
             reply
         )
+        self._move_record().record(user_input, reply)
         self._router_history.extend([
             {
                 "role": "user",
@@ -12109,7 +12392,26 @@ class ChatEngine:
         # the need decides the capability, and only then does anything run.
         # Which agent owns the capability stays declarative, in the
         # `intents:` list of each agents/definitions/*.yaml.
-        if routing.capability.needs_agent and routing.decision.acts:
+        #
+        # A search chosen while search.enabled is off is not dispatched: no
+        # agent takes it and nothing says she is looking. The conditions are
+        # the ones _answer_turn checks before it searches.
+        search_off = (
+            self._search_switched_off()
+            if routing.decision.acts
+            and routing.capability.capability == capability_selection.WEB_SEARCH
+            and not locked_response
+            and route.intent != "screen_analysis"
+            else ""
+        )
+        if search_off:
+            print("[Capability] web_search is switched off (search.enabled); "
+                  "nothing was dispatched.")
+        if (
+            routing.capability.needs_agent
+            and routing.decision.acts
+            and not search_off
+        ):
             # Looked up by a label that agrees with the capability. Using the
             # router's own label here handed a web_search turn labelled
             # "conversation" to the Conversation Agent.
@@ -12184,7 +12486,9 @@ class ChatEngine:
             and route.action_requested
         )
         use_screen_vision = route.intent == "screen_analysis"
-        forced_response = ""
+        # "Web search is switched off at the moment." when that is why
+        # nothing was dispatched above; otherwise nothing is forced yet.
+        forced_response = search_off
         # Whether a real capability ran this turn. Used by the commitment
         # guard below, which treats "let me open that for you" as a broken
         # promise unless something actually happened.
@@ -12194,6 +12498,7 @@ class ChatEngine:
         # dispatched a real search and was missing from it.
         action_performed = (
             routing.decision.acts and routing.capability.needs_agent
+            and not search_off
         )
         if action_performed:
             self.action_ledger.dispatching(
@@ -14508,6 +14813,15 @@ class ChatEngine:
         # What this turn has in hand starts empty every turn. Evidence from
         # an earlier turn gets in only when this turn chooses to reuse it.
         self._turn_evidence = turn_evidence.EvidenceLedger()
+        # The previous turn's explanation room, for the shadow FAST/DEEP
+        # router (brain/fastdeep_router.py). Moved here every turn, so a
+        # turn that never reaches the answer path leaves it empty, not stale.
+        self._previous_turn_budget = getattr(self, "_turn_budget", "")
+        self._turn_budget = ""
+        self._turns_begun = getattr(self, "_turns_begun", 0) + 1
+        self._said_this_session = [*getattr(self, "_said_this_session", []),
+                                   str(user_input or "").strip()]
+        response_stages.soft_stages_off_this_turn(False)
         try:
             return self._take_turn(
                 user_input,
@@ -14523,6 +14837,7 @@ class ChatEngine:
                 trace.record_outcome("raised", f"{type(error).__name__}: {error}")
             raise
         finally:
+            response_stages.soft_stages_off_this_turn(False)
             if trace is not None:
                 turn_trace.finish(trace)
 
@@ -15780,6 +16095,7 @@ class ChatEngine:
         Returns:
             Current web-search results.
         """
+        self._require_web_search()
         normalized_query = " ".join(str(query).lower().split())
         cached = self._search_cache.get(normalized_query)
         if cached is not None:
@@ -15821,7 +16137,48 @@ class ChatEngine:
             )
 
         return result
-    
+
+    def search_web_structured(
+        self,
+        query: str,
+        max_results: int = 5,
+    ) -> list[dict[str, str]]:
+        """The same search as raw per-result data, behind the same switch.
+
+        The research agent used to be handed the tool's own method, so
+        structured acquisition never passed through the engine at all.
+        """
+        self._require_web_search()
+        return self.web_search_tool.search_web_structured(query, max_results)
+
+    def _require_web_search(self) -> None:
+        """Refuse to search while ``search.enabled`` is off.
+
+        Nothing that searched read the switch: it reached the list of
+        abilities she is shown (``_capability_state``) and stopped there. So
+        with it off a turn the capability layer sent to web_search still
+        queried the web, and the prompt said "web search: unavailable: web
+        search is disabled in configuration" directly above the results.
+        Every search she makes ends at ``search_web`` or
+        ``search_web_structured``, which is why it is enforced in those two
+        rather than at each caller.
+        """
+        if not getattr(self, "_web_search_enabled", True):
+            raise RuntimeError("Web search is disabled in configuration.")
+
+    def _search_switched_off(self) -> str:
+        """What she says in place of a search while it is off, else "".
+
+        The contract has declared this failure since A4, and nothing ever
+        reported it. Asked before a search is dispatched, so that she does
+        not say she is looking and then say she cannot.
+        """
+        if getattr(self, "_web_search_enabled", True):
+            return ""
+        return capability_contract.failed(
+            "web_search", "disabled", language=self._turn_language,
+        ).spoken(self._turn_language)
+
     def build_time_context(self, question: str = "", *, said: str = "",
                            language: str = "") -> str:
         """The clock, and -- when the question names somewhere else -- theirs.

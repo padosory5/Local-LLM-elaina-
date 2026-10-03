@@ -15,7 +15,8 @@ Two things are replaced, and only two:
 * **The machine.** Every surface that could move a mouse, launch an app or
   open a page records what it was asked to do and does nothing. Assertions
   are then about the instruction she issued, which is the behaviour under
-  test.
+  test. The web is part of the machine: a search is recorded, and finds
+  nothing unless the test says what is out there.
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ from tools.computer_control.windows_ui_observer import (
     WindowInfo,
     WindowObservation,
 )
+from tools.web_search import WebSearchTool
 
 
 # ----------------------------------------------------------------- model
@@ -63,10 +65,19 @@ class ScriptedClient:
 
     routes: dict[str, dict] = field(default_factory=dict)
     reply: str = "Sure."
+    # What a later, non-routing call says, keyed by a phrase of its own
+    # prompt ("DRAFT ANSWER" for the length rewrite, "Rewrite the draft
+    # below as one line" for her re-say): for a test whose outcome depends
+    # on those steps, so each gets the kind of answer it would really give
+    # rather than the reply again.
+    replies: dict[str, str] = field(default_factory=dict)
     calls: list[str] = field(default_factory=list)
+    # Every prompt in full, for a test about what a call was shown.
+    prompts: list[list] = field(default_factory=list)
 
     def chat(self, **kwargs):
         messages = kwargs.get("messages") or []
+        self.prompts.append(list(messages))
         # Only the newest user message decides which scripted answer applies.
         # Matching the whole prompt matched the *previous* turn's wording out
         # of the conversation history, and answered this turn with it.
@@ -87,9 +98,16 @@ class ScriptedClient:
             # reply call quotes the same utterance a route is keyed on --
             # so matching routes first answered the reply with JSON.
             return iter([{"message": {"content": self.reply}}])
-        for phrase, decision in self.routes.items():
-            if phrase.casefold() in current.casefold() and "intent" in decision:
-                return {"message": {"content": json.dumps(decision)}}
+        # And a routing answer is always JSON. The length rewrite quotes the
+        # utterance too, as plain text, and was answered with the route.
+        if kwargs.get("format") == "json":
+            for phrase, decision in self.routes.items():
+                if phrase.casefold() in current.casefold() and "intent" in decision:
+                    return {"message": {"content": json.dumps(decision)}}
+        else:
+            for phrase, answer in self.replies.items():
+                if phrase.casefold() in current.casefold():
+                    return {"message": {"content": answer}}
         return {"message": {"content": self.reply}}
 
     def generate(self, **kwargs):  # some callers use generate()
@@ -428,6 +446,45 @@ class RecordingAudio:
         return self.spoken[-1] if self.spoken else ""
 
 
+class RecordingSearch(WebSearchTool):
+    """The web, disconnected: every query is recorded and nothing is found.
+
+    ``build_engine`` switches the ``search`` section off, and that was taken
+    to be what kept the suite off the network. It was not. Nothing on the
+    answer path read the switch -- it fed the list of abilities the model is
+    shown, and nothing else -- so a turn the capability layer sent to
+    web_search queried DuckDuckGo for real. Measured: a test about a
+    follow-up ("why can't the heat get out?") had scied.ucar.edu and
+    britannica.com in its draft prompt, under a capability list that said
+    web search was disabled. Five tests in the suite were doing the same.
+
+    The engine honours the switch now. This is the other half: the backend
+    itself, tied the way the mouse is, so a test that turns search back on
+    (``engine._web_search_enabled = True``) still reaches nothing.
+
+    Only the call out is replaced. ``search_web`` is the real one, wording
+    whatever this returns, so "nothing found" arrives exactly as a live
+    search with no results does. A test about what she does with results
+    says what is out there by setting ``results``.
+    """
+
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+        self.results: list[dict[str, str]] = []
+
+    def search_web_structured(
+        self, query: str, max_results: int = 3,
+    ) -> list[dict[str, str]]:
+        query = str(query).strip()
+        if not query:
+            return []
+        self.queries.append(query)
+        return [
+            dict(result)
+            for result in self.results[:max(1, min(max_results, 10))]
+        ]
+
+
 # ------------------------------------------------------------------ engine
 
 
@@ -447,6 +504,13 @@ def build_engine(routes: dict[str, dict] | None = None) -> ChatEngine:
         config.data["tts"]["enabled"] = False
     if "stt" in config.data:
         config.data["stt"]["enabled"] = False
+    # Off: the explanation-contract experiment assigns a random half of
+    # explanation turns, which no test could pin. A test that wants it sets
+    # ELAINA_EXPLANATION_CONTRACT, which overrides this.
+    if isinstance(config.data.get("responses"), dict):
+        config.data["responses"]["explanation_contract"] = "off"
+        # Likewise the turn-move owner: a test that wants it on says so.
+        config.data["responses"]["turn_move"] = "off"
 
     engine = ChatEngine(config)
 
@@ -481,9 +545,12 @@ def build_engine(routes: dict[str, dict] | None = None) -> ChatEngine:
     # would look at the real one on the machine running the tests.
     engine.browser_observer = RecordingBrowserObserver()
     engine.browser_action_planner.observer = engine.browser_observer
-    # Structured acquisition holds its own callable and does not go through
-    # the ordinary search-enabled gate. Tie that network boundary too.
-    engine.research_agent._search_structured = lambda query, max_results: ()
+    # The web is part of the machine too. Both ways she searches end at this
+    # one object -- prose through ``engine.search_web``, structured
+    # acquisition through ``engine.search_web_structured`` -- and both look
+    # it up when they are called, so replacing it here ties both.
+    # tests/test_search_switch.py fails if either stops doing so.
+    engine.web_search_tool = RecordingSearch()
     # Cards are illustrated by a live image index. A test must never reach
     # it: the surface it would decorate is the same surface either way.
     engine.illustrate_surface = lambda surface: surface
@@ -548,6 +615,14 @@ def reset(engine: ChatEngine) -> None:
     engine.desktop_action_planner.control.actions.clear()
     engine.computer_control.operations.clear()
     engine.browser_control.actions.clear()
+    # What was searched for, what a case said the web holds, and the answers
+    # she keeps for five minutes -- which would hand this case the last
+    # one's results without asking the web anything.
+    search = getattr(engine, "web_search_tool", None)
+    if isinstance(search, RecordingSearch):
+        search.queries.clear()
+        search.results.clear()
+    engine._search_cache.clear()
     # Every gate that can hold an answer between turns. A case is about one
     # utterance; leaving an offer pending would test the previous one.
     observer = engine.computer_control.ui_observer
