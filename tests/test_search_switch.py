@@ -204,5 +204,168 @@ class SwitchedOnTests(_Offline):
         self.assertEqual(engine._search_cache, {})
 
 
+class EngineOrderTests(unittest.TestCase):
+    """The engines are tried in one order, not a new random one each search.
+
+    Measured (evals/search_order.py, docs/TURN_MOVE_AB.md): which engine a
+    search drew decided what a Korean lookup found. Yahoo's results held the
+    answer and Yandex's did not, and the library's own order is a shuffle.
+    """
+
+    FOUND = [{"title": "T", "href": "https://example.test/t", "body": "B"}]
+
+    def _library(self, answers):
+        """The search library, standing still: each call takes the next of
+        ``answers`` -- results, or an exception to raise. Returns
+        (the class to patch in, the calls made: (which instance, backend))."""
+        from ddgs.exceptions import DDGSException
+
+        calls, pending, made = [], list(answers), []
+
+        class Backend:
+            def __init__(self, *args, **kwargs):
+                made.append(self)
+
+            def text(self, query, **kwargs):
+                calls.append((made.index(self), kwargs.get("backend"), kwargs.get("max_results")))
+                answer = pending.pop(0) if pending else DDGSException("No results found.")
+                if isinstance(answer, Exception):
+                    raise answer
+                return answer
+
+        return Backend, calls
+
+    def test_yahoo_is_asked_first_and_its_answer_is_the_answer(self):
+        import tools.web_search as web_search
+
+        backend, calls = self._library([self.FOUND, self.FOUND])
+        with mock.patch("tools.web_search.DDGS", backend):
+            tool = web_search.WebSearchTool()
+            found = tool.search_web_structured("요즘 제일 최신 아이폰 모델이 뭐야", 5)
+            prose = tool.search_web("latest iPhone model 2026", 5)
+        self.assertEqual(found, [{"title": "T", "url": "https://example.test/t", "summary": "B"}])
+        self.assertIn("https://example.test/t", prose)
+        # One request each, and nothing after it.
+        self.assertEqual(calls, [(0, "yahoo", 5), (1, "yahoo", 5)])
+
+    def test_an_empty_answer_is_asked_again_on_a_new_connection(self):
+        # Measured: the same connection asked again stayed empty, 0 of 12.
+        # The library poses as a random browser per connection, and cannot
+        # read the page Yahoo sends a phone.
+        from ddgs.exceptions import DDGSException
+
+        import tools.web_search as web_search
+
+        backend, calls = self._library([DDGSException("No results found."), self.FOUND])
+        with mock.patch("tools.web_search.DDGS", backend):
+            found = web_search.WebSearchTool().search_web_structured("latest iPhone model 2026", 5)
+        self.assertEqual(len(found), 1)
+        self.assertEqual([name for _instance, name, _n in calls], ["yahoo", "yahoo"])
+        instances = [instance for instance, _name, _n in calls]
+        self.assertEqual(len(set(instances)), len(instances), "a connection was reused")
+
+    def test_the_retry_is_bounded_and_then_the_whole_order_is_tried(self):
+        from ddgs.exceptions import DDGSException
+
+        import tools.web_search as web_search
+
+        empty = [DDGSException("No results found.")] * web_search.YAHOO_TRIES
+        backend, calls = self._library([*empty, self.FOUND])
+        with mock.patch("tools.web_search.DDGS", backend):
+            found = web_search.WebSearchTool().search_web_structured("latest iPhone model 2026", 5)
+        self.assertEqual(len(found), 1)
+        self.assertEqual([name for _instance, name, _n in calls],
+                         ["yahoo"] * web_search.YAHOO_TRIES + [web_search.ENGINE_ORDER])
+        instances = [instance for instance, _name, _n in calls]
+        self.assertEqual(len(set(instances)), len(instances), "a connection was reused")
+        self.assertLessEqual(web_search.YAHOO_TRIES, 3)
+
+    def test_when_nothing_answers_it_stops_and_says_so(self):
+        # Never a loop: one request more than the tries, and the failure
+        # reaches the caller as it always did.
+        from ddgs.exceptions import DDGSException
+
+        import tools.web_search as web_search
+
+        backend, calls = self._library([])
+        with mock.patch("tools.web_search.DDGS", backend):
+            with self.assertRaises(DDGSException):
+                web_search.WebSearchTool().search_web_structured("latest iPhone model 2026", 5)
+        self.assertEqual(len(calls), web_search.YAHOO_TRIES + 1)
+        self.assertEqual(calls[-1][1], web_search.ENGINE_ORDER)
+
+    def test_a_timeout_is_not_asked_again(self):
+        # A phone's page comes back at once. A timeout is Yahoo not answering,
+        # and each further try would wait it out again.
+        from ddgs.exceptions import TimeoutException
+
+        import tools.web_search as web_search
+
+        backend, calls = self._library([TimeoutException("timed out"), self.FOUND])
+        with mock.patch("tools.web_search.DDGS", backend):
+            found = web_search.WebSearchTool().search_web_structured("latest iPhone model 2026", 5)
+        self.assertEqual(len(found), 1)
+        self.assertEqual([name for _instance, name, _n in calls],
+                         ["yahoo", web_search._ORDER_WITHOUT_YAHOO])
+
+    def test_after_a_timeout_the_engines_that_follow_do_not_include_yahoo(self):
+        # Measured with Yahoo made unreachable: the engine order asked it
+        # again, and a search waited out the timeout twice where it had
+        # waited once before Yahoo was asked first.
+        import tools.web_search as web_search
+
+        order = web_search.ENGINE_ORDER.split(",")
+        without = web_search._ORDER_WITHOUT_YAHOO.split(",")
+        self.assertNotIn("yahoo", without)
+        # Every other engine, in the same order.
+        self.assertEqual(without, [engine for engine in order if engine != "yahoo"])
+        self.assertEqual(len(without), len(order) - 1)
+
+    def test_an_empty_answer_that_used_up_the_timeout_is_a_timeout(self):
+        # Measured with Yahoo made unreachable: the library's own wait ran
+        # out first, and it reported "No results found." like any empty
+        # answer. Read by the exception alone, that was asked again three
+        # times over.
+        from types import SimpleNamespace
+
+        from ddgs.exceptions import DDGSException
+
+        import tools.web_search as web_search
+
+        for took, yahoo_calls, then in (
+            # Not answering: asked once, and not again in the order either.
+            (web_search._TIMEOUT + 0.2, 1, web_search._ORDER_WITHOUT_YAHOO),
+            # A phone's page: asked on new connections, then the whole order.
+            (0.2, web_search.YAHOO_TRIES, web_search.ENGINE_ORDER),
+        ):
+            with self.subTest(took=took):
+                empty = [DDGSException("No results found.")] * yahoo_calls
+                backend, calls = self._library([*empty, self.FOUND])
+                # Each Yahoo-only call reads the clock twice: before and after.
+                ticks = iter(sum(([n * 100.0, n * 100.0 + took] for n in range(10)), []))
+                clock = SimpleNamespace(monotonic=lambda: next(ticks))
+                with mock.patch("tools.web_search.DDGS", backend), \
+                        mock.patch("tools.web_search.time", clock):
+                    found = web_search.WebSearchTool().search_web_structured(
+                        "latest iPhone model 2026", 5)
+                self.assertEqual(len(found), 1)
+                self.assertEqual([name for _instance, name, _n in calls],
+                                 ["yahoo"] * yahoo_calls + [then])
+
+    def test_the_order_is_the_librarys_engines_with_yahoo_ahead_of_yandex(self):
+        from ddgs.engines import ENGINES
+
+        import tools.web_search as web_search
+
+        order = web_search.ENGINE_ORDER.split(",")
+        # Every engine the library has, once: none dropped, so one that starts
+        # answering again is still reached.
+        self.assertEqual(sorted(order), sorted(ENGINES["text"]))
+        self.assertEqual(order[:2], ["wikipedia", "grokipedia"])
+        self.assertLess(order.index("yahoo"), order.index("yandex"))
+        # Behind the engine that answers: it took ten seconds to return nothing.
+        self.assertEqual(order[-2:], ["yandex", "duckduckgo"])
+
+
 if __name__ == "__main__":
     unittest.main()

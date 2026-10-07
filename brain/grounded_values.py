@@ -794,11 +794,29 @@ def names_an_unfound_thing(
 
     A name the person themselves used is theirs, and a place is where you
     look rather than what you find; both are left alone.
+
+    Two things that were being read as an unfound name are not one. Replayed
+    over every recorded turn (evals/named_stage_replay.py, 2026-10-04): the
+    stage that asks this changed 37 replies, and in 32 nothing else was
+    wrong with them --
+
+    * "of October", 23 turns. "As of October 4, 2026, the newest iPhone
+      models are ..." matches as "As of October", the sentence's first word
+      is dropped, and a joiner and a month are left. A name does not begin
+      with a joiner, and a date is not a thing to be found.
+    * a name whose words were all in the evidence, 14 turns, 12 of them
+      "Pro and Pro Max". The evidence said "iPhone 18 Pro and iPhone 18 Pro
+      Max": every word of the name, and not that phrase. A name is found
+      when each of its words is.
+
+    In those 32 the sentence taken out was the answer. A name with a word
+    the evidence does not hold -- the other 5 -- is still unfound.
     """
     said = str(text or "")
     if not said.strip():
         return ()
     seen = f"{evidence or ''} {request or ''}".casefold()
+    seen_words = set(_NAME_WORD.findall(seen))
     found: list[str] = []
     for name in _proper_names(said):
         if _is_a_place(name) or name.casefold() in seen:
@@ -806,9 +824,23 @@ def names_an_unfound_thing(
         # One capitalised word is as often a sentence opening as a name.
         if len(name.split()) < 2:
             continue
+        words = [word.casefold() for word in _NAME_WORD.findall(name)]
+        while words and words[0] in _JOINERS:
+            words = words[1:]
+        if not words or all(
+            word in _NOT_A_BUSINESS or word.isdigit() for word in words
+        ):
+            continue
+        if all(word in seen_words or word in _JOINERS for word in words):
+            continue
         if name not in found:
             found.append(name)
     return tuple(found)
+
+
+# The words _PROPER_NAME lets join two capitalised ones.
+_JOINERS = frozenset({"of", "de", "the", "and"})
+_NAME_WORD = re.compile(r"[^\W_]+")
 
 
 # A brand and the model it sells: "LG 45GX950A-B", "Samsung Odyssey G55C".

@@ -190,6 +190,101 @@ class ItSaysWhyItCannotNameOneTests(unittest.TestCase):
         self.assertIn("came back empty", rewritten)
 
 
+class ADateAndAFoundNameAreNotInventionsTests(unittest.TestCase):
+    """What the recommendation guard was taking for a name nothing found.
+
+    Replayed over every recorded turn (evals/named_stage_replay.py,
+    docs/TURN_MOVE_AB.md, 2026-10-04): the guard changed 37 replies, and in
+    32 of them the only thing it had flagged was "of October" or a name whose
+    words were all in the evidence. The sentence it removed was the answer.
+    """
+
+    EVIDENCE = (
+        "[1] Apple debuts iPhone 18 Pro and iPhone 18 Pro Max - Apple\n"
+        "Snippet: Sep 9, 2026 · Apple announced iPhone 18 Pro and iPhone 18 "
+        "Pro Max, delivering an advanced pro camera system.\n"
+        "[2] iPhone - Apple\nSnippet: Discover iPhone Duo, iPhone 18 Pro, "
+        "iPhone Air, iPhone 17, and iPhone 17e.\n"
+        "[3] iPhone 18 Pro & Max Guide - Macworld\nSnippet: The iPhone 18 Pro "
+        "and Pro Max are here with the new A20 Pro chip."
+    )
+    REQUEST = "What's the newest iPhone model right now?"
+
+    def _engine(self):
+        quiet = io.StringIO()
+        with contextlib.redirect_stdout(quiet):
+            engine = build_engine(routes={})
+        self.addCleanup(engine.close)
+        return engine, quiet
+
+    def _guarded(self, reply, evidence=None):
+        engine, quiet = self._engine()
+        with contextlib.redirect_stdout(quiet):
+            return engine._enforce_named_recommendation(
+                reply, candidates=(), searched=True,
+                evidence=self.EVIDENCE if evidence is None else evidence,
+                request=self.REQUEST,
+            )
+
+    def test_as_of_a_date_is_not_a_name(self):
+        # As recorded: flagged "of October", and lost the sentence.
+        reply = (
+            "As of October 4, 2026, the newest iPhone models are the iPhone "
+            "18 Pro, iPhone 18 Pro Max, and the iPhone Duo, all announced on "
+            "September 9, 2026. These models feature the A20 Pro chip."
+        )
+        self.assertEqual(
+            gv.names_an_unfound_thing(reply, evidence=self.EVIDENCE, request=self.REQUEST), (),
+        )
+        self.assertEqual(self._guarded(reply), reply)
+
+    def test_a_name_whose_words_are_all_in_the_evidence_was_found(self):
+        # As recorded: flagged "Pro and Pro Max", against evidence that said
+        # "iPhone 18 Pro and iPhone 18 Pro Max" and never that phrase.
+        evidence = self.EVIDENCE.split("[3]")[0]
+        self.assertNotIn("pro and pro max", evidence.casefold())
+        reply = (
+            "The newest iPhone models as of 2026 are the iPhone 18 Pro and "
+            "Pro Max, featuring advanced cameras. Apple also introduced a "
+            "foldable iPhone Duo."
+        )
+        self.assertEqual(
+            gv.names_an_unfound_thing(reply, evidence=evidence, request=self.REQUEST), (),
+        )
+        self.assertEqual(self._guarded(reply, evidence=evidence), reply)
+
+    def test_a_name_with_a_word_the_evidence_lacks_is_still_unfound(self):
+        # Three of the five the replay left standing.
+        for reply, name in (
+            ("It has Apple's A19 chip and improved battery life.", "A19"),
+            ("Tools like NVIDIA's TensorRT allow selective quantization.", "TensorRT"),
+            ("The iPhone 15 series features the A16 Bionic chip.", "A16 Bionic"),
+        ):
+            with self.subTest(name=name):
+                flagged = gv.names_an_unfound_thing(
+                    reply, evidence=self.EVIDENCE, request=self.REQUEST,
+                )
+                self.assertTrue([found for found in flagged if name in found], flagged)
+
+    def test_some_of_its_words_being_there_is_not_enough(self):
+        # The case the guard was written for: an Epiphone nobody found,
+        # beside results that say "Les Paul" about a different guitar.
+        evidence = "[1] Gibson Les Paul Standard - a classic electric guitar."
+        reply = "The Epiphone Les Paul SL is a great electric guitar under 500,000 won."
+        flagged = gv.names_an_unfound_thing(reply, evidence=evidence, request="a guitar under 500,000 won")
+        self.assertEqual(flagged, ("Epiphone Les Paul",))
+        rewritten = self._guarded(reply, evidence=evidence)
+        self.assertNotIn("Epiphone", rewritten)
+
+    def test_a_month_in_a_real_name_does_not_excuse_it(self):
+        evidence = "[1] Monthly magazines of 2026 compared."
+        reply = "I'd pick the October Sky Review for that."
+        self.assertEqual(
+            gv.names_an_unfound_thing(reply, evidence=evidence, request="a magazine"),
+            ("October Sky Review",),
+        )
+
+
 class TheReplyIsRewrittenTests(unittest.TestCase):
 
     def _engine(self):
