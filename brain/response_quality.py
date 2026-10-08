@@ -183,7 +183,9 @@ class ResponseQualityGuard:
         }
 
     @classmethod
-    def strip_current_turn_echo(cls, reply: str, current_user: str) -> str:
+    def strip_current_turn_echo(
+        cls, reply: str, current_user: str, *, re_ended: bool = True,
+    ) -> str:
         """Remove a leading restatement while preserving the useful reply.
 
         Handles the two measured shapes: an exact echoed first sentence
@@ -191,6 +193,16 @@ class ResponseQualityGuard:
         ("You're moving to Seattle on 9/13—pack ..."). Ordinary answers are
         untouched because they neither exactly repeat the turn nor place a
         high-overlap setup clause before a dash.
+
+        ``re_ended`` is whether a first sentence that is theirs with the
+        ending changed counts as one (``_says_it_back``). It does when they
+        told her something. After a question it is the answer, and the
+        caller says so: measured (evals/echo_strip_replay.py, 2026-10-08),
+        all twelve recorded strips were of that kind -- "What is the freezing
+        point of water in Fahrenheit?" lost "The freezing point of water is
+        32 degrees Fahrenheit.", and "Okay, so it doesn't mean it's a big
+        difference, right?" lost "No, it doesn't mean it's a big
+        difference.", the verdict it had asked for.
         """
         text = str(reply or "").strip()
         said = str(current_user or "").strip()
@@ -203,7 +215,11 @@ class ResponseQualityGuard:
             and cls._normalize(sentences[0]) == cls._normalize(said)
         ):
             return sentences[1].strip()
-        if len(sentences) == 2 and cls._says_it_back(sentences[0], said):
+        if (
+            re_ended
+            and len(sentences) == 2
+            and cls._says_it_back(sentences[0], said)
+        ):
             return sentences[1].strip()
 
         for separator in (cls._ECHO_DASH, cls._ECHO_COMMA):

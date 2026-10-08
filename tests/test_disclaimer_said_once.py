@@ -84,5 +84,63 @@ class SaidOnceTests(unittest.TestCase):
         self.assertTrue(only_the_figure.strip())
 
 
+class SaidOfADisagreementOnlyTests(unittest.TestCase):
+    """"Sources disagree on that one" through the stage that says it.
+
+    Recorded on 30 of 40 answers to "How much does the iPhone 18 Pro cost?"
+    (evals/disagreement_replay.py, 2026-10-07): the pages listed the sizes
+    the phone comes in, and her 256GB was answered with "another says 1GB".
+    """
+
+    PRICE_PAGES = (
+        "[1] iPhone 18 Pro price\nSource: thepricer.org\nSnippet: The iPhone 18 "
+        "Pro costs $1,199 for 256GB, $1,399 for 512GB, $1,599 for 1TB and "
+        "$1,999 for 2TB.\n\n"
+        "[2] iPhone 18 Pro\nSource: macobserver.com\nSnippet: Starts at $1,199; "
+        "for the first time, a 2TB option."
+    )
+    MONITOR_PAGES = (
+        "[1] LG UltraGear\nSource: bestbuy.com\nSnippet: 165Hz native, 1ms.\n\n"
+        "[2] LG UltraGear\nSource: lg.com\nSnippet: 180Hz overclocked, 1ms."
+    )
+
+    def setUp(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.engine = build_engine({})
+        self.addCleanup(self.engine.close)
+        self.engine._turn_language = "en"
+        patcher = mock.patch.object(
+            chat_engine.CapabilityRegistry, "is_available", return_value=False,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.opening = guard_lines.say("sources_disagree", "en").split("{other}")[0].strip()
+
+    def _guard(self, reply: str, evidence: str, asked: str) -> str:
+        with contextlib.redirect_stdout(io.StringIO()):
+            return self.engine._enforce_grounded_values(
+                reply, user_input=asked, action_performed=False,
+                research_evidence=evidence, trusted_result=False, searched=True,
+            )
+
+    def test_a_price_answer_naming_one_size_is_left_as_written(self):
+        for reply in (
+            "The iPhone 18 Pro starts at $1,199 for the 256GB model.",
+            "The iPhone 18 Pro starts at $1,199. It includes a 2TB storage option.",
+        ):
+            with self.subTest(reply=reply):
+                guarded = self._guard(reply, self.PRICE_PAGES, "How much does the iPhone 18 Pro cost?")
+                self.assertEqual(guarded, reply)
+                self.assertNotIn(self.opening, guarded)
+
+    def test_two_sources_giving_two_values_is_still_said(self):
+        guarded = self._guard(
+            "It runs at 165Hz.", self.MONITOR_PAGES, "What refresh rate does the LG UltraGear run at?",
+        )
+        self.assertIn(self.opening, guarded)
+        self.assertIn("180Hz", guarded)
+        self.assertTrue(guarded.startswith("It runs at 165Hz."))
+
+
 if __name__ == "__main__":
     unittest.main()

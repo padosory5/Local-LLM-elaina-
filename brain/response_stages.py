@@ -126,7 +126,10 @@ STAGES: tuple[Stage, ...] = (
         "completion_retry", HARD,
         "Ask again when a value question came back without the value.",
         INVARIANT, REGENERATES, model_call=True,
-        implemented_by=("brain.response_policy.AnswerCompletionGuard.needs_retry",),
+        implemented_by=(
+            "brain.response_policy.AnswerCompletionGuard.first_draft_needs_retry",
+            "brain.response_policy.AnswerCompletionGuard.needs_retry",
+        ),
         protects="A question that asks for a number gets the number.",
     ),
     Stage(
@@ -453,6 +456,9 @@ STAGES: tuple[Stage, ...] = (
             "the wrong thing'; receipts are exempt (docstring).",
             "Damaged curated greetings ('Hey! What's up?' -> 'What's up?'); "
             "locked replies are exempt (docstring).",
+            "Took the answer to a question for an echo of it (all 12 recorded "
+            "strips, six of them a yes/no verdict); a mirrored first sentence "
+            "is only stripped when they told her something.",
         ),
     ),
     Stage(
@@ -495,6 +501,9 @@ STAGES: tuple[Stage, ...] = (
         conflicts=(
             "Undid the Celsius conversion by restoring the Fahrenheit draft, "
             "so celsius now runs after it (chat_engine, '몇 도' comment).",
+            "Put back sentences grounded_values had just removed as "
+            "unverified (4 of the 9 recorded), so the grounding steps tell "
+            "it which numbers they took out and those stay out.",
         ),
     ),
     Stage(

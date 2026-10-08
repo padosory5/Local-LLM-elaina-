@@ -141,6 +141,33 @@ class OrderAndThreadTests(unittest.TestCase):
                              speech_act="action_request", budget="value")
         self.assertEqual(move.move, tm.DIFFERENTLY)
 
+    def test_a_re_ask_the_router_calls_a_correction_is_still_a_re_ask(self):
+        # Regression, 2026-10-03: asked again with some impatience, filed as a
+        # correction, marked check -- which nothing acts on -- and answered
+        # with the first answer again.
+        first, again = "요즘 제일 최신 아이폰 모델이 뭐야?", "아니 그러니까 지금 제일 최신 아이폰 모델이 뭐냐고?"
+        record = tm.Record(embed=FakeEmbedder({first: AXIS0, again: _at(0.95)}))
+        record.decide(first, is_follow_up=False, topic_shift=False,
+                      speech_act="information_request", budget="value")
+        record.record(first, "지금 가장 최신 모델은 아이폰 17입니다.")
+        move = record.decide(again, is_follow_up=True, topic_shift=False, speech_act="correction",
+                             budget="value")
+        self.assertEqual((move.move, move.asked_before), (tm.DIFFERENTLY, (1,)))
+        self.assertIn("아이폰 17", move.quoted)
+        # What the router called it is still on the record.
+        self.assertEqual(move.trace(language="ko")["challenged"], "correction")
+
+    def test_a_correction_that_is_not_a_re_ask_is_a_check_and_says_how_close_it_was(self):
+        first, objection = "배당금이 뭐야?", "아니, 그건 이자잖아"
+        record = tm.Record(embed=FakeEmbedder({first: AXIS0, objection: _at(0.7)}))
+        record.decide(first, is_follow_up=False, topic_shift=False,
+                      speech_act="information_request", budget="explain")
+        record.record(first, "배당금은 회사가 이익을 나누는 방식입니다.")
+        move = record.decide(objection, is_follow_up=True, topic_shift=False, speech_act="correction",
+                             budget="value")
+        self.assertEqual((move.move, move.challenged), (tm.CHECK, "correction"))
+        self.assertAlmostEqual(move.similarity, 0.7, places=6)
+
     def test_not_a_follow_up_keeps_the_thread_and_a_topic_shift_clears_it(self):
         # Pilot 5: the router called a re-ask "not a follow-up" and the v1 thread was lost.
         embed = FakeEmbedder({"how are small numbers kept?": AXIS0, "the ruler is vague, how?": _at(0.85)})
@@ -334,7 +361,7 @@ class ActingTests(unittest.TestCase):
     SECOND = "Wait, why can't the heat get out if sunlight comes in?"
     THIRD = "But why can't the heat get out if the sunlight comes in?"
 
-    def _run(self, third_route=None, *, mode=tm.ON, model=""):
+    def _run(self, third_route=None, *, mode=tm.ON, model="", closeness=0.9):
         from core import turn_trace
         from tests.turn_harness import build_engine
 
@@ -350,7 +377,7 @@ class ActingTests(unittest.TestCase):
             engine._turn_move_mode = mode
             engine._turn_move_model = model
             self.default_model = engine.conversation_model
-            engine._turn_moves = tm.Record(embed=FakeEmbedder({self.SECOND: AXIS0, self.THIRD: _at(0.9)}))
+            engine._turn_moves = tm.Record(embed=FakeEmbedder({self.SECOND: AXIS0, self.THIRD: _at(closeness)}))
             engine.client.reply = "Greenhouse gases absorb the heat the ground gives off and send some back."
             records = []
             self.written_by = []
@@ -433,13 +460,24 @@ class ActingTests(unittest.TestCase):
         self.assertEqual(self.written_by[2], self.default_model)
         self.assertEqual(records[2][0]["turn_move_applied"]["written_by"], "")
 
+    CORRECTION = {**ROUTE, "speech_act": "correction", "normalized_request": "That's wrong.",
+                  "is_follow_up": True}
+
     def test_a_check_is_never_acted_on(self):
-        correction = {**self.ROUTE, "speech_act": "correction", "normalized_request": "That's wrong.",
-                      "is_follow_up": True}
-        context, prompt = self._run(correction)[2]
+        context, prompt = self._run(self.CORRECTION, closeness=0.5)[2]
         self.assertEqual(context["turn_move"]["move"], tm.CHECK)
         self.assertNotIn("turn_move_applied", context)
         self.assertNotIn("questioning something you said", prompt)
+
+    def test_a_re_ask_the_router_calls_a_correction_is_owned_like_any_other(self):
+        context, prompt = self._run(self.CORRECTION, mode=tm.DEEP, model="the-27b")[2]
+        self.assertEqual((context["turn_move"]["move"], context["turn_move"]["challenged"]),
+                         (tm.DIFFERENTLY, "correction"))
+        self.assertEqual(context["turn_move_applied"]["written_by"], "the-27b")
+        self.assertEqual(self.written_by[2], "the-27b")
+        self.assertIn("This is the 2nd time they have asked this", prompt)
+        self.assertNotIn("questioning something you said", prompt)
+        self.assertIn(f"CURRENT USER MESSAGE\n{self.THIRD}\n", prompt)
 
 
 if __name__ == "__main__":

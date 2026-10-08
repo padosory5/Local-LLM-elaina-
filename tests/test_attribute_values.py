@@ -243,6 +243,102 @@ class SourcesDisagreeingIsAStateNotARaceTests(unittest.TestCase):
                 self.assertIn("{other}", said)
 
 
+class OptionsAndOtherUnitsAreNotADisagreementTests(unittest.TestCase):
+    """What "Sources disagree on that one" was being said about.
+
+    Replayed over every recorded turn that searched
+    (evals/disagreement_replay.py, 2026-10-07): 33 replies given the line,
+    none to a real disagreement, and in 28 the value it named was in no
+    source -- a page's 2TB said back as "another says 2GB".
+    """
+
+    # As retrieved for "How much does the iPhone 18 Pro cost?", shortened.
+    ONE_PAGE_LISTS_THE_SIZES = (
+        "[1] iPhone 18 Pro price\nSource: thepricer.org\nSnippet: The iPhone 18 "
+        "Pro costs $1,199 for 256GB, $1,399 for 512GB, $1,599 for 1TB and "
+        "$1,999 for 2TB.\n\n"
+        "[2] Buy iPhone 18 Pro\nSource: apple.com\nSnippet: From $1,199 with "
+        "256GB of storage."
+    )
+    TWO_PAGES_TWO_UNITS = (
+        "[1] iPhone 18 Pro\nSource: macobserver.com\nSnippet: Starts at $1,199 "
+        "for 256GB.\n\n"
+        "[2] iPhone 18 Pro specs\nSource: example.com\nSnippet: For the first "
+        "time, a 2TB option."
+    )
+
+    def _others(self, reply, evidence):
+        return [other for _, other in attribute_values.conflicting_claims(reply, evidence)]
+
+    def test_the_sizes_one_page_lists_are_options(self):
+        self.assertEqual(
+            self._others("It starts at $1,199 for 256GB.", self.ONE_PAGE_LISTS_THE_SIZES), [],
+        )
+
+    def test_another_unit_is_another_value_not_another_account(self):
+        # Recorded as "another says 2GB": the 2 of 2TB, written in her unit.
+        self.assertEqual(
+            self._others("It starts at $1,199 for 256GB.", self.TWO_PAGES_TWO_UNITS), [],
+        )
+        # And the other way about, recorded as "another says 256TB".
+        self.assertEqual(
+            self._others("It includes a 2TB storage option.", self.TWO_PAGES_TWO_UNITS), [],
+        )
+
+    def test_memory_is_not_a_second_opinion_on_storage(self):
+        # Recorded as "another says 12TB".
+        evidence = (
+            "[1] Specs\nSource: a.example\nSnippet: 12GB of memory; some models "
+            "16GB.\n\n[2] Storage\nSource: b.example\nSnippet: Up to 2TB of storage."
+        )
+        self.assertEqual(self._others("It includes a 2TB storage option.", evidence), [])
+
+    def test_a_value_one_source_gives_beside_hers_is_an_option(self):
+        evidence = (
+            "[1] LG\nSource: a.example\nSnippet: 165Hz native, or 180Hz "
+            "overclocked.\n\n[2] LG\nSource: b.example\nSnippet: A 165Hz panel."
+        )
+        self.assertEqual(self._others("It runs at 165Hz.", evidence), [])
+
+    def test_two_sources_one_unit_two_values_is_still_a_disagreement(self):
+        for reply, evidence, other in (
+            ("It runs at 165Hz.", SourcesDisagreeingIsAStateNotARaceTests.EVIDENCE, "180Hz"),
+            ("It is rated 4.8 stars.",
+             "[1] Store A\nSource: a.example\nSnippet: Rated 4.8 stars by buyers.\n\n"
+             "[2] Store B\nSource: b.example\nSnippet: Rated 4.6 stars overall.",
+             "rated 4.6 stars"),
+        ):
+            with self.subTest(reply=reply):
+                self.assertEqual(self._others(reply, evidence), [other])
+
+    def test_one_unit_spelt_two_ways_is_one_unit(self):
+        # "Same unit" must not mean "same spelling", or these would be lost.
+        for reply, evidence, other in (
+            ("It has a 27 inch screen.",
+             "[1] Monitor\nSource: a.example\nSnippet: A 27-inch panel.\n\n"
+             "[2] Monitor\nSource: b.example\nSnippet: The screen measures 32 inches.",
+             "32 inch"),
+            ("It has a 48MP camera.",
+             "[1] A\nSource: a.example\nSnippet: A 48 megapixel main camera.\n\n"
+             "[2] B\nSource: b.example\nSnippet: The main camera is 50MP.",
+             "50MP"),
+        ):
+            with self.subTest(reply=reply):
+                self.assertEqual(self._others(reply, evidence), [other])
+
+    def test_every_spelling_that_is_called_the_same_unit_is_a_unit_of_one_kind(self):
+        kinds = {}
+        for table in (attribute_values._SPEC_UNITS, attribute_values._AMBIENT_UNITS):
+            for kind, units in table.items():
+                for unit in units:
+                    kinds[unit] = kind
+        for spelling, unit in attribute_values._SAME_UNIT.items():
+            with self.subTest(spelling=spelling):
+                self.assertIn(spelling, kinds)
+                self.assertIn(unit, kinds)
+                self.assertEqual(kinds[spelling], kinds[unit])
+
+
 class ThePatternsAreWhatTheyLookLikeTests(unittest.TestCase):
     """Two corrupted regex tables have cost this project an hour each.
 

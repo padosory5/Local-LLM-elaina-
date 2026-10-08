@@ -124,6 +124,47 @@ class SpeechSaysTheSameThingTests(unittest.TestCase):
         self.assertLess(realize.coverage("It is 42 km to Kyoto.", "It is far to Kyoto."), 0.9)
 
 
+class NoReasoningTests(unittest.TestCase):
+    """A model's thinking is not her reply (docs/TURN_MOVE_AB.md, 2026-10-03).
+
+    With thinking off the 27B still wrote its reasoning, then ``</think>``,
+    then the answer, in one turn of 45. All three were shown, and would have
+    been said.
+    """
+
+    # The recorded reply, shortened.
+    LEAKED = ("확인해 보니 현재 시점의 검색 결과로는 최신 기종이 무엇인지 명확히 확인되지 않았습니다. "
+              "더 정확한 최신 모델명을 확인해 보겠습니다.\n</think>\n\n"
+              "확인해 보니 현재 검색 결과로는 최신 기종이 무엇인지 명확하게 확인되지 않았습니다.")
+    ANSWER = "확인해 보니 현재 검색 결과로는 최신 기종이 무엇인지 명확하게 확인되지 않았습니다."
+
+    def test_what_follows_the_closing_tag_is_the_reply(self):
+        self.assertEqual(realize.without_reasoning(self.LEAKED), self.ANSWER)
+        self.assertEqual(realize.display(self.LEAKED), self.ANSWER)
+        self.assertEqual(realize.invariants(self.LEAKED), self.ANSWER)
+
+    def test_it_is_not_said_either(self):
+        said = realize.speech(self.LEAKED, "ko")
+        self.assertNotIn("think", said)
+        self.assertNotIn("확인해 보겠습니다", said)
+        self.assertEqual(said, realize.speech(self.ANSWER, "ko"))
+
+    def test_a_whole_block_and_other_spellings_of_the_tag(self):
+        for raw in ("<think>They want the newest model.</think>It is the iPhone 18 Pro.",
+                    "They want the newest model.</THINK>\nIt is the iPhone 18 Pro.",
+                    "First thought.</think>Second thought.</think >  It is the iPhone 18 Pro."):
+            self.assertEqual(realize.display(raw), "It is the iPhone 18 Pro.", raw)
+
+    def test_with_nothing_after_the_tag_the_text_is_kept_without_it(self):
+        self.assertEqual(realize.display("It is the iPhone 18 Pro.\n</think>"), "It is the iPhone 18 Pro.")
+        self.assertEqual(realize.display("<think>It is the iPhone 18 Pro.</think>\n"),
+                         "It is the iPhone 18 Pro.")
+
+    def test_a_reply_without_the_tag_is_untouched(self):
+        for text in ("It is the iPhone 18 Pro.", "I think it is, yes.", "x < 3 and y > 2"):
+            self.assertEqual(realize.without_reasoning(text), text)
+
+
 class DisplayRepairTests(unittest.TestCase):
 
     def test_opens_with_notation(self):
@@ -164,6 +205,39 @@ class WholeTurnTests(unittest.TestCase):
         # And the voice gets it said.
         self.assertIn("x minus a", realize.speech(shown))
         self.assertIn("f prime of a", realize.speech(shown))
+
+    def test_reasoning_reaches_neither_the_screen_nor_the_voice_nor_the_history(self):
+        from core import turn_trace
+        from tests.turn_harness import build_engine
+
+        engine = build_engine({
+            "why is the sky": {
+                "intent": "knowledge_question", "confidence": 1.0,
+                "normalized_request": "Why is the sky blue?",
+                "speech_act": "information_request",
+                "information_freshness": "stable",
+                "requires_external_evidence": False,
+            },
+        })
+        self.addCleanup(engine.close)
+        answer = "Air scatters blue light more than red, so blue reaches you from every direction."
+        engine.client.reply = (
+            "They asked why the sky is blue. I should mention scattering.\n</think>\n\n" + answer
+        )
+        shown = engine.chat("Why is the sky blue?")
+        self.assertEqual(shown, answer)
+        record = turn_trace.last().as_record()
+        self.assertEqual(record["display"], answer)
+        # The raw draft is kept, and the step that removed it says so.
+        self.assertIn("</think>", record["draft"]["text"])
+        self.assertTrue([step for step in record["steps"]
+                         if step["name"] == "final_form" and step["changed"]])
+        for heard in engine.audio.spoken:
+            self.assertNotIn("think", heard)
+            self.assertNotIn("I should mention", heard)
+        kept = " ".join(str(message.get("content", "")) for message in engine.conversation.history)
+        self.assertIn(answer, kept)
+        self.assertNotIn("</think>", kept)
 
 
 if __name__ == "__main__":

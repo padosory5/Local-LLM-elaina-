@@ -36,9 +36,32 @@ _PROSE_DOUBLE_DASH = re.compile(r"(?<=\S) -- (?=\S)")
 _SHOWN_ADDRESS = re.compile(r"\s*\(\s*https?://[^)\s]+\s*\)|https?://\S+")
 
 
+# Where a reasoning model's thinking ends. Every call is made with thinking
+# off, and for the 8B the tag never appeared in over 900 recorded turns. The
+# 27B wrote its reasoning, then the tag, then its answer, in one turn of the
+# 45 it has written, and all three were shown (docs/TURN_MOVE_AB.md).
+_END_OF_REASONING = re.compile(r"</think\s*>", re.IGNORECASE)
+_REASONING_TAG = re.compile(r"</?think\s*>", re.IGNORECASE)
+
+
+def without_reasoning(text: str) -> str:
+    """The reply without the model's reasoning: what follows its closing tag.
+
+    The tag and what precedes it are the model thinking, not her answering.
+    When nothing follows the tag, what precedes it is all there is, and it
+    is kept without the markup rather than leaving the turn with no reply.
+    """
+    text = str(text or "")
+    parts = _END_OF_REASONING.split(text)
+    if len(parts) == 1:
+        return text
+    return parts[-1].strip() or _REASONING_TAG.sub(" ", text).strip()
+
+
 def invariants(text) -> str:
-    """HARD, in every modality: no internals, no script she cannot speak."""
-    said = capability_contract.redact_internals(str(text or ""))
+    """HARD, in every modality: no reasoning, no internals, no script she
+    cannot speak."""
+    said = capability_contract.redact_internals(without_reasoning(text))
     if not said:
         return ""
     return TextFilter.without_foreign_script(said)

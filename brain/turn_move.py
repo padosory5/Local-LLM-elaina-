@@ -41,6 +41,14 @@ Both are read before the turn's budget: a re-ask the router files as a
 short answer is still a re-ask (pilot 5, "그거 답이 아니잖아" read as a
 correction and given a value budget).
 
+Asked again is read before challenged. A question put again with some
+impatience is filed by the router as a correction: "아니 그러니까 지금 제일
+최신 아이폰 모델이 뭐냐고?", 0.96 to the question before it, was marked
+``check``, which nothing acts on, and got its first answer again
+(regression, 2026-10-03). Over every recorded run that is 2 of 19 ``check``
+turns; the other 17 are no closer than 0.72 to an earlier question. What
+the router called it stays on the record, under ``challenged``.
+
 The thread is the session's recent exchanges. It is cleared only when the
 router says the topic moved, not when it calls a turn "not a follow-up":
 that flag was wrong on a re-ask in pilot 5, and whether a turn still belongs
@@ -200,6 +208,7 @@ class Exchange:
     said: str
     reply: str = ""
     vector: tuple | None = None         # their words, embedded and normalised
+    lookup: dict | None = None          # what was searched to answer it, when something was
 
 
 @dataclass(frozen=True)
@@ -277,21 +286,8 @@ class Record:
         if topic_shift:
             self.thread = []
         earlier = list(self.thread)
-        vector = self._vector(said)
-        self._pending = (said, vector)
+        vector = self._embedded(said)
         count = len(earlier)
-
-        if earlier:
-            previous = earlier[-1].reply
-            if str(speech_act or "").strip().lower() == "correction":
-                return Move(CHECK, thread_turns=count, challenged="correction",
-                            quoted=_quote(_closest_sentence(previous, said)),
-                            asked_signal=self._signal())
-            theirs, hers = numbers(said), numbers(previous)
-            if len(theirs & hers) >= CHALLENGE_NUMBERS and theirs - hers:
-                claim = next((s for s in _SENTENCE.split(previous) if numbers(s) & theirs), previous)
-                return Move(CHECK, thread_turns=count, challenged="number", quoted=_quote(claim),
-                            their_numbers=tuple(sorted(theirs - hers)), asked_signal=self._signal())
 
         similarity, before = None, ()
         if vector is not None:
@@ -301,9 +297,24 @@ class Record:
                 similarity = max(score for _, score in scored)
                 before = tuple(position for position, score in scored
                                if score >= ASKED_AGAIN_SIMILARITY)
+
+        challenged, claim, set_against = "", "", ()
+        if earlier:
+            previous = earlier[-1].reply
+            theirs, hers = numbers(said), numbers(previous)
+            if str(speech_act or "").strip().lower() == "correction":
+                challenged, claim = "correction", _closest_sentence(previous, said)
+            elif len(theirs & hers) >= CHALLENGE_NUMBERS and theirs - hers:
+                challenged = "number"
+                claim = next((s for s in _SENTENCE.split(previous) if numbers(s) & theirs), previous)
+                set_against = tuple(sorted(theirs - hers))
+
         if before:
             return Move(DIFFERENTLY, thread_turns=count, asked_before=before, similarity=similarity,
-                        quoted=_quote(earlier[before[-1] - 1].reply))
+                        challenged=challenged, quoted=_quote(earlier[before[-1] - 1].reply))
+        if challenged:
+            return Move(CHECK, thread_turns=count, similarity=similarity, challenged=challenged,
+                        quoted=_quote(claim), their_numbers=set_against, asked_signal=self._signal())
         if budget not in EXPLAINING_BUDGETS:
             return Move(NOT_EXPLAINING, thread_turns=count, similarity=similarity,
                         asked_signal=self._signal())
@@ -311,16 +322,40 @@ class Record:
             return Move(FIRST, thread_turns=count, similarity=similarity, asked_signal=self._signal())
         return Move(CONTINUE, thread_turns=count, similarity=similarity, asked_signal=self._signal())
 
-    def record(self, said: str, reply: str) -> None:
-        """What was said and answered, once the turn is over."""
+    def asked_earlier(self, said: str, *, topic_shift: bool = False) -> tuple:
+        """The exchanges whose question this one asks again, oldest first.
+
+        For what is settled before the move is: a search runs ahead of
+        ``decide``. The same signal and the same threshold. Nothing is
+        recorded and the thread is left as it is.
+        """
+        if topic_shift:
+            return ()
+        vector = self._embedded(said)
+        if vector is None:
+            return ()
+        return tuple(exchange for exchange in self.thread
+                     if exchange.vector is not None
+                     and _cosine(vector, exchange.vector) >= ASKED_AGAIN_SIMILARITY)
+
+    def record(self, said: str, reply: str, lookup: dict | None = None) -> None:
+        """What was said and answered, once the turn is over; and what was
+        searched to answer it, when something was."""
         said = str(said or "")
-        vector = self._pending[1] if self._pending and self._pending[0] == said else self._vector(said)
+        vector = self._embedded(said)
         self._pending = ()
-        self.thread.append(Exchange(said, str(reply or ""), vector))
+        self.thread.append(Exchange(said, str(reply or ""), vector, dict(lookup) if lookup else None))
         del self.thread[:-THREAD_LIMIT]
 
     def _signal(self) -> str:
         return EMBEDDING if self.embed is not None else UNAVAILABLE
+
+    def _embedded(self, said: str):
+        """The sentence's vector, embedded once however often the turn asks."""
+        said = str(said or "")
+        if not self._pending or self._pending[0] != said:
+            self._pending = (said, self._vector(said))
+        return self._pending[1]
 
     def _vector(self, text: str):
         if self.embed is None or not str(text or "").strip():

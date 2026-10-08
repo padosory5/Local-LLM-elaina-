@@ -335,25 +335,74 @@ def source_of(claim: Claim, evidence: str) -> str:
     return ""
 
 
+# Spellings of one unit. Everything else in the tables above is a unit of
+# its own: GB is not TB, and Hz is not kHz.
+_SAME_UNIT: dict[str, str] = {
+    "watt": "w", "watts": "w",
+    "megapixel": "mp", "megapixels": "mp",
+    "cd/m2": "nits",
+    "hours": "hour", "hr": "hour", "hrs": "hour",
+    "minutes": "minute", "min": "minute", "mins": "minute",
+    "kgs": "kg", "grams": "g", "lbs": "lb", "pound": "lb", "pounds": "lb",
+    "inches": "inch", "in": "inch", "metre": "m", "metres": "m",
+    "percent": "%", "mile": "mi", "miles": "mi", "litre": "l", "litres": "l",
+}
+
+
+def _measured_in(claim: Claim) -> tuple[str, str]:
+    """What a claim's value is a value of: its kind, in its unit."""
+    unit = str(claim.unit or "").casefold()
+    return claim.kind, _SAME_UNIT.get(unit, unit)
+
+
 def conflicting_claims(reply: str, evidence: str) -> tuple[tuple[Claim, str], ...]:
     """Claims the reply states that the sources disagree about.
 
     Only claims the reply actually makes. A source disagreement about
     something she never mentioned is not worth a sentence -- saying it
     anyway is how honesty turns into the disclaimer footer A1 removed.
+
+    And only a disagreement. Replayed over every recorded turn that
+    searched (evals/disagreement_replay.py, 2026-10-07), this had put
+    "Sources disagree on that one -- another says ..." on 33 replies, none
+    of them to a real disagreement, 30 of them on 40 answers to "How much
+    does the iPhone 18 Pro cost?". Two readings were behind all of it:
+
+    * A value is its number *and* its unit. Any two numbers of one kind
+      counted as two accounts of one thing, and the other was then written
+      in her unit: a page offering 256GB and 2TB had her 256GB answered
+      with "another says 2GB". In 28 of the 33 the value named was in no
+      source.
+    * Values one source lists together are options, not a conflict: the
+      sizes a phone comes in, the cameras on its back.
+
+    What is still a disagreement: one source says 165Hz and another says
+    180Hz, and neither says both. What this no longer reports: one stated
+    in two units (1TB against 512GB), or one where a single source gives
+    both values.
     """
-    disputed = conflicts(evidence)
-    if not disputed:
+    found = sources(evidence)
+    if len(found) <= 1:
         return ()
+    stated: list[dict[tuple[str, str], set[str]]] = []
+    for source in found:
+        values: dict[tuple[str, str], set[str]] = {}
+        for claim in claims(source, spoken=False):
+            values.setdefault(_measured_in(claim), set()).add(claim.value)
+        stated.append(values)
     noted: list[tuple[Claim, str]] = []
     for claim in claims(reply):
-        values = disputed.get(claim.kind)
-        if not values or claim.value not in values:
+        per_source = [values.get(_measured_in(claim), set()) for values in stated]
+        if not any(claim.value in values for values in per_source):
             continue
-        others = sorted(values - {claim.value})
+        others = set().union(*per_source) - {claim.value}
+        others = {
+            other for other in others
+            if not any(claim.value in values and other in values for values in per_source)
+        }
         if others:
             # Written the way she wrote hers, so "165Hz" is answered by
             # "180Hz" and "rated 4.8 stars" by "rated 4.6 stars" -- the
             # bare number would drop the unit that makes it legible.
-            noted.append((claim, claim.text.replace(claim.value, others[0], 1)))
+            noted.append((claim, claim.text.replace(claim.value, sorted(others)[0], 1)))
     return tuple(noted)

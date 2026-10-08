@@ -301,6 +301,7 @@ class AnswerCompletionGuard:
     @classmethod
     def needs_retry(
         cls, text: str, *, calculation: bool, question: str = "",
+        closing_question_is_fine: bool = False,
     ) -> bool:
         if not calculation:
             return False
@@ -309,7 +310,20 @@ class AnswerCompletionGuard:
         if not cleaned:
             return True
         if cleaned.endswith("?"):
-            return True
+            # A closing question reads as "stopped before answering", and
+            # was read that way of answers that had answered. Measured
+            # (evals/completion_retry_replay.py, 2026-10-07): "The iPhone
+            # 18 Pro starts at $1,199 with 256GB storage. ... Would you
+            # like help checking availability?" was sent back nine times,
+            # and the second draft added tier prices no source gave. Where
+            # the caller says so, a reply that states a number the question
+            # did not give has answered, whatever it ends on.
+            if not (
+                closing_question_is_fine
+                and question.strip()
+                and cls.worked_out(cleaned, question=question)
+            ):
+                return True
         if cleaned[-1] not in ".!?":
             return True
         if cls._DEFERRAL.search(cleaned):
@@ -330,6 +344,47 @@ class AnswerCompletionGuard:
             # there?" -> "Seven."
             return not cls._states_a_value(cleaned)
         return not bool(re.search(r"\d", cleaned))
+
+    # How the router says a turn wants an explanation, not a value.
+    _EXPLAINING = frozenset({"explain", "example"})
+
+    @classmethod
+    def first_draft_needs_retry(
+        cls, text: str, *, value_question: bool, calculation: bool,
+        answer_shape: str = "", question: str = "",
+    ) -> bool:
+        """Whether the first draft is sent back for a second one.
+
+        The calculation route is as it was. A turn that is only *worded*
+        like a value question ("how much", "얼마") is held to less, because
+        its wording is all that is known of it:
+
+        * not at all when the router read it as asking for an explanation
+          or an example. Measured (evals/completion_retry_replay.py,
+          2026-10-07): "So it's just about the chance of it being a fluke,
+          not how much it actually helps, right?" The right reply has no
+          number in it, so the retry asked for one -- "Perform the
+          calculation now" -- and "The total is $120. That includes $80
+          for the item and $40 for shipping." went out. Eleven of the
+          twenty recorded retries, and five of six when those threads were
+          said again live.
+        * and not for ending on a question once it has stated a number
+          (``closing_question_is_fine``).
+
+        Only this decision reads the turn that way. Whether a second draft
+        or a rewrite is good enough to keep, and whether a finished reply
+        lost its result, are still asked of ``needs_retry`` as they were.
+        """
+        if not value_question:
+            return False
+        if calculation:
+            return cls.needs_retry(text, calculation=True, question=question)
+        if str(answer_shape or "").strip().lower() in cls._EXPLAINING:
+            return False
+        return cls.needs_retry(
+            text, calculation=True, question=question,
+            closing_question_is_fine=True,
+        )
 
     @classmethod
     def dropped_the_result(
@@ -363,19 +418,38 @@ class AnswerCompletionGuard:
         return not (cls._numbers(final) & worked_out)
 
     @classmethod
-    def the_result_sentence(cls, draft: str, *, question: str) -> str:
+    def numbers_taken_out(cls, before: str, after: str) -> set[str]:
+        """The numbers a stage took out of a reply altogether."""
+        return cls._numbers(before) - cls._numbers(after)
+
+    @classmethod
+    def the_result_sentence(
+        cls, draft: str, *, question: str, taken_out=frozenset(),
+    ) -> str:
         """The draft's own sentence stating what it worked out.
 
         The draft as a whole is not what goes back. It may carry the very
         thing a guard removed on the way out -- the sympathy sentence that
         made the arithmetic turn fail the contamination matrix in the first
         place -- so only the sentence with the answer in it is restored.
+
+        Nor is a sentence the grounding stage took out. ``taken_out`` is the
+        numbers that stage removed from the reply on this turn
+        (``numbers_taken_out``). This was built for a result a rewrite lost
+        by accident and could not tell that from one removed on purpose.
+        Measured (evals/restoration_replay.py, 2026-10-08): of the nine
+        times it had put a sentence back, four were sentences
+        ``grounded_values`` had just removed as unverified -- once "prices
+        starting at $1,099 for the 128GB version and going up to $1,499 for
+        the 1TB model", of a phone that starts at $1,199.
         """
         worked_out = cls.worked_out(draft, question=question)
         if not worked_out:
             return ""
         for sentence in re.split(r"(?<=[.!?])\s+", str(draft or "").strip()):
             if cls._numbers(sentence) & worked_out:
+                if cls._numbers(sentence) & set(taken_out):
+                    return ""
                 return sentence.strip()
         return ""
 

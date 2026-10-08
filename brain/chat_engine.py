@@ -2963,8 +2963,17 @@ class ChatEngine:
             # out as "What's up?", because the guard read the deliberate
             # mirroring in a greeting as parroting.
             return reply
+        # A first sentence that mirrors what they said is theirs handed back
+        # only when they told her something: she is reacting, and it did not
+        # end in a question mark. After a question the mirror is the answer.
+        # Both halves are needed. The router read "Okay, so it doesn't mean
+        # it's a big difference, right?" as a statement out of its thread,
+        # and a spoken question often arrives without its mark.
+        told = act == conversation_style.REACT and not str(
+            user_input or ""
+        ).rstrip().endswith(("?", "？"))
         without_echo = ResponseQualityGuard.strip_current_turn_echo(
-            text, user_input,
+            text, user_input, re_ended=told,
         )
         if without_echo != text:
             print(
@@ -3033,7 +3042,7 @@ class ChatEngine:
         # see. What's on your mind?" -- an echo the draft path would have
         # stripped, released only because it arrived on this path instead.
         fresh = ResponseQualityGuard.strip_current_turn_echo(
-            fresh, user_input,
+            fresh, user_input, re_ended=told,
         )
         if ResponseQualityGuard.is_pure_echo(
             fresh, user_input
@@ -7332,6 +7341,52 @@ class ChatEngine:
             print(f"[Query] kept the router's wording: {why}.")
         return query
 
+    def _lookup_as_first_asked(self, route, said: str, lookup: dict) -> dict:
+        """The lookup for this turn: when it asks again a question she
+        searched for earlier in the conversation, and the router wrote no
+        query for it, the lookup that question got then.
+
+        Two things keep a follow-up on what she already found, and a
+        question asked again gets past both. Recall needs a word that points
+        back ("which one"), and a re-ask says the whole question over. The
+        search cache needs the same query, and with none from the router the
+        query is built from this turn's sentence. Measured
+        (docs/TURN_MOVE_AB.md, 2026-10-03): "아니 그러니까 지금 제일 최신
+        아이폰 모델이 뭐냐고?", routed as conversation needing live
+        information, was searched as that sentence, once and unverified. The
+        first asking had searched their words and a dated official-source
+        query, and had Apple's announcement; this one got blog posts about
+        older models, and she took back a supported answer -- 4 runs of 4.
+        Where the router did write the query again, the same two searches
+        came out of the cache and the answer stood, 3 runs of 3.
+
+        So the same question is the same lookup: the query, the other
+        language's query and the verification it had. Inside the cache's
+        five minutes that is the evidence the first answer was built on;
+        after it, a fresh search made as carefully as the first.
+
+        A turn the router wrote a query for is searched as the router said.
+        """
+        if str(getattr(route, "search_query", "") or "").strip():
+            return lookup
+        asked = self._move_record().asked_earlier(
+            said, topic_shift=bool(getattr(route, "topic_shift", False)),
+        )
+        earlier = next(
+            (exchange.lookup for exchange in reversed(asked) if exchange.lookup),
+            None,
+        )
+        if not earlier or earlier == lookup:
+            return lookup
+        print("[Query]")
+        print("  source: asked before -- the lookup that question got then")
+        print(f"  text: {earlier.get('search_query', '')}")
+        turn_trace.note_context(lookup_as_first_asked={
+            "search_query": earlier.get("search_query", ""),
+            "instead_of": lookup.get("search_query", ""),
+        })
+        return dict(earlier)
+
     def _resolved_search_query(self, route, goal, *, said: str = "") -> str:
         """What to search for, once everything established is folded in.
 
@@ -10171,22 +10226,31 @@ class ChatEngine:
                     resolution=getattr(capability, "execution_preference", None),
                     resolved=resolved,
                     said=user_input,
-                ) or self.research_agent.research(
-                    request=route.normalized_request,
-                    search_query=resolved_query,
-                    max_results=5,
-                    verify=route.verification_required,
-                    query_is_resolved=resolved is not None,
-                    # The router's own wording, when the query above is the
-                    # person's words in the other language. See
-                    # ResearchAgent.research for the turn that needed it.
-                    alternate_query=(
-                        route.search_query
-                        if str(route.search_query or "").strip()
-                        != str(resolved_query or "").strip()
-                        else ""
-                    ),
                 )
+                if not research_result:
+                    lookup = {
+                        "search_query": resolved_query,
+                        "verify": route.verification_required,
+                        "query_is_resolved": resolved is not None,
+                        # The router's own wording, when the query above is
+                        # the person's words in the other language. See
+                        # ResearchAgent.research for the turn that needed it.
+                        "alternate_query": (
+                            route.search_query
+                            if str(route.search_query or "").strip()
+                            != str(resolved_query or "").strip()
+                            else ""
+                        ),
+                    }
+                    lookup = self._lookup_as_first_asked(
+                        route, user_input, lookup,
+                    )
+                    research_result = self.research_agent.research(
+                        request=route.normalized_request,
+                        max_results=5,
+                        **lookup,
+                    )
+                    self._turn_lookup = lookup
                 self._last_search_query = research_result.queries[0]
                 self._last_research_evidence = research_result.evidence
                 self._ledger().add(
@@ -11262,9 +11326,11 @@ class ChatEngine:
             )
             if (
                 not effective_forced_response
-                and AnswerCompletionGuard.needs_retry(
+                and AnswerCompletionGuard.first_draft_needs_retry(
                     reply,
-                    calculation=value_response,
+                    value_question=value_response,
+                    calculation=calculation_response,
+                    answer_shape=getattr(route, "answer_shape", ""),
                     question=asked_with_values,
                 )
             ):
@@ -11351,6 +11417,11 @@ class ChatEngine:
                 )
                 else ""
             )
+            # What the grounding stage takes out of the reply on this turn.
+            # A sentence it removed as unverified was not lost, and the last
+            # check on a value question (result_restored) must not put it
+            # back.
+            taken_out_by_grounding: set[str] = set()
             if (
                 route.intent in {
                     "conversation",
@@ -11723,6 +11794,7 @@ class ChatEngine:
                     action_performed=action_performed,
                 ),
             )
+            ungrounded = reply
             reply = turn_trace.step(
                 "grounded_values", reply,
                 self._enforce_grounded_values(
@@ -11732,6 +11804,9 @@ class ChatEngine:
                     trusted_result=bool(effective_forced_response),
                     searched="web_search" in timings,
                 ),
+            )
+            taken_out_by_grounding |= AnswerCompletionGuard.numbers_taken_out(
+                ungrounded, reply,
             )
             reply = turn_trace.step(
                 "existence_claims", reply,
@@ -11939,6 +12014,7 @@ class ChatEngine:
                         action_performed=action_performed,
                     ),
                 )
+                ungrounded = reply
                 reply = turn_trace.step(
                     "grounded_values", reply,
                     self._enforce_grounded_values(
@@ -11946,6 +12022,9 @@ class ChatEngine:
                         action_performed=action_performed,
                         trusted_result=False, searched="web_search" in timings,
                     ),
+                )
+                taken_out_by_grounding |= AnswerCompletionGuard.numbers_taken_out(
+                    ungrounded, reply,
                 )
                 if not self._browser_result_is_final:
                     reply = turn_trace.step(
@@ -12066,7 +12145,13 @@ class ChatEngine:
             ):
                 said_it = AnswerCompletionGuard.the_result_sentence(
                     answered_calculation, question=asked_with_values,
+                    taken_out=taken_out_by_grounding,
                 )
+                if not said_it and taken_out_by_grounding:
+                    print(
+                        "\n[Response Guard] The value it worked out was "
+                        "taken out as unverified; not put back."
+                    )
                 # Only within one language. The draft and the finished
                 # reply are the same answer in different words; if a later
                 # stage answered in the other language, its sentence is the
@@ -12263,7 +12348,9 @@ class ChatEngine:
             "assistant",
             reply
         )
-        self._move_record().record(user_input, reply)
+        self._move_record().record(
+            user_input, reply, lookup=getattr(self, "_turn_lookup", None),
+        )
         self._router_history.extend([
             {
                 "role": "user",
@@ -14843,6 +14930,8 @@ class ChatEngine:
         # What this turn has in hand starts empty every turn. Evidence from
         # an earlier turn gets in only when this turn chooses to reuse it.
         self._turn_evidence = turn_evidence.EvidenceLedger()
+        # What this turn searched, kept with the exchange once it is over.
+        self._turn_lookup = None
         # The previous turn's explanation room, for the shadow FAST/DEEP
         # router (brain/fastdeep_router.py). Moved here every turn, so a
         # turn that never reaches the answer path leaves it empty, not stale.
