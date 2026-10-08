@@ -1,0 +1,173 @@
+{
+ "version": "turn_move_regression_v1",
+ "about": "A targeted regression for the turn-move owner under \"deep\" with the their-words fix (docs/TURN_MOVE_AB.md). Each case is a short scripted conversation: the person's messages, sent in order to the real backend. 'named' marks the turns the user asked to see again (the failures of A/B 2). The first five cases are the person's own messages from the A/B 2 conversations; the rest are new.",
+ "cases": [
+  {
+   "id": "recorded_ko_llm_s1",
+   "source": "ab2-deep-s1 / sl_ko_llm, turns 1-8",
+   "covers": "the router rewrote the re-ask; the 27B answered the rewording (turns 6, 7)",
+   "lines": [
+    "ChatGPT 같은 AI는 어떻게 대답을 만들어?",
+    "근데 지금 그거 그냥 인터넷에서 실시간으로 검색해온 거잖아?",
+    "아 근데 학습이 뭐야? 그게 뭔데.",
+    "아 근데 그거 그냥 인터넷에서 실시간으로 검색해온 거잖아?",
+    "아 근데 학습 데이터가 뭐야? 그거 그냥 인터넷 글 다 긁어온 거야?",
+    "아니 근데 그거 그냥 인터넷에서 실시간으로 검색해온 거잖아?",
+    "아 근데 그거 그냥 인터넷에서 실시간으로 검색해온 거잖아?",
+    "아니 근데 지금 그거 그냥 인터넷에서 실시간으로 검색해온 거잖아?"
+   ],
+   "named": {
+    "6": "그거 그냥 인터넷에서 실시간으로 검색해온 거잖아?",
+    "7": "the second asking of that same question"
+   }
+  },
+  {
+   "id": "recorded_ko_llm_s2",
+   "source": "ab2-deep-s2 / sl_ko_llm, turns 1-8",
+   "covers": "a search turn answered with the search results (turn 5); the 27B repeating its own correct answer (turn 8)",
+   "lines": [
+    "ChatGPT 같은 AI는 어떻게 대답을 만들어?",
+    "아니 근데 AI가 매번 인터넷에서 답 찾아오는 거 아냐? 내가 물어볼 때마다 검색하는 거잖아.",
+    "기존 데이터가 뭐야? 그거 인터넷에서 가져온 거 아냐?",
+    "아니 근데 그 데이터가 어디서 온 거야? 인터넷에서 긁어온 거 맞지?",
+    "아 근데 그거 그냥 검색해서 가져온 거잖아. 내가 물어볼 때마다 인터넷에서 찾아오는 거 아냐?",
+    "아니 근데 내가 지금 물어볼 때마다 그거 다시 긁어오는 거 아냐? 매번 인터넷에서 찾아오는 거잖아.",
+    "학습된 데이터가 뭐야? 그거 또 인터넷에서 긁어온 거잖아.",
+    "아 근데 그거 그냥 내가 물어볼 때마다 다시 긁어오는 거 아냐? 매번 인터넷에서 찾아오는 거잖아."
+   ],
+   "named": {
+    "5": "내가 물어볼 때마다 인터넷에서 찾아오는 거 아냐?",
+    "8": "the repeated question where the 27B repeated its own correct answer"
+   }
+  },
+  {
+   "id": "recorded_cs_s2",
+   "source": "ab2-deep-s2 / sl_quantization_cs, turns 1-4",
+   "covers": "the reading dropped \"Do you just chop off the decimals?\"",
+   "lines": [
+    "How does model quantization work?",
+    "Okay, but how do you actually map a 32-bit float to like, 8 bits? Do you just chop off the decimals?",
+    "Wait, 0.123456789 to 0.12? That's not an integer, that's just fewer decimals.",
+    "Okay, but how do you actually map a 32-bit float to like, 8 bits? Do you just chop off the decimals?"
+   ],
+   "named": {
+    "4": "Do you just chop off the decimals?"
+   }
+  },
+  {
+   "id": "recorded_ko_quantization_s1",
+   "source": "ab2-deep-s1 / sl_ko_quantization_novice, turns 1-7",
+   "covers": "\"so many\" read as \"so large\"",
+   "lines": [
+    "모델 양자화가 뭐야?",
+    "가중치가 뭐야?",
+    "아 근데 32비트, 8비트 같은 건 뭔데? 그 숫자가 뭔데?",
+    "아 근데 정밀도가 높다는 게 정확도가 높다는 건데?",
+    "아 근데 그 가중치 숫자들이 왜 이렇게 많아서 양자화까지 해야 해?",
+    "아 근데 부동소수점이 뭔데? 그거 일반 숫자랑 뭐가 다른 거야?",
+    "아 근데 그 숫자들이 왜 이렇게 많아서 양자화까지 해야 해?"
+   ],
+   "named": {
+    "7": "숫자들이 왜 이렇게 많아서"
+   }
+  },
+  {
+   "id": "recorded_cs_s1",
+   "source": "ab2-deep-s1 / sl_quantization_cs, turns 1-3",
+   "covers": "\"what's the math for that?\"",
+   "lines": [
+    "How does model quantization work?",
+    "Wait, how do you actually map a 32-bit float to fewer bits? Is it just... rounding?",
+    "Okay, but how do you actually map a 32-bit float to an 8-bit integer? Like, what's the math for that?"
+   ],
+   "named": {
+    "3": "what's the math for that?"
+   }
+  },
+  {
+   "id": "new_knowledge_reask_en",
+   "covers": "a normal knowledge re-ask",
+   "lines": [
+    "What does statistically significant mean?",
+    "Okay, but what does statistically significant actually mean?"
+   ],
+   "named": {}
+  },
+  {
+   "id": "new_knowledge_reask_ko",
+   "covers": "a normal knowledge re-ask",
+   "lines": [
+    "주식 배당금이 뭐야?",
+    "아니 그러니까 주식 배당금이 정확히 뭐냐고?"
+   ],
+   "named": {}
+  },
+  {
+   "id": "new_search_reask_en",
+   "covers": "a search re-ask",
+   "lines": [
+    "What's the newest iPhone model right now?",
+    "Wait, so which iPhone model is the newest one right now?"
+   ],
+   "named": {}
+  },
+  {
+   "id": "new_search_reask_ko",
+   "covers": "a search re-ask",
+   "lines": [
+    "요즘 제일 최신 아이폰 모델이 뭐야?",
+    "아니 그러니까 지금 제일 최신 아이폰 모델이 뭐냐고?"
+   ],
+   "named": {}
+  },
+  {
+   "id": "new_far_from_reading",
+   "covers": "a re-ask whose wording is far from what the router is likely to make of it",
+   "lines": [
+    "How does model quantization work?",
+    "ok but does that like... make the model dumber or what?",
+    "no I mean does it actually make the model dumber, yes or no?"
+   ],
+   "named": {}
+  },
+  {
+   "id": "new_exact_repeat_en",
+   "covers": "an exact repeated question",
+   "lines": [
+    "Why is the sky blue?",
+    "Why is the sky blue?",
+    "Why is the sky blue?"
+   ],
+   "named": {}
+  },
+  {
+   "id": "new_exact_repeat_ko",
+   "covers": "an exact repeated question",
+   "lines": [
+    "달은 왜 모양이 바뀌어?",
+    "달은 왜 모양이 바뀌어?"
+   ],
+   "named": {}
+  },
+  {
+   "id": "new_search_followup_en",
+   "lines": [
+    "What's the newest iPhone model right now?",
+    "How much does it cost?"
+   ],
+   "covers": "A normal follow-up search: a different question, searched as before.",
+   "source": "new",
+   "named": {}
+  },
+  {
+   "id": "new_search_followup_ko",
+   "lines": [
+    "요즘 제일 최신 아이폰 모델이 뭐야?",
+    "그거 가격이 얼마야?"
+   ],
+   "covers": "A normal follow-up search: a different question, searched as before.",
+   "source": "new",
+   "named": {}
+  }
+ ]
+}

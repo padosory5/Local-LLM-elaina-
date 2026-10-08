@@ -46,6 +46,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core import model_context  # noqa: E402
 from brain import response_budget, turn_move  # noqa: E402
 from core import turn_trace  # noqa: E402
 from evals.phase2 import M8, M27  # noqa: E402
@@ -181,7 +182,9 @@ def run() -> int:
                 for seed in SEEDS:
                     if (row["id"], variant, seed) in done:
                         continue
-                    options = {**row["options"], "seed": seed}
+                    # The window every production call asks for (core/model_context.py). The
+                    # runs of 2026-10-03 were made without it, at Ollama's own 4,096 tokens.
+                    options = {**row["options"], "seed": seed, "num_ctx": model_context.configured()}
                     response = ollama.chat(model=model, messages=messages_for(row, variant), stream=False,
                                            options=options, think=False)
                     text = str((response.get("message") or {}).get("content") or "").strip()
@@ -311,7 +314,8 @@ def run_theirs() -> int:
                 messages = [{"role": "system", "content": row["system"]}, *row["history"],
                             {"role": "user", "content": final}]
                 response = ollama.chat(model=row["model"], messages=messages, stream=False,
-                                       options={**row["options"], "seed": seed}, think=False)
+                                       options={**row["options"], "seed": seed,
+                                                "num_ctx": model_context.configured()}, think=False)
                 text = str((response.get("message") or {}).get("content") or "").strip()
                 with path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps({"id": row["id"], "variant": variant, "seed": seed,
