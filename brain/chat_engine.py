@@ -3145,6 +3145,17 @@ class ChatEngine:
             (f"{item.kind}:{item.source}" if item.source else item.kind, item.text)
             for item in ledger.items()
         ]
+        # A calculation's result has no unit and the answer says it with one
+        # ("total: 10000" -> "10,000원"), so nothing the value reader finds in
+        # the first holds the second. Her wording of a number this turn
+        # worked out is read beside the calculation
+        # (grounded_values.computed_as_said).
+        said_computed = grounded_values.computed_as_said(text, "\n".join(
+            item.text for item in ledger.items()
+            if item.kind in (turn_evidence.CALCULATION, turn_evidence.CONVERSION)
+        ))
+        if said_computed:
+            sources.append(("calculation:as she said it", said_computed))
         extra = str(research_evidence or "").strip()
         if extra and extra not in ledger.text():
             sources.append(("research", extra))

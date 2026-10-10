@@ -139,6 +139,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_echo_after_a_question",
             "test_followup_keeps_the_thread",
             "test_worked_examples",
+            "test_computed_values",
             "test_brief_response",
             "test_capabilities",
             "test_capability_contract",

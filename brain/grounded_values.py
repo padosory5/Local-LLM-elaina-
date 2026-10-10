@@ -36,6 +36,7 @@ ones, and they are the numbers that decide a purchase. See
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation
 
 from brain import attribute_values
 from brain.spoken_notation import prose
@@ -184,6 +185,81 @@ def _mangled_numbers(reply: str, source: str) -> set[str]:
                 mangled.add(number)
                 break
     return mangled
+
+
+# What a calculation worked out: the number after the last ":" or "=" of a
+# line, which is where every writer of one puts it --
+#
+#     total dividend received: 10000          (brain/calculation_planner.py)
+#     15 / 100 * 80 = 12                      (brain/domain_resolver.py)
+#     1 pound = 16 ounces
+#
+# Not the operands and not a number in a label ("500g water at 1:4 ratio:
+# 125" worked out 125). Those are the question's own, and a result said
+# wrong is very often one of them.
+_COMPUTED_RESULT = re.compile(
+    r"[:=]\s*-?(\d[\d,]*(?:\.\d+)?)(?=[^:=\d\n]*$)", flags=re.MULTILINE,
+)
+_PLAIN_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _number_of(written: str) -> Decimal | None:
+    """The number in a written amount: "10,000원" and "$10,000.00" are one."""
+    digits = re.sub(r"[^\d.]", "", str(written or "")).strip(".")
+    try:
+        return Decimal(digits) if digits else None
+    except InvalidOperation:
+        return None
+
+
+def computed_as_said(reply: str, computed: str) -> str:
+    """The reply's own wording of the numbers a calculation worked out.
+
+    A calculator's result has no unit. The unit is in the question, and the
+    answer says both:
+
+        User:   한 주당 1000원이라고 하면, 주식 10주 있으면 1만원 받는 거지?
+        (calculator)  total dividend received: 10000
+        Elaina: 총 배당금은 10,000원입니다.
+
+    Read as evidence the bare 10000 is no value at all -- a plain integer is
+    deliberately not a claim (see ``_MONEY``) -- so "10,000원" was a price
+    nothing supported, and the one figure the turn had just computed was the
+    one it would not say. Measured 2026-10-09, twice running in one
+    conversation: "아직 확인해 보지 않아서, 추측으로 말씀드리지는
+    않겠습니다." The same for "$12" on a fifteen percent tip.
+
+    ``computed`` is the text of the turn's calculations. What comes back is
+    how the reply wrote their results -- "10,000원", "$12.00", "10000 grams"
+    -- to be read as evidence beside them, so the decision, the repair and
+    the findings all see a value a source holds.
+
+    The number has to be the calculator's own: "$12.00" is 12, and "about
+    $33" for 33.33 is a different number. A figure beside the result that
+    nothing computed is no part of this.
+    """
+    results = {
+        number
+        for number in (
+            _number_of(match.group(1))
+            for match in _COMPUTED_RESULT.finditer(str(computed or ""))
+        )
+        if number is not None
+    }
+    if not results:
+        return ""
+    text = prose(str(reply or ""))
+    said = [
+        match.group(0)
+        for match in _MONEY.finditer(text)
+        if _number_of(match.group(0)) in results
+    ]
+    said += [
+        claim.text
+        for claim in attribute_values.claims(text)
+        if _PLAIN_NUMBER.fullmatch(claim.value) and Decimal(claim.value) in results
+    ]
+    return " ".join(said)
 
 
 # Both, and by accident rather than design: what it compares are

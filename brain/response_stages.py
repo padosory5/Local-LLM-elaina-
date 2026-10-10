@@ -318,6 +318,9 @@ STAGES: tuple[Stage, ...] = (
             "(all 13 removals on turns read as explain, of 1,032 it ran on); "
             "on such a turn the numbers are left as written and logged, "
             "unless they price a named place or the person disputed them.",
+            "Took a calculator's own result for an unsourced value when the "
+            "answer said it with a unit (\"total: 10000\" -> \"10,000원\"); "
+            "her wording of a number the turn computed is read as evidence.",
         ),
     ),
     Stage(
