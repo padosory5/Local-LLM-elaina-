@@ -137,6 +137,8 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_completion_retry",
             "test_result_restored",
             "test_echo_after_a_question",
+            "test_followup_keeps_the_thread",
+            "test_worked_examples",
             "test_brief_response",
             "test_capabilities",
             "test_capability_contract",

@@ -366,6 +366,27 @@ class GroundedValueGuard:
         )
 
     @classmethod
+    def is_an_illustration(cls, reply: str, *, disputed: bool) -> bool:
+        """Whether an explanation's numbers are its own example, not a claim.
+
+        Asked only of a turn the router read as explaining something. There
+        the numbers are overwhelmingly made up on purpose: "주당 1,000원의
+        배당금이 있고 100주를 보유한다면 100,000원을 받을 수 있습니다", "if the
+        integer is 32 and the scaling factor is 0.01, the original float
+        value is 0.32". Measured over every recorded turn (2026-10-08): the
+        value check ran on 1,032 such turns and took a sentence out of 13,
+        and all 13 were a worked example -- twice the very thing the person
+        had asked for, and ten times with "I looked, but couldn't confirm
+        the specific number" said after it, of a number nobody had looked
+        for.
+
+        Two shapes stay claims about the world wherever they are said: a
+        price put on a place she has named, and a value the person has just
+        said is wrong.
+        """
+        return not disputed and not _prices_a_named_place(reply)
+
+    @classmethod
     def correct_values(
         cls, reply: str, *, evidence: str, offer: str, partial_offer: str = "",
         their_words: str | None = None,

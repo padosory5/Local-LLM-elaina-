@@ -3112,6 +3112,7 @@ class ChatEngine:
         research_evidence: str = "",
         trusted_result: bool = False,
         searched: bool = False,
+        illustrating: bool = False,
     ) -> str:
         """Never quote a value that nothing this session actually saw.
 
@@ -3199,6 +3200,23 @@ class ChatEngine:
             grounded_subject=looked_something_up,
             their_words=theirs,
         ):
+            return text
+
+        # An explanation's worked example is not a value she looked up
+        # (GroundedValueGuard.is_an_illustration). ``illustrating`` is the
+        # router's reading of the turn; what is left is written down, so the
+        # trace still says which numbers went out unchecked.
+        if illustrating and GroundedValueGuard.is_an_illustration(
+            text, disputed=disputed,
+        ):
+            left = sorted(
+                GroundedValueGuard.unsupported_values(text, evidence)
+                | grounded_values._mangled_numbers(text, theirs)
+            )
+            print(
+                "[Grounding Guard] An explanation's own example; left as "
+                f"written: {', '.join(left) or '(unnamed)'}."
+            )
             return text
 
         # "I haven't actually checked that" was said after two searches had
@@ -5668,8 +5686,21 @@ class ChatEngine:
             reason = f"the turn drops {dropped!r} and asks something else"
         elif route.topic_shift:
             reason = "the router says the topic moved"
-        elif held_subject and current and not context_policy.subjects_agree(
-            held_subject, current,
+        elif (
+            held_subject and current
+            # Two labels sharing no word says the subject changed only when
+            # nothing says the turn follows on. A question about a word she
+            # has just used is filed under a subject of its own -- "적외선?
+            # 그거 뭐야?" under 'infrared radiation', inside 'greenhouse
+            # effect' -- and starting clean retires the whole conversation
+            # for the turns after it too: the next one explained how
+            # microwave ovens warm the Earth. Measured over 1,135 recorded
+            # turns (2026-10-08): of the 225 this comparison started clean,
+            # the router had called 167 a follow-up, every one inside a
+            # single explanation, and 47 of the other 58 were the next
+            # unrelated question, which is what it is for.
+            and not getattr(route, "is_follow_up", False)
+            and not context_policy.subjects_agree(held_subject, current)
         ):
             reason = (
                 f"the turn is about {current!r}, the conversation was about "
@@ -11422,6 +11453,12 @@ class ChatEngine:
             # check on a value question (result_restored) must not put it
             # back.
             taken_out_by_grounding: set[str] = set()
+            # Whether the router read this turn as explaining something. The
+            # numbers of an explanation are its own examples, and the
+            # grounding stage is told so.
+            explaining = str(
+                getattr(route, "answer_shape", "") or ""
+            ).strip().lower() in {"explain", "example"}
             if (
                 route.intent in {
                     "conversation",
@@ -11803,6 +11840,7 @@ class ChatEngine:
                     action_performed=action_performed,
                     trusted_result=bool(effective_forced_response),
                     searched="web_search" in timings,
+                    illustrating=explaining,
                 ),
             )
             taken_out_by_grounding |= AnswerCompletionGuard.numbers_taken_out(
@@ -12021,6 +12059,7 @@ class ChatEngine:
                         reply, user_input=user_input,
                         action_performed=action_performed,
                         trusted_result=False, searched="web_search" in timings,
+                        illustrating=explaining,
                     ),
                 )
                 taken_out_by_grounding |= AnswerCompletionGuard.numbers_taken_out(

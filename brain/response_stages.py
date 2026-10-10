@@ -313,6 +313,12 @@ STAGES: tuple[Stage, ...] = (
             "brain.attribute_values",
         ),
         protects="Grounded values: no unsourced value is stated.",
+        conflicts=(
+            "Took an explanation's worked example for an unsourced value "
+            "(all 13 removals on turns read as explain, of 1,032 it ran on); "
+            "on such a turn the numbers are left as written and logged, "
+            "unless they price a named place or the person disputed them.",
+        ),
     ),
     Stage(
         "existence_claims", HARD,

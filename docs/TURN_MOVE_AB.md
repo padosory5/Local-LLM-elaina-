@@ -1061,3 +1061,100 @@ was made for this one: it is a soft stage, and nothing about a model call change
 
 **Consequence.** `result_restored` no longer fires on the freezing-point question, because the
 answer is no longer taken out.
+
+## The fresh pilot, and what it pointed at (2026-10-08)
+
+`pilot7-current-s1`/`-s2` on the committed code (`eb3c159`, Ollama 0.40.0), against the 2026-10-03 off
+arm (`ab2-off-s1`/`-s2`, Ollama 0.35.1); `runtime/evals/sl/pilot7_report.md`.
+
+| | fresh | 2026-10-03 |
+|---|---|---|
+| verified understanding (the learner says so and the judge finds every idea) | 8 of 18 | 11 of 18 |
+| replies pitched at this person | 51 of 100 | 52 of 105 |
+| changed approach after confusion | 40 of 70 | 41 of 69 |
+| replies that sound natural | 47 of 100 | 48 of 105 |
+| completion retry asked / restatement strips | 0 / 0 | 3 / 1 |
+
+Five stage fixes removed what they were aimed at and moved nothing the judge measures. The 8 against
+11 is inside the spread of the old run's own two seeds. Verdict-first on understanding checks, by
+hand: about 12 of 29, as in pilot 3. What the transcripts show: the 8B's own wrong or vague
+explanations and the same explanation again (30 of 70 "repeated"); the thread dropped on 16 of 91
+follow-ups; `grounded_values` deleting worked examples on 4 replies; "...거입니다" endings from the
+voice stage on 4 of 55 Korean replies. `deep` as built reaches 11 of 100 replies and 6 of the 30
+"repeated".
+
+## A follow-up keeps the conversation it follows (2026-10-08)
+
+**What was failing.** `_context_for_turn` starts a turn clean when the subject it is filed under
+shares no word with the subject the conversation was filed under, and a clean start retires the
+whole conversation for the turns after it too (`ConversationManager.start_new_subject`). A question
+about a word she has just used is filed under a subject of its own: "적외선? 그거 뭐야?" was answered
+with microwave ovens, and the next turn explained how microwave ovens warm the Earth.
+
+**How often.** Of 1,135 recorded turns after the first of their conversation, the label comparison
+started 225 clean. On 167 the router had called the turn a follow-up and not said the topic moved,
+and every one was inside a single explanation. Of the other 58, 47 were the next unrelated question
+("Who wrote Pride and Prejudice?" after "What's 15% of 80?"), which is what the rule is for, and 11
+were term questions inside a thread that the router did not call follow-ups ("파장이 뭐야?").
+
+**The change.** The label comparison decides only for a turn the router did not call a follow-up.
+What the person says ("forget the mouse") and the router saying the topic moved start a turn clean
+as before. Tests: `tests/test_followup_keeps_the_thread.py` (7; the four that pin the change fail on
+the code as it was). The 11 term questions are not covered.
+
+**The risk side, live** (`scripts/live_contamination_check.py`, 12 cases, a backend each, one run
+before and one after): 11 of 12 before, 12 of 12 after, no old subject named in a new question.
+"where is my school again?" after a correction went from "You haven't told me where your school is"
+to "You're attending UW in Tacoma".
+
+## An explanation's worked example is not a value she looked up (2026-10-08)
+
+**What was failing.** `grounded_values` took a sentence out of 25 recorded replies. The 12 on turns
+the router read as `state` were prices. The 13 on turns it read as `explain` were all worked
+examples ("주당 1,000원의 배당금이 있고 100주를 보유한다면 100,000원"), 13 of the 1,032 explanation
+turns it ran on and not one invented fact among them; ten were then told "couldn't confirm the
+specific number". In the pilot it removed the corrected arithmetic ("if the integer is 32 and the
+scaling factor is 0.01, the original float value is 0.32") straight after the learner had said the
+math did not work.
+
+**Why.** Two readings. With evidence anywhere in the thread, every number not in it is unsourced (7
+on turns that searched, 4 on carried evidence). And when the person's own message holds a number,
+any other number in the reply reads as theirs come back changed (2).
+
+**The change, chosen by the user over a narrower one.** On a turn the router read as `explain` or
+`example`, the numbers are left as written and the log says which
+(`GroundedValueGuard.is_an_illustration`, `_enforce_grounded_values(illustrating=...)`). A price put
+on a place she has named and a value the person has just disputed are still taken out there. A turn
+read as asking for a fact is checked as before. Tests: `tests/test_worked_examples.py` (11; the five
+that pin the change fail with every explanation's numbers checked).
+
+**The exposure, accepted.** An invented statistic inside an explanation is no longer removed. The
+router read real value questions as `state` in 150 of 150 (the completion-retry check), so a price or
+a fact that was asked for keeps the full check.
+
+## A/B 3: current against `deep`, after the two fixes (2026-10-08)
+
+`ab3-off-s1/-s2` and `ab3-deep-s1/-s2`, interleaved, same learners and simulator, on the thread-drop
+and worked-example fixes; `runtime/evals/sl/ab3_report.md`. The current arm against pilot 7 (same
+arm, same seeds, the code before the two fixes) is their before and after.
+
+| | pilot 7 (before) | current | deep |
+|---|---|---|---|
+| verified understanding | 8 of 18 | 11 of 18 | 9 of 18 |
+| ideas the judge found conveyed | 40 of 52 | 41 of 52 | 37 of 49 |
+| replies pitched at this person | 51 of 100 | 47 of 101 | 52 of 99 |
+| changed approach after confusion | 40 of 70 | 40 of 66 | 40 of 64 |
+| replies that sound natural | 47 of 100 | 45 of 101 | 48 of 99 |
+| follow-ups answered without the thread | 13 | 3 | 1 |
+| replies `grounded_values` took a sentence out of | 3 | 0 | 1 |
+| turns flagged as re-asks / changed approach on them | 11 / 5 | 6 / 2 | 11 / 7 of 9 judged |
+| reply seconds, median | 9.5 | 9.1 | 9.4 (19.4 on the 27B's turns) |
+
+- One deep conversation could not be judged (three unreadable answers, and four more with a longer
+  limit); its learner said it understood, so deep is 9 or 10 of 18.
+- The two fixes did what they were for. The remaining clean starts are turns the router did not call
+  follow-ups; the one sentence still removed was on "배당률이 뭐야?", which the router reads as
+  `state`.
+- `deep`: the 27B wrote all 11 flagged turns. By hand, 8 answer the question in a new way, 2 are her
+  previous answer word for word (the 27B's own draft, on a re-ask routed as a search), and 2 are
+  good answers with a pipeline line attached. Verified understanding did not rise, here or in A/B 2.
