@@ -14,6 +14,7 @@ from memory.memory_manager import MemoryManager
 from memory import memory_manager as memory_categories
 from memory.extractor import MemoryExtractor
 from memory.consolidator import MemoryConsolidator, same_fact
+from memory import faithful as memory_faithful
 from memory.context_builder import ContextBuilder
 from brain.prompt_builder import PromptBuilder
 from brain.deliberation import ClarificationGate, Goal
@@ -1377,6 +1378,9 @@ class ChatEngine:
         self._vision_last_warm = 0.0
         self._turn_lock = threading.Lock()
         self._active_turn_cancel: threading.Event | None = None
+        # What they told her before she was last closed and never got to
+        # (memory/said.py). Last, so the thread finds everything it reads.
+        self._finish_what_was_left()
 
     def on_speech_start(self) -> None:
         # Freeze the foreground surface before Electron status events or an
@@ -5372,8 +5376,94 @@ class ChatEngine:
                     return item
         return None
 
-    def _store_memory_candidate(self, user_input: str) -> None:
-        """Perform expensive extraction/consolidation outside response latency."""
+    def _worth_writing_down(self, user_input: str, route) -> bool:
+        """Whether this turn may hold something about the person: it is then
+        written down (memory/said.py) and shown to the extractor.
+
+        Three ways in. The durable patterns, which keep a sentence whatever
+        the extractor says. The router's own flag on a turn that is plain
+        conversation. And anything stated in the first person
+        (``memory_gate.may_be_about_them``): the patterns are a list, and
+        measured against 95 things a person says about themselves they knew
+        44 -- "I have asthma", "I'm training for a marathon" and "작년에
+        미국으로 이사 왔어" were never looked at. For those the extractor
+        decides.
+        """
+        if not getattr(self, "memory_enabled", False):
+            return False
+        if getattr(self, "_asked_to_repeat", False):
+            return False
+        if memory_gate.is_question(user_input):
+            # A question states nothing; the extractor filled one in anyway
+            # ("내가 무슨 전공인지 기억해?" -> "The user studies Electrical
+            # Engineering").
+            return False
+        telling = getattr(route, "intent", "") == "conversation"
+        # Inside an explanation the first person is about the subject, not
+        # the person: "I thought the Earth's shadow covered part of it",
+        # "아 근데 나는 배당금이 주가 오르면 생기는 돈인 줄 알았어". Measured
+        # with the real extractor on 166 learner turns: 41 were shown to it
+        # and 13 became "memories", every one a remark like those. The
+        # router's reading separates the two: of 34 such turns it read 27 as
+        # explaining and the rest as requests, and of 36 things a person told
+        # her about themselves that only this way in catches, it read every
+        # one as a statement and none as explaining. So this way in is for a
+        # statement outside an explanation. The durable patterns are not held
+        # back by either -- which is the known limit: a kind of fact they do
+        # not list, said inside a question, is not looked at.
+        explaining = str(
+            getattr(route, "answer_shape", "") or ""
+        ).strip().lower() in {"explain", "example"}
+        stating = str(
+            getattr(route, "speech_act", "") or ""
+        ).strip().lower() == "statement"
+        return bool(
+            memory_gate.carries_something_to_remember(user_input)
+            or (telling and getattr(route, "memory_candidate", False))
+            or (
+                stating and not explaining
+                and memory_gate.may_be_about_them(user_input, telling=telling)
+            )
+        )
+
+    def _finish_what_was_left(self) -> None:
+        """Make memories of what they said before she was last closed.
+
+        The window stops the backend with ``taskkill /F`` (desktop/main.js),
+        so the thread that turns a sentence into a memory -- two model calls,
+        up to 13 seconds -- is cut off whenever she is closed soon after
+        being told something. The sentence itself was written down in the
+        turn; this picks up whatever is still waiting.
+        """
+        manager = self.memory_manager if getattr(self, "memory_enabled", False) else None
+        journal = getattr(manager, "said", None)
+        if journal is None or self.extractor is None or self.consolidator is None:
+            return
+        left = journal.waiting()
+        if not left:
+            return
+        print(f"[Memory] Finishing {len(left)} thing(s) you told me before I was closed.")
+
+        def finish() -> None:
+            for said_id, text in left:
+                self._store_memory_candidate(text, said_id=said_id)
+
+        thread = threading.Thread(target=finish, name="elaina-memory-left", daemon=True)
+        thread.start()
+        # Kept with the others: close() waits for it, and "you haven't told
+        # me that" is not said while it runs.
+        self._memory_stores = [
+            store for store in getattr(self, "_memory_stores", []) if store.is_alive()
+        ] + [thread]
+
+    def _store_memory_candidate(self, user_input: str, said_id: int | None = None) -> None:
+        """Perform expensive extraction/consolidation outside response latency.
+
+        ``said_id`` is this sentence's row in the journal (memory/said.py),
+        written in the turn. It is settled here once something was made of
+        the sentence or it was looked at and passed over. On a failure it is
+        left waiting, and finished at the next start.
+        """
         if (
             not self.memory_enabled
             or self.memory_manager is None
@@ -5381,6 +5471,7 @@ class ChatEngine:
             or self.consolidator is None
         ):
             return
+        journal = getattr(self.memory_manager, "said", None)
         if memory_gate.is_question(user_input):
             # Asking is not telling -- here too, not only where the router
             # calls this. Measured after a restart: the extractor declined
@@ -5390,9 +5481,13 @@ class ChatEngine:
             # polluted then made "제일 좋아하는 색깔이 뭐였지?" look like
             # something she had been told, so the fixed "you haven't told
             # me" line never ran and the model guessed 파랑.
+            if journal is not None:
+                journal.settle(said_id)
             return
         with self._memory_store_lock:
             started = time.perf_counter()
+            if journal is not None:
+                journal.tried(said_id)
             try:
                 memory = self.extractor.extract(user_input)
                 # The extractor's "save" is a model call, and it is the
@@ -5412,38 +5507,42 @@ class ChatEngine:
                     user_input
                 )
                 if not memory["save"] and not worth_keeping:
+                    if journal is not None:
+                        journal.settle(said_id)
                     return
                 if not memory["save"]:
                     print(
                         "[Memory] The extractor declined; the gate did not. "
                         f"Keeping: {user_input[:60]!r}"
                     )
-                if not str(memory.get("content", "")).strip():
-                    # No phrasing came back with the refusal, so their own
-                    # sentence is the memory. Verbatim on purpose: a
-                    # paraphrase of something never paraphrased before is
-                    # a second chance to get it wrong.
-                    memory = {
-                        **memory,
-                        "content": " ".join(str(user_input).split()),
-                        "category": memory.get("category") or "personal",
-                    }
 
-                # The extractor writes English, and a Korean name does not
-                # survive the trip: measured, "젠레스 존 제로" was kept as
-                # "Genres Zero" and a dog called 콩 as "Kongi" -- so "무슨
-                # 게임 한다고 했지?" could only ever be answered wrongly. What
-                # they said is kept beside what the extractor made of it.
+                # What is kept is what they said. The wording is a model's
+                # and it does not always stop at rewording: measured, "나
+                # 워싱턴 대학교에서..." was kept as "...at Washington
+                # University", "젠레스 존 제로" as "Genres Zero", a dog
+                # called 콩 as "Kongi", and "I'm going to UW" as "the
+                # University of Washington". So it is read against their
+                # sentence (memory/faithful.py), and when it says anything
+                # they did not -- or says nothing -- their own words are the
+                # memory: the part that states something, without the
+                # question it may have come with.
                 said = " ".join(str(user_input).split())
-                content = str(memory.get("content", ""))
-                if (
-                    re.search(r"[가-힣]", said)
-                    and not re.search(r"[가-힣]", content)
-                    and said not in content
-                ):
+                content = str(memory.get("content", "") or "").strip()
+                extra = memory_faithful.added(said, content) if content else set()
+                # (Their sentence handed back unchanged is their own words
+                # too, and is marked as theirs like the rest.)
+                if extra or not content or content == said:
+                    stated = memory_gate.what_they_stated(said) or said
+                    if extra:
+                        print(
+                            "[Memory] The extraction said more than they did "
+                            f"({', '.join(sorted(extra))[:80]}); keeping their "
+                            f"own words: {stated[:60]!r}"
+                        )
                     memory = {
                         **memory,
-                        "content": f'{content} (in their words: "{said[:160]}")',
+                        "content": memory_faithful.as_said(stated),
+                        "category": memory.get("category") or "personal",
                     }
 
                 similar = self.memory_manager.search_memory_objects(
@@ -5457,6 +5556,8 @@ class ChatEngine:
                 corrects = self._replaces_what_they_took_back(
                     similar, memory["content"],
                 )
+                # Which memory holds it now, for the journal.
+                kept_in = None
                 if corrects is not None and action != "UPDATE":
                     print(
                         "[Memory] They took that back; putting the "
@@ -5465,8 +5566,9 @@ class ChatEngine:
                     self.memory_manager.update_memory(
                         corrects.id, memory["content"],
                     )
+                    kept_in = corrects.id
                 elif action == "ADD":
-                    self.memory_manager.store_memory(
+                    kept_in = self.memory_manager.store_memory(
                         content=memory["content"],
                         category=memory["category"],
                         importance=5,
@@ -5486,45 +5588,59 @@ class ChatEngine:
                     if target is not None and same_fact(
                         getattr(target, "content", ""), memory["content"],
                     ):
+                        # Overwritten with what was read against their
+                        # sentence -- not with the consolidator's own wording
+                        # of it, a second model's sentence nothing checked.
                         self.memory_manager.update_memory(
                             result["memory_id"],
-                            result["content"],
+                            memory["content"],
                         )
+                        kept_in = result["memory_id"]
                     else:
                         print(
                             "[Memory] The consolidator wanted to overwrite a "
                             "different fact; keeping both: "
                             f"{memory['content'][:60]!r}"
                         )
-                        self.memory_manager.store_memory(
+                        kept_in = self.memory_manager.store_memory(
                             content=memory["content"],
                             category=memory["category"],
                             importance=5,
                         )
-                elif any(
-                    same_fact(getattr(row, "content", ""), memory["content"])
-                    for row in similar
-                ):
-                    # Genuinely already known. Visible, because it was not:
-                    # a Korean memory among English ones was consolidated
-                    # away in silence and the restart could not say which
-                    # school.
-                    print(
-                        "[Memory] Already known; not kept again: "
-                        f"{memory['content'][:60]!r}"
-                    )
                 else:
-                    print(
-                        "[Memory] The consolidator called it a duplicate of "
-                        f"nothing it had; keeping it: {memory['content'][:60]!r}"
+                    known = next(
+                        (
+                            row for row in similar
+                            if same_fact(getattr(row, "content", ""), memory["content"])
+                        ),
+                        None,
                     )
-                    self.memory_manager.store_memory(
-                        content=memory["content"],
-                        category=memory["category"],
-                        importance=5,
-                    )
+                    if known is not None:
+                        # Genuinely already known. Visible, because it was
+                        # not: a Korean memory among English ones was
+                        # consolidated away in silence and the restart could
+                        # not say which school.
+                        print(
+                            "[Memory] Already known; not kept again: "
+                            f"{memory['content'][:60]!r}"
+                        )
+                        kept_in = getattr(known, "id", None)
+                    else:
+                        print(
+                            "[Memory] The consolidator called it a duplicate of "
+                            f"nothing it had; keeping it: {memory['content'][:60]!r}"
+                        )
+                        kept_in = self.memory_manager.store_memory(
+                            content=memory["content"],
+                            category=memory["category"],
+                            importance=5,
+                        )
                 self._profile_cache = None
+                if journal is not None:
+                    journal.settle(said_id, kept_in, kept=True)
             except Exception as error:
+                # Left waiting in the journal, so it is tried again when she
+                # next starts rather than lost with this thread.
                 print(
                     f"[Memory Background Warning] "
                     f"{type(error).__name__}: {error}"
@@ -5535,6 +5651,21 @@ class ChatEngine:
                         "[Timing] background_memory="
                         f"{time.perf_counter() - started:.2f}s"
                     )
+
+    # How much of what they told her goes in front of the model on one turn.
+    _TOLD_SHOWN = 30
+    _TOLD_RECENT = 20
+
+    def _told_for_this_turn(self, told: list[str], user_input: str) -> list[str]:
+        """What they told her that this turn's prompt carries: all of it
+        while it is short; past that, the newest and whatever is on the
+        subject of what they just said. The whole list is still what "have
+        they told me that?" is answered from."""
+        if len(told) <= self._TOLD_SHOWN:
+            return list(told)
+        recent, older = list(told[: self._TOLD_RECENT]), list(told[self._TOLD_RECENT:])
+        on_topic = memory_gate.facts_on_topic(user_input, older)
+        return recent + on_topic[: self._TOLD_SHOWN - self._TOLD_RECENT]
 
     def _update_conversation_state(self, route) -> None:
         """Retain corrected entities and topics for short follow-up turns."""
@@ -12436,19 +12567,16 @@ class ChatEngine:
         #
         # Either gate saying yes is enough. A wrong yes costs a little
         # latency; a wrong no loses something the person told you once.
-        if self.memory_enabled and (
-            (
-                route.intent == "conversation" and route.memory_candidate
-                # A question states nothing; the extractor filled one in
-                # anyway ("내가 무슨 전공인지 기억해?" -> "The user studies
-                # Electrical Engineering").
-                and not memory_gate.is_question(user_input)
-            )
-            or memory_gate.carries_something_to_remember(user_input)
-        ) and not getattr(self, "_asked_to_repeat", False):
+        if self._worth_writing_down(user_input, route):
+            # Written down before any model is asked what it means: a memory
+            # that exists only at the end of a thread is lost when the window
+            # is closed (memory/said.py).
+            journal = getattr(self.memory_manager, "said", None)
+            said_id = journal.note(user_input) if journal is not None else None
             store = threading.Thread(
                 target=self._store_memory_candidate,
                 args=(user_input,),
+                kwargs={"said_id": said_id},
                 name="elaina-memory-store",
                 daemon=True,
             )
@@ -12631,17 +12759,28 @@ class ChatEngine:
             # ("which one would you choose?") carries no subject of its own,
             # so it matched personal memories at random -- a plausible second
             # source of the car recommendation in a conversation about hotels.
-            memories = self.memory_manager.search(
-                self._search_subject(route, routing.goal_intent) or user_input,
-                k=20,
-                # Research evidence lives in the same index but answers a
-                # different question. Without this, "how has my week been"
-                # could come back with a hotel price as a fact about them.
-                exclude_categories={memory_categories.RESEARCH_CATEGORY},
-            )
-            memories = self.memory_ranker.rank(memories)
-            memories = self._memories_about(memories, routing.goal_intent)
-            memory_text = self.context_builder.build(memories)
+            # A failure here used to end the turn: this is the reply thread,
+            # and when the memory session broke (memory/memory_manager.py,
+            # ``_one_at_a_time``) the exception went straight up through it
+            # and nothing was said. Not remembering is a worse answer; no
+            # answer is not one.
+            try:
+                memories = self.memory_manager.search(
+                    self._search_subject(route, routing.goal_intent) or user_input,
+                    k=20,
+                    # Research evidence lives in the same index but answers a
+                    # different question. Without this, "how has my week been"
+                    # could come back with a hotel price as a fact about them.
+                    exclude_categories={memory_categories.RESEARCH_CATEGORY},
+                )
+                memories = self.memory_ranker.rank(memories)
+                memories = self._memories_about(memories, routing.goal_intent)
+                memory_text = self.context_builder.build(memories)
+            except Exception as error:
+                print(
+                    "[Memory] Could not read memory for this turn "
+                    f"({type(error).__name__}: {error}); answering without it."
+                )
         timings["memory_retrieval"] = (
             time.perf_counter() - memory_started
         )
@@ -12891,7 +13030,7 @@ class ChatEngine:
         # a person knows who they are talking to. Measured before this: ten
         # facts told, seven stored, and after a restart 0 of 11 recalled;
         # the store worked, nothing ever put it in front of her.
-        told = self._what_they_told_her()
+        told = self._told_for_this_turn(self._what_they_told_her(), user_input)
         if told:
             context_prompt += (
                 "\n\nWHAT THIS PERSON HAS TOLD YOU ABOUT THEMSELVES "

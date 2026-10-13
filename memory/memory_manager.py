@@ -1,6 +1,10 @@
 from datetime import datetime, timedelta
+import functools
 import json
 import re
+import threading
+
+from sqlalchemy import func
 
 from memory.database import Base, SessionLocal, engine
 
@@ -12,6 +16,8 @@ from memory.models import (
 from memory.embedding import EmbeddingModel
 
 from memory.faiss_manager import FAISSManager
+
+from memory.said import SaidJournal
 
 
 # What a memory is *for*. The schema already carried ``category``; nothing
@@ -51,39 +57,63 @@ _PER_CATEGORY = {"project": 3}
 _SHARED_WORDS = {
     "the", "user", "users", "user's", "their", "they", "them", "and", "has",
     "have", "had", "was", "are", "who", "with", "that", "this", "for", "from",
-    "does", "not", "into", "words",
+    "does", "not", "into", "words", "said", "사용자", "사용자는", "사용자의", "사용자가",
 }
 
 
-def select_profile(rows, *, limit=24):
+# Said about a moment of one day: "I went to the gym this morning", "어제 잠을
+# 잘 못 잤어". True when it was said, and not who they are a week later. The
+# extractor keeps about half of these (8 of 18, measured with its reasoning
+# off), so they are dated like any relative day and, after a few days, no
+# longer put in front of her. They stay in the database.
+_A_MOMENT = re.compile(
+    r"\b(?:last\s+night|this\s+(?:morning|afternoon|evening)|today|tonight|"
+    r"yesterday|just\s+now|right\s+now)\b|어제|오늘|방금|아까",
+    re.IGNORECASE,
+)
+MOMENT_DAYS = 3
+
+
+def select_profile(rows, *, limit=24, now=None):
     """Which of their memories go in front of her, from (category, content,
     created_at) rows newest first: no moods, each near-duplicate once, a few
-    project notes at most, and a relative day ("next Friday") dated to when
-    it was said."""
+    project notes at most, a relative day ("next Friday") dated to when it
+    was said, and a remark about one day left out once that day is past."""
+    now = now or datetime.utcnow()
     seen = []
     counts = {}
     facts = []
     for category, content, created_at in rows:
         text = " ".join(str(content or "").split())
+        moment = bool(_A_MOMENT.search(text))
+        if moment and created_at is not None and (now - created_at).days >= MOMENT_DAYS:
+            continue
         # Compared on what the fact says, not on how every fact starts:
         # "The user is vegetarian." shares "the" and "user" with every other
         # memory, and that alone once made it a duplicate -- measured, the
         # diet was dropped and "Do I follow any particular diet?" was told
         # she had not been told.
-        words = set(re.findall(r"[^\W_]{3,}", text.casefold())) - _SHARED_WORDS
+        # A Korean word is a word at two syllables. Counted from three, a
+        # memory kept in their own words -- "나 매운 거 못 먹어" -- had no
+        # words at all and was never shown.
+        words = set(re.findall(r"[가-힣]{2,}|[^\W_]{3,}", text.casefold())) - _SHARED_WORDS
         if not text or not words or _MOOD.search(text):
             continue
         cap = _PER_CATEGORY.get(category)
         if cap is not None and counts.get(category, 0) >= cap:
             continue
+        # Most of the shorter one, rounded: cut down instead, two facts of
+        # two words each were one fact if they shared a verb -- "The user
+        # likes jazz." went as a duplicate of "The user likes pizza.", and
+        # she had not been told about the jazz.
         if any(
-            len(words & other) >= max(1, int(0.8 * min(len(words), len(other))))
+            len(words & other) >= max(1, round(0.8 * min(len(words), len(other))))
             for other in seen
         ):
             continue
         seen.append(words)
         counts[category] = counts.get(category, 0) + 1
-        if _RELATIVE_TIME.search(text) and created_at is not None:
+        if (moment or _RELATIVE_TIME.search(text)) and created_at is not None:
             text = f"{text} (said on {created_at:%Y-%m-%d})"
         facts.append(text)
         if len(facts) >= limit:
@@ -91,27 +121,145 @@ def select_profile(rows, *, limit=24):
     return facts
 
 
+def _one_at_a_time(method):
+    """One thread in the session at a time, no transaction left open, and a
+    failed write rolled back.
+
+    The session is shared by the turn (recall, the profile) and by the
+    background thread that keeps what was said, and a SQLAlchemy session is
+    not built for that. Measured live, 2026-10-13: a search from the turn
+    landed inside a store from the background thread, the same new row was
+    flushed twice ("UNIQUE constraint failed: memories.id"), and the session
+    stayed in that failed state -- so every later turn that read memory
+    raised ``PendingRollbackError`` in the reply thread and she stopped
+    answering at all until she was restarted. The engine's own lock was held
+    by the storing thread only; the turn never took it for a search.
+
+    So the manager guards itself. Held for the database work only, never
+    across a model call.
+    """
+    @functools.wraps(method)
+    def guarded(self, *args, **kwargs):
+        with self._lock:
+            try:
+                result = method(self, *args, **kwargs)
+                # Ends the transaction a read began, too: left open it holds
+                # the file against the journal's own short writes.
+                self.db.commit()
+                return result
+            except Exception:
+                try:
+                    self.db.rollback()
+                except Exception:
+                    pass
+                raise
+    return guarded
+
+
 class MemoryManager:
 
-    def __init__(self):
+    def __init__(self, sessions=None, bind=None, embedder=None, index_path=None):
+        """The arguments are for tests: another database, a stand-in for the
+        embedding model, another index file. Left out, they are her own."""
+        sessions = sessions or SessionLocal
+        bind = bind or engine
+        self._lock = threading.RLock()
 
         # Nothing else ever created the tables. A database that already
         # existed kept working; a new one -- a fresh install, a deleted
         # file, a new runtime folder -- failed every store with "no such
         # table: memories", silently, so she remembered nothing at all.
         # Idempotent: an existing table is left exactly as it is.
-        Base.metadata.create_all(engine)
+        Base.metadata.create_all(bind)
 
-        self.db = SessionLocal()
+        # What a search hands back is read by the caller after the lock is
+        # released. Expired on commit, every attribute read would be another
+        # query on this session, from the caller's thread.
+        self.db = sessions(expire_on_commit=False)
 
-        self.embedder = EmbeddingModel()
+        # What they said, written down before anything is made of it
+        # (memory/said.py). Its own short sessions, never this one.
+        self.said = SaidJournal(sessions, bind)
+
+        self.embedder = embedder or EmbeddingModel()
 
         dimension = len(
             self.embedder.encode("hello")
         )
 
-        self.faiss = FAISSManager(dimension)
+        self.faiss = FAISSManager(dimension, index_path)
 
+        self._check_index()
+
+    @_one_at_a_time
+    def _check_index(self):
+        """Rebuild the search index from the database when the two disagree.
+
+        A memory is three writes -- the row, its vector, the row saying which
+        vector is whose -- and the backend is stopped with ``taskkill /F``, so
+        any of them can be the last. Two outcomes do damage: positions that
+        no longer line up (an unreadable or missing index file is replaced by
+        an empty one, and the next memory then takes a position another row
+        owns, which the unique constraint refuses -- every store after that
+        fails), and a memory with no vector, which search can never find.
+
+        A vector whose memory is gone is harmless: search skips it.
+        """
+        mapped = self.db.query(VectorMapping).count()
+        highest = self.db.query(func.max(VectorMapping.faiss_index)).scalar()
+        total = int(self.faiss.index.ntotal)
+        without = (
+            self.db.query(Memory)
+            .outerjoin(VectorMapping, VectorMapping.memory_id == Memory.id)
+            .filter(VectorMapping.id.is_(None))
+            .count()
+        )
+        in_step = mapped == total and (highest is None or int(highest) == total - 1)
+        if in_step and not without:
+            return
+        print(
+            f"[Memory] The search index ({total} vectors) and the database "
+            f"({mapped} placed, {without} memories without one) disagree; "
+            "rebuilding the index from the database."
+        )
+        self.rebuild_index()
+
+    @_one_at_a_time
+    def rebuild_index(self):
+        """One vector per memory, in the order they were kept. The database is
+        what she was told; the index is only a way to find it. Nothing is
+        changed unless all of it can be: a model that will not load must not
+        cost her the index she had."""
+        try:
+            memories = self.db.query(Memory).order_by(Memory.id).all()
+            vectors = [self.embedder.encode(memory.content) for memory in memories]
+        except Exception as error:
+            self.db.rollback()
+            print(
+                "[Memory] The search index could not be rebuilt "
+                f"({type(error).__name__}: {error}); left as it was."
+            )
+            return
+        previous = self.faiss.index
+        try:
+            self.faiss.reset()
+            self.db.query(VectorMapping).delete()
+            for position, (memory, vector) in enumerate(zip(memories, vectors)):
+                self.faiss.add_vector(vector)
+                self.db.add(VectorMapping(faiss_index=position, memory_id=memory.id))
+            self.faiss.save()
+            self.db.commit()
+        except Exception as error:
+            self.db.rollback()
+            self.faiss.index = previous
+            print(
+                "[Memory] The search index could not be rebuilt "
+                f"({type(error).__name__}: {error}); left as it was."
+            )
+            return
+        print(f"[Memory] Rebuilt the search index: {len(memories)} memories.")
+
+    @_one_at_a_time
     def store_memory(
         self,
         content,
@@ -152,6 +300,7 @@ class MemoryManager:
 
         return memory.id
 
+    @_one_at_a_time
     def search(
         self,
         query,
@@ -252,9 +401,16 @@ class MemoryManager:
         "general",
     )
 
-    def profile(self, limit=24):
+    @_one_at_a_time
+    def profile(self, limit=200):
         """Everything they have told her about themselves, newest first,
         each near-duplicate once.
+
+        All of it, not the newest two dozen: this is also what "have they
+        told me that?" is answered from, and with a cap of 24 the first
+        things a person ever said -- their name -- were the first to fall
+        out of it once they had said 25. What goes in front of the model on
+        one turn is chosen from this (ChatEngine._told_for_this_turn).
 
         Retrieval by similarity cannot carry this: measured on a store of
         seven facts, "tell me a joke" scored 0.53 against them and "which
@@ -267,7 +423,7 @@ class MemoryManager:
             .filter(Memory.is_active.is_(True))
             .filter(Memory.category.in_(self.PROFILE_CATEGORIES))
             .order_by(Memory.created_at.desc())
-            .limit(300)
+            .limit(2000)
             .all()
         )
         return select_profile(
@@ -277,6 +433,7 @@ class MemoryManager:
 
     # ------------------------------------------------- research evidence
 
+    @_one_at_a_time
     def remember_research(
         self,
         *,
@@ -322,6 +479,7 @@ class MemoryManager:
             source=json.dumps(detail, ensure_ascii=False)[:900],
         )
 
+    @_one_at_a_time
     def recall_research(self, subject, k=3, max_age_seconds=None):
         """Recent research about this subject, freshest first."""
         subject = str(subject or "").strip()
@@ -343,6 +501,7 @@ class MemoryManager:
         )
         return found[:k]
     
+    @_one_at_a_time
     def update_memory(
         self,
         memory_id,
@@ -376,6 +535,7 @@ class MemoryManager:
     # cleared the floor. Naming one subject must not clear the shelf.
     FORGET_MARGIN = 0.15
 
+    @_one_at_a_time
     def forget(self, subject="", *, everything=False):
         """Deactivate what the person asked to be rid of, and say what went.
 
@@ -430,6 +590,7 @@ class MemoryManager:
             self.db.commit()
         return removed
 
+    @_one_at_a_time
     def search_memory_objects(self, text, k=5):
 
         vector = self.embedder.encode(text)

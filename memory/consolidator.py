@@ -39,7 +39,7 @@ Return ONLY one of these:
 _BOILERPLATE = {
     "the", "user", "users", "user's", "is", "are", "was", "were", "has",
     "have", "had", "does", "and", "for", "with", "that", "this", "their",
-    "them", "they", "사용자", "사용자는", "사용자의", "사용자가",
+    "them", "they", "said", "사용자", "사용자는", "사용자의", "사용자가",
 }
 _WORD = re.compile(r"[가-힣]{2,}|[A-Za-z][A-Za-z']{1,}|\d[\d,.]*")
 
@@ -122,7 +122,10 @@ class MemoryConsolidator:
                 }
             ],
             format="json",
-            options={"temperature": 0},
+            # Reasoning off and a ceiling, as in the extractor: its answer
+            # is six tokens, and it was writing 208 to get there.
+            think=False,
+            options={"temperature": 0, "num_predict": 200},
         )
 
         return self.read(response)

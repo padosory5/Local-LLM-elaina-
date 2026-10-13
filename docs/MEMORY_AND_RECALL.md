@@ -362,3 +362,50 @@ call — "forget that my name is Quinn" does it.
 
 `runtime/database/` (memory, FAISS index, activity log), `runtime/data/
 routines/`, `directives.yaml` and `about_me.yaml` are all in `.gitignore`.
+
+## Nothing lost, nothing added (2026-10-13)
+
+The person's request: she has to remember what she is told across being turned off and on,
+everything important about them has to be in the database, and what is in it has to be exactly
+what they said, whatever she gets wrong when she talks. Reading the path from a sentence to a
+memory against the real store and the desktop window found six things wrong with it.
+
+| what was wrong | measured | now |
+|---|---|---|
+| A memory existed only at the end of a background thread, and the window stops the backend with `taskkill /F` ([`desktop/main.js`](../desktop/main.js)), so `ChatEngine.close()` never ran. | Told 56 things and killed as the last reply landed: 20 kept. | The sentence is written to the database in the turn ([`memory/said.py`](../memory/said.py)); what is still waiting is finished at the next start (`ChatEngine._finish_what_was_left`). |
+| The gate that decides which sentences reach the extractor is a list of patterns. | It let through 44 of 95 things a person says about themselves. | Anything stated in the first person is shown to the extractor (`memory_gate.may_be_about_them`), on a turn the router reads as a statement and not as explaining. |
+| The wording of a memory is a model's, and an update was written in a second model's wording. | "UW" kept as "the University of Washington", 콩 as "Kongi", 젠레스 존 제로 as "Genres Zero". | Read against their sentence without a model ([`memory/faithful.py`](../memory/faithful.py)): if it says a word, a number or a "not" they did not, their own words are kept instead, marked `They said: "…"`. |
+| One database session was shared by the turn and the background writer. | A search landed inside a store: `UNIQUE constraint failed: memories.id`, then `PendingRollbackError` in the reply thread on every later turn. She stopped answering. | `MemoryManager` guards itself (`_one_at_a_time`), a failed write is rolled back, and a failed recall no longer ends the turn. |
+| The two model calls in the write path ran with reasoning on and no limit. | 279 tokens and 2.0 s for a 33-token answer; one call ran 482 s with the person's turn queued behind it. | Reasoning off and a ceiling: 0.2 s. |
+| The profile was the newest 24 memories, and counted two short facts sharing a verb as one. | "The user likes jazz." hidden behind "The user likes pizza."; Korean sentences of two-syllable words not shown at all. | The profile is everything told (`MemoryManager.profile`); one prompt shows the newest and what is on the subject of the turn (`ChatEngine._told_for_this_turn`). |
+
+Also: the search index file is replaced whole or not at all, and is rebuilt from the database at
+start when the two disagree; a remark about one day ("I went to the gym this morning") is dated
+and no longer shown after three days.
+
+**Live, speech off, isolated runtime** ([`scripts/live_memory_coverage_check.py`](../scripts/live_memory_coverage_check.py):
+56 things told in both languages after 16 that are not facts, killed as the last reply lands,
+booted again):
+
+| | before | after |
+|---|---|---|
+| kept | 20/56 | 56/56 |
+| of those, saying only what was said | 19/20 by the check | 56/56 |
+| memories made of things that are not facts about them | 0 | 1 ("I had a rough night.") |
+| still unwritten at the kill, finished at the next start | lost | 1, finished |
+| seconds per turn, median / p95 | 3.7 / 9.7 | 3.6 / 4.6 |
+| seconds per background write, median | 6.4 | 0.7 |
+
+The restart check ([`scripts/live_memory_restart_check.py`](../scripts/live_memory_restart_check.py)),
+one run each way: killed 13/13, shut down cleanly 13/13.
+
+**What it does not do.** A kind of fact the patterns do not list, said inside a question ("I
+moved here last year, so what's a good bank?"), is not looked at: that way in is for statements.
+The extractor with reasoning off keeps about half of passing remarks; the ones about a day are
+aged out of what she is shown, and "I had a rough night" is not. Memories written before this
+have no sentence behind them and were never checked; [`scripts/show_memory.py`](../scripts/show_memory.py)
+prints what she holds so the person can read it. The window still force-kills the backend; nothing
+depends on it shutting down cleanly any more.
+
+Tests: `tests/test_memory_said.py`, `test_memory_faithful.py`, `test_memory_index.py`,
+`test_memory_kept_as_said.py`.

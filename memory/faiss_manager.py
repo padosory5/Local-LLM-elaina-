@@ -19,6 +19,8 @@ class FAISSManager:
                 self.index = faiss.read_index(str(self.index_path))
                 print("Loaded existing FAISS index.")
             except RuntimeError:
+                # MemoryManager sees the empty index against a database that
+                # is not, and rebuilds it from there.
                 print("Corrupted index detected. Creating a new one.")
                 self.index = faiss.IndexFlatL2(dimension)
         else:
@@ -34,6 +36,23 @@ class FAISSManager:
         distances, indices = self.index.search(vector, k)
         return distances[0], indices[0]
 
+    def reset(self):
+        """An empty index, for a rebuild. Nothing on disk changes until save()."""
+        self.index = faiss.IndexFlatL2(self.dimension)
+
     def save(self):
+        """The whole file or the old one. The desktop window stops the backend
+        with ``taskkill /F``; killed part way through a write straight onto
+        the index, the file was unreadable at the next start and every
+        position the database remembered pointed at nothing."""
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
-        faiss.write_index(self.index, str(self.index_path))
+        partial = self.index_path.with_name(self.index_path.name + ".writing")
+        try:
+            faiss.write_index(self.index, str(partial))
+            os.replace(partial, self.index_path)
+        finally:
+            if partial.exists():
+                try:
+                    partial.unlink()
+                except OSError:
+                    pass

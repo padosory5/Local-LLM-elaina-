@@ -140,6 +140,7 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_followup_keeps_the_thread",
             "test_worked_examples",
             "test_computed_values",
+            "test_explanation_followup_route",
             "test_brief_response",
             "test_capabilities",
             "test_capability_contract",
@@ -222,6 +223,10 @@ CATEGORIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "test_activity_turns",
             "test_replay",
             "test_memory_profile",
+            "test_memory_said",
+            "test_memory_faithful",
+            "test_memory_index",
+            "test_memory_kept_as_said",
             "test_misread_repairs",
             "test_told_not_asked",
             "test_premise_check",
@@ -414,6 +419,11 @@ LIVE_CHECKS: tuple[LiveCheck, ...] = (
     LiveCheck(
         "memory-restart", "live_memory_restart_check.py", "app",
         "ten facts told, shut down, booted again: what she still knows (A7)",
+    ),
+    LiveCheck(
+        "memory-coverage", "live_memory_coverage_check.py", "app",
+        "things a person says about themselves, then killed: how many she "
+        "kept, and whether each is what they said",
     ),
     LiveCheck(
         "misread", "live_misread_check.py", "app",

@@ -218,8 +218,14 @@ _THEIR_MACHINE = re.compile(
 
 # Clause boundaries. A durable fact usually arrives attached to a request,
 # so the two halves have to be judged separately.
-_CLAUSES = re.compile(r"[.!?;]+\s*|,\s*(?=(?:and\s+)?(?:who|what|where|when|"
-                      r"why|how|which|can|could|do|does|is|are)\b)")
+_CLAUSES = re.compile(
+    r"[.!?;]+\s*|,\s*(?=(?:(?:and|so|but)\s+)?(?:who|what|where|when|"
+    r"why|how|which|can|could|do|does|is|are)\b)"
+    # Korean says the fact and then asks, in one breath: "나 채식주의자인데
+    # 저녁 뭐 먹을까?" Read whole, its question mark made the fact a question
+    # and it was never kept.
+    r"|(?<=[인는은]데)\s+(?=\S.*[?？]\s*$)"
+)
 
 
 def _said(text) -> str:
@@ -274,6 +280,72 @@ def carries_something_to_remember(text) -> bool:
         if _DURABLE.search(clause):
             return True
     return False
+
+
+# Someone speaking of themselves. Not a list of what they might say -- the
+# patterns above are that, and measured against 95 things a person says about
+# themselves they let 44 through: "I have asthma", "I'm training for a
+# marathon", "I was born in Busan" and "My favorite color is blue" name no
+# predicate on the list.
+_FIRST_PERSON = re.compile(
+    r"\b(?:i|i'?m|i'?ve|i'?d|i'?ll|my|mine|me|myself|we|we'?re|we'?ve|our|ours)\b"
+    # 나/내/저/제/우리 as a word of its own: 내일, 나중에 and 제일 are not.
+    r"|(?:^|\s)(?:나|내|저|제|우리|저희)(?:는|가|도|의|한테|에게)?(?=\s)",
+    re.IGNORECASE,
+)
+_HANGUL = re.compile(r"[가-힣]")
+
+
+def may_be_about_them(text, *, telling: bool = False) -> bool:
+    """Whether a turn the durable patterns did not recognise may still state
+    something about the person, and so is worth showing to the extractor.
+
+    Looser than ``carries_something_to_remember`` on purpose, and weaker: that
+    one keeps a sentence whatever the extractor says, this one only asks it.
+    Something stated (not asked), not a passing state, and in the first
+    person. Korean leaves the subject out -- "작년에 미국으로 이사 왔어",
+    "매일 아침 여섯 시에 일어나" -- so on a turn that is plain conversation
+    (``telling``) any Korean statement of more than a word counts.
+    """
+    said = _said(text)
+    if not said:
+        return False
+    for clause in _CLAUSES.split(said):
+        clause = clause.strip()
+        if not clause or _IS_A_QUESTION.search(clause):
+            continue
+        if _TRANSIENT.search(clause) and not _DURABLE.search(clause):
+            continue
+        # "my screen" and "my browser" are about the machine in front of them.
+        about = _THEIR_MACHINE.sub(" ", clause)
+        if _FIRST_PERSON.search(about):
+            return True
+        if telling and _HANGUL.search(about) and len(about.split()) >= 2:
+            return True
+    return False
+
+
+def what_they_stated(text) -> str:
+    """Their own words without the clauses that only ask: "By the way I'm
+    vegetarian. What's a quick dinner I can make tonight?" states the first
+    sentence. Untouched when nothing is asked; empty when nothing is stated.
+    """
+    said = _said(text)
+    kept, dropped, start = [], False, 0
+    for match in list(_CLAUSES.finditer(said)) + [None]:
+        end = match.start() if match else len(said)
+        clause = said[start:end].strip()
+        mark = match.group().strip()[:1] if match else ""
+        start = match.end() if match else len(said)
+        if not clause:
+            continue
+        if _IS_A_QUESTION.search(clause):
+            dropped = True
+            continue
+        kept.append(clause + (mark if mark in ".!;" else ""))
+    if not dropped:
+        return said
+    return " ".join(kept)
 
 
 # A question about themselves: the answer is something they told her, or

@@ -1,32 +1,41 @@
-"""Who writes an explanation thread: the 8B, or the 27B for every reply of it.
+"""Who writes an explanation thread: the 8B, the 27B behind an 8B router, or the 27B alone.
 
-    .venv/Scripts/python.exe -m evals.thread_writer_ab --run tw1 --seeds 1 2
-    .venv/Scripts/python.exe -m evals.thread_writer_ab --judge tw1 --seeds 1 2
-    .venv/Scripts/python.exe -m evals.thread_writer_ab --report tw1 --seeds 1 2
+    .venv/Scripts/python.exe -m evals.thread_writer_ab --run tw2 --seeds 3 4 5
+    .venv/Scripts/python.exe -m evals.thread_writer_ab --run tw2x --seeds 3 --learner 35b
+    .venv/Scripts/python.exe -m evals.thread_writer_ab --judge tw2 --seeds 3 4 5
+    .venv/Scripts/python.exe -m evals.thread_writer_ab --report tw2 --seeds 3 4 5
 
-The simulated-learner eval (evals/sim_learner.py), two arms that differ in one
-environment variable of the backend:
+The simulated-learner eval (evals/sim_learner.py), in arms that differ only in
+which model the backend is told to use:
 
-    8b    the ``current`` arm as it is: ``ELAINA_MODEL=qwen3:8b`` decides and
-          writes, the turn-move owner and the explanation contract off.
-    27b   the same, plus ``ELAINA_CONVERSATION_MODEL=<the 27B>``: the 8B still
-          routes, plans and extracts; every reply is written by the 27B
-          (brain/chat_engine.py, ``active_model = self.conversation_model``).
+    8b     the ``current`` arm as it is: ``ELAINA_MODEL=qwen3:8b`` decides and
+           writes, the turn-move owner and the explanation contract off.
+    split  the same, plus ``ELAINA_CONVERSATION_MODEL=<the 27B>``: the 8B still
+           routes, plans and extracts; every reply is written by the 27B
+           (brain/chat_engine.py, ``self.conversation_model``).
+    all27  ``ELAINA_MODEL`` and ``ELAINA_CONVERSATION_MODEL`` both the 27B: one
+           model for everything, so nothing is swapped inside a turn.
 
 Nothing in the repository is changed for it and nothing in config.yaml sets
-the variable: it is the words-model split the engine already has. Every
+these variables: they are the model settings the engine already reads. Every
 conversation of this eval is one explanation thread, so "the 27B writes every
 reply of the thread" is, here, the 27B writing every reply. The soft stages
-run in both arms, which the 27B's earlier arms (DEEP, SPLIT, ``deep``) did
-not have.
+run in every arm.
 
-The two models do not fit on the card together (5.2 GB and 13.5 GB of weights
-on 16 GB), so the 27b arm reloads a model twice a turn. ``--run`` samples the
-GPU and what Ollama holds every 15 seconds beside each run, and the traces
-keep each call's load time.
+The first run of this (``tw1``, 2026-10-09, seeds 1 and 2) had the first two
+arms only and named them ``8b`` and ``27b``; its ``27b`` is ``split`` here.
 
-Runs are interleaved (8b, 27b, 27b, 8b, ...) and resumable, like the eval
-itself.
+``--learner`` is who plays the person. The eval's own is the 27B, which in the
+``split`` and ``all27`` arms is also the writer; ``35b`` is the judge's model,
+for a run in which the learner is neither arm's writer.
+
+The 8B and the 27B do not fit on the card together (5.2 GB and 13.5 GB of
+weights on 16 GB), so the ``split`` arm reloads a model twice a turn. ``--run``
+samples the GPU and what Ollama holds every 15 seconds beside each run, and
+the traces keep each call's load time.
+
+Runs are interleaved, the order of the arms rotating from seed to seed, and
+resumable, like the eval itself.
 """
 
 from __future__ import annotations
@@ -45,18 +54,22 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from evals import sim_learner as sl  # noqa: E402
+from evals.judge import DEFAULT_JUDGE  # noqa: E402
 
-ARM_8B, ARM_27B = "current", "thread_27b"
-sl.ARMS[ARM_27B] = {**sl.ARMS[ARM_8B], "ELAINA_CONVERSATION_MODEL": sl.M27}
-SHORT = {ARM_8B: "8b", ARM_27B: "27b"}
+# Short name -> the arm in ``sl.ARMS`` a run's meta.json records.
+ARMS = {"8b": "current", "split": "thread_27b", "all27": "thread_all27"}
+sl.ARMS["thread_27b"] = {**sl.ARMS["current"], "ELAINA_CONVERSATION_MODEL": sl.M27}
+sl.ARMS["thread_all27"] = {**sl.ARMS["current"], "ELAINA_MODEL": sl.M27,
+                           "ELAINA_CONVERSATION_MODEL": sl.M27}
+LEARNERS = {"27b": sl.M27, "35b": DEFAULT_JUDGE}
 
 
-def names(prefix: str, seeds: list[int]) -> list[tuple[str, str, int]]:
+def names(prefix: str, seeds: list[int], arms: list[str]) -> list[tuple[str, str, int]]:
     """(run name, arm, seed), in the order they are run."""
     order = []
     for index, seed in enumerate(seeds):
-        arms = (ARM_8B, ARM_27B) if index % 2 == 0 else (ARM_27B, ARM_8B)
-        order += [(f"{prefix}-{SHORT[arm]}-s{seed}", arm, seed) for arm in arms]
+        turn = index % len(arms)
+        order += [(f"{prefix}-{arm}-s{seed}", arm, seed) for arm in arms[turn:] + arms[:turn]]
     return order
 
 
@@ -93,18 +106,24 @@ def main() -> int:
     parser.add_argument("--run", default="")
     parser.add_argument("--judge", default="")
     parser.add_argument("--report", default="")
-    parser.add_argument("--seeds", nargs="*", type=int, default=[1, 2])
+    parser.add_argument("--seeds", nargs="*", type=int, default=[3, 4, 5])
+    parser.add_argument("--arms", nargs="*", choices=sorted(ARMS), default=["8b", "split", "all27"])
+    parser.add_argument("--learner", default="27b",
+                        help="27b (the eval's own), 35b (the judge's model), or a model name")
+    parser.add_argument("--only", nargs="*", default=[], help="learner ids, for a smoke test")
     args = parser.parse_args()
     prefix = args.run or args.judge or args.report
     if not prefix:
         parser.print_help()
         return 0
-    order = names(prefix, args.seeds)
+    order = names(prefix, args.seeds, list(args.arms))
+    learner_model = LEARNERS.get(args.learner, args.learner)
     if args.run:
+        wanted = len(args.only) or len(sl.load_learners()[0])
         for name, arm, seed in order:
             out = sl.ROOT / name
             if (out / "dialogues.jsonl").exists() and len(
-                    (out / "dialogues.jsonl").read_text(encoding="utf-8").splitlines()) >= 9:
+                    (out / "dialogues.jsonl").read_text(encoding="utf-8").splitlines()) >= wanted:
                 print(f"{name}: already run", flush=True)
                 continue
             out.mkdir(parents=True, exist_ok=True)
@@ -112,10 +131,11 @@ def main() -> int:
             watch.start()
             started = time.monotonic()
             try:
-                code = sl.run(name, arm, sl.M27, seed, [])
+                code = sl.run(name, ARMS[arm], learner_model, seed, list(args.only))
             finally:
                 watch.done.set()
-            print(f"{name}: arm {arm}, seed {seed}, exit {code}, {time.monotonic() - started:.0f}s", flush=True)
+            print(f"{name}: arm {arm}, learner {args.learner}, seed {seed}, exit {code}, "
+                  f"{time.monotonic() - started:.0f}s", flush=True)
             if code:
                 return code
     if args.judge:

@@ -209,7 +209,16 @@ class MemoryExtractor:
                         "content": user_message
                     }
                 ],
-                format="json"
+                format="json",
+                # Reasoning off, and a ceiling on the answer. Every other
+                # call in the backend says so; this one did not, and the
+                # model reasoned before each small JSON object: measured,
+                # 279 tokens and 2.0 s a call where the answer is 33 tokens
+                # and 0.2 s. With nothing to stop it one of them ran for 482
+                # seconds, and the turn the person was waiting on ran behind
+                # it (scripts/live_memory_restart_check.py, 2026-10-13).
+                think=False,
+                options={"temperature": 0, "num_predict": 300},
             )
 
             raw_output = response["message"]["content"].strip()

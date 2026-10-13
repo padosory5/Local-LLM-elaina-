@@ -1619,10 +1619,28 @@ class SemanticIntentRouter:
             _ASKS_FOR_A_RECORD.search(decision.normalized_request or "")
             or _ASKS_FOR_A_RECORD.search(decision.search_query or "")
         )
+        # An explanation is not about the present because it is asked in the
+        # present tense. The 8B writes time_scope "current" for most
+        # present-tense questions -- 58% of the follow-ups inside an
+        # explanation, where the 27B writes it for under 1% -- and that one
+        # field was enough to send "아 근데 내가 가진 주식 수만큼 받는 거야?" to a
+        # web search. Measured over every recorded turn (2026-10-11): 239 of
+        # this policy's 541 conversions rested on it alone, 120 of them
+        # follow-ups the router itself read as explaining; none of their 115
+        # distinct questions needed a lookup, and each cost about seven
+        # seconds. Only that case: a first question, a fact about the
+        # present, the future and anything the router called changing or
+        # asked evidence for are decided as before.
+        explaining_on = bool(decision.is_follow_up) and str(
+            decision.answer_shape or ""
+        ).strip().lower() in {"explain", "example"}
         can_use_local_knowledge = not asks_for_a_record and (
             decision.information_freshness == "stable"
             and not decision.requires_external_evidence
-            and decision.time_scope not in {"current", "future"}
+            and (
+                decision.time_scope not in {"current", "future"}
+                or (explaining_on and decision.time_scope == "current")
+            )
             and not (
                 decision.recommendation_needed
                 and decision.advice_domain in {"health", "financial", "legal"}
