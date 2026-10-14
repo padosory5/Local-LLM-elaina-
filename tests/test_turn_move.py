@@ -363,7 +363,7 @@ class ActingTests(unittest.TestCase):
 
     def _run(self, third_route=None, *, mode=tm.ON, model="", closeness=0.9):
         from core import turn_trace
-        from tests.turn_harness import build_engine
+        from tests.turn_harness import build_engine, drafting_parts, drafting_prompts
 
         with contextlib.redirect_stdout(io.StringIO()):
             engine = build_engine({
@@ -381,16 +381,21 @@ class ActingTests(unittest.TestCase):
             engine.client.reply = "Greenhouse gases absorb the heat the ground gives off and send some back."
             records = []
             self.written_by = []
+            # The last message each writer read: on a knowledge question, what
+            # the person said (brain/response_messages.their_words_last).
+            self.said_last = []
             for said in ("What is the greenhouse effect?", self.SECOND, self.THIRD):
                 before = len(engine.client.prompts)
                 engine.chat(said)
-                drafts = [(str(p[-1].get("content", "")), engine.client.models[before + index])
-                          for index, p in enumerate(engine.client.prompts[before:])
-                          if p and "VOICE RESPONSE REQUIREMENTS\n" in str(p[-1].get("content", ""))
-                          and not str(p[-1].get("content", "")).startswith("DRAFT ANSWER")]
+                drafts = []
+                for index, prompt in enumerate(engine.client.prompts[before:]):
+                    if drafting_prompts([prompt]):
+                        _persona, rules, last = drafting_parts(prompt)
+                        drafts.append((rules, last, engine.client.models[before + index]))
                 self.assertTrue(drafts, said)
                 self.assertNotIn("CURRENT RETRIEVED EVIDENCE", drafts[0][0])
-                self.written_by.append(drafts[0][1])
+                self.written_by.append(drafts[0][2])
+                self.said_last.append(drafts[0][1])
                 records.append((turn_trace.last().as_record()["context"], drafts[0][0]))
         engine.close()
         return records
@@ -410,19 +415,24 @@ class ActingTests(unittest.TestCase):
     def test_the_writer_answers_what_they_said_not_the_routers_reading(self):
         # A/B 2: a question asked for the third time reached the writer as the
         # router's rewording of it, and the rewording is what got answered.
+        # Every knowledge question now ends on what was said
+        # (brain/response_messages.their_words_last); on the move's turn the
+        # reading is not even offered as a note.
         records = self._run()
         (_c1, _p1), (_c2, p2), (c3, p3) = records
-        reading = "CURRENT USER MESSAGE\nWhy can't the heat get out?\n"
-        self.assertIn(f"CURRENT USER MESSAGE\n{self.THIRD}\n", p3)
-        self.assertNotIn(reading, p3)
+        note = "It was read as: Why can't the heat get out?."
+        self.assertEqual(self.said_last[2], self.THIRD)
+        self.assertNotIn("It was read as", p3)
         self.assertEqual(c3["turn_move_applied"]["question_shown"], "their words")
-        # A turn the move does not own is built as it always was.
-        self.assertIn(reading, p2)
+        # A turn the move does not own ends on their words too, the reading kept as a note.
+        self.assertEqual(self.said_last[1], self.SECOND)
+        self.assertIn(note, p2)
 
-    def test_with_the_flag_off_the_writer_is_shown_what_it_always_was(self):
+    def test_with_the_flag_off_the_writer_gets_what_production_builds(self):
         _context, prompt = self._run(mode=tm.OFF)[2]
-        self.assertIn("CURRENT USER MESSAGE\nWhy can't the heat get out?\n", prompt)
-        self.assertNotIn(self.THIRD, prompt.split("CURRENT USER MESSAGE\n", 1)[1].split("\n", 1)[0])
+        self.assertEqual(self.said_last[2], self.THIRD)
+        self.assertIn("It was read as: Why can't the heat get out?.", prompt)
+        self.assertNotIn("time they have asked this", prompt)
 
     def test_off_records_and_changes_nothing(self):
         records = self._run(mode=tm.OFF)
@@ -477,7 +487,7 @@ class ActingTests(unittest.TestCase):
         self.assertEqual(self.written_by[2], "the-27b")
         self.assertIn("This is the 2nd time they have asked this", prompt)
         self.assertNotIn("questioning something you said", prompt)
-        self.assertIn(f"CURRENT USER MESSAGE\n{self.THIRD}\n", prompt)
+        self.assertEqual(self.said_last[2], self.THIRD)
 
 
 if __name__ == "__main__":

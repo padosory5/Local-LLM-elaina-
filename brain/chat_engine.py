@@ -66,7 +66,11 @@ from tools.visual_search import VisualSearchTool
 from tools.project_mcp_client import ProjectMCPManager
 from config.loader import Config
 from brain.personality_loader import PersonalityLoader
-from brain.response_messages import build_personality_messages
+from brain.response_messages import (
+    THEIR_WORDS_ROUTES,
+    build_personality_messages,
+    their_words_last,
+)
 from brain.response_quality import ResponseQualityGuard
 from brain.response_policy import (
     AdviceResponseGuard,
@@ -11369,6 +11373,15 @@ class ChatEngine:
             # for, which is the part the model was losing.
             f"\n\n{style_text}"
         )
+        # Every rule above stays; on a knowledge question or a search they
+        # move ahead of the conversation, and the last thing the writer
+        # reads is what the person said (brain/response_messages.py). The
+        # note keeps the reading the prompt showed -- none, when the turn
+        # move has already put their own words there.
+        if route.intent in THEIR_WORDS_ROUTES and not uses_vision_model:
+            messages, their_words = their_words_last(messages, said=user_input)
+            if their_words:
+                turn_trace.note_context(question_shown="their words, last")
 
         # Notify the UI before waiting for Ollama's first token.
         print("[ChatEngine] Emitting assistant_started")

@@ -24,7 +24,7 @@ from brain.personality_loader import PersonalityLoader
 from brain.response_policy import ResponseLimits
 from core import turn_trace
 from tests.test_turn_trace import _traced
-from tests.turn_harness import build_engine
+from tests.turn_harness import build_engine, drafting_parts
 
 GPS = {"intent": "knowledge_question", "confidence": 1.0,
        "normalized_request": "How does GPS know where I am?",
@@ -78,7 +78,14 @@ def _turns(said, *, plan_reply=None, **settings):
 
 
 def _prompt_text(messages) -> tuple[str, str]:
-    return str(messages[0]["content"]), str(messages[-1]["content"])
+    """(persona, the turn's rules) of a drafting prompt.
+
+    On an explanation the rules sit ahead of the conversation and the
+    last message is what the person said
+    (brain/response_messages.their_words_last).
+    """
+    persona, rules, _said = drafting_parts(messages)
+    return persona, rules
 
 
 class ConfigurationTests(unittest.TestCase):

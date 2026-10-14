@@ -1284,6 +1284,56 @@ Verdict-first held on about 4 of 10 check questions. The rule reached the prompt
 the 8B drops it when a check and a new question come together. That is a case for the per-turn
 move (step 3), not for more prompt text.
 
+## Their words last (2026-10-13)
+
+English only, at the user's direction; the 27B line is closed and the
+budget is about 4 s to her first word. Six English seeds on the 8B after the
+router's `time_scope` fix (`runtime/evals/sl/tw4_report.md`): 23/30
+verified, as before it. Seven failures, five of them the CS student: wrong
+maths in worked examples, restating scaling when asked why accuracy holds,
+the same example after being corrected.
+
+**Cause.** On `knowledge_question` and `web_search` the drafting prompt was
+the persona, the conversation, and one last message of about 6,000
+characters holding every rule for the turn, with the question inside it as
+the router's `normalized_request`. Of 127 such English follow-ups 13 reached
+the writer word for word; corrections, "I already get X" and "is this right?"
+are what the reading drops. Asked cold, the 8B answered the CS student's
+three ideas correctly 9 of 9 times. Conversation and clarification turns
+already ended on the person's words.
+
+**Measured offline** (no change to the app while measuring):
+- Five CS follow-ups, two tries each: the rule block as sent, even under a
+  neutral system prompt, wrong or generic 10 of 10; her persona with the
+  conversation and their words alone, the right method 9 of 10. Taking the
+  abilities list or the "keep it simple / worked example" lines out of the
+  block changed nothing.
+- All 56 rewritten follow-ups of the pilot, judged blind by the 35B with the
+  order shuffled, the current prompt against the rules moved ahead of the
+  conversation with the person's words last: 15 to 41 (p 0.001); answers
+  what was said, yes 24 against 53; states something wrong, 8 against 9.
+- The same, through the code as written (the reading kept as a note): 14 to
+  42 (p 0.0002); answers what was said, yes 25 against 52; wrong, 8 against 9.
+
+**Changed.** `brain/response_messages.their_words_last`, called in
+`ChatEngine._answer_turn` after the voice and style requirements, on
+`knowledge_question` and `web_search` only. Every rule stays and moves into
+the system message after the persona; the last message is what the person
+said; the reading the prompt showed is kept as a note for "it" and misheard
+words (none when the turn move has already put their words there). No new
+model call. The trace records `question_shown: "their words, last"`. Tests:
+`tests/test_their_words_last.py`; the tests that found the drafting prompt
+by its last message use `tests/turn_harness.drafting_prompts` and
+`drafting_parts`.
+
+**Not changed.** Calculation and tool results, the length rewrite and the
+advice finaliser still build the old shape. It does not make her facts or
+her arithmetic more reliable: the 8B still gets numbers inside worked
+examples wrong (86 for 89.25). Offline tools that read "CURRENT USER
+MESSAGE" from a trace's last message (`evals/last_answer_repair.py`,
+`evals/lookup_evidence.py`, `evals/turn_move_*`) see the new shape on these
+routes in turns recorded from now on.
+
 ## Still open
 
 - **Production FAST/DEEP routing**: not enabled. The order agreed:

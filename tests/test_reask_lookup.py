@@ -28,7 +28,7 @@ from unittest import mock
 from brain import turn_move as tm
 from core import turn_trace
 from tests.test_turn_move import AXIS0, FakeEmbedder, _at
-from tests.turn_harness import RecordingSearch, build_engine
+from tests.turn_harness import RecordingSearch, build_engine, drafting_parts, drafting_prompts
 
 FIRST = "What's the newest iPhone model right now?"
 AGAIN = "Wait, so which iPhone model is the newest one right now?"
@@ -127,9 +127,8 @@ class _Conversation(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             engine.chat(said)
         record = turn_trace.last().as_record()
-        drafts = [str(prompt[-1].get("content", "")) for prompt in engine.client.prompts[prompts:]
-                  if prompt and "VOICE RESPONSE REQUIREMENTS\n" in str(prompt[-1].get("content", ""))
-                  and not str(prompt[-1].get("content", "")).startswith("DRAFT ANSWER")]
+        # The turn's rules, evidence included, wherever the prompt puts them.
+        drafts = [drafting_parts(prompt)[1] for prompt in drafting_prompts(engine.client.prompts[prompts:])]
         self.assertTrue(drafts, said)
         return (engine.web_search_tool.queries[before:],
                 list((record.get("evidence") or {}).get("search_queries") or ()),

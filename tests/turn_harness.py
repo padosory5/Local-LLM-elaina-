@@ -656,3 +656,47 @@ def reset(engine: ChatEngine) -> None:
     ):
         if gate is not None and hasattr(gate, "clear"):
             gate.clear()
+
+
+# ------------------------------------------------------- drafting prompts
+
+# Where a drafting prompt's rules for the turn begin, in whichever message
+# holds them. The persona uses [BRACKETS]; these are the turn's own.
+_RULE_HEADERS = (
+    "RECENT VERIFIED CONTEXT\n", "CURRENT RETRIEVED EVIDENCE\n",
+    "TRUSTED TOOL RESULT\n", "CURRENTLY AVAILABLE AI AGENTS\n",
+    "WHAT THIS MESSAGE IS ABOUT\n", "ANSWER LANGUAGE\n",
+)
+_VOICE = "VOICE RESPONSE REQUIREMENTS\n"
+
+
+def drafting_prompts(prompts: list[list]) -> list[list]:
+    """The prompts that drafted a reply, from ``ScriptedClient.prompts``.
+
+    They carry the voice requirements: in the last message, or -- on a
+    knowledge question or a search -- ahead of the conversation, with what
+    the person said as the last message
+    (brain/response_messages.their_words_last). The length rewrite's
+    prompt quotes its draft and is not one of them.
+    """
+    found = []
+    for prompt in prompts:
+        if not prompt or not isinstance(prompt[-1], dict):
+            continue
+        if str(prompt[-1].get("content", "")).startswith("DRAFT ANSWER"):
+            continue
+        if any(_VOICE in str(m.get("content", "")) for m in prompt if isinstance(m, dict)):
+            found.append(prompt)
+    return found
+
+
+def drafting_parts(prompt: list) -> tuple[str, str, str]:
+    """(persona, the turn's rules, the last message) of one drafting prompt."""
+    system = str(prompt[0].get("content", "")) if prompt[0].get("role") == "system" else ""
+    last = str(prompt[-1].get("content", ""))
+    if _VOICE in last:
+        return system, last, last
+    starts = [system.find(header) for header in _RULE_HEADERS if header in system]
+    if not starts:
+        return system, "", last
+    return system[:min(starts)].rstrip(), system[min(starts):], last
