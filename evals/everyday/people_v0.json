@@ -1,0 +1,141 @@
+{
+ "version": "people_v0",
+ "max_turns": 6,
+ "patience": 3,
+ "note": "Everyday English conversations (evals/sim_everyday.py). Each person wants something ordinary, mentions facts about themselves along the way, and brings up one twist (a change of plan, a correction, or a wish about how she should respond). Elaina is told none of this.",
+ "people": [
+  {
+   "id": "ev_dinner",
+   "language": "en",
+   "situation": "Just got home from work, hungry, deciding what to cook.",
+   "opening": "I just got home and I'm starving. What should I make for dinner?",
+   "persona": "You are a 28-year-old who works in an office. You talk casually and briefly.",
+   "facts": [
+    "you are vegetarian",
+    "you only have about 20 minutes",
+    "you have eggs, spinach, rice and cheese at home"
+   ],
+   "twist": "After her first concrete suggestion, you realise you are out of eggs, and say so.",
+   "wants": [
+    {"id": "d1", "need": "One specific vegetarian dish they can make in about 20 minutes from what they have, adjusted once they say they have no eggs."},
+    {"id": "d2", "need": "Enough of how to make it (a few steps or the timing) to start cooking."}
+   ]
+  },
+  {
+   "id": "ev_sleep",
+   "language": "en",
+   "situation": "Has been sleeping badly for a couple of weeks.",
+   "opening": "I've been sleeping really badly lately.",
+   "persona": "You are a 35-year-old nurse. You are tired and a little irritable, and you speak plainly.",
+   "facts": [
+    "you work night shifts three times a week",
+    "you drink coffee around 4pm to get through the day",
+    "you have tried melatonin once and did not like it"
+   ],
+   "twist": "If she gives generic advice that ignores your night shifts, point that out.",
+   "wants": [
+    {"id": "s1", "need": "One or two concrete things to try that fit someone working night shifts."},
+    {"id": "s2", "need": "Something about the 4pm coffee, once they have mentioned it."}
+   ]
+  },
+  {
+   "id": "ev_bad_day",
+   "language": "en",
+   "situation": "Had a bad day at work and wants to talk about it.",
+   "opening": "Ugh, today was awful.",
+   "persona": "You are a 26-year-old who just started a new job. You are upset but not in danger, and you talk in short bursts.",
+   "facts": [
+    "your presentation went badly",
+    "your manager criticised it in front of the whole team"
+   ],
+   "twist": "If she starts giving advice before you ask for any, say you don't want advice right now, you just needed to vent.",
+   "wants": [
+    {"id": "b1", "need": "To feel listened to: she responds to what actually happened, not with generic sympathy."},
+    {"id": "b2", "need": "She stops advising once they say they just want to vent, and stays with them."}
+   ]
+  },
+  {
+   "id": "ev_trip",
+   "language": "en",
+   "situation": "Planning a first weekend trip to Chicago.",
+   "opening": "I'm going to Chicago next weekend. Any ideas what I should do?",
+   "persona": "You are a 31-year-old graphic designer who likes buildings and food. You talk casually.",
+   "facts": [
+    "it is your first time in Chicago",
+    "you have two days",
+    "you are on a tight budget"
+   ],
+   "twist": "Once she has suggested a few things, ask how you should get around without a car.",
+   "wants": [
+    {"id": "t1", "need": "Two or three specific things to do in Chicago that fit liking architecture and food and a tight budget."},
+    {"id": "t2", "need": "A practical way to get around Chicago without a car."}
+   ]
+  },
+  {
+   "id": "ev_quick_questions",
+   "language": "en",
+   "situation": "Cooking and doing small sums, asking quick questions one after another.",
+   "opening": "Quick one: how long do I boil an egg if I want it soft-boiled?",
+   "persona": "You are a 40-year-old parent in the middle of making breakfast. You want quick answers, not explanations.",
+   "facts": [
+    "you are cooking right now and in a hurry"
+   ],
+   "twist": "After the egg answer, ask how many tablespoons are in a quarter cup. After that, ask what a 15 percent tip on 48 dollars is.",
+   "wants": [
+    {"id": "q1", "need": "A soft-boiled egg time of about 6 to 7 minutes in boiling water."},
+    {"id": "q2", "need": "A quarter cup is 4 tablespoons."},
+    {"id": "q3", "need": "A 15 percent tip on 48 dollars is 7 dollars 20 cents."}
+   ]
+  },
+  {
+   "id": "ev_gift",
+   "language": "en",
+   "situation": "Needs a birthday present for their sister.",
+   "opening": "My sister's birthday is on Saturday and I have no idea what to get her.",
+   "persona": "You are a 33-year-old who is not good at presents. You talk casually.",
+   "facts": [
+    "your sister is turning 30",
+    "she loves hiking and good coffee",
+    "you were thinking of spending about 50 dollars"
+   ],
+   "twist": "After her first ideas, say your budget is actually more like 30 dollars.",
+   "wants": [
+    {"id": "g1", "need": "Two or three specific gift ideas that fit hiking or coffee."},
+    {"id": "g2", "need": "Ideas that fit the 30 dollar budget once they have lowered it."}
+   ]
+  },
+  {
+   "id": "ev_interview",
+   "language": "en",
+   "situation": "Nervous about a job interview on Friday.",
+   "opening": "I have a job interview on Friday and I'm kind of nervous.",
+   "persona": "You are a 23-year-old recent graduate. You are anxious but hopeful, and you talk simply.",
+   "facts": [
+    "the job is a junior data analyst role",
+    "you know SQL and Excel well",
+    "the question you dread is 'tell me about yourself'"
+   ],
+   "twist": "Ask her to help you with how to answer 'tell me about yourself'.",
+   "wants": [
+    {"id": "i1", "need": "A concrete way to answer 'tell me about yourself' for a junior data analyst role, using their SQL and Excel."},
+    {"id": "i2", "need": "One practical thing to do about the nerves."}
+   ]
+  },
+  {
+   "id": "ev_small_talk",
+   "language": "en",
+   "situation": "Just wants a bit of friendly chat in the evening.",
+   "opening": "Hey Elaina, how's it going?",
+   "persona": "You are a 29-year-old relaxing after dinner. You are friendly and chatty but keep it short.",
+   "facts": [
+    "you just watched a movie you loved, the first Dune film",
+    "you are thinking of reading the book"
+   ],
+   "twist": "Ask her whether the book is worth reading after the movie.",
+   "wants": [
+    {"id": "c1", "need": "A warm, brief reply that engages with what they said about the movie, without claiming she watched it herself."},
+    {"id": "c2", "need": "A real answer about whether the book is worth reading after the movie, without wrong facts about it."}
+   ]
+  }
+ ]
+}

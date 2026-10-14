@@ -57,7 +57,8 @@ from evals import sim_learner as sl  # noqa: E402
 from evals.judge import DEFAULT_JUDGE  # noqa: E402
 
 # Short name -> the arm in ``sl.ARMS`` a run's meta.json records.
-ARMS = {"8b": "current", "split": "thread_27b", "all27": "thread_all27"}
+ARMS = {"8b": "current", "split": "thread_27b", "all27": "thread_all27",
+        "person": "voice_person"}
 sl.ARMS["thread_27b"] = {**sl.ARMS["current"], "ELAINA_CONVERSATION_MODEL": sl.M27}
 sl.ARMS["thread_all27"] = {**sl.ARMS["current"], "ELAINA_MODEL": sl.M27,
                            "ELAINA_CONVERSATION_MODEL": sl.M27}

@@ -77,6 +77,9 @@ ARMS = {
     # ...and that turn written by the 27B.
     "move_deep": {**NO_STT, "ELAINA_DOMAINS": "act", "ELAINA_MODEL": M8, ec.EXPERIMENT_ENV: "off",
                   "ELAINA_TURN_MOVE": "deep", "ELAINA_TURN_MOVE_MODEL": M27},
+    # The person voice (brain/voice.py): the production arm talking as a person.
+    "voice_person": {**NO_STT, "ELAINA_DOMAINS": "act", "ELAINA_MODEL": M8, ec.EXPERIMENT_ENV: "off",
+                     "ELAINA_TURN_MOVE": "off", "ELAINA_VOICE": "person"},
 }
 
 

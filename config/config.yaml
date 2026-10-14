@@ -263,6 +263,14 @@ responses:
   turn_move: "off"
   turn_move_model: "hf.co/jrell/Qwen3.8-27B-i1-IQ4_XS-GGUF-Smaller:latest"
 
+  # How she talks (brain/voice.py). "assistant" is the voice she has had:
+  # personality_en.txt, which opens "speak like a professional assistant".
+  # "person" talks the way a person talks to a friend: personality_en_person.txt
+  # (the same honesty, advice, tool and safety rules), and explanations asked
+  # for that way instead of by the why / what-for / worked-example checklist.
+  # English only; Korean keeps its own file. ELAINA_VOICE overrides this.
+  voice: "assistant"
+
   # Short Ollama-generated acknowledgement before a slower agent starts.
   status_max_words: 6
 

@@ -462,7 +462,8 @@ class EngineTests(unittest.TestCase):
         for _ in range(DEFAULT_CAPABILITY_GAP):
             self.engine.recommendations.begin_turn()
 
-    def _append(self, reply, level=2, capability="browser_control", act="answer"):
+    def _append(self, reply, level=2, capability="browser_control", act="answer",
+                goal=None, following_up=False):
         class Choice:
             def __init__(self, value):
                 self.capability = value
@@ -471,10 +472,11 @@ class EngineTests(unittest.TestCase):
             reply,
             decision=_decision(level=level),
             capability=Choice(capability),
-            goal=goal_intent.SemanticGoal(
+            goal=goal or goal_intent.SemanticGoal(
                 intent=goal_intent.RECOMMEND, subject="the hotel page",
             ),
             act=act,
+            following_up=following_up,
         )
 
     def test_an_act_with_no_room_for_an_offer_never_gets_one(self):
@@ -495,6 +497,47 @@ class EngineTests(unittest.TestCase):
                 said = "Alright."
                 self.assertEqual(self._append(said, act=act), said)
                 self.assertIsNone(self.engine.capability_offer.peek())
+
+    def test_a_follow_up_while_learning_gets_no_offer(self):
+        """The answer is the help; an offer to look up what she is explaining is not.
+
+        Every offer this stage had added on record (20 of 20, 2026-10-13)
+        went to someone following up while learning: "Shall I look into a
+        model quantization?" under the answer to "why doesn't the accuracy
+        drop more?", "I can go through an astronomy if that helps."
+        """
+        for intent in (goal_intent.EXPLAIN, goal_intent.CHAT):
+            with self.subTest(intent=intent):
+                self.engine.capability_offer.clear()
+                said = "Rounding errors are small and mostly cancel out."
+                learning = goal_intent.SemanticGoal(intent=intent, subject="model quantization")
+                self.assertEqual(self._append(said, goal=learning, following_up=True), said)
+                self.assertIsNone(self.engine.capability_offer.peek())
+
+    def test_a_follow_up_about_something_they_want_can_still_carry_one(self):
+        self.engine.capability_offer.clear()
+        said = "That one looks pretty nice."
+
+        self.assertNotEqual(self._append(said, following_up=True), said)
+        self.assertIsNotNone(self.engine.capability_offer.peek())
+
+    def test_a_learning_goal_flagged_as_a_recommendation_is_not_silenced(self):
+        self.engine.capability_offer.clear()
+        said = "That one looks pretty nice."
+        wanted = goal_intent.SemanticGoal(intent=goal_intent.EXPLAIN, subject="the hotel page",
+                                          recommendation=True)
+
+        self.assertNotEqual(self._append(said, goal=wanted, following_up=True), said)
+
+    def test_the_turn_tells_the_stage_whether_it_is_a_follow_up(self):
+        import inspect
+
+        from brain.chat_engine import ChatEngine
+
+        source = inspect.getsource(ChatEngine._answer_turn)
+        call = source[source.index("self._append_recommendation("):]
+        call = call[:call.index(")\n") + 1]
+        self.assertIn('following_up=bool(getattr(route, "is_follow_up", False))', call)
 
     def test_an_answer_still_carries_one(self):
         self.engine.capability_offer.clear()

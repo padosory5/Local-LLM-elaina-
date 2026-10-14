@@ -27,6 +27,7 @@ from brain import fastdeep_router
 from brain import response_stages
 from brain import result_state
 from brain import turn_move
+from brain import voice as voice_setting
 from brain import response_surface as surfaces
 from brain import entity_discovery
 from brain import surface_images
@@ -644,6 +645,11 @@ class ChatEngine:
         if self._turn_move_mode != turn_move.OFF:
             print(f"[Turn Move] acting on: {', '.join(turn_move.ACTED_ON)}"
                   + (f" (written by {self._turn_move_model})" if self._turn_move_model else ""))
+        # How she talks (brain/voice.py, config responses.voice): as an
+        # assistant, or as a person.
+        self._voice = voice_setting.configured(self.config)
+        if self._voice != voice_setting.ASSISTANT:
+            print(f"[Voice] talking as a {self._voice}")
 
         self.temperature = self.config.get(
             "llm",
@@ -2347,8 +2353,16 @@ class ChatEngine:
 
     @property
     def system_prompt(self) -> str:
-        """Who she is, written in the language of this turn."""
-        return self.personality_loader.load(self._turn_language)
+        """Who she is, written in the language of this turn, in her voice."""
+        return self.personality_loader.load(self._turn_language, self._voice_file)
+
+    @property
+    def _voice_file(self) -> str:
+        """The voice a persona file and a goal are chosen by; "" for the
+        assistant, whose files are the plain ones. An engine made without
+        ``__init__`` talks as the assistant."""
+        chosen = getattr(self, "_voice", voice_setting.ASSISTANT)
+        return "" if chosen == voice_setting.ASSISTANT else chosen
 
     def _use_language(self, language: str) -> None:
         """Answer in this language from now until it changes.
@@ -8400,6 +8414,7 @@ class ChatEngine:
 
     def _append_recommendation(
         self, reply: str, *, decision, capability, goal, act=conversation_style.ANSWER,
+        following_up: bool = False,
     ) -> str:
         """Offer something that would help, when offering is worth it.
 
@@ -8439,6 +8454,21 @@ class ChatEngine:
             # asked for is not just noise -- it is a question, and the next
             # thing the person says becomes its answer.
             return quiet(f"a {act} has no room for an offer")
+        if (
+            following_up
+            and str(getattr(goal, "intent", "")) in (goal_intent.CHAT, goal_intent.EXPLAIN)
+            and not getattr(goal, "recommendation", False)
+        ):
+            # They are following up on something she is explaining or
+            # talking through, and asked for nothing to be found. Every
+            # offer this stage has added on record was this shape -- 20 of
+            # 20, all to someone learning, 13 of them filed by the router
+            # as an agent offer: "Shall I look into a model quantization?"
+            # under the answer to "why doesn't the accuracy drop more?",
+            # "I can go through an astronomy if that helps." The answer is
+            # the help; an offer to look up what she is explaining is a
+            # second question, and in those words not a fluent one.
+            return quiet("they are following up, and asked for nothing to be found")
         if self.clarification.peek() is not None:
             # She has just asked a question of her own. Adding "want me to
             # search?" underneath it puts two questions on the table and
@@ -11142,10 +11172,12 @@ class ChatEngine:
             max_words=max_words,
             max_sentences=max_sentences,
             goal=(
-                budget.goal(self._turn_language)
+                budget.goal(self._turn_language, voice=self._voice_file)
                 if turn_act == conversation_style.ANSWER else ""
             ),
         )
+        if self._voice_file:
+            turn_trace.note_context(voice=self._voice_file)
         # What the person already gave her, for the completeness checks
         # below: a calculation answer made only of the question's own
         # numbers has not answered it. Both spellings count as given --
@@ -11300,7 +11332,7 @@ class ChatEngine:
             if messages and messages[0].get("role") == "system":
                 messages[0] = {**messages[0], "content": explain_contract.persona_without_conflicts(
                     str(messages[0].get("content") or ""),
-                    self.personality_loader.sections(self._turn_language))}
+                    self.personality_loader.sections(self._turn_language, self._voice_file))}
             turn_trace.note_context(explanation_contract={
                 "arm": explain_arm, "plan": plan.as_record() if plan else None, **plan_note})
         # The turn-move owner, acting (config responses.turn_move, off by
@@ -12176,6 +12208,7 @@ class ChatEngine:
                     self._append_recommendation(
                         reply, decision=decision, capability=capability,
                         goal=goal_intent_result, act=turn_act,
+                        following_up=bool(getattr(route, "is_follow_up", False)),
                     ),
                 )
             checked_draft = reply

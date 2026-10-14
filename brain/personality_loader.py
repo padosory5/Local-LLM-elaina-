@@ -29,24 +29,32 @@ class PersonalityLoader:
 
     def __init__(self):
         self.directory = Path(__file__).parent
-        self._cache: dict[str, str] = {}
+        self._cache: dict[tuple[str, str], str] = {}
 
     def load(
         self,
         language: str,
+        voice: str = "",
     ) -> str:
-        """The personality text for this language.
+        """The personality text for this language, in this voice.
+
+        A voice (brain/voice.py) is a file of its own beside the language's,
+        ``personality_en_person.txt``; a language without that file keeps
+        its own, so Korean is untouched by an English voice.
 
         Cached: this is now read per turn rather than once per process, and
         re-reading a file from disk to answer "hello" would be silly.
         """
         language = str(language or "").strip().lower()
-        if language in self._cache:
-            return self._cache[language]
+        voice = str(voice or "").strip().lower()
+        if (language, voice) in self._cache:
+            return self._cache[(language, voice)]
 
-        filename = f"personality_{language}.txt"
-
-        path = self.directory / filename
+        path = self.directory / f"personality_{language}.txt"
+        if voice:
+            voiced = self.directory / f"personality_{language}_{voice}.txt"
+            if voiced.exists():
+                path = voiced
 
         if not path.exists():
             raise FileNotFoundError(
@@ -56,10 +64,10 @@ class PersonalityLoader:
         text = path.read_text(
             encoding="utf-8",
         ).strip()
-        self._cache[language] = text
+        self._cache[(language, voice)] = text
         return text
 
-    def sections(self, language: str) -> dict[str, list[str]]:
+    def sections(self, language: str, voice: str = "") -> dict[str, list[str]]:
         """The rules under each section marker, in order.
 
         A rule is a ``- `` bullet. Everything else -- the lead line, the
@@ -69,7 +77,7 @@ class PersonalityLoader:
         """
         found: dict[str, list[str]] = {}
         current = ""
-        for line in self.load(language).splitlines():
+        for line in self.load(language, voice).splitlines():
             header = _SECTION.match(line.strip())
             if header:
                 current = header.group(1)
@@ -82,9 +90,9 @@ class PersonalityLoader:
                 found[current].append(rule.group(1).strip())
         return found
 
-    def example_count(self, language: str) -> int:
+    def example_count(self, language: str, voice: str = "") -> int:
         """How many example exchanges the file demonstrates."""
-        text = self.load(language)
+        text = self.load(language, voice)
         marker = "[EXAMPLES]"
         if marker not in text:
             return 0

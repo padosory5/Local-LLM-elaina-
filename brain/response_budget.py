@@ -72,6 +72,16 @@ OPEN = "open"
 # explanation again, the verdict left for the person to work out. Every
 # shape that explains carries it, because the router files these turns
 # under all of them; the explanation contract carries the same words.
+# The person voice's explanation goal (brain/voice.py). English only:
+# Korean is left out of the work for now and keeps its goal.
+from brain.voice import PERSON as PERSON_VOICE  # noqa: E402
+EXPLAIN_LIKE_A_FRIEND = (
+    "Explain it the way you would to a friend: start from something they "
+    "already know or a simple comparison, then say the real point in plain "
+    "words. Add one small example with real numbers or a real situation only "
+    "if it makes it click. Shorter is fine when the answer is simple."
+)
+
 CHECKING_UNDERSTANDING = (
     "If they ask whether they have understood it right, start by saying "
     "whether they have: yes, partly, or not quite. Then, if any of it is "
@@ -110,8 +120,14 @@ class ResponseBudget:
     # What the answer is for; "" when no instruction belongs in the prompt.
     shape: str = ""
 
-    def goal(self, language: str = "en") -> str:
-        """What the room is for, said to the model in the reply's language."""
+    def goal(self, language: str = "en", voice: str = "") -> str:
+        """What the room is for, said to the model in the reply's language.
+
+        In the person voice (brain/voice.py) an English explanation is asked
+        for the way a friend gives one, not by the why / what-for /
+        worked-example checklist that made every answer the same three
+        parts.
+        """
         korean = str(language or "").lower().startswith("ko")
         goals = {
             # "Add at most one short sentence of context" read as an
@@ -169,6 +185,8 @@ class ResponseBudget:
             ),
         }
         english, korean_goal = goals.get(self.shape, ("", ""))
+        if voice == PERSON_VOICE and self.shape == EXPLAIN_ANSWER:
+            english = EXPLAIN_LIKE_A_FRIEND
         if english and self.shape != VALUE_ANSWER:
             english = f"{english} {CHECKING_UNDERSTANDING[0]}"
             korean_goal = f"{korean_goal} {CHECKING_UNDERSTANDING[1]}"
